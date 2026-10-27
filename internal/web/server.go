@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/version"
@@ -55,6 +56,9 @@ type Server struct {
 	now          func() time.Time
 	tmpl         *template.Template
 	handler      http.Handler
+
+	// Auth is the authentication handler.
+	a *auth.Server
 }
 
 // New builds the handler. It fails only if the embedded templates cannot be
@@ -82,6 +86,7 @@ func New(opts Options) (*Server, error) {
 		started:      opts.Started,
 		now:          opts.Now,
 		tmpl:         tmpl,
+		a:            auth.NewServer(opts.Logger, opts.Config, opts.TokenPresent),
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -97,6 +102,12 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// Auth routes
+	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("POST /api/auth/totp", s.handleTotpLogin)
+	mux.HandleFunc("POST /api/auth/mpin", s.handleMPINLogin)
+	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
 
 	var h http.Handler = mux
 	h = localOnly(s.log, h)
@@ -209,6 +220,120 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := writeJSON(w, httpStatus, resp); err != nil {
 		s.log.Warn("write health response", "event", "http_write_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+	}
+}
+
+// handleLoginPage serves the login page.
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	data := pageData{
+		Title: "Login",
+		Mode:  strings.ToUpper(s.cfg.Trading.Mode),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if err := s.tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
+		s.log.Error("render login page", "event", "http_render_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+	}
+}
+
+// handleTotpLogin handles TOTP-based login.
+func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TOTP string `json:"totp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.TOTP == "" {
+		http.Error(w, "TOTP code required", http.StatusBadRequest)
+		return
+	}
+
+	// Use the auth server to authenticate
+	accessToken, err := s.a.Login(req.TOTP, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the session and convert to SessionData
+	session := s.a.SessionManager().GetSession(accessToken)
+	if session == nil {
+		http.Error(w, "session creation failed", http.StatusInternalServerError)
+		return
+	}
+
+	resp := struct {
+		Success bool `json:"success"`
+		Session *auth.SessionData `json:"session_data,omitempty"`
+	}{
+		Success: true,
+		Session: auth.ToSessionData(session),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Warn("write login response", "event", "http_write_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+	}
+}
+
+// handleMPINLogin handles MPIN-based login.
+func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MPIN string `json:"mpin"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.MPIN == "" {
+		http.Error(w, "MPIN required", http.StatusBadRequest)
+		return
+	}
+
+	// Use the auth server to authenticate
+	accessToken, err := s.a.Login("", req.MPIN)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the session and convert to SessionData
+	session := s.a.SessionManager().GetSession(accessToken)
+	if session == nil {
+		http.Error(w, "session creation failed", http.StatusInternalServerError)
+		return
+	}
+
+	resp := struct {
+		Success bool `json:"success"`
+		Session *auth.SessionData `json:"session_data,omitempty"`
+	}{
+		Success: true,
+		Session: auth.ToSessionData(session),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Warn("write mpin login response", "event", "http_write_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+	}
+}
+
+// handleSessionStatus returns the current session status.
+func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.a.SessionStatus()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		s.log.Warn("write session status", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
 }
