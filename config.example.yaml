@@ -1,0 +1,130 @@
+# Scalper — localhost manual options terminal
+#
+# Copy to config.yaml (git-ignored) and adjust. All keys are strict: a typo is a
+# startup error. Relative paths are resolved from the process working directory.
+#
+# KOTAK_ACCESS_TOKEN is read from the environment only. It is required for live
+# mode and for a real login; paper mode starts without it.
+
+app:
+  listen: "127.0.0.1:8080"
+  db_path: "./data/scalper.db"
+  timezone: "Asia/Kolkata"
+
+logging:
+  level: "info"              # debug | info | warn | error
+  format: "json"             # json | text
+  file: "./logs/scalper.log" # empty = stderr only
+  max_size_mb: 100
+  max_backups: 10
+  retention_days: 14
+  tick_sample_seconds: 1     # 0 disables sampled tick lines
+  redact: true               # must stay true
+
+kotak:
+  mobile_number: "+91XXXXXXXXXX"
+  ucc: "XXXXXXXX"
+  neo_fin_key: "neotradeapi"
+  # Access token: KOTAK_ACCESS_TOKEN only.
+  # TOTP and MPIN are entered in the UI and never stored.
+
+market:
+  data_mode: "websocket"     # websocket | poll
+  indices:
+    - key: "NIFTY"
+      display_name: "NIFTY"
+      exchange_segment: "nse_fo"
+      index_segment: "nse_cm"
+      index_symbol: "Nifty 50"   # Quotes/WS index name
+      scrip_name: "NIFTY"        # pSymbolName in the Scrip Master
+      expiry_mode: "both"    # both | weekly | monthly
+      default_expiry: "nearest_weekly"
+    - key: "BANKNIFTY"
+      display_name: "BANKNIFTY"
+      exchange_segment: "nse_fo"
+      index_segment: "nse_cm"
+      index_symbol: "Nifty Bank"
+      scrip_name: "BANKNIFTY"
+      expiry_mode: "both"
+      default_expiry: "nearest_weekly"
+    - key: "MIDCPNIFTY"
+      display_name: "MIDCPNIFTY"
+      exchange_segment: "nse_fo"
+      index_segment: "nse_cm"
+      index_symbol: "Nifty Midcap Select"
+      scrip_name: "MIDCPNIFTY"
+      expiry_mode: "both"
+      default_expiry: "nearest_weekly"
+    - key: "SENSEX"
+      display_name: "SENSEX"
+      exchange_segment: "bse_fo"
+      index_segment: "bse_cm"
+      index_symbol: "SENSEX"
+      scrip_name: "SENSEX"
+      expiry_mode: "both"
+      default_expiry: "nearest_weekly"
+  india_vix:
+    enabled: true
+    exchange_segment: "nse_cm"
+    symbol: "INDIA VIX"      # hidden automatically if unavailable
+    scrip_name: "INDIA VIX"  # pSymbolName in the Scrip Master
+  chain:
+    visible_poll_ms: 1000
+    full_poll_ms: 5000
+    batch_size: 50
+    visible_priority: true
+  depth:
+    enabled: true
+    mode: "poll"             # poll | websocket
+  holidays: []               # e.g. ["2026-10-02"]
+
+charts:
+  base_timeframe: "1m"
+  timeframes: ["1m", "3m", "5m", "15m", "1h"]
+  default_timeframe: "5m"
+  retention_days: 30
+  persist: true
+
+trading:
+  mode: "paper"              # paper | live
+  default_product: "MIS"
+  default_order_type: "MARKET"
+  confirm_live_orders: true
+  market_protection: 0
+  quantity:
+    default_lots: 1
+    default_unit: "lots"     # lots | shares
+    allow_shares: true
+  paper:
+    starting_cash: 1000000
+    slippage_ticks: 1
+    short_margin_pct: 15
+  margin:
+    check_before_order: true
+    fail_closed: true
+    refresh_ms: 5000
+    preview_debounce_ms: 300
+  session:
+    open: "09:15"
+    close: "15:30"
+    allow_outside_hours: false
+  risk:
+    max_lots_per_order: 0
+    max_open_lots_per_index: 0
+    max_order_value_inr: 0
+    max_daily_loss_inr: 5000
+    max_orders_per_minute: 6
+    max_exit_orders_per_second: 4
+    block_on_data_stale_ms: 5000
+  risk_view:
+    enabled: true
+    payoff_range_pct: 10
+    payoff_points: 121
+    include_preview: true
+
+scrip:
+  refresh_at: "08:45"
+  segments: ["nse_fo", "bse_fo", "nse_cm", "bse_cm"]
+
+web:
+  open_browser: true

@@ -1,0 +1,192 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0e11;
+  --panel: #12171c;
+  --panel-2: #171d24;
+  --line: #232c35;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #f0b429;
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #141a20, #0d1115);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; }
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #1a1300;
+  font-weight: 800;
+}
+
+.name { font-weight: 700; letter-spacing: .02em; }
+.tag { color: var(--muted); font-size: 12px; }
+
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  border: 1px solid var(--line);
+}
+.badge.paper { color: var(--accent); border-color: #4a3a10; background: #1d1808; }
+.badge.live { color: var(--red); border-color: #5a1f1c; background: #210f0e; }
+
+.shell {
+  width: min(1120px, calc(100% - 48px));
+  margin: 28px auto;
+  display: grid;
+  gap: 18px;
+  flex: 1;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 10px 30px #0006;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 28px;
+  align-items: center;
+  background:
+    radial-gradient(900px 240px at 10% -40%, #f0b42922, transparent 70%),
+    var(--panel);
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+h1 { margin: 0 0 10px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.02em; }
+h2 { margin: 0; font-size: 15px; letter-spacing: .02em; }
+
+.lede { margin: 0; color: var(--muted); max-width: 60ch; }
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.status-grid > div {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.status-grid dt {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.status-grid dd { margin: 3px 0 0; font-weight: 600; }
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.muted { color: var(--muted); font-size: 12px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 0; }
+.chips li {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .03em;
+}
+
+.roadmap {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.roadmap li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  background: var(--panel-2);
+}
+.roadmap span { color: var(--muted); font-size: 12px; text-align: right; }
+
+.footer {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.footer a { color: var(--blue); text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
+
+@media (max-width: 780px) {
+  .hero { grid-template-columns: 1fr; }
+  .tag { display: none; }
+  .roadmap li { flex-direction: column; gap: 2px; }
+  .roadmap span { text-align: left; }
+}

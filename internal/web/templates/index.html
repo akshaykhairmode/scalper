@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">S</span>
+      <span class="name">{{.Title}}</span>
+      <span class="tag">manual options terminal</span>
+    </div>
+    <div class="topbar-right">
+      <span class="badge {{if eq .Mode "LIVE"}}live{{else}}paper{{end}}">{{.Mode}}</span>
+      <span class="muted">{{.Now}}</span>
+      <span class="muted">v{{.Version}}</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Phase 1 · foundation</p>
+        <h1>Localhost trading terminal</h1>
+        <p class="lede">
+          Config, structured logging, SQLite migrations and the web shell are
+          running. Market feeds, the option chain and order entry arrive in the
+          next phases.
+        </p>
+      </div>
+      <dl class="status-grid">
+        <div>
+          <dt>Mode</dt>
+          <dd>{{.Mode}}</dd>
+        </div>
+        <div>
+          <dt>Uptime</dt>
+          <dd>{{.Uptime}}</dd>
+        </div>
+        <div>
+          <dt>Database</dt>
+          <dd>{{if .DBOK}}ready{{else}}unavailable{{end}}</dd>
+        </div>
+        <div>
+          <dt>Access token</dt>
+          <dd>{{if .TokenPresent}}present{{else}}not set{{end}}</dd>
+        </div>
+        <div>
+          <dt>Log sink</dt>
+          <dd>{{if .LogDegraded}}degraded{{else}}healthy{{end}}</dd>
+        </div>
+        <div>
+          <dt>Build</dt>
+          <dd>{{.Commit}}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Configured indices</h2>
+        <span class="muted">chart-only streaming, ladder polled</span>
+      </div>
+      <ul class="chips">
+        {{range .Indices}}<li>{{.}}</li>{{end}}
+      </ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Next up</h2>
+        <span class="muted">Phase 2 → authentication</span>
+      </div>
+      <ol class="roadmap">
+        <li><strong>TOTP → MPIN</strong><span>manual login, session kept in memory</span></li>
+        <li><strong>Scrip Master</strong><span>option chain derived from the CSV</span></li>
+        <li><strong>Market data</strong><span>HSM ticks for the two chart contracts</span></li>
+        <li><strong>Charts</strong><span>CE · spot · PE, persisted candles</span></li>
+        <li><strong>Orders</strong><span>paper first, live behind a confirmation</span></li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>bound to localhost only</span>
+    <a href="/healthz">health</a>
+    <span class="muted">no automatic square-off</span>
+  </footer>
+</body>
+</html>

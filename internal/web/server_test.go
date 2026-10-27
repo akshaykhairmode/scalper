@@ -1,0 +1,419 @@
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/akshaykhairmode/scalper/internal/config"
+)
+
+type fakeDB struct{ err error }
+
+func (f fakeDB) Ping(context.Context) error { return f.err }
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
+func testConfig() config.Config {
+	c := config.Default()
+	c.Kotak.MobileNumber = "+919999999999"
+	c.Kotak.UCC = "TEST"
+	return c
+}
+
+type serverOpts struct {
+	db          DBPinger
+	degraded    bool
+	token       bool
+	now         func() time.Time
+	started     time.Time
+	cfg         *config.Config
+	tokenFnSet  bool
+	noTokenFunc bool
+}
+
+func newTestServer(t *testing.T, o serverOpts) *Server {
+	t.Helper()
+	cfg := testConfig()
+	if o.cfg != nil {
+		cfg = *o.cfg
+	}
+	now := o.now
+	if now == nil {
+		now = func() time.Time { return time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC) }
+	}
+	started := o.started
+	if started.IsZero() {
+		started = now().Add(-90 * time.Minute)
+	}
+	opts := Options{
+		Logger:      testLogger(),
+		Config:      cfg,
+		DB:          o.db,
+		LogDegraded: func() bool { return o.degraded },
+		Started:     started,
+		Now:         now,
+	}
+	if !o.noTokenFunc {
+		opts.TokenPresent = func() bool { return o.token }
+	}
+	s, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+func do(t *testing.T, s *Server, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func localRequest(method, target string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "127.0.0.1:8080"
+	return req
+}
+
+func TestIndexPage(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, token: true})
+	rec := do(t, s, localRequest(http.MethodGet, "/"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Scalper", "PAPER", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("index body missing %q", want)
+		}
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestIndexWithoutTokenAndDegraded(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, token: false, degraded: true})
+	rec := do(t, s, localRequest(http.MethodGet, "/"))
+	body := rec.Body.String()
+	if !strings.Contains(body, "not set") {
+		t.Fatal("token should be reported as not set")
+	}
+	if !strings.Contains(body, "degraded") {
+		t.Fatal("log sink should be reported as degraded")
+	}
+}
+
+func TestIndexUnknownPath(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/nope"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHealthOK(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, token: true})
+	rec := do(t, s, localRequest(http.MethodGet, "/api/health"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp healthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Status != "ok" || resp.Mode != "paper" {
+		t.Fatalf("response = %+v", resp)
+	}
+	if resp.Checks["database"].Status != "ok" {
+		t.Fatalf("database check = %+v", resp.Checks["database"])
+	}
+	if resp.Checks["session"].Status != "ok" {
+		t.Fatalf("session check = %+v", resp.Checks["session"])
+	}
+	if resp.UptimeSeconds != 5400 {
+		t.Fatalf("uptime = %d", resp.UptimeSeconds)
+	}
+	if resp.Version["go_version"] == nil {
+		t.Fatal("version metadata missing")
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+}
+
+func TestHealthUnhealthy(t *testing.T) {
+	t.Run("database failure", func(t *testing.T) {
+		s := newTestServer(t, serverOpts{db: fakeDB{err: errors.New("down")}})
+		rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+		var resp healthResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != "fail" || resp.Checks["database"].Status != "fail" {
+			t.Fatalf("response = %+v", resp)
+		}
+	})
+	t.Run("no database configured", func(t *testing.T) {
+		s := newTestServer(t, serverOpts{})
+		rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+	})
+	t.Run("degraded logging", func(t *testing.T) {
+		s := newTestServer(t, serverOpts{db: fakeDB{}, degraded: true})
+		rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var resp healthResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != "degraded" {
+			t.Fatalf("status = %q, want degraded", resp.Status)
+		}
+	})
+	t.Run("no token", func(t *testing.T) {
+		s := newTestServer(t, serverOpts{db: fakeDB{}, token: false})
+		rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+		var resp healthResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Checks["session"].Status != "unauthenticated" {
+			t.Fatalf("session check = %+v", resp.Checks["session"])
+		}
+	})
+}
+
+func TestHealthWithoutCallbacks(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, noTokenFunc: true})
+	rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp healthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Checks["logging"].Status != "ok" {
+		t.Fatalf("logging check = %+v", resp.Checks["logging"])
+	}
+}
+
+func TestLocalOnly(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	cases := []struct {
+		name   string
+		host   string
+		origin string
+		want   int
+	}{
+		{name: "ipv4", host: "127.0.0.1:8080", want: http.StatusOK},
+		{name: "localhost", host: "localhost:8080", want: http.StatusOK},
+		{name: "ipv6", host: "[::1]:8080", want: http.StatusOK},
+		{name: "bare host", host: "127.0.0.1", want: http.StatusOK},
+		{name: "remote host", host: "example.com:8080", want: http.StatusForbidden},
+		{name: "remote ip", host: "10.0.0.1:8080", want: http.StatusForbidden},
+		{name: "local origin", host: "127.0.0.1:8080", origin: "http://localhost:8080", want: http.StatusOK},
+		{name: "remote origin", host: "127.0.0.1:8080", origin: "http://evil.test", want: http.StatusForbidden},
+		{name: "invalid origin", host: "127.0.0.1:8080", origin: "://bad", want: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := localRequest(http.MethodGet, "/healthz")
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := do(t, s, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want == http.StatusForbidden {
+				if !strings.Contains(rec.Body.String(), "localhost only") {
+					t.Fatalf("body = %s", rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+	h := rec.Header()
+	for _, key := range []string{
+		"Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options",
+		"Referrer-Policy", "Permissions-Policy",
+	} {
+		if h.Get(key) == "" {
+			t.Fatalf("missing header %s", key)
+		}
+	}
+	if h.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("X-Frame-Options = %q", h.Get("X-Frame-Options"))
+	}
+	if h.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q", h.Get("X-Content-Type-Options"))
+	}
+}
+
+func TestRequestID(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+
+	req := localRequest(http.MethodGet, "/healthz")
+	req.Header.Set("X-Request-ID", "client-provided-123")
+	rec := do(t, s, req)
+	if got := rec.Header().Get("X-Request-ID"); got != "client-provided-123" {
+		t.Fatalf("request id = %q", got)
+	}
+
+	req = localRequest(http.MethodGet, "/healthz")
+	req.Header.Set("X-Request-ID", "bad id")
+	rec = do(t, s, req)
+	got := rec.Header().Get("X-Request-ID")
+	if got == "bad id" || len(got) != 24 {
+		t.Fatalf("invalid id not replaced: %q", got)
+	}
+}
+
+func TestStaticAssetsAndFavicon(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/static/app.css"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("css status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "--accent") {
+		t.Fatal("css body unexpected")
+	}
+	if rec.Header().Get("Cache-Control") == "no-store" {
+		t.Fatal("static assets should be cacheable")
+	}
+
+	rec = do(t, s, localRequest(http.MethodGet, "/favicon.ico"))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("favicon status = %d", rec.Code)
+	}
+}
+
+func TestRecoverPanic(t *testing.T) {
+	s := &Server{log: testLogger(), now: time.Now}
+	h := s.recoverPanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, localRequest(http.MethodGet, "/boom"))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "internal error") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestRecoverPanicRepanicsAbort(t *testing.T) {
+	s := &Server{log: testLogger()}
+	h := s.recoverPanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	defer func() {
+		if rec := recover(); rec != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want ErrAbortHandler", rec)
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), localRequest(http.MethodGet, "/"))
+}
+
+func TestStatusRecorder(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+	if _, err := sr.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	sr.WriteHeader(http.StatusTeapot) // second header ignored
+	if sr.status != http.StatusOK {
+		t.Fatalf("status = %d", sr.status)
+	}
+	if sr.bytes != 2 {
+		t.Fatalf("bytes = %d", sr.bytes)
+	}
+	if sr.Unwrap() != rec {
+		t.Fatal("Unwrap mismatch")
+	}
+}
+
+func TestIsLocalHost(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1":       true,
+		"127.0.0.1:8080":  true,
+		"localhost":       true,
+		"localhost:1234":  true,
+		"LOCALHOST:80":    true,
+		"[::1]:8080":      true,
+		"::1":             true,
+		"0.0.0.0:8080":    false,
+		"192.168.1.10:80": false,
+		"evil.test:80":    false,
+		"":                false,
+	}
+	for host, want := range cases {
+		if got := isLocalHost(host); got != want {
+			t.Errorf("isLocalHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+func TestWriteJSONError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if err := writeJSONError(rec, http.StatusBadRequest, "nope", "req-1"); err != nil {
+		t.Fatal(err)
+	}
+	var got jsonError
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Error != "nope" || got.RequestID != "req-1" {
+		t.Fatalf("json error = %+v", got)
+	}
+}
+
+func TestWriteJSONEncodeFailure(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if err := writeJSON(rec, http.StatusOK, make(chan int)); err == nil {
+		t.Fatal("expected encode error")
+	}
+}
+
+func TestIndexUsesUTCWhenTimezoneInvalid(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.Timezone = "Not/AZone"
+	cfg.Market.Indices = nil
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+	rec := do(t, s, localRequest(http.MethodGet, "/"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "12:00:00 IST") {
+		t.Fatalf("body missing formatted time: %s", rec.Body.String())
+	}
+}

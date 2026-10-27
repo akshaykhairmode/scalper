@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+
+  exclusions:
+    rules:
+      # Tests intentionally pass odd values and ignore cleanup noise.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+      # Launching the platform browser requires an exec with a runtime URL.
+      - path: cmd/scalper/main\.go
+        text: "G204"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/akshaykhairmode/scalper
