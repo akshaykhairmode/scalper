@@ -53,6 +53,14 @@ type Order struct {
 	Validity        string  `json:"validity"`
 }
 
+type responseEnvelope struct {
+	Stat   string          `json:"stat"`
+	Emsg   string          `json:"emsg"`
+	ErrMsg string          `json:"errMsg"`
+	Desc   string          `json:"desc"`
+	StCode json.RawMessage `json:"stCode"`
+}
+
 func (c *Client) Orders(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.get(ctx, s, "quick/user/orders")
 }
@@ -237,18 +245,61 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 	if !json.Valid(raw) {
 		return nil, errors.New("Kotak API returned invalid JSON")
 	}
-	var envelope struct {
-		Stat string `json:"stat"`
-		Emsg string `json:"emsg"`
-	}
+	var envelope responseEnvelope
 	if json.Unmarshal(raw, &envelope) == nil && strings.EqualFold(envelope.Stat, "Not_Ok") {
-		c.logResponse(req, resp, raw, "api_rejected")
-		if envelope.Emsg != "" {
-			return nil, fmt.Errorf("Kotak API rejected the request: %s", envelope.Emsg)
+		if isEmptyReport(path, envelope) {
+			c.logResponse(req, resp, raw, "no_data")
+			return json.RawMessage(`{"stat":"Ok","data":[]}`), nil
 		}
-		return nil, errors.New("Kotak API rejected the request")
+		c.logResponse(req, resp, raw, "api_rejected")
+		return nil, kotakAPIError(envelope)
 	}
 	return json.RawMessage(raw), nil
+}
+
+func isEmptyReport(path string, envelope responseEnvelope) bool {
+	if path != "quick/user/orders" && path != "quick/user/trades" {
+		return false
+	}
+	var code int
+	if json.Unmarshal(envelope.StCode, &code) != nil {
+		var text string
+		if json.Unmarshal(envelope.StCode, &text) == nil {
+			_, _ = fmt.Sscan(text, &code)
+		}
+	}
+	message := strings.ToLower(strings.TrimSpace(envelope.ErrMsg + " " + envelope.Emsg + " " + envelope.Desc))
+	return code == 5203 || strings.Contains(message, "no data") || strings.Contains(message, "data not found")
+}
+
+func kotakAPIError(envelope responseEnvelope) error {
+	message := strings.TrimSpace(envelope.Emsg)
+	if message == "" {
+		message = strings.TrimSpace(envelope.ErrMsg)
+	}
+	if desc := strings.TrimSpace(envelope.Desc); desc != "" && !strings.EqualFold(desc, message) {
+		if message == "" {
+			message = desc
+		} else {
+			message += " (" + desc + ")"
+		}
+	}
+	var code any
+	if len(envelope.StCode) > 0 {
+		if json.Unmarshal(envelope.StCode, &code) != nil {
+			code = string(envelope.StCode)
+		}
+	}
+	if message == "" && code != nil {
+		return fmt.Errorf("Kotak API rejected the request (code %v)", code)
+	}
+	if code != nil {
+		return fmt.Errorf("Kotak API rejected the request: %s (code %v)", message, code)
+	}
+	if message != "" {
+		return fmt.Errorf("Kotak API rejected the request: %s", message)
+	}
+	return errors.New("Kotak API rejected the request")
 }
 
 func (c *Client) logResponse(req *http.Request, resp *http.Response, body []byte, outcome string) {
@@ -262,7 +313,11 @@ func (c *Client) logResponse(req *http.Request, resp *http.Response, body []byte
 			safeBody = safeBody[:maxLoggedResponseBytes] + "…[truncated]"
 		}
 	}
-	c.log.Error("Kotak trading API response",
+	log := c.log.Error
+	if outcome == "no_data" {
+		log = c.log.Info
+	}
+	log("Kotak trading API response",
 		"event", "kotak_trading_api_response",
 		"method", req.Method,
 		"url", logging.RedactURL(req.URL.String()),
