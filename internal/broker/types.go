@@ -159,10 +159,7 @@ func (kb *KotakBroker) GetPositions() ([]Position, error) {
 		return nil, fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to get current positions.
-	// For now, return empty positions.
-	return []Position{}, nil
+	return nil, fmt.Errorf("positions API is not implemented")
 }
 
 // GetTradeBook implements BrokerInterface.
@@ -174,9 +171,7 @@ func (kb *KotakBroker) GetTradeBook() ([]Trade, error) {
 		return nil, fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to get the trade history.
-	return []Trade{}, nil
+	return nil, fmt.Errorf("trade book API is not implemented")
 }
 
 // GetOrderBook implements BrokerInterface.
@@ -188,9 +183,7 @@ func (kb *KotakBroker) GetOrderBook() ([]Order, error) {
 		return nil, fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to get open orders.
-	return []Order{}, nil
+	return nil, fmt.Errorf("order book API is not implemented")
 }
 
 // GetMargin implements BrokerInterface.
@@ -202,14 +195,7 @@ func (kb *KotakBroker) GetMargin() (AvailableMargin, error) {
 		return AvailableMargin{}, fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to get margin information.
-	return AvailableMargin{
-		TotalMargin:      100000,
-		UsedMargin:       20000,
-		AvailableMargin:  80000,
-		FundsAvailable:   80000,
-	}, nil
+	return AvailableMargin{}, fmt.Errorf("margin API is not implemented")
 }
 
 // SquareOffAll implements BrokerInterface.
@@ -221,18 +207,7 @@ func (kb *KotakBroker) SquareOffAll() error {
 		return fmt.Errorf("broker not initialized")
 	}
 
-	// Check if market hours have ended
-	// In a real implementation, check market close time
-
-	// In a real implementation, this would:
-	// 1. Get all open positions
-	// 2. Square off each position (square off BUY for short, square off SELL for long)
-	// 3. Square off any open orders
-	// 4. Record the square-off trades in the trade book
-	// 5. Update positions
-
-	kb.logger.Info("squaring off all positions", "event", "broker_squareoff_all")
-	return nil
+	return fmt.Errorf("square-off API is not implemented")
 }
 
 // PlaceOrder implements BrokerInterface.
@@ -251,19 +226,7 @@ func (kb *KotakBroker) PlaceOrder(order *Order) error {
 		}
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to place the order.
-	kb.logger.Info("placing order", "event", "broker_place_order",
-		"instrument", order.InstrumentKey,
-		"quantity", order.Quantity,
-		"buy_sell", order.BuySell,
-		"order_type", order.OrderType)
-	
-	// Simulate order placement
-	order.Status = "EXECUTED"
-	order.Timestamp = time.Now().Unix()
-
-	return nil
+	return fmt.Errorf("order API is not implemented")
 }
 
 // ModifyOrder implements BrokerInterface.
@@ -275,14 +238,7 @@ func (kb *KotakBroker) ModifyOrder(order *Order) error {
 		return fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to modify the order.
-	kb.logger.Info("modifying order", "event", "broker_modify_order",
-		"order_id", order.ID,
-		"instrument", order.InstrumentKey)
-	
-	order.Status = "EXECUTED"
-	return nil
+	return fmt.Errorf("modify order API is not implemented")
 }
 
 // CancelOrder implements BrokerInterface.
@@ -294,13 +250,7 @@ func (kb *KotakBroker) CancelOrder(orderID string) error {
 		return fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak API
-	// to cancel the order.
-	kb.logger.Info("cancelling order", "event", "broker_cancel_order",
-		"order_id", orderID)
-	
-	// Simulate cancellation
-	return nil
+	return fmt.Errorf("cancel order API is not implemented")
 }
 
 // GetQuote implements BrokerInterface.
@@ -312,21 +262,7 @@ func (kb *KotakBroker) GetQuote(instrumentKey string) (float64, error) {
 		return 0, fmt.Errorf("broker not initialized")
 	}
 
-	// In a real implementation, this would call the Kotak quotes API
-	// to get the latest quote.
-	// For now, return a simulated quote based on instrument
-	switch instrumentKey {
-	case "NIFTY":
-		return 22845.75, nil
-	case "BANKNIFTY":
-		return 47231.50, nil
-	case "MIDCPNIFTY":
-		return 13856.20, nil
-	case "SENSEX":
-		return 78452.80, nil
-	default:
-		return 0, fmt.Errorf("unknown instrument: %s", instrumentKey)
-	}
+	return 0, fmt.Errorf("quote API is not implemented for %s", instrumentKey)
 }
 
 // IsMarketHours implements BrokerInterface.
@@ -362,7 +298,7 @@ func (kb *KotakBroker) GetLTP(instrumentKey string) (float64, error) {
 		return 0, fmt.Errorf("broker not initialized")
 	}
 
-	return kb.GetQuote(instrumentKey)
+	return 0, fmt.Errorf("quote API is not implemented for %s", instrumentKey)
 }
 
 // CheckOrder implements RiskManager.

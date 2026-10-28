@@ -106,6 +106,7 @@ func (sm *SessionManager) NewBrokerSession(broker TradeSession, loginMethod Logi
 		AccessToken:  hex.EncodeToString(id[:]),
 		TokenExpiry:  time.Now().Add(sm.maxAge),
 		LoginMethod:  loginMethod,
+		PaperMode:    true,
 		BrokerToken:  broker.Token,
 		BrokerSID:    broker.SID,
 		BaseURL:      broker.BaseURL,

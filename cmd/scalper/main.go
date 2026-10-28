@@ -20,6 +20,9 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/logging"
+	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/paper"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/store"
 	"github.com/akshaykhairmode/scalper/internal/version"
 	"github.com/akshaykhairmode/scalper/internal/web"
@@ -119,10 +122,58 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}
 	log.Info("schema ready", "event", "db_schema", "version", versionApplied, "path", st.Path())
 
+	underlyings := make([]scrip.Underlying, 0, len(cfg.Market.Indices))
+	for _, index := range cfg.Market.Indices {
+		underlyings = append(underlyings, scrip.Underlying{
+			Key:             index.Key,
+			DisplayName:     index.DisplayName,
+			ScripName:       index.ScripName,
+			SpotSymbol:      index.IndexSymbol,
+			ExchangeSegment: index.ExchangeSegment,
+			SpotSegment:     index.IndexSegment,
+		})
+	}
+	scripManager, err := scrip.NewManager(scrip.ManagerConfig{
+		Segments:    cfg.Scrip.Segments,
+		Underlyings: underlyings,
+		Client:      scrip.NewClient(accessToken),
+		Repository:  st,
+		Logger:      log,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Scrip Master: %w", err)
+	}
+	if err := scripManager.Load(ctx); err != nil {
+		log.Warn("Scrip Master cache load failed", "event", "scrip_load_failed", "error", err)
+	}
+	if hasToken {
+		go func() {
+			refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if err := scripManager.Refresh(refreshCtx, market.DefaultBaseURL); err != nil {
+				log.Error("initial Scrip Master refresh failed", "event", "scrip_refresh_failed", "error", err)
+			}
+		}()
+	}
+	quotes := market.NewQuotesClient(accessToken, log)
+	marketService, err := market.NewService(cfg, scripManager, quotes)
+	if err != nil {
+		return fmt.Errorf("configure live market data: %w", err)
+	}
+	paperService, err := paper.NewService(ctx, st, cfg.Trading)
+	if err != nil {
+		return fmt.Errorf("configure paper trading: %w", err)
+	}
+	hsmFeed := market.NewHSMFeed(cfg, scripManager, log)
+	defer hsmFeed.Stop()
+
 	srv, err := web.New(web.Options{
 		Logger:       log,
 		Config:       cfg,
 		AccessToken:  accessToken,
+		Market:       marketService,
+		Paper:        paperService,
+		HSM:          hsmFeed,
 		DB:           st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasToken },
@@ -131,6 +182,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		log.Error("web startup failed", "event", "startup_failed", "error", err)
 		return err
 	}
+	defer srv.Close()
 
 	listener, err := net.Listen("tcp", cfg.App.Listen)
 	if err != nil {

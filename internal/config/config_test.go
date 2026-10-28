@@ -176,6 +176,8 @@ func TestValidate(t *testing.T) {
 		{name: "missing ucc", mutate: func(c *Config) { c.Kotak.UCC = "" }, wantField: "kotak.ucc"},
 		{name: "missing fin key", mutate: func(c *Config) { c.Kotak.NeoFinKey = "" }, wantField: "kotak.neo_fin_key"},
 		{name: "bad data mode", mutate: func(c *Config) { c.Market.DataMode = "magic" }, wantField: "market.data_mode"},
+		{name: "bad HSM URL scheme", mutate: func(c *Config) { c.Market.HSMURL = "http://mlhsm.kotaksecurities.com/wsfeed" }, wantField: "market.hsm_url"},
+		{name: "untrusted HSM URL host", mutate: func(c *Config) { c.Market.HSMURL = "wss://kotaksecurities.com.attacker.example/wsfeed" }, wantField: "market.hsm_url"},
 		{name: "no indices", mutate: func(c *Config) { c.Market.Indices = nil }, wantField: "market.indices"},
 		{name: "duplicate index", mutate: func(c *Config) { c.Market.Indices[1].Key = c.Market.Indices[0].Key }, wantField: "market.indices[1].key"},
 		{name: "empty index key", mutate: func(c *Config) { c.Market.Indices[0].Key = "" }, wantField: "market.indices[0].key"},

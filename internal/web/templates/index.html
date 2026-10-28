@@ -7,7 +7,7 @@
   <title>{{.Title}} · options terminal</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body data-mode="{{.Mode}}" data-demo="{{if .Demo}}true{{else}}false{{end}}">
+<body data-mode="{{.Mode}}">
   <div class="sr-only" id="diagnostics">
     Database {{if .DBOK}}ready{{else}}unavailable{{end}} · Access token {{if .TokenPresent}}present{{else}}not set{{end}} · Log sink {{if .LogDegraded}}degraded{{else}}healthy{{end}} · Uptime {{.Uptime}}
   </div>
@@ -49,7 +49,6 @@
     <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe"></div>
 
     <span class="atm-chip">ATM <b id="atm-value">—</b></span>
-    <span class="demo-badge" id="demo-badge" hidden>SIMULATED</span>
     <span class="toolbar-spacer"></span>
     <button type="button" class="ghost small" id="refresh-button" title="Refresh chain">Refresh</button>
     <button type="button" class="ghost small" id="fullscreen-button">Fullscreen</button>

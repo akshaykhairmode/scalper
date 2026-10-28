@@ -17,15 +17,14 @@ import (
 
 // Config is the root of config.yaml.
 type Config struct {
-	App      App      `yaml:"app"`
-	Logging  Logging  `yaml:"logging"`
-	Kotak    Kotak    `yaml:"kotak"`
-	Market   Market   `yaml:"market"`
-	Charts   Charts   `yaml:"charts"`
-	Trading  Trading  `yaml:"trading"`
-	Scrip    Scrip    `yaml:"scrip"`
-	Web      Web      `yaml:"web"`
-	FakeData FakeData `yaml:"fake_data"`
+	App     App     `yaml:"app"`
+	Logging Logging `yaml:"logging"`
+	Kotak   Kotak   `yaml:"kotak"`
+	Market  Market  `yaml:"market"`
+	Charts  Charts  `yaml:"charts"`
+	Trading Trading `yaml:"trading"`
+	Scrip   Scrip   `yaml:"scrip"`
+	Web     Web     `yaml:"web"`
 }
 
 // App holds process-level settings.
@@ -58,6 +57,7 @@ type Kotak struct {
 // Market holds index, chain and feed settings.
 type Market struct {
 	DataMode string   `yaml:"data_mode"`
+	HSMURL   string   `yaml:"hsm_url"`
 	Indices  []Index  `yaml:"indices"`
 	IndiaVIX IndiaVIX `yaml:"india_vix"`
 	Chain    Chain    `yaml:"chain"`
@@ -132,7 +132,7 @@ type Quantity struct {
 	AllowShares bool   `yaml:"allow_shares"`
 }
 
-// Paper holds simulated-account settings.
+// Paper holds paper-trading account settings.
 type Paper struct {
 	StartingCash   float64 `yaml:"starting_cash"`
 	SlippageTicks  int     `yaml:"slippage_ticks"`
@@ -184,12 +184,6 @@ type Web struct {
 	OpenBrowser bool `yaml:"open_browser"`
 }
 
-// FakeData holds fake/mock data generator settings.
-type FakeData struct {
-	Enabled  bool `yaml:"enabled"`
-	Interval int  `yaml:"interval_seconds"`
-}
-
 // Default returns the documented defaults. A minimal config file can omit any
 // section and inherit these values.
 func Default() Config {
@@ -212,6 +206,7 @@ func Default() Config {
 		Kotak: Kotak{NeoFinKey: "neotradeapi"},
 		Market: Market{
 			DataMode: "websocket",
+			HSMURL:   "wss://sfeed.kotaksecurities.com/wsfeed",
 			Indices: []Index{
 				{
 					Key: "NIFTY", DisplayName: "NIFTY",
@@ -424,6 +419,7 @@ func (c Config) Summary() map[string]any {
 		"log_format": c.Logging.Format,
 		"log_file":   c.Logging.File,
 		"data_mode":  c.Market.DataMode,
+		"hsm_url":    c.Market.HSMURL,
 		"indices":    keys,
 		"paper_cash": c.Trading.Paper.StartingCash,
 		"risk_caps_disabled": c.Trading.Risk.MaxLotsPerOrder == 0 &&

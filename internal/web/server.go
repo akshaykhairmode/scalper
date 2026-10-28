@@ -2,6 +2,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -18,12 +19,17 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/logging"
+	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/paper"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/version"
+	"github.com/gorilla/websocket"
 )
 
 //go:embed templates/index.html
@@ -37,12 +43,24 @@ type DBPinger interface {
 	Ping(ctx context.Context) error
 }
 
+type MarketAPI interface {
+	Indices(context.Context, string) ([]market.IndexQuote, error)
+	Expiries(string) ([]scrip.ExpiryInfo, error)
+	Chain(context.Context, string, string, string) ([]market.ChainRow, error)
+	Quote(context.Context, string, string) (market.Quote, error)
+	Option(string) (scrip.Option, bool)
+	FindOption(string, string) (scrip.Option, bool)
+}
+
 // Options configures the HTTP server.
 type Options struct {
 	Logger       *slog.Logger
 	Config       config.Config
 	AccessToken  string
 	AuthClient   auth.KotakAuthenticator
+	Market       MarketAPI
+	Paper        *paper.Service
+	HSM          *market.HSMFeed
 	DB           DBPinger
 	LogDegraded  func() bool
 	TokenPresent func() bool
@@ -64,13 +82,20 @@ type Server struct {
 	bootstrap    template.JS
 
 	// Auth is the authentication handler.
-	a *auth.Server
+	a      *auth.Server
+	market MarketAPI
+	paper  *paper.Service
+	hsm    *market.HSMFeed
+
+	feedMu      sync.RWMutex
+	feedClients map[*websocket.Conn]struct{}
+	feedCtx     context.Context
+	feedCancel  context.CancelFunc
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
 // a round-trip. It contains no secrets: only display settings and the index list.
 type bootstrapConfig struct {
-	Demo              bool             `json:"demo"`
 	Indices           []bootstrapIndex `json:"indices"`
 	Timeframes        []string         `json:"timeframes"`
 	DefaultTimeframe  string           `json:"defaultTimeframe"`
@@ -98,7 +123,6 @@ type bootstrapIndex struct {
 
 func newBootstrap(cfg config.Config) (template.JS, error) {
 	boot := bootstrapConfig{
-		Demo:              cfg.FakeData.Enabled,
 		Timeframes:        append([]string(nil), cfg.Charts.Timeframes...),
 		DefaultTimeframe:  cfg.Charts.DefaultTimeframe,
 		DefaultProduct:    cfg.Trading.DefaultProduct,
@@ -154,6 +178,7 @@ func New(opts Options) (*Server, error) {
 	if opts.AuthClient != nil {
 		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient)
 	}
+	feedCtx, feedCancel := context.WithCancel(context.Background())
 	s := &Server{
 		log:          opts.Logger,
 		cfg:          opts.Config,
@@ -165,6 +190,12 @@ func New(opts Options) (*Server, error) {
 		tmpl:         tmpl,
 		bootstrap:    bootstrap,
 		a:            authServer,
+		market:       opts.Market,
+		paper:        opts.Paper,
+		hsm:          opts.HSM,
+		feedClients:  make(map[*websocket.Conn]struct{}),
+		feedCtx:      feedCtx,
+		feedCancel:   feedCancel,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -188,6 +219,18 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
+	mux.HandleFunc("GET /api/indices", s.handleIndices)
+	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
+	mux.HandleFunc("GET /api/chain", s.handleChain)
+	mux.HandleFunc("GET /api/positions", s.handlePositions)
+	mux.HandleFunc("GET /api/orders", s.handleOrders)
+	mux.HandleFunc("GET /api/trades", s.handleTrades)
+	mux.HandleFunc("GET /api/limits", s.handleLimits)
+	mux.HandleFunc("GET /api/risk", s.handleRisk)
+	mux.HandleFunc("GET /api/candles", s.handleCandles)
+	mux.HandleFunc("POST /api/orders", s.handlePaperOrder)
+	mux.HandleFunc("POST /api/orders/square-off-all", s.handleSquareOffAll)
+	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	var h http.Handler = mux
 	h = localOnly(s.log, h)
@@ -196,11 +239,26 @@ func New(opts Options) (*Server, error) {
 	h = requestID(h)
 	h = s.recoverPanic(h)
 	s.handler = h
+	if s.hsm != nil {
+		go s.forwardHSMEvents()
+	}
 	return s, nil
 }
 
 // Handler returns the complete middleware chain.
 func (s *Server) Handler() http.Handler { return s.handler }
+
+func (s *Server) Close() {
+	if s.feedCancel != nil {
+		s.feedCancel()
+	}
+	s.feedMu.Lock()
+	for client := range s.feedClients {
+		_ = client.Close()
+		delete(s.feedClients, client)
+	}
+	s.feedMu.Unlock()
+}
 
 type pageData struct {
 	Title        string
@@ -213,7 +271,6 @@ type pageData struct {
 	TokenPresent bool
 	LogDegraded  bool
 	DBOK         bool
-	Demo         bool
 	Bootstrap    template.JS
 }
 
@@ -243,7 +300,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		TokenPresent: token,
 		LogDegraded:  s.loggingDegraded(),
 		DBOK:         dbOK,
-		Demo:         s.cfg.FakeData.Enabled,
 		Bootstrap:    s.bootstrap,
 	}
 	var buf strings.Builder
@@ -319,6 +375,9 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.a.CancelAllLogins()
 	s.a.SessionManager().RevokeAll()
+	if s.hsm != nil {
+		s.hsm.Stop()
+	}
 	clearAuthFlowCookie(w)
 	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
 	if err := writeJSON(w, http.StatusOK, map[string]any{"success": true}); err != nil {
@@ -371,6 +430,12 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeAuthError(w, err)
 		return
+	}
+	if s.hsm != nil && s.cfg.Market.DataMode == "websocket" {
+		if err := s.hsm.Start(session.BrokerToken, session.BrokerSID); err != nil {
+			s.log.Error("start Kotak HSM feed", "event", "hsm_start_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+		}
 	}
 	resp := struct {
 		Success bool              `json:"success"`
@@ -457,9 +522,6 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) currentMode() string {
-	if s.a.SessionStatus().Authenticated {
-		return "live"
-	}
 	return "paper"
 }
 
@@ -575,7 +637,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-		if !strings.HasPrefix(r.URL.Path, "/static/") {
+		if strings.HasPrefix(r.URL.Path, "/static/") {
+			h.Set("Cache-Control", "no-cache")
+		} else {
 			h.Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -649,8 +713,17 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer (needed for
-// WebSocket upgrades later).
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	controller := http.NewResponseController(r.ResponseWriter)
+	conn, rw, err := controller.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	r.status = http.StatusSwitchingProtocols
+	r.wrote = true
+	return conn, rw, nil
+}
+
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func writeJSON(w http.ResponseWriter, status int, v any) error {

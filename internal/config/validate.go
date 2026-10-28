@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -128,9 +129,13 @@ func (c Config) validateMarket() error {
 	default:
 		return fieldErr("market.data_mode", "must be websocket|poll, got %q", c.Market.DataMode)
 	}
+	if err := validateHSMURL(c.Market.HSMURL); err != nil {
+		return fieldErr("market.hsm_url", "%v", err)
+	}
 	if len(c.Market.Indices) == 0 {
 		return fieldErr("market.indices", "at least one index is required")
 	}
+
 	seen := make(map[string]bool, len(c.Market.Indices))
 	scripSeen := make(map[string]bool, len(c.Market.Indices))
 	for i, idx := range c.Market.Indices {
@@ -220,6 +225,20 @@ func (c Config) validateMarket() error {
 		if _, err := time.Parse("2006-01-02", h); err != nil {
 			return fieldErr(fmt.Sprintf("market.holidays[%d]", i), "invalid date %q: %v", h, err)
 		}
+	}
+	return nil
+}
+
+func validateHSMURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("must be an absolute WebSocket URL without user info, query or fragment")
+	}
+	host := strings.ToLower(u.Hostname())
+	trusted := host == "kotaksecurities.com" || strings.HasSuffix(host, ".kotaksecurities.com")
+	localTest := u.Scheme == "ws" && (host == "localhost" || host == "127.0.0.1")
+	if (u.Scheme != "wss" && !localTest) || (!trusted && !localTest) {
+		return fmt.Errorf("must use wss with a kotaksecurities.com host")
 	}
 	return nil
 }

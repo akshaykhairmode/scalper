@@ -245,7 +245,7 @@ func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
 		t.Fatalf("broker session not retained: %+v", session)
 	}
 	status := server.SessionStatus()
-	if !status.Authenticated || status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
+	if !status.Authenticated || !status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
 		t.Fatalf("SessionStatus = %+v", status)
 	}
 	data, err := json.Marshal(ToSessionData(session))

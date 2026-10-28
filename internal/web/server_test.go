@@ -14,6 +14,10 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
+	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/paper"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
+	"github.com/gorilla/websocket"
 )
 
 type fakeDB struct{ err error }
@@ -39,6 +43,8 @@ type serverOpts struct {
 	started     time.Time
 	cfg         *config.Config
 	authClient  auth.KotakAuthenticator
+	marketAPI   MarketAPI
+	paper       *paper.Service
 	tokenFnSet  bool
 	noTokenFunc bool
 }
@@ -61,6 +67,8 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		Logger:      testLogger(),
 		Config:      cfg,
 		AuthClient:  o.authClient,
+		Market:      o.marketAPI,
+		Paper:       o.paper,
 		DB:          o.db,
 		LogDegraded: func() bool { return o.degraded },
 		Started:     started,
@@ -74,6 +82,83 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+func TestWebSocketUpgradeThroughMiddleware(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	s.hsm = market.NewHSMFeed(testConfig(), nil, testLogger())
+	defer s.Close()
+
+	httpServer := httptest.NewServer(s.Handler())
+	defer httpServer.Close()
+
+	endpoint := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws"
+	conn, response, err := websocket.DefaultDialer.Dial(endpoint, nil)
+	if err != nil {
+		t.Fatalf("dial WebSocket: %v (response: %+v)", err, response)
+	}
+	defer conn.Close()
+
+	var status struct {
+		Type string `json:"type"`
+	}
+	if err := conn.ReadJSON(&status); err != nil {
+		t.Fatalf("read initial feed status: %v", err)
+	}
+	if status.Type != "feed_status" {
+		t.Fatalf("initial message type = %q, want feed_status", status.Type)
+	}
+}
+
+type fakeMarketAPI struct {
+	quote      market.Quote
+	instrument scrip.Option
+}
+
+func (f fakeMarketAPI) Indices(context.Context, string) ([]market.IndexQuote, error) {
+	return []market.IndexQuote{{Key: "NIFTY", LTP: 25_000}}, nil
+}
+
+func (f fakeMarketAPI) Expiries(string) ([]scrip.ExpiryInfo, error) {
+	return []scrip.ExpiryInfo{{Date: f.instrument.Expiry}}, nil
+}
+
+func (f fakeMarketAPI) Chain(context.Context, string, string, string) ([]market.ChainRow, error) {
+	return []market.ChainRow{}, nil
+}
+
+func (f fakeMarketAPI) Quote(context.Context, string, string) (market.Quote, error) {
+	return f.quote, nil
+}
+
+func (f fakeMarketAPI) Option(key string) (scrip.Option, bool) {
+	return f.instrument, key == f.instrument.InstrumentKey
+}
+
+func (f fakeMarketAPI) FindOption(segment, symbol string) (scrip.Option, bool) {
+	return f.instrument, segment == f.instrument.ExchangeSegment && symbol == f.instrument.PSymbol
+}
+
+type fakePaperRepository struct {
+	requests []paper.OrderRequest
+}
+
+func (f *fakePaperRepository) EnsurePaperAccount(context.Context, float64) error {
+	return nil
+}
+
+func (f *fakePaperRepository) PaperSnapshot(context.Context, float64) (paper.Snapshot, error) {
+	return paper.Snapshot{}, nil
+}
+
+func (f *fakePaperRepository) ApplyPaperTrade(_ context.Context, request paper.OrderRequest, _ float64) (paper.Order, error) {
+	f.requests = append(f.requests, request)
+	return paper.Order{
+		ID: request.ClientOrderID, InstrumentKey: request.Instrument.InstrumentKey,
+		Symbol: request.Instrument.PTrdSymbol, Side: request.Side,
+		Quantity: request.Quantity, Price: request.FillPrice,
+		Status: "EXECUTED", Mode: "paper",
+	}, nil
 }
 
 type testKotakAuthenticator struct {
@@ -120,6 +205,9 @@ func TestIndexPage(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
+	}
+	if strings.Contains(body, "SIMULATED") || strings.Contains(body, "data-demo") {
+		t.Fatal("index page should not render fake-data controls")
 	}
 
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
@@ -175,7 +263,7 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 	}
 	statusRec := do(t, s, localRequest(http.MethodGet, "/api/session"))
 	if !strings.Contains(statusRec.Body.String(), `"authenticated":true`) ||
-		!strings.Contains(statusRec.Body.String(), `"paper_mode":false`) {
+		!strings.Contains(statusRec.Body.String(), `"paper_mode":true`) {
 		t.Fatalf("session status = %s", statusRec.Body.String())
 	}
 	healthRec := do(t, s, localRequest(http.MethodGet, "/api/health"))
@@ -183,8 +271,8 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 	if err := json.Unmarshal(healthRec.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health after login: %v", err)
 	}
-	if health.Mode != "live" {
-		t.Fatalf("health mode after login = %q, want live", health.Mode)
+	if health.Mode != "paper" {
+		t.Fatalf("health mode after login = %q, want paper", health.Mode)
 	}
 }
 
@@ -213,8 +301,103 @@ func TestIndexWithoutTokenAndDegraded(t *testing.T) {
 	if !strings.Contains(body, "not set") {
 		t.Fatal("token should be reported as not set")
 	}
+
 	if !strings.Contains(body, "degraded") {
 		t.Fatal("log sink should be reported as degraded")
+	}
+}
+
+func TestPaperOrderUsesFreshKotakQuoteAndRejectsLiveMode(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	instrument := scrip.Option{
+		InstrumentKey:   "nse_fo|NIFTY|2026-10-29|25000|CE",
+		ExchangeSegment: "nse_fo",
+		PSymbol:         "12345",
+		PTrdSymbol:      "NIFTY29OCT25000CE",
+		Underlying:      "NIFTY",
+		Expiry:          "2026-10-29",
+		StrikePaise:     2_500_000,
+		OptionType:      scrip.Call,
+		LotSize:         25,
+	}
+	repository := &fakePaperRepository{}
+	paperService, err := paper.NewService(context.Background(), repository, config.Default().Trading)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServer(t, serverOpts{
+		db:  fakeDB{},
+		now: func() time.Time { return now },
+		marketAPI: fakeMarketAPI{
+			instrument: instrument,
+			quote:      market.Quote{LTP: 100, UpdatedAt: now.Unix()},
+		},
+		paper: paperService,
+	})
+	body := `{"instrument_key":"nse_fo|NIFTY|2026-10-29|25000|CE","side":"B","buy_sell":"B","quantity":25,"qty":25,"product":"MIS","intent":"ENTRY","mode":"paper","price":0,"order_type":"MARKET","lot_size":25}`
+	req := localRequest(http.MethodPost, "/api/orders")
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = io.NopCloser(strings.NewReader(body))
+	rec := do(t, server, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("paper order status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result paper.Order
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "paper" || result.Status != "EXECUTED" || result.Price != 100 {
+		t.Fatalf("paper order result = %+v", result)
+	}
+	if len(repository.requests) != 1 || repository.requests[0].FillPrice != 100 {
+		t.Fatalf("paper fills = %+v", repository.requests)
+	}
+
+	liveReq := localRequest(http.MethodPost, "/api/orders")
+	liveReq.Header.Set("Content-Type", "application/json")
+	liveReq.Body = io.NopCloser(strings.NewReader(strings.Replace(body, `"mode":"paper"`, `"mode":"live"`, 1)))
+	liveRec := do(t, server, liveReq)
+	if liveRec.Code != http.StatusConflict || len(repository.requests) != 1 {
+		t.Fatalf("live order status=%d paper fills=%d body=%s", liveRec.Code, len(repository.requests), liveRec.Body.String())
+	}
+}
+
+func TestPaperOrderRejectsStaleKotakQuote(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	instrument := scrip.Option{
+		InstrumentKey:   "nse_fo|NIFTY|2026-10-29|25000|CE",
+		ExchangeSegment: "nse_fo",
+		PSymbol:         "12345",
+		PTrdSymbol:      "NIFTY29OCT25000CE",
+		Underlying:      "NIFTY",
+		Expiry:          "2026-10-29",
+		StrikePaise:     2_500_000,
+		OptionType:      scrip.Call,
+		LotSize:         25,
+	}
+	repository := &fakePaperRepository{}
+	paperService, err := paper.NewService(context.Background(), repository, config.Default().Trading)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServer(t, serverOpts{
+		db:  fakeDB{},
+		now: func() time.Time { return now },
+		marketAPI: fakeMarketAPI{
+			instrument: instrument,
+			quote: market.Quote{
+				LTP: 100, UpdatedAt: now.Add(-10 * time.Second).Unix(),
+			},
+		},
+		paper: paperService,
+	})
+	requestBody := `{"instrument_key":"nse_fo|NIFTY|2026-10-29|25000|CE","side":"B","quantity":25,"product":"MIS","mode":"paper","order_type":"MARKET"}`
+	req := localRequest(http.MethodPost, "/api/orders")
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = io.NopCloser(strings.NewReader(requestBody))
+	rec := do(t, server, req)
+	if rec.Code != http.StatusServiceUnavailable || len(repository.requests) != 0 {
+		t.Fatalf("stale quote status=%d paper fills=%d body=%s", rec.Code, len(repository.requests), rec.Body.String())
 	}
 }
 
@@ -399,15 +582,20 @@ func TestRequestID(t *testing.T) {
 
 func TestStaticAssetsAndFavicon(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
-	rec := do(t, s, localRequest(http.MethodGet, "/static/app.css"))
+	rec := do(t, s, localRequest(http.MethodGet, "/static/demo.js"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("removed demo asset status = %d, want 404", rec.Code)
+	}
+
+	rec = do(t, s, localRequest(http.MethodGet, "/static/app.css"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("css status = %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "--accent") {
 		t.Fatal("css body unexpected")
 	}
-	if rec.Header().Get("Cache-Control") == "no-store" {
-		t.Fatal("static assets should be cacheable")
+	if rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("static asset Cache-Control = %q, want no-cache", rec.Header().Get("Cache-Control"))
 	}
 
 	rec = do(t, s, localRequest(http.MethodGet, "/favicon.ico"))

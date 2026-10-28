@@ -164,6 +164,25 @@ func (a *Server) SessionManager() *SessionManager {
 	return a.sm
 }
 
+// CurrentSession returns a copy of the most recently authenticated broker
+// session. Broker credentials are never included in HTTP responses or logs.
+func (a *Server) CurrentSession() *Session {
+	a.sm.mu.Lock()
+	defer a.sm.mu.Unlock()
+	now := time.Now()
+	var current *Session
+	for _, session := range a.sm.sessions {
+		if now.After(session.TokenExpiry) {
+			continue
+		}
+		if current == nil || session.CreatedAt.After(current.CreatedAt) {
+			copy := *session
+			current = &copy
+		}
+	}
+	return current
+}
+
 // SessionStatus returns the current authentication status without exposing
 // broker tokens, SIDs, or the dynamic API URL.
 func (a *Server) SessionStatus() *struct {
@@ -190,9 +209,8 @@ func (a *Server) SessionStatus() *struct {
 		PaperMode     bool   `json:"paper_mode"`
 		LoginMethod   string `json:"login_method"`
 		ExpiresIn     int    `json:"expires_in"`
-	}{Authenticated: found, PaperMode: !found}
+	}{Authenticated: found, PaperMode: true}
 	if found {
-		status.PaperMode = foundSession.PaperMode
 		status.LoginMethod = string(foundSession.LoginMethod)
 		status.ExpiresIn = int(time.Until(foundSession.TokenExpiry).Minutes())
 	}

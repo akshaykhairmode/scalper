@@ -1,4 +1,3 @@
-import { DemoMarket } from "./demo.js";
 import { CandleChart } from "./charts.js";
 
 const $ = (id) => document.getElementById(id);
@@ -64,13 +63,11 @@ function parseBootstrap() {
 }
 
 function tradingMode() {
-  return !S.usingDemo && S.session?.authenticated ? "live" : "paper";
+  return "paper";
 }
 
 const S = {
   boot: {},
-  demo: null,
-  usingDemo: false,
   activeIndex: "NIFTY",
   expiry: "",
   timeframe: "5m",
@@ -93,11 +90,14 @@ const S = {
   polling: false,
   ws: null,
   wsTimer: null,
+  feedSubscriptions: [],
   charts: {},
   candles: {},
   lastFetch: 0,
   focusedChart: null,
 };
+
+let marketRetryTimer = null;
 
 /* ── API helpers ───────────────────────────────────────── */
 
@@ -161,6 +161,7 @@ function normalizeOption(raw, type) {
     symbol: raw.symbol ?? raw.p_trd_symbol ?? raw.pTrdSymbol ?? "",
     pSymbol: raw.p_symbol ?? raw.pSymbol ?? "",
     pTrdSymbol: raw.p_trd_symbol ?? raw.pTrdSymbol ?? "",
+    quoteAvailable: raw.quote_available === true,
     ltp,
     prevClose,
     close: prevClose,
@@ -168,8 +169,8 @@ function normalizeOption(raw, type) {
     changePct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0,
     oi,
     volume: num(raw.volume),
-    bid: num(raw.bid ?? raw.best_bid ?? raw.bestBid, Math.max(0.05, ltp - 0.05)),
-    ask: num(raw.ask ?? raw.best_ask ?? raw.bestAsk, ltp + 0.05),
+    bid: num(raw.bid ?? raw.best_bid ?? raw.bestBid),
+    ask: num(raw.ask ?? raw.best_ask ?? raw.bestAsk),
   };
 }
 
@@ -286,7 +287,6 @@ function init() {
   checkSession();
   window.setInterval(refreshSession, 30000);
   loadMarket();
-  window.setInterval(demoTick, 1000);
 }
 
 function buildTimeframes() {
@@ -339,6 +339,7 @@ async function checkSession() {
     openLogin(wantsLogin ? 1 : 1);
   } else {
     closeLogin();
+    connectWebSocket();
   }
 }
 
@@ -356,25 +357,42 @@ function updateAuthButton() {
 /* ── Market loading ────────────────────────────────────── */
 
 async function loadMarket() {
-  if (S.boot.demo) {
-    startDemo(true);
-    return;
-  }
   try {
     await loadFromAPI();
-    S.usingDemo = false;
     S.feed = "polling";
     S.apiAvailable = true;
     startLivePolling();
-    connectWebSocket();
+    if (S.session?.authenticated) connectWebSocket();
   } catch (error) {
-    console.warn("market API unavailable, using simulated data", error);
-    startDemo(false, "Market API unavailable — showing simulated data");
+    console.error("live market data unavailable", error);
+    S.feed = "degraded";
+    renderAll();
+    toast(`Live market data unavailable: ${error.message}`, "error", 8000);
+    if (!marketRetryTimer) {
+      marketRetryTimer = window.setTimeout(() => {
+        marketRetryTimer = null;
+        loadMarket();
+      }, 5000);
+    }
   }
 }
 
 async function loadFromAPI() {
   const indexRaw = await getJSON("/api/indices");
+  applyIndexQuotes(indexRaw);
+  const expiryRaw = await getJSON(`/api/expiries?index=${encodeURIComponent(S.activeIndex)}`);
+  S.expiries = normalizeExpiryList(expiryRaw);
+  S.expiry = pickExpiry(S.expiries);
+
+  const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
+  S.chain = normalizeChain(chainRaw);
+  await refreshBooksFromAPI();
+  selectDefaultStrike();
+  S.chainScrolled = false;
+  renderAll();
+}
+
+function applyIndexQuotes(indexRaw) {
   const list = Array.isArray(indexRaw) ? indexRaw : (indexRaw?.indices || []);
   const map = new Map();
   for (const item of list) {
@@ -415,17 +433,6 @@ async function loadFromAPI() {
     }
   }
   S.spots = map;
-
-  const expiryRaw = await getJSON(`/api/expiries?index=${encodeURIComponent(S.activeIndex)}`);
-  S.expiries = normalizeExpiryList(expiryRaw);
-  S.expiry = pickExpiry(S.expiries);
-
-  const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
-  S.chain = normalizeChain(chainRaw);
-  await refreshBooksFromAPI();
-  selectDefaultStrike();
-  S.chainScrolled = false;
-  renderAll();
 }
 
 function normalizeExpiryList(raw) {
@@ -436,41 +443,6 @@ function normalizeExpiryList(raw) {
 function pickExpiry(list) {
   const first = list.find((e) => !e.expired) || list[0];
   return first?.date || "";
-}
-
-function startDemo(declared, reason) {
-  if (!S.demo) S.demo = new DemoMarket(S.boot);
-  S.usingDemo = true;
-  S.feed = "simulated";
-  S.demo.setActive(S.activeIndex);
-  S.expiries = S.demo.expiries(S.activeIndex);
-  S.expiry = pickExpiry(S.expiries);
-  S.demo.setActive(S.activeIndex, S.expiry);
-  S.chain = S.demo.chainFor(S.activeIndex, S.expiry);
-  syncFromDemo();
-  selectDefaultStrike();
-  S.chainScrolled = false;
-  renderAll();
-  if (reason) toast(reason, "warn", 5000);
-}
-
-function syncFromDemo() {
-  if (!S.demo) return;
-  S.spots = new Map(S.demo.spotList().map((spot) => [spot.key, spot]));
-  S.positions = S.demo.positionList();
-  S.orders = S.demo.orderList();
-  S.trades = S.demo.tradeList();
-  S.limits = { available: S.demo.availableMargin(), used: 0, total: S.demo.startingCash };
-  S.risk = buildRiskGroups(S.positions);
-}
-
-function demoTick() {
-  if (!S.usingDemo || !S.demo) return;
-  S.demo.tick();
-  syncFromDemo();
-  S.chain = S.demo.chainFor(S.activeIndex, S.expiry);
-  refreshChartsFromDemo();
-  renderAll(true);
 }
 
 async function refreshBooksFromAPI() {
@@ -520,15 +492,16 @@ function startLivePolling() {
 }
 
 async function pollLive() {
-  if (S.usingDemo || S.polling) return;
+  if (S.polling) return;
   S.polling = true;
   try {
+    applyIndexQuotes(await getJSON("/api/indices"));
     await refreshBooksFromAPI();
     if (S.activeIndex && S.expiry) {
       const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
       S.chain = normalizeChain(chainRaw);
     }
-    S.feed = S.ws?.readyState === WebSocket.OPEN ? "live" : "polling";
+    if (S.ws?.readyState !== WebSocket.OPEN || S.feed !== "live") S.feed = "polling";
     renderAll(true);
   } catch (error) {
     console.warn("live poll failed", error);
@@ -540,14 +513,13 @@ async function pollLive() {
 }
 
 function connectWebSocket() {
-  if (S.usingDemo || S.ws) return;
+  if (S.ws) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   try {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     S.ws = ws;
     ws.addEventListener("open", () => {
-      S.feed = "live";
-      renderFeed();
+      updateFeedSubscriptions();
     });
     ws.addEventListener("message", (event) => {
       try {
@@ -560,7 +532,7 @@ function connectWebSocket() {
       S.ws = null;
       S.feed = "degraded";
       renderFeed();
-      if (!S.wsTimer) {
+      if (S.session?.authenticated && !S.wsTimer) {
         S.wsTimer = window.setTimeout(() => {
           S.wsTimer = null;
           connectWebSocket();
@@ -586,10 +558,27 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "tick") {
+    for (const spot of S.spots.values()) {
+      if (spot.spotKey !== data.key) continue;
+      spot.ltp = num(data.ltp, spot.ltp);
+      spot.prevClose = num(data.prev_close, spot.prevClose);
+      spot.change = num(data.change, spot.ltp - spot.prevClose);
+      spot.changePct = num(data.change_pct,
+        spot.prevClose ? ((spot.ltp - spot.prevClose) / spot.prevClose) * 100 : 0);
+      renderHeader();
+      renderPaneHeaders();
+      return;
+    }
     const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
     if (row) {
       const opt = row.call?.instrumentKey === data.key ? row.call : row.put;
       opt.ltp = num(data.ltp, opt.ltp);
+      opt.prevClose = num(data.prev_close, opt.prevClose);
+      opt.bid = num(data.bid, opt.bid);
+      opt.ask = num(data.ask, opt.ask);
+      opt.volume = num(data.volume, opt.volume);
+      opt.oi = num(data.oi, opt.oi);
+      opt.quoteAvailable = opt.ltp > 0;
       opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
       renderChain(true);
       renderOrderPad();
@@ -619,6 +608,19 @@ function handleSocketEvent(event) {
   if (event.type === "session") {
     checkSession();
   }
+}
+
+function updateFeedSubscriptions() {
+  const keys = [selectedOption("CE")?.instrumentKey, selectedOption("PE")?.instrumentKey]
+    .filter(Boolean);
+  const desired = [...new Set(keys)];
+  if (S.ws?.readyState === WebSocket.OPEN) {
+    const remove = S.feedSubscriptions.filter((key) => !desired.includes(key));
+    const add = desired.filter((key) => !S.feedSubscriptions.includes(key));
+    if (remove.length) S.ws.send(JSON.stringify({ type: "unsubscribe", keys: remove }));
+    if (add.length) S.ws.send(JSON.stringify({ type: "subscribe", keys: add }));
+  }
+  S.feedSubscriptions = desired;
 }
 
 /* ── Chain selection ───────────────────────────────────── */
@@ -654,6 +656,7 @@ function selectStrike(strike, type, rerender = true) {
   S.selected = { strike, type, call: row.call, put: row.put };
   S.preview = { type, side: "B" };
   S.chainScrolled = true;
+  updateFeedSubscriptions();
   loadCharts();
   if (rerender) {
     renderChain(true);
@@ -668,7 +671,7 @@ function selectedOption(type) {
 
 function lotSize() {
   const option = selectedOption("CE") || selectedOption("PE");
-  return option?.lotSize || S.demo?.lotSize(S.activeIndex) || 75;
+  return option?.lotSize || 0;
 }
 
 /* ── Charts ────────────────────────────────────────────── */
@@ -692,46 +695,24 @@ async function loadCharts() {
       $("hint-" + pane).hidden = false;
       continue;
     }
-    if (S.usingDemo && S.demo) {
-      const candles = S.demo.candlesFor(key, S.timeframe);
+    try {
+      const raw = await getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`);
+      const candles = (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
+        time: num(c.time ?? c.ts),
+        open: num(c.open),
+        high: num(c.high),
+        low: num(c.low),
+        close: num(c.close),
+        volume: num(c.volume),
+      }));
       S.candles[pane] = candles;
       chart.setData(candles);
       $("hint-" + pane).hidden = candles.length > 8;
-    } else {
-      try {
-        const raw = await getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`);
-        const candles = (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
-          time: num(c.time ?? c.ts),
-          open: num(c.open),
-          high: num(c.high),
-          low: num(c.low),
-          close: num(c.close),
-          volume: num(c.volume),
-        }));
-        S.candles[pane] = candles;
-        chart.setData(candles);
-        $("hint-" + pane).hidden = candles.length > 8;
-      } catch {
-        $("hint-" + pane).hidden = false;
-      }
+    } catch (error) {
+      console.warn("candle data unavailable", { pane, error });
+      chart.setData([]);
+      $("hint-" + pane).hidden = false;
     }
-  }
-  renderPaneHeaders();
-}
-
-function refreshChartsFromDemo() {
-  if (!S.usingDemo || !S.demo) return;
-  const keys = [
-    ["ce", selectedOption("CE")?.instrumentKey],
-    ["spot", spotKey()],
-    ["pe", selectedOption("PE")?.instrumentKey],
-  ];
-  for (const [pane, key] of keys) {
-    if (!key) continue;
-    const candles = S.demo.candlesFor(key, S.timeframe);
-    S.candles[pane] = candles;
-    S.charts[pane].setData(candles);
-    $("hint-" + pane).hidden = candles.length > 8;
   }
   renderPaneHeaders();
 }
@@ -798,7 +779,7 @@ function renderHeader() {
 
   const available = S.limits?.available || 0;
   $("margin-chip").textContent = available ? `₹${fmt(available, 0)}` : "—";
-  const totalPnl = (S.positions || []).reduce((sum, p) => sum + num(p.pnl), 0) + (S.demo?.realisedPnl?.() || 0);
+  const totalPnl = (S.positions || []).reduce((sum, p) => sum + num(p.pnl), 0);
   const pnlChip = $("pnl-chip");
   pnlChip.textContent = totalPnl ? `₹${fmtSigned(totalPnl, 0)}` : "—";
   pnlChip.className = "metric-value " + directionClass(totalPnl);
@@ -812,12 +793,11 @@ function renderHeader() {
 function renderFeed() {
   const badge = $("feed-badge");
   const label = $("feed-label");
-  const feed = S.usingDemo ? "simulated" : S.feed;
-  const cls = feed === "live" ? "live" : feed === "polling" ? "degraded" : feed === "simulated" ? "degraded" : "connecting";
+  const feed = S.feed;
+  const cls = feed === "live" ? "live" : feed === "polling" || feed === "degraded" ? "degraded" : "connecting";
   badge.className = `feed-badge ${cls}`;
   label.textContent = feed;
   $("footer-feed").textContent = `${feed} feed`;
-  $("demo-badge").hidden = !S.usingDemo;
 }
 
 function renderToolbar() {
@@ -828,7 +808,6 @@ function renderToolbar() {
     button.classList.toggle("active", button.dataset.tf === S.timeframe);
   }
   $("atm-value").textContent = fmtStrike(computeATM() ?? 0);
-  $("demo-badge").hidden = !S.usingDemo;
 }
 
 function expiryOptionsHTML() {
@@ -874,7 +853,7 @@ function renderChain(preserveScroll = false) {
     </div>`;
   }).join("");
   $("chain-meta").textContent = `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
-  $("chain-sub").textContent = S.usingDemo ? "all strikes · simulated feed" : "all strikes · polled";
+  $("chain-sub").textContent = "all strikes · polled";
 
   body.scrollTop = scrollTop;
   if (!S.chainScrolled) {
@@ -976,9 +955,9 @@ function resolvedShares(lot) {
 
 function requiredMargin(option, shares, side) {
   if (!option) return 0;
-  if (S.usingDemo && S.demo) return S.demo.requiredMargin(option, shares, side);
-  const spot = S.spots.get(option.underlying)?.ltp || option.ltp * 20;
   if (side === "B") return option.ltp * shares;
+  const spot = S.spots.get(option.underlying)?.ltp || 0;
+  if (spot <= 0) return Infinity;
   return spot * shares * (num(S.boot.shortMarginPct, 15) / 100) + option.ltp * shares;
 }
 
@@ -1110,9 +1089,7 @@ function renderTab() {
   for (const button of $$("#tabs button")) {
     button.classList.toggle("active", button.dataset.tab === S.tab);
   }
-  $("paper-note").textContent = S.usingDemo
-    ? "paper P&L is gross of charges · simulated"
-    : "P&L is gross of charges";
+  $("paper-note").textContent = "P&L is gross of charges";
 
   if (S.tab === "positions") content.innerHTML = positionsHTML();
   else if (S.tab === "risk") {
@@ -1177,7 +1154,7 @@ function legRisk(position) {
 }
 
 function riskHTML() {
-  const groups = S.usingDemo ? buildRiskGroups(S.positions) : (S.risk?.length ? S.risk : buildRiskGroups(S.positions));
+  const groups = S.risk?.length ? S.risk : buildRiskGroups(S.positions);
   if (!groups.length) {
     return `<div class="empty-state">No open legs. The at-expiry payoff appears here once a position is open.</div>`;
   }
@@ -1210,7 +1187,7 @@ function riskHTML() {
 }
 
 function drawRiskCharts() {
-  const groups = S.usingDemo ? buildRiskGroups(S.positions) : (S.risk?.length ? S.risk : buildRiskGroups(S.positions));
+  const groups = S.risk?.length ? S.risk : buildRiskGroups(S.positions);
   groups.forEach((group, index) => {
     const canvas = $(`risk-canvas-${index}`);
     if (!canvas) return;
@@ -1311,8 +1288,7 @@ function tradesHTML() {
 function depthHTML() {
   const option = selectedOption(S.selected.type);
   if (!option) return `<div class="empty-state">Select a CE or PE strike to see depth.</div>`;
-  let levels = S.depth || [];
-  if (S.usingDemo && S.demo) levels = S.demo.depthFor(option);
+  const levels = S.depth || [];
   const maxQty = Math.max(1, ...levels.flatMap((l) => [l.bidQty || 0, l.askQty || 0]));
   const barWidth = (qty) => Math.max(2, Math.min(100, Math.round(((qty || 0) / maxQty) * 100)));
   const bidRows = levels.map((level, index) => `<tr>
@@ -1341,7 +1317,7 @@ function depthHTML() {
 
 function renderFooter() {
   $("footer-version").textContent = `v${S.boot.version || "dev"}`;
-  $("footer-feed").textContent = `${S.usingDemo ? "simulated" : S.feed} feed`;
+  $("footer-feed").textContent = `${S.feed} feed`;
 }
 
 /* ── Trading actions ──────────────────────────────────── */
@@ -1358,13 +1334,13 @@ function validateQuantity(lot) {
 }
 
 async function onTrade(action, type) {
-  if (tradingMode() === "live" && S.usingDemo) {
-    toast("Live orders are unavailable while market data is simulated.", "error", 6000);
-    return;
-  }
   const option = selectedOption(type);
   if (!option) {
     toast(`Select a ${type} strike first.`, "warn");
+    return;
+  }
+  if (!option.quoteAvailable || option.ltp <= 0) {
+    toast("No live quote is available for this contract; order was not submitted.", "error", 6000);
     return;
   }
   const lot = lotSize();
@@ -1377,22 +1353,13 @@ async function onTrade(action, type) {
   const side = action === "buy" ? "B" : "S";
   const required = requiredMargin(option, shares, side);
   const available = num(S.limits?.available);
+  if (!Number.isFinite(required)) {
+    toast("A live underlying quote is required to calculate short-order margin.", "error", 6000);
+    return;
+  }
   if (required > available) {
     toast(`Insufficient margin: required ₹${fmt(required, 0)}, available ₹${fmt(available, 0)}.`, "error", 5000);
     return;
-  }
-
-  if (tradingMode() === "live" && S.boot.confirmLiveOrders) {
-    const ok = await confirmAction({
-      title: "Confirm live order",
-      body: `<b>LIVE</b> · ${side === "B" ? "BUY" : "SELL"} ` +
-        `${shares} sh (${S.qty.unit === "lots" ? `${S.qty.lots} lot` : "shares"}) of ` +
-        `<b>${esc(option.symbol || `${S.activeIndex} ${fmtStrike(option.strike)} ${type}`)}</b><br>` +
-        `Market order · ${esc(S.product)} · approx value <b>₹${fmt(required, 0)}</b>`,
-      okLabel: side === "B" ? "Buy" : "Sell",
-      danger: side === "S",
-    });
-    if (!ok) return;
   }
 
   const payload = {
@@ -1415,27 +1382,9 @@ async function onTrade(action, type) {
     lot_size: lot,
   };
 
-  if (S.usingDemo && S.demo) {
-    try {
-      const order = S.demo.placeOrder({
-        instrumentKey: option.instrumentKey,
-        side,
-        qty: shares,
-        product: S.product,
-        intent: "ENTRY",
-      });
-      syncFromDemo();
-      renderAll(true);
-      toast(`PAPER ${side === "B" ? "BUY" : "SELL"} ${shares} × ${fmtStrike(option.strike)} ${type} filled at ₹${fmt(order.price)}`, "ok");
-    } catch (err) {
-      toast(err.message || "Paper order failed", "error");
-    }
-    return;
-  }
-
   try {
     const result = await postOrder(payload);
-    toast(`Order sent: ${result?.status || "queued"}`, "ok");
+    toast(`Paper order ${result?.status?.toLowerCase() || "submitted"} at live quote ₹${fmt(result?.price ?? option.ltp)}.`, "ok");
     window.setTimeout(pollLive, 400);
   } catch (err) {
     toast(`Order rejected: ${err.message}`, "error", 6000);
@@ -1443,10 +1392,6 @@ async function onTrade(action, type) {
 }
 
 async function onExit(instrumentKey) {
-  if (tradingMode() === "live" && S.usingDemo) {
-    toast("Live exits are unavailable while market data is simulated.", "error", 6000);
-    return;
-  }
   const position = S.positions.find((p) => p.instrument_key === instrumentKey);
   if (!position) return;
   const side = position.quantity > 0 ? "S" : "B";
@@ -1459,17 +1404,6 @@ async function onExit(instrumentKey) {
   });
   if (!ok) return;
 
-  if (S.usingDemo && S.demo) {
-    try {
-      S.demo.placeOrder({ instrumentKey, side, qty, product: position.product || S.product, intent: "EXIT" });
-      syncFromDemo();
-      renderAll(true);
-      toast(`Position exited: ${position.symbol}`, "ok");
-    } catch (err) {
-      toast(err.message, "error");
-    }
-    return;
-  }
   try {
     await postOrder({
       instrument_key: instrumentKey,
@@ -1488,7 +1422,7 @@ async function onExit(instrumentKey) {
       intent: "EXIT",
       mode: tradingMode(),
     });
-    toast("Exit order sent", "ok");
+    toast("Paper exit filled at live quote.", "ok");
     window.setTimeout(pollLive, 400);
   } catch (err) {
     toast(`Exit failed: ${err.message}`, "error", 6000);
@@ -1496,10 +1430,6 @@ async function onExit(instrumentKey) {
 }
 
 async function onSquareOffAll() {
-  if (tradingMode() === "live" && S.usingDemo) {
-    toast("Live square-off is unavailable while market data is simulated.", "error", 6000);
-    return;
-  }
   if (!S.positions.length) {
     toast("No open positions to square off.", "warn");
     return;
@@ -1513,13 +1443,6 @@ async function onSquareOffAll() {
   });
   if (!ok) return;
 
-  if (S.usingDemo && S.demo) {
-    const fills = S.demo.squareOffAll();
-    syncFromDemo();
-    renderAll(true);
-    toast(`Squared off ${fills.length} position${fills.length === 1 ? "" : "s"}`, "ok");
-    return;
-  }
   try {
     await postJSON("/api/orders/square-off-all", { confirm: true, mode: tradingMode() }).catch((error) => {
       if (error.status !== 404) throw error;
@@ -1640,7 +1563,8 @@ async function submitLogin(event) {
     renderHeader();
     closeLogin();
     toast("Session active. Feeds are connecting.", "ok");
-    if (!S.usingDemo && !S.expiry) loadMarket();
+    connectWebSocket();
+    if (!S.expiry) loadMarket();
   } catch (error) {
     loginError(error.message || "MPIN validation failed.");
   } finally {
@@ -1659,10 +1583,19 @@ async function logout() {
   $("totp-input").value = "";
   $("mpin-input").value = "";
   S.session = { authenticated: false };
+  if (S.wsTimer) {
+    window.clearTimeout(S.wsTimer);
+    S.wsTimer = null;
+  }
+  if (S.ws) {
+    const ws = S.ws;
+    S.ws = null;
+    ws.close();
+  }
   updateAuthButton();
   renderHeader();
-  openLogin(1);
-  toast("Signed out.", "warn");
+  closeLogin();
+  toast("Signed out. Paper mode remains available.", "warn");
 }
 
 /* ── Toasts ───────────────────────────────────────────── */
@@ -1779,7 +1712,7 @@ function bindEvents() {
   $("login-close").addEventListener("click", closeLogin);
   $("login-paper").addEventListener("click", () => {
     closeLogin();
-    toast("Continuing without a broker session — paper/simulated mode.", "warn");
+    toast("Continuing without a broker session — paper mode.", "warn");
   });
   $("login-form").addEventListener("submit", submitLogin);
   $("confirm-cancel").addEventListener("click", () => closeConfirm(false));
@@ -1848,23 +1781,15 @@ async function switchIndex(key) {
   S.activeIndex = key;
   S.expiry = "";
   S.chainScrolled = false;
-  if (S.usingDemo && S.demo) {
-    S.expiries = S.demo.expiries(key);
+  try {
+    const raw = await getJSON(`/api/expiries?index=${encodeURIComponent(key)}`);
+    S.expiries = normalizeExpiryList(raw);
     S.expiry = pickExpiry(S.expiries);
-    S.demo.setActive(key, S.expiry);
-    S.chain = S.demo.chainFor(key, S.expiry);
-    syncFromDemo();
-  } else {
-    try {
-      const raw = await getJSON(`/api/expiries?index=${encodeURIComponent(key)}`);
-      S.expiries = normalizeExpiryList(raw);
-      S.expiry = pickExpiry(S.expiries);
-      const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(key)}&expiry=${encodeURIComponent(S.expiry)}`);
-      S.chain = normalizeChain(chainRaw);
-    } catch (error) {
-      toast(`Could not load ${key}: ${error.message}`, "error");
-      return;
-    }
+    const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(key)}&expiry=${encodeURIComponent(S.expiry)}`);
+    S.chain = normalizeChain(chainRaw);
+  } catch (error) {
+    toast(`Could not load ${key}: ${error.message}`, "error");
+    return;
   }
   selectDefaultStrike();
   renderAll();
@@ -1875,18 +1800,12 @@ async function switchExpiry(date) {
   if (!date) return;
   S.expiry = date;
   S.chainScrolled = false;
-  if (S.usingDemo && S.demo) {
-    S.demo.setActive(S.activeIndex, date);
-    S.chain = S.demo.chainFor(S.activeIndex, date);
-    syncFromDemo();
-  } else {
-    try {
-      const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(date)}`);
-      S.chain = normalizeChain(chainRaw);
-    } catch (error) {
-      toast(`Could not load expiry: ${error.message}`, "error");
-      return;
-    }
+  try {
+    const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(date)}`);
+    S.chain = normalizeChain(chainRaw);
+  } catch (error) {
+    toast(`Could not load expiry: ${error.message}`, "error");
+    return;
   }
   selectDefaultStrike();
   renderAll();
@@ -1894,15 +1813,7 @@ async function switchExpiry(date) {
 }
 
 function refreshMarket() {
-  if (S.usingDemo && S.demo) {
-    S.demo.tick();
-    syncFromDemo();
-    S.chain = S.demo.chainFor(S.activeIndex, S.expiry);
-    refreshChartsFromDemo();
-    renderAll(true);
-  } else {
-    pollLive();
-  }
+  pollLive();
   toast("Refreshed", "ok", 1200);
 }
 

@@ -17,9 +17,15 @@
 
 ## 1. Summary
 
+The application uses Kotak REST quotes for pre-login market data and paper
+order fills. With `market.data_mode: websocket`, a successful TOTP/MPIN login
+also starts the authenticated HSM stream; `poll` keeps the REST-only feed.
+Orders are always stored and filled locally at a fresh Kotak quote. The app
+does not call a broker order endpoint.
+
 | Feed | Endpoint | Encoding | Purpose | Schema status |
 | --- | --- | --- | --- | --- |
-| **HSM** | `wss://mlhsm.kotaksecurities.com` | Binary, big-endian | Market ticks (index, scrip, depth) | **Known** (this document) |
+| **HSM** | `wss://sfeed.kotaksecurities.com/wsfeed` (configurable via `market.hsm_url`) | Binary requests/data; text connection acknowledgement | Market ticks (index, scrip, depth) | **Known** (this document) |
 | **HSI** | `wss://mis.kotaksecurities.com/realtime` (or datacenter host) | JSON text | Order lifecycle events | **Unknown** — capture in Phase 0B |
 
 Key facts that change the implementation:
@@ -27,6 +33,10 @@ Key facts that change the implementation:
 1. HSM **requests are binary**, even though the JS SDK exposes a JSON-style
    `send()`. The SDK serializes `{"type":"cn", ...}` and `{"type":"mws", ...}`
    into the packet format in §2 before writing to the socket.
+   The Python SDK handles the connection acknowledgement as a text JSON
+   message with type `cn`. The server can first send a text initialization
+   message (`message_code: 1119`) containing exchange metadata; the Go client
+   ignores that metadata while waiting for the authentication acknowledgement.
 2. HSM prices are **fixed-point signed 32-bit integers**, not IEEE-754
    `float32`. Decode with `raw / (multiplier × 10^precision)`.
 3. The connection response carries an **ACK threshold**; when it is non-zero,
@@ -132,6 +142,10 @@ Authorization mode (`demo.js`) is serialized as:
 | 1 | Session token (the HSM `Authorization` value) |
 | 2 | Session `Sid` |
 | 3 | `JS_API` |
+
+The Python SDK uses `websocket-client` 1.8.0, which sends a default `Origin`
+header (`https://<host>` for `wss://`). The Go client sends the same origin
+value, derived from the configured HSM host, during the WebSocket upgrade.
 
 The SDK's alternative mode sends `x-access-token` instead of token + Sid; v1
 uses the token + Sid mode because the MPIN validation returns both.

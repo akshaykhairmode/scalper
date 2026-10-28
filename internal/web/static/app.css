@@ -258,17 +258,6 @@ a { color: var(--blue); }
 }
 .atm-chip b { color: var(--accent); font-family: var(--mono); margin-left: 3px; }
 
-.demo-badge {
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: var(--accent-soft);
-  border: 1px solid #4a3a10;
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: .12em;
-}
-
 /* ── Layout ─────────────────────────────────────────────── */
 .terminal {
   display: grid;
