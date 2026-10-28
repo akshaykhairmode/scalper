@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akshaykhairmode/scalper/internal/hsm"
 	"github.com/gorilla/websocket"
+
+	"github.com/akshaykhairmode/scalper/internal/hsm"
 )
 
 var feedUpgrader = websocket.Upgrader{

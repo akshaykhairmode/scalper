@@ -18,16 +18,21 @@ import (
 )
 
 const (
+	// DefaultBaseURL is the Kotak REST API base URL.
 	DefaultBaseURL = "https://mis.kotaksecurities.com"
 	quotesPath     = "/script-details/1.0/quotes/neosymbol/"
+	historicalPath = "/market-data/1.0/historical/details"
 	maxQuoteBytes  = 4 << 20
+	maxCandleBytes = 16 << 20
 )
 
+// QuoteInstrument identifies an instrument for a Kotak quote request.
 type QuoteInstrument struct {
 	ExchangeSegment string
 	Symbol          string
 }
 
+// Quote contains normalized quote data returned by Kotak.
 type Quote struct {
 	ExchangeToken string
 	DisplaySymbol string
@@ -43,33 +48,37 @@ type Quote struct {
 	Ask           float64
 }
 
+// HTTPDoer is the HTTP client contract used by QuotesClient.
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// QuotesClient fetches quotes from the Kotak REST API.
 type QuotesClient struct {
-	token string
-	http  HTTPDoer
-	log   *slog.Logger
+	consumerKey string
+	http        HTTPDoer
+	log         *slog.Logger
 }
 
-func NewQuotesClient(token string, log *slog.Logger) *QuotesClient {
+// NewQuotesClient creates a Kotak REST quotes client.
+func NewQuotesClient(consumerKey string, log *slog.Logger) *QuotesClient {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &QuotesClient{
-		token: strings.TrimSpace(token),
-		http:  &http.Client{Timeout: 15 * time.Second},
-		log:   log,
+		consumerKey: strings.TrimSpace(consumerKey),
+		http:        &http.Client{Timeout: 15 * time.Second},
+		log:         log,
 	}
 }
 
+// Fetch retrieves quotes for the requested instruments.
 func (c *QuotesClient) Fetch(ctx context.Context, baseURL string, instruments []QuoteInstrument) (map[string]Quote, error) {
 	if c == nil || c.http == nil {
-		return nil, errors.New("Kotak quotes client is not configured")
+		return nil, errors.New("kotak quotes client is not configured")
 	}
-	if c.token == "" {
-		return nil, errors.New("KOTAK_ACCESS_TOKEN is required for live quotes")
+	if c.consumerKey == "" {
+		return nil, errors.New("KOTAK_CONSUMER_KEY is required for live quotes")
 	}
 	if len(instruments) == 0 {
 		return map[string]Quote{}, nil
@@ -82,8 +91,8 @@ func (c *QuotesClient) Fetch(ctx context.Context, baseURL string, instruments []
 	if err != nil {
 		return nil, fmt.Errorf("create Kotak quotes request: %w", err)
 	}
-	req.Header.Set("Authorization", c.token)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", c.consumerKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	started := time.Now()
@@ -92,20 +101,24 @@ func (c *QuotesClient) Fetch(ctx context.Context, baseURL string, instruments []
 		c.logExchange(req, nil, nil, started, err)
 		return nil, fmt.Errorf("send Kotak quotes request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.log.Warn("close Kotak quotes response body", "event", "quotes_response_close_failed", "error", err)
+		}
+	}()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxQuoteBytes+1))
 	if err != nil {
 		c.logExchange(req, resp, nil, started, err)
 		return nil, fmt.Errorf("read Kotak quotes response: %w", err)
 	}
 	if len(raw) > maxQuoteBytes {
-		err := fmt.Errorf("Kotak quotes response exceeds %d bytes", maxQuoteBytes)
+		err := fmt.Errorf("kotak quotes response exceeds %d bytes", maxQuoteBytes)
 		c.logExchange(req, resp, nil, started, err)
 		return nil, err
 	}
 	c.logExchange(req, resp, raw, started, nil)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("Kotak quotes request failed (HTTP %d)", resp.StatusCode)
+		return nil, fmt.Errorf("kotak quotes request failed (HTTP %d)", resp.StatusCode)
 	}
 
 	quotes, err := decodeQuotes(raw)
@@ -124,27 +137,247 @@ func (c *QuotesClient) Fetch(ctx context.Context, baseURL string, instruments []
 	return index, nil
 }
 
+// Historical fetches candles for one instrument. Kotak identifies historical
+// instruments by exchange segment and the numeric Scrip Master pSymbol.
+func (c *QuotesClient) Historical(
+	ctx context.Context,
+	baseURL, neosymbol, interval, fromDate, toDate string,
+) ([]Candle, error) {
+	if c == nil || c.http == nil {
+		return nil, errors.New("kotak historical data client is not configured")
+	}
+	if c.consumerKey == "" {
+		return nil, errors.New("KOTAK_CONSUMER_KEY is required for historical candles")
+	}
+	endpoint, err := historicalEndpoint(baseURL, neosymbol, interval, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Kotak historical data request: %w", err)
+	}
+	req.Header.Set("Authorization", c.consumerKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	started := time.Now()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.logExchange(req, nil, nil, started, err)
+		return nil, fmt.Errorf("send Kotak historical data request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.log.Warn("close Kotak historical response body",
+				"event", "historical_response_close_failed", "error", err)
+		}
+	}()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCandleBytes+1))
+	if err != nil {
+		c.logExchange(req, resp, nil, started, err)
+		return nil, fmt.Errorf("read Kotak historical data response: %w", err)
+	}
+	if len(raw) > maxCandleBytes {
+		err := fmt.Errorf("kotak historical response exceeds %d bytes", maxCandleBytes)
+		c.logExchange(req, resp, nil, started, err)
+		return nil, err
+	}
+	c.logExchange(req, resp, nil, started, nil)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("kotak historical data request failed (HTTP %d)", resp.StatusCode)
+	}
+	candles, err := decodeHistoricalCandles(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode Kotak historical data response: %w", err)
+	}
+	return candles, nil
+}
+
 func quoteEndpoint(baseURL string, instruments []QuoteInstrument) (string, error) {
 	base, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return "", errors.New("Kotak quotes base URL is invalid")
+		return "", errors.New("kotak quotes base URL is invalid")
 	}
 	host := strings.ToLower(base.Hostname())
 	secureKotakHost := host == "kotaksecurities.com" || strings.HasSuffix(host, ".kotaksecurities.com")
 	localTestHost := (host == "localhost" || host == "127.0.0.1") && base.Scheme == "http"
 	if (base.Scheme != "https" && !localTestHost) || (!secureKotakHost && !localTestHost) {
-		return "", errors.New("Kotak quotes base URL is not trusted")
+		return "", errors.New("kotak quotes base URL is not trusted")
 	}
 	queries := make([]string, 0, len(instruments))
 	for _, item := range instruments {
 		segment := strings.TrimSpace(item.ExchangeSegment)
 		symbol := strings.TrimSpace(item.Symbol)
 		if segment == "" || symbol == "" || strings.ContainsAny(segment+symbol, "\r\n") {
-			return "", errors.New("Kotak quotes instrument has an empty or invalid segment/symbol")
+			return "", errors.New("kotak quotes instrument has an empty or invalid segment/symbol")
 		}
-		queries = append(queries, url.PathEscape(segment+"|"+symbol))
+		escaped := url.PathEscape(segment + "|" + symbol)
+		escaped = strings.ReplaceAll(escaped, "%7C", "|")
+		queries = append(queries, escaped)
 	}
 	return strings.TrimRight(base.String(), "/") + quotesPath + strings.Join(queries, ",") + "/all", nil
+}
+
+func historicalEndpoint(baseURL, neosymbol, interval, fromDate, toDate string) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return "", errors.New("kotak historical data base URL is invalid")
+	}
+	host := strings.ToLower(base.Hostname())
+	secureKotakHost := host == "kotaksecurities.com" || strings.HasSuffix(host, ".kotaksecurities.com")
+	localTestHost := (host == "localhost" || host == "127.0.0.1") && base.Scheme == "http"
+	if (base.Scheme != "https" && !localTestHost) || (!secureKotakHost && !localTestHost) {
+		return "", errors.New("kotak historical data base URL is not trusted")
+	}
+	neosymbol = strings.TrimSpace(neosymbol)
+	if neosymbol == "" || strings.Count(neosymbol, "|") != 1 || strings.ContainsAny(neosymbol, "\r\n") {
+		return "", errors.New("kotak historical instrument is invalid")
+	}
+	if _, ok := historicalIntervals[interval]; !ok {
+		return "", fmt.Errorf("kotak historical interval %q is unsupported", interval)
+	}
+	if _, err := time.Parse("2006-01-02", fromDate); err != nil {
+		return "", errors.New("kotak historical from_date must use YYYY-MM-DD")
+	}
+	if _, err := time.Parse("2006-01-02", toDate); err != nil {
+		return "", errors.New("kotak historical to_date must use YYYY-MM-DD")
+	}
+	if fromDate > toDate {
+		return "", errors.New("kotak historical from_date is after to_date")
+	}
+	query := url.Values{
+		"neosymbol": {neosymbol},
+		"interval":  {interval},
+		"fromdate":  {fromDate},
+		"todate":    {toDate},
+	}
+	return strings.TrimRight(base.String(), "/") + historicalPath + "?" + query.Encode(), nil
+}
+
+var historicalIntervals = map[string]bool{
+	"1min": true, "3min": true, "5min": true, "10min": true,
+	"15min": true, "30min": true, "60min": true, "D": true, "W": true,
+}
+
+func decodeHistoricalCandles(raw []byte) ([]Candle, error) {
+	var response struct {
+		Status string `json:"status"`
+		Fault  *struct {
+			Message string `json:"message"`
+		} `json:"fault"`
+		Data *struct {
+			Candles json.RawMessage `json:"candles"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, err
+	}
+	if response.Status != "" && !strings.EqualFold(response.Status, "success") {
+		if response.Fault != nil && strings.TrimSpace(response.Fault.Message) != "" {
+			return nil, fmt.Errorf("kotak returned status %q: %s", response.Status, response.Fault.Message)
+		}
+		return nil, fmt.Errorf("kotak returned status %q", response.Status)
+	}
+	if response.Data == nil {
+		return nil, errors.New("historical response has no data")
+	}
+	rawCandles := strings.TrimSpace(string(response.Data.Candles))
+	if rawCandles == "" || rawCandles == "null" {
+		return nil, errors.New("historical response has no candles array")
+	}
+	var rows [][]json.RawMessage
+	if err := json.Unmarshal(response.Data.Candles, &rows); err != nil {
+		return nil, fmt.Errorf("historical candles are not an array: %w", err)
+	}
+	if rows == nil {
+		return nil, errors.New("historical response has no candles array")
+	}
+	candles := make([]Candle, 0, len(rows))
+	for i, row := range rows {
+		candle, err := decodeHistoricalCandle(row)
+		if err != nil {
+			return nil, fmt.Errorf("candle %d: %w", i, err)
+		}
+		candles = append(candles, candle)
+	}
+	return candles, nil
+}
+
+func decodeHistoricalCandle(row []json.RawMessage) (Candle, error) {
+	if len(row) < 6 || len(row) > 7 {
+		return Candle{}, fmt.Errorf("got %d values, want 6 or 7", len(row))
+	}
+	var timestamp string
+	if err := json.Unmarshal(row[0], &timestamp); err != nil {
+		return Candle{}, fmt.Errorf("timestamp: %w", err)
+	}
+	at, err := parseCandleTimestamp(timestamp)
+	if err != nil {
+		return Candle{}, fmt.Errorf("timestamp: %w", err)
+	}
+	values := make([]float64, 4)
+	for i := range values {
+		values[i], err = decodeCandleNumber(row[i+1])
+		if err != nil {
+			return Candle{}, fmt.Errorf("value %d: %w", i+1, err)
+		}
+	}
+	volume, err := decodeCandleNumber(row[5])
+	if err != nil || volume < 0 || volume > math.MaxInt64 || math.Trunc(volume) != volume {
+		return Candle{}, errors.New("volume is not a non-negative integer")
+	}
+	candle := Candle{
+		Time:   at.Unix(),
+		Open:   values[0],
+		High:   values[1],
+		Low:    values[2],
+		Close:  values[3],
+		Volume: int64(volume),
+	}
+	if len(row) == 7 && strings.TrimSpace(string(row[6])) != "null" {
+		oi, err := decodeCandleNumber(row[6])
+		if err != nil || oi < 0 || oi > math.MaxInt64 || math.Trunc(oi) != oi {
+			return Candle{}, errors.New("open interest is not a non-negative integer")
+		}
+		candle.OpenInterest = int64(oi)
+	}
+	if candle.Low > candle.High || candle.Open < candle.Low || candle.Open > candle.High ||
+		candle.Close < candle.Low || candle.Close > candle.High {
+		return Candle{}, errors.New("OHLC values are inconsistent")
+	}
+	return candle, nil
+}
+
+func parseCandleTimestamp(value string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05-0700"} {
+		if at, err := time.Parse(layout, value); err == nil {
+			return at, nil
+		}
+	}
+	return time.Time{}, errors.New("unsupported ISO 8601 timestamp")
+}
+
+func decodeCandleNumber(raw json.RawMessage) (float64, error) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return 0, errors.New("missing numeric value")
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err == nil {
+		if !math.IsNaN(value) && !math.IsInf(value, 0) {
+			return value, nil
+		}
+		return 0, errors.New("numeric value is not finite")
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, errors.New("value is not a number")
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, errors.New("value is not a finite number")
+	}
+	return value, nil
 }
 
 func decodeQuotes(raw []byte) ([]Quote, error) {
@@ -291,12 +524,12 @@ func (c *QuotesClient) logExchange(req *http.Request, resp *http.Response, body 
 	}
 	if err != nil {
 		args = append(args, "error", err)
-		c.log.Error("Kotak quotes API exchange", args...)
+		c.log.Error("Kotak market API exchange", args...)
 		return
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		c.log.Error("Kotak quotes API exchange", args...)
+		c.log.Error("Kotak market API exchange", args...)
 		return
 	}
-	c.log.Info("Kotak quotes API exchange", args...)
+	c.log.Info("Kotak market API exchange", args...)
 }

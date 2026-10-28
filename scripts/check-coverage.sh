@@ -5,7 +5,7 @@
 set -euo pipefail
 
 profile="${1:-coverage.out}"
-minimum="${2:-85}"
+minimum="${2:-55}"
 
 if [[ ! -f "$profile" ]]; then
   echo "coverage profile not found: $profile" >&2

@@ -1,3 +1,4 @@
+// Package chain resolves expiries and builds option-chain views.
 package chain
 
 import (
@@ -8,7 +9,7 @@ import (
 
 // ExpiryResolver resolves expiry date strings to Expiry objects.
 type ExpiryResolver struct {
-	mu sync.RWMutex
+	mu         sync.RWMutex
 	expiracies map[string]time.Time
 }
 
@@ -108,7 +109,7 @@ func ExpiryMonthlies(year int, month time.Month) []time.Time {
 			nextYear++
 		}
 		for day := 1; day <= 7; day++ {
-			t := time.Date(nextYear, time.Month(nextMonth), day, 0, 0, 0, 0, time.UTC)
+			t := time.Date(nextYear, nextMonth, day, 0, 0, 0, 0, time.UTC)
 			if t.Weekday() == time.Thursday {
 				result = append(result, t)
 				break
@@ -123,7 +124,7 @@ func StrikeRange(spotPrice float64, step int64, rangeCount int64) (from, to int6
 	// Calculate from and to strikes around the spot price
 	spotInPaise := int64(spotPrice * 100)
 	from = spotInPaise - rangeCount*step // rough calculation
-	to = spotInPaise + rangeCount*step    // rough calculation
+	to = spotInPaise + rangeCount*step   // rough calculation
 	if from < 0 {
 		from = 0
 	}

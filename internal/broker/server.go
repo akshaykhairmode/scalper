@@ -1,3 +1,4 @@
+// Package broker provides the legacy Kotak broker operations and HTTP handlers.
 package broker
 
 import (
@@ -7,28 +8,31 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akshaykhairmode/scalper/internal/config"
 	"log/slog"
+
+	"github.com/akshaykhairmode/scalper/internal/config"
 )
 
 // BrokerServer is the HTTP handler for broker operations.
 // It provides REST endpoints for the UI to interact with the broker.
+//
+//nolint:revive // Preserve the established exported server type name.
 type BrokerServer struct {
-	log           *slog.Logger
-	cfg           *config.Config
-	broker        *KotakBroker
-	orderStore    *orderStore
-	positions     map[string]*Position
-	orderChan     chan *Order
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	log        *slog.Logger
+	cfg        *config.Config
+	broker     *KotakBroker
+	orderStore *orderStore
+	positions  map[string]*Position
+	orderChan  chan *Order
+	stopCh     chan struct{}
+	wg         sync.WaitGroup
 }
 
 // orderStore manages in-memory order storage.
 type orderStore struct {
-	mu      sync.RWMutex
-	orders  map[string]*Order
-	trades  []*Trade
+	mu     sync.RWMutex
+	orders map[string]*Order
+	trades []*Trade
 }
 
 // NewBrokerServer creates a new BrokerServer.
@@ -152,7 +156,8 @@ func (bs *BrokerServer) updatePositions(order *Order, trade *Trade) {
 	}
 
 	// Update position based on buy/sell
-	if order.BuySell == "B" {
+	switch order.BuySell {
+	case "B":
 		// Buy order - increase position
 		pos.Quantity += order.Quantity
 		// Update average price
@@ -160,13 +165,13 @@ func (bs *BrokerServer) updatePositions(order *Order, trade *Trade) {
 			pos.AveragePrice = order.Price
 		} else {
 			// Running average
-			totalCost := pos.AveragePrice * float64(pos.Quantity - order.Quantity)
+			totalCost := pos.AveragePrice * float64(pos.Quantity-order.Quantity)
 			totalCost += order.Price * float64(order.Quantity)
 			pos.AveragePrice = totalCost / float64(pos.Quantity)
 		}
 		pos.MarketValue = pos.AveragePrice * float64(pos.Quantity)
 		pos.TodayPL = (order.Price - pos.AveragePrice) * float64(order.Quantity)
-	} else if order.BuySell == "S" {
+	case "S":
 		// Sell order - decrease position (or square off)
 		if float64(pos.Quantity) >= float64(order.Quantity) {
 			pos.Quantity -= order.Quantity
@@ -237,26 +242,26 @@ func (bs *BrokerServer) SquareOffAll() error {
 			if pos.Quantity > 0 {
 				// Square off long position - sell
 				sqOrder = &Order{
-					ID:           fmt.Sprintf("sqo-%d", time.Now().Unix()),
-					InstrumentKey: pos.InstrumentKey,
+					ID:              fmt.Sprintf("sqo-%d", time.Now().Unix()),
+					InstrumentKey:   pos.InstrumentKey,
 					ExchangeSegment: "nse_fo",
-					OrderType:    "MARKET",
-					Quantity:     pos.Quantity,
-					BuySell:      "S", // Sell to square off long
-					Status:       "PENDING",
-					Timestamp:    time.Now().Unix(),
+					OrderType:       "MARKET",
+					Quantity:        pos.Quantity,
+					BuySell:         "S", // Sell to square off long
+					Status:          "PENDING",
+					Timestamp:       time.Now().Unix(),
 				}
 			} else {
 				// Square off short position - buy
 				sqOrder = &Order{
-					ID:           fmt.Sprintf("sqo-%d", time.Now().Unix()),
-					InstrumentKey: pos.InstrumentKey,
+					ID:              fmt.Sprintf("sqo-%d", time.Now().Unix()),
+					InstrumentKey:   pos.InstrumentKey,
 					ExchangeSegment: "nse_fo",
-					OrderType:    "MARKET",
-					Quantity:     -pos.Quantity, // positive quantity for buy
-					BuySell:      "B", // Buy to square off short
-					Status:       "PENDING",
-					Timestamp:    time.Now().Unix(),
+					OrderType:       "MARKET",
+					Quantity:        -pos.Quantity, // positive quantity for buy
+					BuySell:         "B",           // Buy to square off short
+					Status:          "PENDING",
+					Timestamp:       time.Now().Unix(),
 				}
 			}
 
@@ -303,11 +308,11 @@ func (bs *BrokerServer) GetMargin() (AvailableMargin, error) {
 // HealthCheck returns the health status of the broker server.
 func (bs *BrokerServer) HealthCheck() map[string]string {
 	status := map[string]string{
-		"status":     "ok",
-		"broker":     "initialized",
-		"positions":  fmt.Sprintf("%d", len(bs.positions)),
-		"orders":     fmt.Sprintf("%d", len(bs.orderStore.orders)),
-		"uptime":     fmt.Sprintf("%v", time.Since(time.Now().Add(-24*time.Hour)).Round(time.Second)),
+		"status":    "ok",
+		"broker":    "initialized",
+		"positions": fmt.Sprintf("%d", len(bs.positions)),
+		"orders":    fmt.Sprintf("%d", len(bs.orderStore.orders)),
+		"uptime":    fmt.Sprintf("%v", time.Since(time.Now().Add(-24*time.Hour)).Round(time.Second)),
 	}
 
 	// Check if broker is initialized
@@ -327,43 +332,51 @@ func (bs *BrokerServer) Stop() {
 
 // RegisterRoutes registers the HTTP routes for the broker server.
 func (bs *BrokerServer) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/broker/positions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/broker/positions", func(w http.ResponseWriter, _ *http.Request) {
 		positions, err := bs.GetPositions()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(positions)
+		if err := json.NewEncoder(w).Encode(positions); err != nil {
+			bs.log.Error("encode broker positions response", "error", err)
+		}
 	})
 
-	mux.HandleFunc("GET /api/broker/trade-book", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/broker/trade-book", func(w http.ResponseWriter, _ *http.Request) {
 		trades, err := bs.GetTradeBook()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(trades)
+		if err := json.NewEncoder(w).Encode(trades); err != nil {
+			bs.log.Error("encode broker trade book response", "error", err)
+		}
 	})
 
-	mux.HandleFunc("GET /api/broker/order-book", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/broker/order-book", func(w http.ResponseWriter, _ *http.Request) {
 		orders, err := bs.GetOrderBook()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(orders)
+		if err := json.NewEncoder(w).Encode(orders); err != nil {
+			bs.log.Error("encode broker order book response", "error", err)
+		}
 	})
 
-	mux.HandleFunc("POST /api/broker/square-off-all", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/broker/square-off-all", func(w http.ResponseWriter, _ *http.Request) {
 		if err := bs.SquareOffAll(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "success"}); err != nil {
+			bs.log.Error("encode broker square-off response", "error", err)
+		}
 	})
 
 	mux.HandleFunc("POST /api/broker/order", func(w http.ResponseWriter, r *http.Request) {
@@ -377,6 +390,8 @@ func (bs *BrokerServer) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "queued"}); err != nil {
+			bs.log.Error("encode broker order response", "error", err)
+		}
 	})
 }

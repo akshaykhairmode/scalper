@@ -11,6 +11,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/paper"
 )
 
+// EnsurePaperAccount initializes the persisted paper account if absent.
 func (s *Store) EnsurePaperAccount(ctx context.Context, startingCash float64) error {
 	if startingCash <= 0 || math.IsNaN(startingCash) || math.IsInf(startingCash, 0) {
 		return errors.New("store: paper starting cash must be positive and finite")
@@ -25,6 +26,7 @@ func (s *Store) EnsurePaperAccount(ctx context.Context, startingCash float64) er
 	return nil
 }
 
+// PaperSnapshot reads the paper account and its current books.
 func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (paper.Snapshot, error) {
 	var snapshot paper.Snapshot
 	err := s.db.QueryRowContext(ctx, `
@@ -126,6 +128,7 @@ func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (pape
 	return snapshot, nil
 }
 
+// ApplyPaperTrade atomically applies a paper order to the account and books.
 func (s *Store) ApplyPaperTrade(ctx context.Context, request paper.OrderRequest, shortMarginPct float64) (result paper.Order, err error) {
 	if request.ClientOrderID == "" || request.Instrument.InstrumentKey == "" ||
 		request.Quantity <= 0 || request.FillPrice <= 0 ||
@@ -276,6 +279,7 @@ func absInt64(value int64) int64 {
 	return value
 }
 
+// PaperOrder looks up a paper order by its client order ID.
 func (s *Store) PaperOrder(ctx context.Context, id string) (paper.Order, bool, error) {
 	if strings.TrimSpace(id) == "" {
 		return paper.Order{}, false, errors.New("store: paper order ID is empty")

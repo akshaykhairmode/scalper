@@ -1,22 +1,28 @@
+// Package hsclient contains legacy HSM frame types and decoders.
 package hsclient
 
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
-	"log/slog"
 )
 
 // MessageType represents HSM message types.
 type MessageType uint8
 
 const (
+	// ConnectType identifies an initial connection frame.
 	ConnectType MessageType = 1 // Initial connection
+	// SubscribeType requests a subscription to market topics.
 	SubscribeType MessageType = 4 // Subscribe to topics
+	// AckType identifies a server acknowledgement.
 	AckType MessageType = 3 // Acknowledgment
+	// DataType identifies a market data frame.
 	DataType MessageType = 6 // Market data
+	// KeepaliveType identifies a keepalive frame.
 	KeepaliveType MessageType = 2 // Keepalive every 30s
 )
 
@@ -30,30 +36,30 @@ type HSMFrame struct {
 
 // HSMHeader is the 2-byte length + type + fieldCount header.
 type HSMHeader struct {
-	Length     uint16 // 2-byte big-endian length
+	Length     uint16      // 2-byte big-endian length
 	Type       MessageType // message type
-	FieldCount uint8  // number of fields
+	FieldCount uint8       // number of fields
 }
 
 // FieldIDs for HSM messages - based on docs/HSM_PROTOCOL.md
 const (
-	FieldScrip            = 1  // Scrip ID
-	FieldUpdateVector     = 2 // Update vector
-	FieldTimestamp        = 3 // Timestamp
-	FieldLTP              = 5  // Last Traded Price
-	FieldVolume           = 4  // Volume
-	FieldClose            = 21 // Close price
-	FieldOI               = 22 // Open Interest
-	FieldMultiplier       = 23 // Price multiplier
-	FieldPrecision        = 24 // Price precision
-	FieldIndexLTP         = 2  // Index LTP
-	FieldIndexClose       = 3  // Index close
-	FieldDepthMultiplier  = 32 // Depth multiplier
-	FieldDepthPrecision   = 33 // Depth precision
-	FieldString51         = 51
-	FieldString52         = 52
-	FieldString53         = 53
-	FieldString54         = 54
+	FieldScrip           = 1  // Scrip ID
+	FieldUpdateVector    = 2  // Update vector
+	FieldTimestamp       = 3  // Timestamp
+	FieldLTP             = 5  // Last Traded Price
+	FieldVolume          = 4  // Volume
+	FieldClose           = 21 // Close price
+	FieldOI              = 22 // Open Interest
+	FieldMultiplier      = 23 // Price multiplier
+	FieldPrecision       = 24 // Price precision
+	FieldIndexLTP        = 2  // Index LTP
+	FieldIndexClose      = 3  // Index close
+	FieldDepthMultiplier = 32 // Depth multiplier
+	FieldDepthPrecision  = 33 // Depth precision
+	FieldString51        = 51
+	FieldString52        = 52
+	FieldString53        = 53
+	FieldString54        = 54
 )
 
 // Quote represents a market quote from HSM.
@@ -65,7 +71,7 @@ type Quote struct {
 	OI            int64   `json:"oi"`
 	Bid           float64 `json:"bid"`
 	Ask           float64 `json:"ask"`
-	Identifier    string  `json:"identifier"` // scrip identifier string
+	Identifier    string  `json:"identifier"`  // scrip identifier string
 	OptionType    string  `json:"option_type"` // CE or PE
 	Strike        float64 `json:"strike"`
 }
@@ -79,18 +85,6 @@ type HSMClient struct {
 
 	// Connected indicates if the client is currently connected
 	connected bool
-
-	// SessionID is the session token from the connection
-	sessionID string
-
-	// OnQuote is called when a market data frame is received
-	onQuote func(*Quote)
-
-	// OnConnect is called when the connection is established
-	onConnect func(sessionID string)
-
-	// OnDisconnect is called when the connection is lost
-	onDisconnect func()
 
 	// logger for status messages
 	logger *slog.Logger
@@ -220,8 +214,8 @@ func ParseFrame(data []byte) (HSMFrame, error) {
 	}
 
 	header := HSMHeader{
-		Length:  uint16(data[0])<<8 | uint16(data[1]),
-		Type:    MessageType(data[2]),
+		Length:     uint16(data[0])<<8 | uint16(data[1]),
+		Type:       MessageType(data[2]),
 		FieldCount: data[3],
 	}
 
@@ -272,7 +266,7 @@ func ExtractLTP(fields map[uint32][]byte) (float64, bool) {
 	}
 
 	// LTP is fixed-point int32: raw / (multiplier × 10^precision)
-	raw := int32(binary.BigEndian.Uint32(data))
+	raw := signedUint32(binary.BigEndian.Uint32(data))
 
 	// Get multiplier and precision if available
 	multiplier := 1.0
@@ -301,7 +295,7 @@ func ExtractVolume(fields map[uint32][]byte) (int64, bool) {
 	}
 
 	// Volume is fixed-point int32
-	raw := int32(binary.BigEndian.Uint32(data))
+	raw := signedUint32(binary.BigEndian.Uint32(data))
 	return int64(raw), true
 }
 
@@ -317,6 +311,14 @@ func ExtractOI(fields map[uint32][]byte) (int64, bool) {
 	}
 
 	// OI is fixed-point int32
-	raw := int32(binary.BigEndian.Uint32(data))
+	raw := signedUint32(binary.BigEndian.Uint32(data))
 	return int64(raw), true
+}
+
+func signedUint32(value uint32) int32 {
+	const maxInt32 = uint32(1<<31 - 1)
+	if value <= maxInt32 {
+		return int32(value)
+	}
+	return ^int32(^value) // #nosec G115 -- The complement is bounded to MaxInt32.
 }

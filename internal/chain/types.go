@@ -13,8 +13,10 @@ type Strike int64
 type OptionType string
 
 const (
+	// Call identifies a call option.
 	Call OptionType = "CE"
-	Put  OptionType = "PE"
+	// Put identifies a put option.
+	Put OptionType = "PE"
 )
 
 // UnderlyingID is the identifier for an underlying index.
@@ -45,13 +47,13 @@ func OptionTypeFromString(s string) (OptionType, error) {
 
 // Spot is an index or volatility instrument in the cash segment.
 type Spot struct {
-	InstrumentKey   string    `json:"instrument_key"`
-	ExchangeSegment string    `json:"exchange_segment"`
-	Symbol          string    `json:"symbol"`
-	DisplayName     string    `json:"display_name"`
-	PSymbol         string    `json:"p_symbol"`
-	LTP             float64   `json:"ltp"`
-	Close           float64   `json:"close"`
+	InstrumentKey   string  `json:"instrument_key"`
+	ExchangeSegment string  `json:"exchange_segment"`
+	Symbol          string  `json:"symbol"`
+	DisplayName     string  `json:"display_name"`
+	PSymbol         string  `json:"p_symbol"`
+	LTP             float64 `json:"ltp"`
+	Close           float64 `json:"close"`
 }
 
 // Chain is the full option chain for an underlying index.
@@ -67,20 +69,20 @@ func (c *Chain) AddOption(co ChainOption) {
 	c.Options = append(c.Options, co)
 }
 
-// ChainOption is an option contract from the chain.
+//nolint:revive // Preserve the established exported option type name.
 type ChainOption struct {
-	Underlying    UnderlyingID
-	Expiry        Expiry
-	OptionType    OptionType
-	Strike        Strike
-	PSymbol       string
-	LotSize       int64
+	Underlying      UnderlyingID
+	Expiry          Expiry
+	OptionType      OptionType
+	Strike          Strike
+	PSymbol         string
+	LotSize         int64
 	ExchangeSegment string
 
 	// Market data fields
-	LTP         float64
+	LTP           float64
 	PreviousClose float64
-	OI          int64
+	OI            int64
 }
 
 // Expiry is an option expiry date.
@@ -91,7 +93,7 @@ func (e Expiry) String() string {
 	return time.Time(e).Format("2006-01-02")
 }
 
-// ChainOptionSorted is ChainOption with a sorted index for quick lookup.
+//nolint:revive // Preserve the established exported indexed-option type name.
 type ChainOptionSorted struct {
 	ChainOption
 	// CallIndex maps strike -> ChainOption for CE contracts.
@@ -112,9 +114,10 @@ func (c *Chain) BuildIndices() *ChainOptionSorted {
 	}
 
 	for _, opt := range c.Options {
-		if opt.OptionType == Call {
+		switch opt.OptionType {
+		case Call:
 			result.CallIndex[opt.Strike] = opt
-		} else if opt.OptionType == Put {
+		case Put:
 			result.PutIndex[opt.Strike] = opt
 		}
 	}
@@ -129,7 +132,7 @@ func (c *Chain) SortStrikes() {
 	})
 }
 
-// ChainLadder is the sorted chain data for UI display.
+//nolint:revive // Preserve the established exported UI type name.
 type ChainLadder struct {
 	Underlying UnderlyingID
 	Expiry     Expiry
@@ -138,15 +141,15 @@ type ChainLadder struct {
 	ATMStrike  Strike // At-the-money strike
 }
 
-// ChainLadderEntry is a row in the chain ladder UI.
+//nolint:revive // Preserve the established exported UI row type name.
 type ChainLadderEntry struct {
-	Strike      Strike
-	OptionType  OptionType
-	LTP         float64
+	Strike        Strike
+	OptionType    OptionType
+	LTP           float64
 	PreviousClose float64
-	OI          int64
-	Change      float64 // percentage change
-	IsATM       bool    // At-The-Money flag
+	OI            int64
+	Change        float64 // percentage change
+	IsATM         bool    // At-The-Money flag
 }
 
 // NewChain creates a new Chain for the given underlying and expiry.

@@ -1,19 +1,26 @@
 // Minimal dependency-free candlestick chart. The plan calls for TradingView
 // Lightweight Charts; this canvas renderer keeps the single-binary, no-CDN
-// constraint while preserving the intended dark terminal look. It can be
+// constraint while matching the terminal's active theme. It can be
 // swapped for the vendored library without changing app state.
 
-const COLORS = {
-  bg: "#07090c",
-  grid: "#141c24",
-  text: "#8292a2",
-  crosshair: "#5d6b79",
-  up: "#35c46a",
-  down: "#ff5d5d",
-  last: "#f0b429",
-  volumeUp: "#35c46a44",
-  volumeDown: "#ff5d5d44",
-};
+function chartColors(element) {
+  const styles = getComputedStyle(element);
+  const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  return {
+    bg: color("--chart-bg", "#07090c"),
+    grid: color("--chart-grid", "#141c24"),
+    text: color("--chart-text", "#8292a2"),
+    crosshair: color("--chart-crosshair", "#5d6b79"),
+    up: color("--green", "#35c46a"),
+    down: color("--red", "#ff5d5d"),
+    last: color("--accent", "#f0b429"),
+    volumeUp: color("--chart-volume-up", "#35c46a44"),
+    volumeDown: color("--chart-volume-down", "#ff5d5d44"),
+    markerBg: color("--chart-marker-bg", "#3a2c08"),
+    labelBg: color("--chart-label-bg", "#0d1319dd"),
+    labelText: color("--chart-label-text", "#d4dee7"),
+  };
+}
 
 function fmt(n, digits = 2) {
   if (!Number.isFinite(n)) return "—";
@@ -205,8 +212,9 @@ export class CandleChart {
   render() {
     const { width, height } = this.layout();
     const ctx = this.ctx;
+    const colors = chartColors(this.canvas);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = COLORS.bg;
+    ctx.fillStyle = colors.bg;
     ctx.fillRect(0, 0, width, height);
 
     if (!this.data.length) return;
@@ -248,13 +256,13 @@ export class CandleChart {
 
     // Horizontal grid + price labels.
     ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
-    ctx.fillStyle = COLORS.text;
+    ctx.fillStyle = colors.text;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     const gridLines = 4;
     for (let i = 0; i <= gridLines; i++) {
       const y = top + (plotH / gridLines) * i;
-      ctx.strokeStyle = COLORS.grid;
+      ctx.strokeStyle = colors.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, Math.round(y) + 0.5);
@@ -267,7 +275,7 @@ export class CandleChart {
     // Volume separators.
     const volumeTop = top + plotH + 4;
     if (this.showVolume) {
-      ctx.strokeStyle = COLORS.grid;
+      ctx.strokeStyle = colors.grid;
       ctx.beginPath();
       ctx.moveTo(left, volumeTop - 2.5);
       ctx.lineTo(width - right, volumeTop - 2.5);
@@ -278,7 +286,7 @@ export class CandleChart {
     data.forEach((c, i) => {
       const x = left + i * barSlot + barSlot / 2;
       const up = c.close >= c.open;
-      const color = up ? COLORS.up : COLORS.down;
+      const color = up ? colors.up : colors.down;
       const bodyW = Math.max(1, Math.min(barSlot - 2, 14));
       const yHigh = yOf(c.high);
       const yLow = yOf(c.low);
@@ -299,7 +307,7 @@ export class CandleChart {
 
       if (this.showVolume && maxVol > 0) {
         const vh = ((c.volume || 0) / maxVol) * Math.max(2, volumeH - 4);
-        ctx.fillStyle = up ? COLORS.volumeUp : COLORS.volumeDown;
+        ctx.fillStyle = up ? colors.volumeUp : colors.volumeDown;
         ctx.fillRect(Math.round(x - bodyW / 2), volumeTop + (volumeH - vh), bodyW, Math.max(1, vh));
       }
     });
@@ -307,7 +315,7 @@ export class CandleChart {
     // Last price marker.
     const last = data[data.length - 1];
     const yLast = yOf(last.close);
-    ctx.strokeStyle = COLORS.last;
+    ctx.strokeStyle = colors.last;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
     ctx.moveTo(left, Math.round(yLast) + 0.5);
@@ -318,13 +326,13 @@ export class CandleChart {
     const label = fmt(last.close);
     ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
     const labelW = ctx.measureText(label).width + 8;
-    ctx.fillStyle = "#3a2c08";
+    ctx.fillStyle = colors.markerBg;
     ctx.fillRect(width - right + 2, yLast - 7, Math.min(labelW, right - 4), 14);
-    ctx.fillStyle = COLORS.last;
+    ctx.fillStyle = colors.last;
     ctx.fillText(label, width - right + 6, yLast);
 
     // Time labels.
-    ctx.fillStyle = COLORS.text;
+    ctx.fillStyle = colors.text;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     const labelCount = Math.min(5, data.length);
@@ -344,7 +352,7 @@ export class CandleChart {
       const x = left + idx * barSlot + barSlot / 2;
       const y = this.hover.y;
 
-      ctx.strokeStyle = COLORS.crosshair;
+      ctx.strokeStyle = colors.crosshair;
       ctx.setLineDash([2, 3]);
       ctx.beginPath();
       ctx.moveTo(Math.round(x) + 0.5, top);
@@ -355,9 +363,9 @@ export class CandleChart {
       ctx.setLineDash([]);
 
       const price = max - ((y - top) / plotH) * range;
-      ctx.fillStyle = "#1a232c";
+      ctx.fillStyle = colors.labelBg;
       ctx.fillRect(width - right + 2, y - 7, right - 4, 14);
-      ctx.fillStyle = "#d4dee7";
+      ctx.fillStyle = colors.labelText;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
       ctx.fillText(fmt(price), width - right + 5, y);
@@ -365,9 +373,9 @@ export class CandleChart {
       const legend = `O ${fmt(c.open)}  H ${fmt(c.high)}  L ${fmt(c.low)}  C ${fmt(c.close)}`;
       ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
       const legendW = ctx.measureText(legend).width + 12;
-      ctx.fillStyle = "#0d1319dd";
+      ctx.fillStyle = colors.labelBg;
       ctx.fillRect(left + 3, top + 2, legendW, 15);
-      ctx.fillStyle = c.close >= c.open ? COLORS.up : COLORS.down;
+      ctx.fillStyle = c.close >= c.open ? colors.up : colors.down;
       ctx.textBaseline = "middle";
       ctx.fillText(legend, left + 9, top + 10);
     }

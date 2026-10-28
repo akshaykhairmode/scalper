@@ -30,6 +30,7 @@ type Session struct {
 	BrokerToken  string      `json:"-"`
 	BrokerSID    string      `json:"-"`
 	BaseURL      string      `json:"-"`
+	FeedURL      string      `json:"-"`
 	CreatedAt    time.Time   `json:"created_at"`
 	LastActivity time.Time   `json:"last_activity"`
 }
@@ -97,6 +98,7 @@ func (sm *SessionManager) NewSession(accessToken string, loginMethod LoginMethod
 	return session
 }
 
+// NewBrokerSession stores the broker credentials in a new local session.
 func (sm *SessionManager) NewBrokerSession(broker TradeSession, loginMethod LoginMethod) (*Session, error) {
 	var id [32]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -110,6 +112,7 @@ func (sm *SessionManager) NewBrokerSession(broker TradeSession, loginMethod Logi
 		BrokerToken:  broker.Token,
 		BrokerSID:    broker.SID,
 		BaseURL:      broker.BaseURL,
+		FeedURL:      broker.FeedURL,
 		CreatedAt:    time.Now(),
 		LastActivity: time.Now(),
 	}

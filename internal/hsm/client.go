@@ -1,13 +1,12 @@
+// Package hsm implements the Kotak SFeed WebSocket client and decoder.
 package hsm
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,128 +18,121 @@ import (
 )
 
 const (
-	DefaultURL        = "wss://mlhsm.kotaksecurities.com"
-	maxScripsPerBatch = 100
+	// DefaultURL is Kotak's default SFeed endpoint.
+	DefaultURL        = "wss://sfeed.kotaksecurities.com/apifeed"
+	maxSFeedTokens    = 3000
+	sfeedPingInterval = 20 * time.Second
 )
 
-type topicState struct {
-	name    string
-	values  map[uint8]int32
-	strings map[uint8]string
-}
-
+//nolint:revive // HSM distinguishes this feed client from other market clients.
 type HSMClient struct {
 	url     string
-	token   string
-	sid     string
+	user    string
+	auth    string
 	logger  *slog.Logger
 	quoteCh chan<- *Quote
 
-	mu        sync.RWMutex
-	writeMu   sync.Mutex
-	conn      *websocket.Conn
-	connected bool
-	ackLimit  uint32
-	topics    map[uint32]*topicState
-	subs      map[string]bool
+	mu             sync.RWMutex
+	writeMu        sync.Mutex
+	subscriptionMu sync.Mutex
+	conn           *websocket.Conn
+	connected      bool
+	dividers       map[int8]int
+	tradingSymbols map[string]string
+	subs           map[string]struct{}
+	ackPending     bool
+	pendingQuotes  map[string]*Quote
 
-	stopCh        chan struct{}
-	connectedCh   chan struct{}
-	connectErrCh  chan error
-	doneCh        chan error
-	stopOnce      sync.Once
-	connectedOnce sync.Once
-	wg            sync.WaitGroup
+	stopCh         chan struct{}
+	connectedCh    chan struct{}
+	connectErrCh   chan error
+	doneCh         chan error
+	subscribeAckCh chan struct{}
+	stopOnce       sync.Once
+	connectedOnce  sync.Once
+	wg             sync.WaitGroup
 }
 
-type requestField struct {
-	id    uint8
-	value []byte
-}
-
-type hsmNackError struct {
-	packetType uint8
-}
-
-func (e *hsmNackError) Error() string {
-	return fmt.Sprintf("Kotak HSM operation %d was rejected", e.packetType)
-}
-
+// NewHSMClient creates an SFeed client with the default logger.
 func NewHSMClient(endpoint string, quoteCh chan<- *Quote) *HSMClient {
 	return NewHSMClientWithLogger(endpoint, quoteCh, slog.Default())
 }
 
+// NewHSMClientWithLogger creates an SFeed client with an explicit logger.
 func NewHSMClientWithLogger(endpoint string, quoteCh chan<- *Quote, logger *slog.Logger) *HSMClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = DefaultURL
+	}
 	return &HSMClient{
-		url:          endpoint,
-		logger:       logger,
-		quoteCh:      quoteCh,
-		topics:       make(map[uint32]*topicState),
-		subs:         make(map[string]bool),
-		stopCh:       make(chan struct{}),
-		connectedCh:  make(chan struct{}),
-		connectErrCh: make(chan error, 1),
-		doneCh:       make(chan error, 1),
+		url:            endpoint,
+		logger:         logger,
+		quoteCh:        quoteCh,
+		dividers:       make(map[int8]int),
+		tradingSymbols: make(map[string]string),
+		subs:           make(map[string]struct{}),
+		pendingQuotes:  make(map[string]*Quote),
+		stopCh:         make(chan struct{}),
+		connectedCh:    make(chan struct{}),
+		connectErrCh:   make(chan error, 1),
+		doneCh:         make(chan error, 1),
+		subscribeAckCh: make(chan struct{}, 1),
 	}
 }
 
-func (c *HSMClient) Connect(ctx context.Context, token, sid string) error {
-	if strings.TrimSpace(token) == "" || strings.TrimSpace(sid) == "" {
-		return errors.New("HSM session token and SID are required")
+// Connect authenticates the client and starts its read loop.
+func (c *HSMClient) Connect(ctx context.Context, user, auth string) error {
+	if strings.TrimSpace(user) == "" || strings.TrimSpace(auth) == "" {
+		return errors.New("SFeed user and auth values are required")
 	}
-	if err := validateHSMURL(c.url); err != nil {
+	if err := validateSFeedURL(c.url); err != nil {
 		return err
 	}
-	c.token = token
-	c.sid = sid
-	parsedURL, err := url.Parse(c.url)
-	if err != nil {
-		return fmt.Errorf("parse Kotak HSM URL: %w", err)
-	}
-	originScheme := "https"
-	if parsedURL.Scheme == "ws" {
-		originScheme = "http"
-	}
-	headers := http.Header{"Origin": []string{originScheme + "://" + parsedURL.Host}}
+	c.user, c.auth = user, auth
+	c.logger.Info("Kotak SFeed connection attempt", "event", "sfeed_connect_attempt", "url", c.url)
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	c.logger.Info("Kotak HSM connection attempt", "event", "hsm_connect_attempt", "url", c.url)
-	conn, response, err := dialer.DialContext(ctx, c.url, headers)
+	conn, response, err := dialer.DialContext(ctx, c.url, http.Header{})
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
 	if err != nil {
 		if response != nil {
-			c.logger.Warn("Kotak HSM WebSocket handshake rejected", "event", "hsm_websocket_handshake_failed",
-				"http_status", response.StatusCode)
+			c.logger.Warn("Kotak SFeed WebSocket handshake rejected",
+				"event", "sfeed_websocket_handshake_failed", "http_status", response.StatusCode)
 		}
-		return fmt.Errorf("dial Kotak HSM: %w", err)
+		return fmt.Errorf("dial Kotak SFeed: %w", err)
 	}
-	c.logger.Info("Kotak HSM WebSocket handshake established", "event", "hsm_websocket_open",
-		"http_status", response.StatusCode)
 	conn.SetReadLimit(1 << 20)
+	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	})
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
-	c.wg.Add(1)
+
+	authFrame := map[string]any{
+		"user":              user,
+		"auth":              auth,
+		"format":            "native_batch",
+		"source":            "NEOTRADEAPI",
+		"platform":          "Web",
+		"version":           "1.2.3",
+		"sdk_version":       2,
+		"sdk_date":          "2026-08-07T09:41:17.667Z",
+		"conn_req_time":     time.Now().UnixMilli(),
+		"sessionValidation": false,
+	}
+	if err := c.writeJSON(authFrame); err != nil {
+		c.closeConnection()
+		return fmt.Errorf("send Kotak SFeed authentication: %w", err)
+	}
+
+	c.wg.Add(2)
 	go c.readLoop()
-
-	authFrame, err := encodeRequest(ConnectType, []requestField{
-		{id: 1, value: []byte(token)},
-		{id: 2, value: []byte(sid)},
-		{id: 3, value: []byte("JS_API")},
-	})
-	if err != nil {
-		c.Stop()
-		return err
-	}
-	if err := c.writeFrame(authFrame); err != nil {
-		c.Stop()
-		return fmt.Errorf("send Kotak HSM authentication: %w", err)
-	}
-	c.logger.Info("Kotak HSM authentication frame sent", "event", "hsm_auth_frame_sent",
-		"packet_type", ConnectType, "frame_bytes", len(authFrame),
-		"token_present", token != "", "sid_present", sid != "", "source", "JS_API")
-
+	go c.pingLoop()
 	select {
 	case <-c.connectedCh:
 		return nil
@@ -149,23 +141,23 @@ func (c *HSMClient) Connect(ctx context.Context, token, sid string) error {
 		return err
 	case <-ctx.Done():
 		c.Stop()
-		return fmt.Errorf("wait for Kotak HSM authentication: %w", ctx.Err())
-	case <-time.After(15 * time.Second):
+		return fmt.Errorf("wait for Kotak SFeed authentication: %w", ctx.Err())
+	case <-time.After(10 * time.Second):
 		c.Stop()
-		return errors.New("timed out waiting for Kotak HSM authentication")
+		return errors.New("timed out waiting for Kotak SFeed authentication")
 	}
 }
 
-func validateHSMURL(raw string) error {
+func validateSFeedURL(raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("HSM URL is invalid")
+		return errors.New("SFeed URL is invalid")
 	}
 	host := strings.ToLower(u.Hostname())
 	trusted := host == "kotaksecurities.com" || strings.HasSuffix(host, ".kotaksecurities.com")
 	localTest := u.Scheme == "ws" && (host == "localhost" || host == "127.0.0.1")
 	if (u.Scheme != "wss" && !localTest) || (!trusted && !localTest) {
-		return errors.New("HSM URL is not trusted")
+		return errors.New("SFeed URL is not trusted")
 	}
 	return nil
 }
@@ -173,141 +165,70 @@ func validateHSMURL(raw string) error {
 func (c *HSMClient) readLoop() {
 	defer c.wg.Done()
 	defer close(c.doneCh)
-	heartbeat := time.NewTicker(30 * time.Second)
-	defer heartbeat.Stop()
-
-	readErr := make(chan error, 1)
-	go func() {
-		for {
-			messageType, data, err := c.readMessage()
-			if err != nil {
-				if !c.IsConnected() {
-					handshakeErr := authenticationReadError(err)
-					select {
-					case c.connectErrCh <- handshakeErr:
-					default:
-					}
+	for {
+		c.mu.RLock()
+		conn := c.conn
+		c.mu.RUnlock()
+		if conn == nil {
+			return
+		}
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			if !c.IsConnected() {
+				connectErr := sanitizedConnectionError(err)
+				select {
+				case c.connectErrCh <- connectErr:
+				default:
 				}
-				readErr <- err
+			}
+			c.setDisconnected(err)
+			return
+		}
+		if err := c.handleMessage(messageType, data); err != nil {
+			if !c.IsConnected() {
+				select {
+				case c.connectErrCh <- err:
+				default:
+				}
+				c.closeConnection()
 				return
 			}
-			c.logIncomingMessage(messageType, data)
-			if err := c.handleMessage(messageType, data); err != nil {
-				c.logger.Warn("Kotak HSM frame rejected", "event", "hsm_frame_invalid",
-					"message_type", websocketMessageTypeName(messageType), "frame_bytes", len(data),
-					"error", err)
-				var nack *hsmNackError
-				if errors.As(err, &nack) || !c.IsConnected() {
-					select {
-					case c.connectErrCh <- err:
-					default:
-					}
-					readErr <- err
-					return
-				}
-			}
+			c.logger.Warn("Kotak SFeed message rejected",
+				"event", "sfeed_message_invalid", "message_type", messageType, "error", err)
 		}
-	}()
+	}
+}
 
+func (c *HSMClient) pingLoop() {
+	defer c.wg.Done()
+	ticker := time.NewTicker(sfeedPingInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-c.stopCh:
 			return
-		case err := <-readErr:
-			c.setDisconnected(err)
-			return
-		case <-heartbeat.C:
-			value := make([]byte, 4)
-			frame, err := encodeRequest(KeepaliveType, []requestField{{id: 1, value: value}})
-			if err == nil {
-				err = c.writeFrame(frame)
+		case <-ticker.C:
+			if !c.IsConnected() {
+				continue
 			}
+			c.writeMu.Lock()
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+			var err error
+			if conn == nil {
+				err = errors.New("kotak SFeed socket is not connected")
+			} else {
+				err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			}
+			c.writeMu.Unlock()
 			if err != nil {
-				c.setDisconnected(fmt.Errorf("Kotak HSM heartbeat: %w", err))
+				c.logger.Warn("Kotak SFeed ping failed", "event", "sfeed_ping_failed", "error", err)
+				c.closeConnection()
 				return
 			}
 		}
 	}
-}
-
-func authenticationReadError(err error) error {
-	var closeErr *websocket.CloseError
-	if errors.As(err, &closeErr) {
-		return fmt.Errorf("Kotak HSM closed during authentication (close code %d)", closeErr.Code)
-	}
-	return fmt.Errorf("read Kotak HSM authentication response: %w", err)
-}
-
-func (c *HSMClient) logIncomingMessage(messageType int, data []byte) {
-	if c.IsConnected() {
-		return
-	}
-	attrs := []any{"message_type", websocketMessageTypeName(messageType), "frame_bytes", len(data)}
-	switch messageType {
-	case websocket.TextMessage:
-		var messages []struct {
-			Type        string          `json:"type"`
-			MessageCode json.RawMessage `json:"message_code"`
-			Exchanges   json.RawMessage `json:"exchanges"`
-		}
-		trimmed := strings.TrimSpace(string(data))
-		if strings.HasPrefix(trimmed, "[") {
-			if err := json.Unmarshal(data, &messages); err != nil {
-				attrs = append(attrs, "json_valid", false)
-			}
-		} else {
-			var message struct {
-				Type        string          `json:"type"`
-				MessageCode json.RawMessage `json:"message_code"`
-				Exchanges   json.RawMessage `json:"exchanges"`
-			}
-			if err := json.Unmarshal(data, &message); err != nil {
-				attrs = append(attrs, "json_valid", false)
-			} else {
-				messages = append(messages, message)
-			}
-		}
-		if len(messages) > 0 {
-			message := messages[0]
-			attrs = append(attrs, "response_type", message.Type)
-			if len(message.MessageCode) > 0 {
-				attrs = append(attrs, "message_code", string(message.MessageCode))
-			}
-			if len(message.Exchanges) > 0 {
-				var exchanges map[string]json.RawMessage
-				if err := json.Unmarshal(message.Exchanges, &exchanges); err == nil {
-					attrs = append(attrs, "exchange_count", len(exchanges))
-				}
-			}
-		}
-	case websocket.BinaryMessage:
-		if len(data) >= 3 {
-			attrs = append(attrs, "declared_length", binary.BigEndian.Uint16(data[:2]),
-				"packet_type", data[2])
-		}
-	}
-	c.logger.Info("Kotak HSM handshake response received", append([]any{"event", "hsm_handshake_response"}, attrs...)...)
-}
-
-func websocketMessageTypeName(messageType int) string {
-	switch messageType {
-	case websocket.TextMessage:
-		return "text"
-	case websocket.BinaryMessage:
-		return "binary"
-	default:
-		return "other"
-	}
-}
-
-func (c *HSMClient) readMessage() (int, []byte, error) {
-	c.mu.RLock()
-	conn := c.conn
-	c.mu.RUnlock()
-	if conn == nil {
-		return 0, nil, errors.New("Kotak HSM socket is not open")
-	}
-	return conn.ReadMessage()
 }
 
 func (c *HSMClient) handleMessage(messageType int, data []byte) error {
@@ -315,520 +236,388 @@ func (c *HSMClient) handleMessage(messageType int, data []byte) error {
 	case websocket.TextMessage:
 		return c.handleTextMessage(data)
 	case websocket.BinaryMessage:
-		return c.handleFrame(data)
+		if !c.IsConnected() {
+			return nil
+		}
+		return c.handleBinaryMessage(data)
 	default:
-		return fmt.Errorf("unexpected Kotak HSM WebSocket message type %d", messageType)
+		return fmt.Errorf("unexpected Kotak SFeed WebSocket message type %d", messageType)
 	}
 }
 
 func (c *HSMClient) handleTextMessage(data []byte) error {
-	type textResponse struct {
-		Type        string                     `json:"type"`
-		MessageCode int                        `json:"message_code"`
-		Exchanges   map[string]json.RawMessage `json:"exchanges"`
+	var message struct {
+		MessageCode json.RawMessage `json:"message_code"`
+		Format      string          `json:"format"`
+		Exchanges   map[string]struct {
+			Value   json.RawMessage `json:"value"`
+			Divider json.RawMessage `json:"divider"`
+		} `json:"exchanges"`
+		TradingSymbols map[string]json.RawMessage `json:"trading_symbols"`
 	}
-	var messages []textResponse
-	trimmed := strings.TrimSpace(string(data))
-	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal(data, &messages); err != nil {
-			return fmt.Errorf("decode Kotak HSM text response: %w", err)
-		}
-	} else {
-		var message textResponse
-		if err := json.Unmarshal(data, &message); err != nil {
-			return fmt.Errorf("decode Kotak HSM text response: %w", err)
-		}
-		messages = append(messages, message)
-	}
-	if len(messages) == 0 {
-		return errors.New("Kotak HSM text response is empty")
-	}
-	metadataReceived := false
-	for _, message := range messages {
-		if strings.EqualFold(message.Type, "cn") {
-			c.markConnected()
+	if err := json.Unmarshal(data, &message); err != nil {
+		if c.IsConnected() {
 			return nil
 		}
-		if message.MessageCode == 1119 && len(message.Exchanges) > 0 {
-			metadataReceived = true
-			c.logger.Debug("Kotak HSM server metadata received", "event", "hsm_server_metadata",
-				"message_code", message.MessageCode, "exchange_count", len(message.Exchanges))
-			continue
-		}
+		return errors.New("decode Kotak SFeed authentication response")
 	}
-	if metadataReceived {
+	code, _ := parseJSONInt(message.MessageCode)
+	if code == 1109 {
+		c.mu.Lock()
+		for key, rawSymbol := range message.TradingSymbols {
+			var symbol string
+			if key != "" && json.Unmarshal(rawSymbol, &symbol) == nil && symbol != "" {
+				c.tradingSymbols[key] = symbol
+			}
+		}
+		hasPendingAck := c.ackPending
+		c.ackPending = false
+		pending := c.takePendingQuotesLocked()
+		c.mu.Unlock()
+		if hasPendingAck {
+			select {
+			case c.subscribeAckCh <- struct{}{}:
+			default:
+			}
+			c.publishPending(pending)
+		}
 		return nil
 	}
-	return fmt.Errorf("Kotak HSM text response did not confirm connection (message_code %d)",
-		messages[0].MessageCode)
+	if code != 1117 && code != 1119 {
+		if c.IsConnected() {
+			return nil
+		}
+		return errors.New("unexpected Kotak SFeed authentication response")
+	}
+	if message.Format == "native_fallback" {
+		return errors.New("kotak SFeed rejected native_batch authentication")
+	}
+
+	dividers := make(map[int8]int, len(message.Exchanges))
+	for name, info := range message.Exchanges {
+		id := exchangeID(name)
+		if parsed, ok := parseJSONInt(info.Value); ok {
+			if parsed < -128 || parsed > 127 {
+				return errors.New("kotak SFeed authentication response contains an invalid exchange ID")
+			}
+			id = int8(parsed)
+		}
+		if divider, ok := parseJSONInt(info.Divider); ok && divider > 0 {
+			dividers[id] = divider
+		}
+	}
+	c.mu.Lock()
+	c.dividers = dividers
+	c.connected = true
+	c.mu.Unlock()
+	c.connectedOnce.Do(func() { close(c.connectedCh) })
+	c.logger.Info("Kotak SFeed authenticated",
+		"event", "sfeed_authenticated", "exchange_count", len(dividers))
+	return nil
 }
 
-func (c *HSMClient) handleFrame(data []byte) error {
-	frame, err := ParseFrame(data)
+func parseJSONInt(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, false
+	}
+	value, err := strconv.Atoi(text)
+	return value, err == nil
+}
+
+func exchangeID(name string) int8 {
+	for id, candidate := range exchangeNames {
+		if candidate == name {
+			return id
+		}
+	}
+	return -1
+}
+
+func (c *HSMClient) handleBinaryMessage(data []byte) error {
+	packets, err := splitSFeedBatch(data)
 	if err != nil {
 		return err
 	}
-	switch MessageType(frame.Header.Type) {
-	case KeepaliveType, ACKType:
-		return nil
-	case ConnectType:
-		return c.handleConnectResponse(frame)
-	case DataType:
-		return c.handleDataFrame(frame.Payload)
-	case SubscribeType, UnsubscribeType, SnapshotType, 7, 8, OPCType:
-		status := ""
-		if value := frame.Fields[1]; len(value) > 0 {
-			status = string(value)
-		}
-		if status == "N" {
-			return &hsmNackError{packetType: frame.Header.Type}
-		}
-		c.logger.Debug("Kotak HSM status", "event", "hsm_status",
-			"packet_type", frame.Header.Type, "status", status)
-		return nil
-	default:
-		return fmt.Errorf("unknown Kotak HSM packet type %d", frame.Header.Type)
-	}
-}
-
-func (c *HSMClient) handleConnectResponse(frame HSMFrame) error {
-	status := string(frame.Fields[1])
-	if status != "K" {
-		err := fmt.Errorf("Kotak HSM authentication rejected (status %q)", status)
-		select {
-		case c.connectErrCh <- err:
-		default:
-		}
-		return err
-	}
-	if threshold := frame.Fields[2]; len(threshold) > 0 {
-		limit, err := parseACKThreshold(threshold)
-		if err != nil {
-			c.logger.Warn("invalid Kotak HSM ACK threshold; ACKs disabled",
-				"event", "hsm_ack_threshold_invalid", "error", err)
-			limit = 0
-		}
-		c.mu.Lock()
-		c.ackLimit = limit
-		c.mu.Unlock()
-	}
-	c.markConnected()
-	return nil
-}
-
-func (c *HSMClient) markConnected() {
-	c.mu.Lock()
-	c.connected = true
-	ackLimit := c.ackLimit
-	c.mu.Unlock()
-	c.connectedOnce.Do(func() { close(c.connectedCh) })
-	c.logger.Info("Kotak HSM connected", "event", "hsm_connected", "ack_threshold", ackLimit)
-}
-
-func parseACKThreshold(raw []byte) (uint32, error) {
-	if len(raw) == 0 || len(raw) > 4 {
-		return 0, errors.New("ACK threshold must contain 1 to 4 bytes")
-	}
-	if len(raw) > 1 {
-		ascii := true
-		for _, b := range raw {
-			if b < '0' || b > '9' {
-				ascii = false
-				break
-			}
-		}
-		if ascii {
-			value, err := strconv.ParseUint(string(raw), 10, 32)
-			return uint32(value), err
-		}
-	}
-	var value uint32
-	for _, b := range raw {
-		value = (value << 8) | uint32(b)
-	}
-	return value, nil
-}
-
-func (c *HSMClient) handleDataFrame(payload []byte) error {
-	offset := 0
 	c.mu.RLock()
-	ackLimit := c.ackLimit
+	dividers := make(map[int8]int, len(c.dividers))
+	for id, divider := range c.dividers {
+		dividers[id] = divider
+	}
+	symbols := make(map[string]string, len(c.tradingSymbols))
+	for key, symbol := range c.tradingSymbols {
+		symbols[key] = symbol
+	}
 	c.mu.RUnlock()
-	var messageNumber uint32
-	if ackLimit > 0 {
-		if len(payload) < 4 {
-			return errors.New("HSM data frame is missing its message number")
-		}
-		messageNumber = binary.BigEndian.Uint32(payload[:4])
-		offset += 4
-	}
-	if len(payload)-offset < 2 {
-		return errors.New("HSM data frame is missing its topic count")
-	}
-	packetCount := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
-	offset += 2
-	for packet := 0; packet < packetCount; packet++ {
-		if len(payload)-offset < 2 {
-			return errors.New("HSM data frame has a truncated packet length")
-		}
-		packetLength := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
-		offset += 2
-		if packetLength < 5 || len(payload)-offset < packetLength {
-			return errors.New("HSM data frame has a truncated topic packet")
-		}
-		start := offset
-		packetType := payload[offset]
-		offset++
-		topicID := binary.BigEndian.Uint32(payload[offset : offset+4])
-		offset += 4
-		var quote *Quote
-		var err error
-		switch packetType {
-		case 'S':
-			quote, err = c.parseSnapshot(topicID, payload, &offset)
-		case 'U':
-			quote, err = c.parseUpdate(topicID, payload, &offset)
-		default:
-			err = fmt.Errorf("unknown HSM topic packet type 0x%x", packetType)
-		}
+	for _, packet := range packets {
+		quote, err := decodeSFeedPacket(packet, dividers, symbols)
 		if err != nil {
 			return err
 		}
-		if offset-start != packetLength {
-			return fmt.Errorf("HSM topic packet length mismatch: header=%d consumed=%d", packetLength, offset-start)
-		}
-		if quote != nil {
-			c.publish(quote)
-		}
-	}
-	if offset != len(payload) {
-		return fmt.Errorf("HSM data frame has %d trailing bytes", len(payload)-offset)
-	}
-	if ackLimit > 0 && messageNumber > 0 {
-		value := make([]byte, 4)
-		binary.BigEndian.PutUint32(value, messageNumber)
-		frame, err := encodeRequest(ACKType, []requestField{{id: 1, value: value}})
-		if err != nil {
-			return err
-		}
-		return c.writeFrame(frame)
+		c.publish(quote)
 	}
 	return nil
-}
-
-func (c *HSMClient) parseSnapshot(id uint32, data []byte, offset *int) (*Quote, error) {
-	if *offset >= len(data) {
-		return nil, errors.New("HSM snapshot is missing topic name length")
-	}
-	nameLength := int(data[*offset])
-	*offset++
-	if len(data)-*offset < nameLength+1 {
-		return nil, errors.New("HSM snapshot topic name is truncated")
-	}
-	name := string(data[*offset : *offset+nameLength])
-	*offset += nameLength
-	valueCount := int(data[*offset])
-	*offset++
-	if len(data)-*offset < valueCount*4+1 {
-		return nil, errors.New("HSM snapshot values are truncated")
-	}
-	state := &topicState{name: name, values: make(map[uint8]int32), strings: make(map[uint8]string)}
-	for field := 0; field < valueCount; field++ {
-		state.values[uint8(field)] = int32(binary.BigEndian.Uint32(data[*offset : *offset+4]))
-		*offset += 4
-	}
-	stringCount := int(data[*offset])
-	*offset++
-	for i := 0; i < stringCount; i++ {
-		if len(data)-*offset < 2 {
-			return nil, errors.New("HSM snapshot string field is truncated")
-		}
-		fieldID := data[*offset]
-		stringLength := int(data[*offset+1])
-		*offset += 2
-		if len(data)-*offset < stringLength {
-			return nil, errors.New("HSM snapshot string value is truncated")
-		}
-		state.strings[fieldID] = string(data[*offset : *offset+stringLength])
-		*offset += stringLength
-	}
-	c.mu.Lock()
-	c.topics[id] = state
-	c.mu.Unlock()
-	return quoteFromTopic(state), nil
-}
-
-func (c *HSMClient) parseUpdate(id uint32, data []byte, offset *int) (*Quote, error) {
-	if *offset >= len(data) {
-		return nil, errors.New("HSM update is missing value count")
-	}
-	valueCount := int(data[*offset])
-	*offset++
-	if len(data)-*offset < valueCount*4 {
-		return nil, errors.New("HSM update values are truncated")
-	}
-	c.mu.Lock()
-	state := c.topics[id]
-	if state == nil {
-		c.mu.Unlock()
-		c.logger.Warn("ignoring update for unknown HSM topic", "event", "hsm_unknown_topic", "topic_id", id)
-		*offset += valueCount * 4
-		return nil, nil
-	}
-	for field := 0; field < valueCount; field++ {
-		value := int32(binary.BigEndian.Uint32(data[*offset : *offset+4]))
-		*offset += 4
-		if value != trashValue {
-			state.values[uint8(field)] = value
-		}
-	}
-	quote := quoteFromTopic(state)
-	c.mu.Unlock()
-	return quote, nil
-}
-
-func quoteFromTopic(topic *topicState) *Quote {
-	if topic == nil {
-		return nil
-	}
-	parts := strings.SplitN(topic.name, "|", 2)
-	if len(parts) != 2 {
-		return nil
-	}
-	prefix := parts[0]
-	ltpField, closeField, multiplierField, precisionField := uint8(5), uint8(21), uint8(23), uint8(24)
-	timestampField := uint8(3)
-	if prefix == "if" {
-		ltpField, closeField, multiplierField, precisionField = 2, 3, 8, 9
-		timestampField = 0
-	}
-	ltp, ltpOK := fixedPrice(topic.values, ltpField, multiplierField, precisionField)
-	if !ltpOK {
-		return nil
-	}
-	close, _ := fixedPrice(topic.values, closeField, multiplierField, precisionField)
-	change := ltp - close
-	changePct := 0.0
-	if close > 0 {
-		changePct = change / close * 100
-	}
-	quote := &Quote{
-		InstrumentKey: topic.name,
-		LTP:           ltp,
-		PreviousClose: close,
-		Change:        change,
-		ChangePct:     changePct,
-		Identifier:    topic.strings[52],
-	}
-	if ts, ok := topic.values[timestampField]; ok && ts != trashValue {
-		quote.Timestamp = int64(ts)
-	}
-	if prefix == "sf" {
-		quote.Volume = nonNegative(topic.values[4])
-		quote.OI = nonNegative(topic.values[22])
-		quote.Bid, _ = fixedPrice(topic.values, 9, multiplierField, precisionField)
-		quote.Ask, _ = fixedPrice(topic.values, 10, multiplierField, precisionField)
-	}
-	return quote
-}
-
-func fixedPrice(values map[uint8]int32, field, multiplierField, precisionField uint8) (float64, bool) {
-	raw, ok := values[field]
-	if !ok || raw == trashValue {
-		return 0, false
-	}
-	multiplier := float64(1)
-	if value, ok := values[multiplierField]; ok && value > 0 && value != trashValue {
-		multiplier = float64(value)
-	}
-	precision := int32(2)
-	if value, ok := values[precisionField]; ok && value >= 0 && value <= 9 && value != trashValue {
-		precision = value
-	}
-	price := float64(raw) / (multiplier * math.Pow10(int(precision)))
-	return price, !math.IsNaN(price) && !math.IsInf(price, 0)
-}
-
-func nonNegative(value int32) int64 {
-	if value < 0 || value == trashValue {
-		return 0
-	}
-	return int64(value)
 }
 
 func (c *HSMClient) publish(quote *Quote) {
 	if quote == nil || c.quoteCh == nil {
 		return
 	}
+	c.mu.Lock()
+	if c.ackPending && quote.Identifier == "" {
+		c.pendingQuotes[quote.InstrumentKey] = quote
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	c.enqueueQuote(quote)
+}
+
+func (c *HSMClient) enqueueQuote(quote *Quote) {
 	select {
 	case c.quoteCh <- quote:
 	case <-c.stopCh:
 	}
 }
 
-func (c *HSMClient) Subscribe(instruments []string) error {
-	return c.writeSubscription(SubscribeType, instruments)
+func (c *HSMClient) takePendingQuotesLocked() []*Quote {
+	pending := make([]*Quote, 0, len(c.pendingQuotes))
+	for key, quote := range c.pendingQuotes {
+		if quote.Identifier == "" {
+			symbolKey := strings.TrimPrefix(strings.TrimPrefix(key, "sf|"), "if|")
+			quote.Identifier = c.tradingSymbols[symbolKey]
+		}
+		pending = append(pending, quote)
+	}
+	c.pendingQuotes = make(map[string]*Quote)
+	return pending
 }
 
-func (c *HSMClient) Unsubscribe(instruments []string) error {
-	return c.writeSubscription(UnsubscribeType, instruments)
+func (c *HSMClient) publishPending(quotes []*Quote) {
+	for _, quote := range quotes {
+		c.enqueueQuote(quote)
+	}
 }
 
-func (c *HSMClient) writeSubscription(packetType MessageType, instruments []string) error {
-	if len(instruments) == 0 {
+// SubscribeScrips subscribes to option and futures instruments.
+func (c *HSMClient) SubscribeScrips(tokens []string) error {
+	return c.writeSubscription("subscribeScrips", "scrips", tokens, true)
+}
+
+// UnsubscribeScrips removes option and futures subscriptions.
+func (c *HSMClient) UnsubscribeScrips(tokens []string) error {
+	return c.writeSubscription("unsubscribeScrips", "scrips", tokens, false)
+}
+
+// SubscribeIndices subscribes to index instruments.
+func (c *HSMClient) SubscribeIndices(tokens []string) error {
+	return c.writeSubscription("subscribeIndices", "indices", tokens, true)
+}
+
+// UnsubscribeIndices removes index subscriptions.
+func (c *HSMClient) UnsubscribeIndices(tokens []string) error {
+	return c.writeSubscription("unsubscribeIndices", "indices", tokens, false)
+}
+
+func (c *HSMClient) writeSubscription(event, intent string, tokens []string, subscribe bool) error {
+	if len(tokens) == 0 {
 		return nil
 	}
-	for start := 0; start < len(instruments); start += maxScripsPerBatch {
-		end := min(start+maxScripsPerBatch, len(instruments))
-		batch := instruments[start:end]
-		blob, err := encodeScripBlob(batch)
-		if err != nil {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+	for _, token := range tokens {
+		if err := validateSFeedToken(token); err != nil {
 			return err
 		}
-		frame, err := encodeRequest(packetType, []requestField{
-			{id: 1, value: blob},
-			{id: 2, value: []byte{1}},
-		})
-		if err != nil {
-			return err
-		}
-		if err := c.writeFrame(frame); err != nil {
-			return err
-		}
-		c.mu.Lock()
-		for _, instrument := range batch {
-			if packetType == SubscribeType {
-				c.subs[instrument] = true
-			} else {
-				delete(c.subs, instrument)
+	}
+	if !c.IsConnected() {
+		return errors.New("kotak SFeed socket is not authenticated")
+	}
+	keys := make([]string, 0, len(tokens))
+	inputTokens := make([]string, 0, len(tokens))
+	c.mu.Lock()
+	for _, token := range tokens {
+		key := intent + "|" + token
+		if subscribe {
+			if _, exists := c.subs[key]; exists {
+				continue
 			}
+			c.subs[key] = struct{}{}
+			keys = append(keys, key)
+			inputTokens = append(inputTokens, token)
+		} else {
+			if _, exists := c.subs[key]; !exists {
+				continue
+			}
+			delete(c.subs, key)
+			keys = append(keys, key)
+			inputTokens = append(inputTokens, token)
+		}
+	}
+	if subscribe && len(c.subs) > maxSFeedTokens {
+		for _, key := range keys {
+			delete(c.subs, key)
 		}
 		c.mu.Unlock()
+		return fmt.Errorf("SFeed subscription limit of %d instruments exceeded", maxSFeedTokens)
+	}
+	c.mu.Unlock()
+	if len(inputTokens) == 0 {
+		return nil
+	}
+	if subscribe {
+		c.mu.Lock()
+		c.ackPending = true
+		c.mu.Unlock()
+	}
+	payload := map[string]any{
+		"event":      event,
+		"inputtoken": strings.Join(inputTokens, ","),
+	}
+	if subscribe {
+		payload["ack_symbol"] = true
+	}
+	if err := c.writeJSON(payload); err != nil {
+		c.mu.Lock()
+		for _, key := range keys {
+			if subscribe {
+				delete(c.subs, key)
+			} else {
+				c.subs[key] = struct{}{}
+			}
+		}
+		c.ackPending = false
+		pending := c.takePendingQuotesLocked()
+		c.mu.Unlock()
+		go c.publishPending(pending)
+		return fmt.Errorf("send Kotak SFeed %s request: %w", event, err)
+	}
+	if subscribe {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-c.subscribeAckCh:
+		case <-timer.C:
+			c.logger.Warn("Kotak SFeed subscription acknowledgement timed out",
+				"event", "sfeed_subscribe_ack_timeout", "subscription_event", event)
+			c.mu.Lock()
+			c.ackPending = false
+			pending := c.takePendingQuotesLocked()
+			c.mu.Unlock()
+			go c.publishPending(pending)
+		case <-c.stopCh:
+			return errors.New("kotak SFeed client stopped while waiting for subscription acknowledgement")
+		case err := <-c.doneCh:
+			if err == nil {
+				return errors.New("kotak SFeed connection closed while waiting for subscription acknowledgement")
+			}
+			return fmt.Errorf("kotak SFeed connection closed while waiting for subscription acknowledgement: %w", err)
+		}
 	}
 	return nil
 }
 
-func encodeScripBlob(instruments []string) ([]byte, error) {
-	if len(instruments) == 0 || len(instruments) > maxScripsPerBatch {
-		return nil, fmt.Errorf("HSM subscription count must be between 1 and %d", maxScripsPerBatch)
+func validateSFeedToken(token string) error {
+	segment, instrument, found := strings.Cut(token, "|")
+	if !found || segment == "" || instrument == "" ||
+		strings.ContainsAny(instrument, ",|\r\n") || strings.ContainsAny(segment, ",|\r\n") {
+		return fmt.Errorf("invalid SFeed instrument token %q", token)
 	}
-	size := 2
-	for _, instrument := range instruments {
-		parts := strings.SplitN(instrument, "|", 3)
-		if len(instrument) == 0 || len(instrument) > 255 || len(parts) != 3 ||
-			(parts[0] != "sf" && parts[0] != "if" && parts[0] != "dp") ||
-			parts[1] == "" || parts[2] == "" {
-			return nil, fmt.Errorf("invalid HSM scrip %q", instrument)
-		}
-		size += 1 + len(instrument)
-	}
-	blob := make([]byte, size)
-	binary.BigEndian.PutUint16(blob[:2], uint16(len(instruments)))
-	offset := 2
-	for _, instrument := range instruments {
-		blob[offset] = byte(len(instrument))
-		offset++
-		copy(blob[offset:], instrument)
-		offset += len(instrument)
-	}
-	return blob, nil
+	return nil
 }
 
-func encodeRequest(packetType MessageType, fields []requestField) ([]byte, error) {
-	if len(fields) > 255 {
-		return nil, errors.New("HSM request has too many fields")
+func (c *HSMClient) writeJSON(value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode Kotak SFeed request: %w", err)
 	}
-	size := 2 + 2
-	for _, field := range fields {
-		if len(field.value) > 65535 {
-			return nil, errors.New("HSM request field is too long")
-		}
-		size += 3 + len(field.value)
-	}
-	if size-2 > 65535 {
-		return nil, errors.New("HSM request frame is too long")
-	}
-	frame := make([]byte, size)
-	binary.BigEndian.PutUint16(frame[:2], uint16(size-2))
-	frame[2] = byte(packetType)
-	frame[3] = byte(len(fields))
-	offset := 4
-	for _, field := range fields {
-		frame[offset] = field.id
-		binary.BigEndian.PutUint16(frame[offset+1:offset+3], uint16(len(field.value)))
-		copy(frame[offset+3:], field.value)
-		offset += 3 + len(field.value)
-	}
-	return frame, nil
-}
-
-func (c *HSMClient) writeFrame(frame []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
 	if conn == nil {
-		return errors.New("Kotak HSM socket is not connected")
+		return errors.New("kotak SFeed socket is not connected")
 	}
 	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
 	}
-	return conn.WriteMessage(websocket.BinaryMessage, frame)
+	return conn.WriteMessage(websocket.TextMessage, raw)
 }
 
 func (c *HSMClient) setDisconnected(err error) {
 	c.mu.Lock()
-	c.connected = false
 	conn := c.conn
 	c.conn = nil
+	c.connected = false
 	c.mu.Unlock()
 	if conn != nil {
 		_ = conn.Close()
 	}
-	if err != nil {
-		select {
-		case c.doneCh <- err:
-		default:
-		}
+	if err == nil {
+		return
 	}
-	if err != nil {
-		var closeErr *websocket.CloseError
-		if errors.As(err, &closeErr) {
-			c.logger.Warn("Kotak HSM disconnected", "event", "hsm_disconnected",
-				"close_code", closeErr.Code, "close_reason_present", closeErr.Text != "")
-			return
-		}
+	safeErr := sanitizedConnectionError(err)
+	select {
+	case c.doneCh <- safeErr:
+	default:
 	}
-	c.logger.Warn("Kotak HSM disconnected", "event", "hsm_disconnected", "error", err)
+	closeErr := &websocket.CloseError{}
+	if errors.As(err, &closeErr) {
+		c.logger.Warn("Kotak SFeed disconnected",
+			"event", "sfeed_disconnected", "close_code", closeErr.Code,
+			"close_reason_present", closeErr.Text != "")
+		return
+	}
+	c.logger.Warn("Kotak SFeed disconnected", "event", "sfeed_disconnected", "error", safeErr)
 }
 
+func sanitizedConnectionError(err error) error {
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return fmt.Errorf("kotak SFeed closed (close code %d)", closeErr.Code)
+	}
+	return fmt.Errorf("kotak SFeed connection failed: %w", err)
+}
+
+func (c *HSMClient) closeConnection() {
+	c.mu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.connected = false
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+// IsConnected reports whether the SFeed connection is authenticated.
 func (c *HSMClient) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.connected
 }
 
+// WaitForConnection returns a channel closed after successful authentication.
 func (c *HSMClient) WaitForConnection() <-chan struct{} {
 	return c.connectedCh
 }
 
+// Done returns a channel that receives the terminal connection error.
 func (c *HSMClient) Done() <-chan error {
 	return c.doneCh
 }
 
+// Stop closes the WebSocket and waits for the read loop to exit.
 func (c *HSMClient) Stop() {
 	c.stopOnce.Do(func() { close(c.stopCh) })
-	c.mu.Lock()
-	conn := c.conn
-	c.conn = nil
-	c.connected = false
-	c.mu.Unlock()
-	if conn != nil {
-		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "logout"),
-			time.Now().Add(time.Second))
-		_ = conn.Close()
-	}
+	c.closeConnection()
 	c.wg.Wait()
 }

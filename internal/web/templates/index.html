@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>{{.Title}} · options terminal</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -14,7 +14,7 @@
 
   <header class="topbar">
     <div class="brand">
-      <span class="mark">S</span>
+      <button type="button" class="mark" id="theme-toggle" aria-label="Switch to light theme" title="Switch to light theme">S</button>
       <span class="name">Scalper</span>
       <span class="tag">NEO terminal</span>
     </div>
@@ -54,7 +54,7 @@
     <button type="button" class="ghost small" id="fullscreen-button">Fullscreen</button>
   </nav>
 
-  <main class="terminal">
+  <main class="terminal chain-collapsed bottom-collapsed">
     <section class="charts-row" id="charts-row" aria-label="Charts">
       <article class="pane" data-pane="ce">
         <div class="pane-head">
@@ -127,14 +127,17 @@
     </section>
 
     <section class="middle-grid">
-      <section class="panel chain-panel" aria-label="Option chain">
-        <div class="panel-head">
-          <div>
+      <details class="panel chain-panel" id="chain-panel" aria-label="Option chain">
+        <summary class="panel-head chain-summary">
+          <div class="chain-summary-title">
             <h2>Strike ladder</h2>
             <span class="panel-sub" id="chain-sub">all strikes · polled</span>
           </div>
-          <span class="panel-meta" id="chain-meta">—</span>
-        </div>
+          <span class="chain-summary-meta">
+            <span class="panel-meta" id="chain-meta">—</span>
+            <span class="chain-toggle" aria-hidden="true"></span>
+          </span>
+        </summary>
         <div class="chain-head" role="row">
           <span class="col-ce">CE LTP</span>
           <span class="col-ce">CE %</span>
@@ -147,7 +150,7 @@
         <div class="chain-body" id="chain-body" role="table" tabindex="0">
           <div class="empty-state">Waiting for the option chain…</div>
         </div>
-      </section>
+      </details>
 
       <aside class="panel orderpad" aria-label="Order pad">
         <div class="orderpad-head">
@@ -229,8 +232,9 @@
       </aside>
     </section>
 
-    <section class="panel bottom-panel" aria-label="Positions and books">
+    <section class="panel bottom-panel bottom-collapsed" id="bottom-panel" aria-label="Positions and books">
       <div class="bottom-head">
+        <h2 class="bottom-title">Positions &amp; books</h2>
         <div class="tabs" role="tablist" id="tabs">
           <button type="button" role="tab" data-tab="positions" class="active">Positions</button>
           <button type="button" role="tab" data-tab="risk">Risk</button>
@@ -242,6 +246,7 @@
           <span class="paper-note" id="paper-note">paper P&amp;L is gross of charges</span>
           <button type="button" class="danger" id="square-off-button">SQUARE OFF ALL</button>
         </div>
+        <button type="button" class="ghost small bottom-toggle" id="bottom-toggle" aria-controls="tab-content" aria-expanded="false">Expand</button>
       </div>
       <div class="tab-content" id="tab-content">
         <div class="empty-state">No open positions.</div>
@@ -273,35 +278,27 @@
         <button type="button" class="icon-button" id="login-close" aria-label="Close login">×</button>
       </div>
 
-      <div class="login-progress" aria-hidden="true">
-        <span class="step active" data-step-dot="1"><b>1</b> TOTP</span>
-        <span class="step-line"></span>
-        <span class="step" data-step-dot="2"><b>2</b> MPIN</span>
-      </div>
-
       <form id="login-form" novalidate>
-        <div class="login-step" id="login-step-1">
-          <p class="modal-copy">
-            Enter the 6-digit code from your authenticator. TOTP and MPIN are kept
-            in memory only — never written to disk.
-          </p>
-          <label class="field">
-            <span>TOTP code</span>
-            <input id="totp-input" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                   maxlength="6" pattern="[0-9]{6}" placeholder="000000" required>
-          </label>
-          <p class="field-hint">Invalid code? Sync your device time and try again.</p>
-        </div>
+        <p class="modal-copy">
+          Enter your authenticator code{{if not .MPINConfigured}} and MPIN{{end}} to open the trading session.
+          Credentials are held in memory only and never written to disk.
+        </p>
+        <label class="field">
+          <span>TOTP code</span>
+          <input id="totp-input" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="6" pattern="[0-9]{6}" placeholder="000000">
+        </label>
+        <p class="field-hint" id="totp-hint">Invalid code? Sync your device time and try again.</p>
 
-        <div class="login-step" id="login-step-2" hidden>
-          <p class="modal-copy">TOTP accepted. Enter your 6-digit MPIN to open the trading session.</p>
+        {{if not .MPINConfigured}}
           <label class="field">
             <span>MPIN</span>
             <input id="mpin-input" name="mpin" type="password" inputmode="numeric"
-                   maxlength="6" pattern="[0-9]{6}" placeholder="••••••" required>
+                   autocomplete="off" maxlength="6" pattern="[0-9]{6}"
+                   placeholder="••••••" disabled>
           </label>
           <p class="field-hint">MPIN is never stored by the app.</p>
-        </div>
+        {{end}}
 
         <p class="form-error" id="login-error" role="alert" hidden></p>
 

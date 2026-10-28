@@ -151,7 +151,33 @@ func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
-	s.writeRouteError(w, r, http.StatusNotImplemented, "historical candles are not available", nil)
+	if s.market == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
+		return
+	}
+	instrument := strings.TrimSpace(r.URL.Query().Get("instrument"))
+	timeframe := strings.TrimSpace(r.URL.Query().Get("tf"))
+	if instrument == "" || timeframe == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "instrument and tf are required", nil)
+		return
+	}
+	allowed := false
+	for _, configured := range s.cfg.Charts.Timeframes {
+		if timeframe == configured {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		s.writeRouteError(w, r, http.StatusBadRequest, "unsupported chart timeframe", nil)
+		return
+	}
+	candles, err := s.market.Candles(r.Context(), s.marketBaseURL(), instrument, timeframe)
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+		return
+	}
+	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": candles})
 }
 
 type paperOrderRequest struct {
@@ -328,11 +354,11 @@ func (s *Server) requireFreshQuote(quote market.Quote) error {
 	}
 	age := s.now().Sub(time.Unix(updatedAt, 0))
 	if age < -time.Minute {
-		return errors.New("Kotak quote timestamp is in the future")
+		return errors.New("kotak quote timestamp is in the future")
 	}
 	maxAge := time.Duration(s.cfg.Trading.Risk.BlockOnDataStaleMS) * time.Millisecond
 	if maxAge > 0 && age > maxAge {
-		return fmt.Errorf("Kotak quote is stale (%s old)", age.Round(time.Millisecond))
+		return fmt.Errorf("kotak quote is stale (%s old)", age.Round(time.Millisecond))
 	}
 	return nil
 }

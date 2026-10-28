@@ -129,8 +129,10 @@ func (c Config) validateMarket() error {
 	default:
 		return fieldErr("market.data_mode", "must be websocket|poll, got %q", c.Market.DataMode)
 	}
-	if err := validateHSMURL(c.Market.HSMURL); err != nil {
-		return fieldErr("market.hsm_url", "%v", err)
+	if strings.TrimSpace(c.Market.HSMURL) != "" {
+		if err := validateHSMURL(c.Market.HSMURL); err != nil {
+			return fieldErr("market.hsm_url", "%v", err)
+		}
 	}
 	if len(c.Market.Indices) == 0 {
 		return fieldErr("market.indices", "at least one index is required")

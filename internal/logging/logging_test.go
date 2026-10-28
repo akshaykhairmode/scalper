@@ -428,6 +428,7 @@ func TestRequestID(t *testing.T) {
 	if got := RequestID(ctx); got != id {
 		t.Fatalf("id = %q, want %q", got, id)
 	}
+	//nolint:staticcheck // Verify the helper safely handles a nil context.
 	if RequestID(nil) != "" {
 		t.Fatal("nil context should return empty")
 	}

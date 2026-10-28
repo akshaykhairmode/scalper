@@ -28,12 +28,14 @@ type Server struct {
 	pendingLogins map[string]pendingLogin
 }
 
-func NewServer(log *slog.Logger, cfg config.Config, accessToken string) *Server {
+// NewServer creates an authentication server backed by the Kotak API.
+func NewServer(log *slog.Logger, cfg config.Config, consumerKey string) *Server {
 	return NewServerWithAuthenticator(log, NewKotakAuthenticatorWithLogger(log,
-		accessToken, cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Kotak.NeoFinKey,
+		consumerKey, cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Kotak.NeoFinKey,
 	))
 }
 
+// NewServerWithAuthenticator creates an authentication server with a supplied authenticator.
 func NewServerWithAuthenticator(log *slog.Logger, kotak KotakAuthenticator) *Server {
 	if log == nil {
 		log = slog.Default()
@@ -141,6 +143,7 @@ func (a *Server) resetPendingValidation(flowID string) {
 	a.pendingMu.Unlock()
 }
 
+// CancelAllLogins discards all pending TOTP sessions.
 func (a *Server) CancelAllLogins() {
 	a.pendingMu.Lock()
 	clear(a.pendingLogins)
@@ -176,8 +179,8 @@ func (a *Server) CurrentSession() *Session {
 			continue
 		}
 		if current == nil || session.CreatedAt.After(current.CreatedAt) {
-			copy := *session
-			current = &copy
+			sessionCopy := *session
+			current = &sessionCopy
 		}
 	}
 	return current

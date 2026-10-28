@@ -42,7 +42,8 @@ func newRotatingWriter(path string, maxSizeMB, maxBackups, retentionDays int) (*
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("logging: create log directory: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// The path is supplied explicitly by the local operator in configuration.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("logging: open log file %s: %w", path, err)
 	}

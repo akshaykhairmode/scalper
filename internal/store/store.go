@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	// Register the SQLite database driver used by sql.Open.
 	_ "modernc.org/sqlite"
 
 	"github.com/akshaykhairmode/scalper/internal/errs"

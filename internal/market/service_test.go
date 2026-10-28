@@ -6,11 +6,25 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
+
+type testScripRepository struct {
+	options []scrip.Option
+	spots   []scrip.Spot
+}
+
+func (r testScripRepository) ReplaceScripSnapshot(context.Context, []scrip.Option, []scrip.Spot, []scrip.SyncRecord) error {
+	return nil
+}
+
+func (r testScripRepository) LoadScripSnapshot(context.Context) ([]scrip.Option, []scrip.Spot, error) {
+	return r.options, r.spots, nil
+}
 
 func TestIndicesPreservesAvailableQuotesWhenOneSymbolIsMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -93,5 +107,65 @@ func TestIndicesErrorsWhenNoConfiguredIndexQuoteIsReturned(t *testing.T) {
 
 	if _, err := service.Indices(context.Background(), server.URL); err == nil {
 		t.Fatal("expected an error when Kotak returns no configured index quotes")
+	}
+}
+
+func TestCandlesResolvesCanonicalInstrumentsToKotakSymbols(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Query().Get("neosymbol") + "|" + r.URL.Query().Get("interval")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"candles":[]}}`)
+	}))
+	defer server.Close()
+
+	option := scrip.Option{
+		InstrumentKey:   scrip.InstrumentKey("nse_fo", "NIFTY", "2026-10-29", 2_500_000, scrip.Call),
+		ExchangeSegment: "nse_fo",
+		PSymbol:         "12345",
+		PTrdSymbol:      "NIFTY26OCT25000CE",
+		Underlying:      "NIFTY",
+		Expiry:          "2026-10-29",
+		StrikePaise:     2_500_000,
+		OptionType:      scrip.Call,
+		LotSize:         25,
+	}
+	spot := scrip.Spot{
+		InstrumentKey:   scrip.SpotKey("nse_cm", "NIFTY"),
+		ExchangeSegment: "nse_cm",
+		Symbol:          "Nifty 50",
+		PSymbol:         "1333",
+	}
+	scripts, err := scrip.NewManager(scrip.ManagerConfig{
+		Segments: []string{"nse_cm", "nse_fo"},
+		Underlyings: []scrip.Underlying{{
+			Key: "NIFTY", ScripName: "NIFTY", ExchangeSegment: "nse_fo", SpotSegment: "nse_cm",
+		}},
+		Repository: testScripRepository{options: []scrip.Option{option}, spots: []scrip.Spot{spot}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scripts.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client := NewQuotesClient("test-token", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client.http = server.Client()
+	cfg := config.Default()
+	service, err := NewService(cfg, scripts, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Candles(context.Background(), server.URL, "nse_cm|NIFTY", "5m"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Candles(context.Background(), server.URL, option.InstrumentKey, "1h"); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{<-requests, <-requests}
+	if !strings.Contains(strings.Join(got, ","), "nse_cm|1333|5min") ||
+		!strings.Contains(strings.Join(got, ","), "nse_fo|12345|60min") {
+		t.Fatalf("historical instrument requests = %v", got)
 	}
 }

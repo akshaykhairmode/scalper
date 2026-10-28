@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// ChainBuilder builds option chains from scrip master data.
+//nolint:revive // Preserve the established exported builder name.
 type ChainBuilder struct {
 	// mu protects the chain data.
 	mu sync.RWMutex
@@ -155,9 +155,7 @@ func underlyingDisplayName(underlying UnderlyingID) string {
 // splitChainKey splits a chain key into parts.
 func splitChainKey(key string) []string {
 	parts := make([]string, 0, 2)
-	for _, part := range strings.Split(key, ":") {
-		parts = append(parts, part)
-	}
+	parts = append(parts, strings.Split(key, ":")...)
 	return parts
 }
 

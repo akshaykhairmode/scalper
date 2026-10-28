@@ -1,12 +1,13 @@
 package hsm
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func TestHSMClientAuthenticatesSubscribesAndDecodesTicks(t *testing.T) {
-	quoteCh := make(chan *Quote, 4)
+func TestSFeedClientAuthenticatesSubscribesAndDecodesTicks(t *testing.T) {
+	quotes := make(chan *Quote, 4)
 	upgrader := websocket.Upgrader{}
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,266 +27,283 @@ func TestHSMClientAuthenticatesSubscribesAndDecodesTicks(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		expectedOrigin := "http://" + r.Host
-		if got := r.Header.Get("Origin"); got != expectedOrigin {
-			t.Errorf("Origin = %q, want %q", got, expectedOrigin)
+
+		messageType, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read auth frame: %v", err)
+			return
+		}
+		if messageType != websocket.TextMessage {
+			t.Errorf("auth message type = %d, want text", messageType)
+			return
+		}
+		var auth map[string]any
+		if err := json.Unmarshal(raw, &auth); err != nil {
+			t.Errorf("decode auth frame: %v", err)
+			return
+		}
+		for key, want := range map[string]any{
+			"user": "test-ucc", "auth": "trade-sid", "format": "native_batch",
+			"source": "NEOTRADEAPI", "platform": "Web", "version": "1.2.3",
+		} {
+			if auth[key] != want {
+				t.Errorf("auth[%q] = %v, want %v", key, auth[key], want)
+				return
+			}
+		}
+		if auth["sessionValidation"] != false || auth["sdk_version"] != float64(2) {
+			t.Errorf("SDK auth fields = %#v", auth)
+			return
+		}
+		if _, ok := auth["conn_req_time"].(float64); !ok {
+			t.Errorf("conn_req_time has type %T", auth["conn_req_time"])
 			return
 		}
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(
-			`{"message_code":1119,"id":"SFD_EPROD_702","version":1,"exchanges":{"nse_cm":{"value":1,"divider":100}},"timestamp":"2026-10-28T14:37:24.569205019+05:30"}`,
+			`{"message_code":1119,"format":"native_batch","exchanges":{"nse_cm":{"value":1,"divider":100},"nse_fo":{"value":2,"divider":100}}}`,
 		)); err != nil {
-			t.Errorf("write server metadata: %v", err)
-			return
-		}
-		_, request, err := conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read connect request: %v", err)
-			return
-		}
-		frame, err := ParseFrame(request)
-		if err != nil || frame.Header.Type != byte(ConnectType) ||
-			string(frame.Fields[1]) != "trade-token" || string(frame.Fields[2]) != "trade-sid" ||
-			string(frame.Fields[3]) != "JS_API" {
-			t.Errorf("connect frame = %+v, %v", frame, err)
-			return
-		}
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`[{"type":"cn"}]`)); err != nil {
-			t.Errorf("write connect response: %v", err)
+			t.Errorf("write auth response: %v", err)
 			return
 		}
 
-		_, request, err = conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read subscription: %v", err)
-			return
-		}
-		frame, err = ParseFrame(request)
-		if err != nil || frame.Header.Type != byte(SubscribeType) || string(frame.Fields[2]) != "\x01" {
-			t.Errorf("subscribe frame = %+v, %v", frame, err)
-			return
-		}
-		if err := conn.WriteMessage(websocket.BinaryMessage, testDataFrame(true, 12_345)); err != nil {
-			t.Errorf("write snapshot: %v", err)
-			return
-		}
-		if err := conn.WriteMessage(websocket.BinaryMessage, testDataFrame(false, 12_555)); err != nil {
-			t.Errorf("write update: %v", err)
-			return
+		for _, want := range []struct {
+			event string
+			input string
+		}{
+			{"subscribeIndices", "nse_cm|Nifty 50"},
+			{"subscribeScrips", "nse_fo|12345,nse_fo|12346"},
+		} {
+			messageType, raw, err = conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read %s: %v", want.event, err)
+				return
+			}
+			if messageType != websocket.TextMessage {
+				t.Errorf("%s message type = %d, want text", want.event, messageType)
+				return
+			}
+			var request map[string]any
+			if err := json.Unmarshal(raw, &request); err != nil {
+				t.Errorf("decode %s: %v", want.event, err)
+				return
+			}
+			if request["event"] != want.event || request["inputtoken"] != want.input ||
+				request["ack_symbol"] != true {
+				t.Errorf("%s request = %#v", want.event, request)
+				return
+			}
+			var data []byte
+			if want.event == "subscribeIndices" {
+				data = testIndexPacket()
+			} else {
+				data = append(testMarketPicturePacket(), testMiniTouchPacket()...)
+			}
+			if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+				t.Errorf("write %s feed data: %v", want.event, err)
+				return
+			}
+			ack := `{"message_code":1109,"trading_symbols":{"nse_cm|Nifty 50":"Nifty 50"}}`
+			if want.event == "subscribeScrips" {
+				ack = `{"message_code":1109,"trading_symbols":{"nse_fo|12345":"NIFTY-TEST-CE","nse_fo|12346":"NIFTY-TEST-PE"}}`
+			}
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(ack)); err != nil {
+				t.Errorf("write %s acknowledgement: %v", want.event, err)
+				return
+			}
 		}
 		_, _, _ = conn.ReadMessage()
 	}))
 	defer server.Close()
 
 	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
-	client := NewHSMClientWithLogger(endpoint, quoteCh,
+	client := NewHSMClientWithLogger(endpoint, quotes,
 		slog.New(slog.NewTextHandler(testDiscard{}, nil)))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := client.Connect(ctx, "trade-token", "trade-sid"); err != nil {
+	if err := client.Connect(ctx, "test-ucc", "trade-sid"); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Subscribe([]string{"sf|nse_fo|12345"}); err != nil {
+	if err := client.SubscribeIndices([]string{"nse_cm|Nifty 50"}); err != nil {
 		t.Fatal(err)
 	}
-	first := receiveQuote(t, quoteCh)
-	second := receiveQuote(t, quoteCh)
-	if first.InstrumentKey != "sf|nse_fo|12345" || first.LTP != 123.45 ||
-		first.PreviousClose != 120 || first.Volume != 100 || first.OI != 500 ||
-		first.Bid != 123.4 || first.Ask != 123.5 || first.Timestamp != 1_761_566_400 {
-		t.Fatalf("snapshot quote = %+v", first)
+	if err := client.SubscribeScrips([]string{"nse_fo|12345", "nse_fo|12346"}); err != nil {
+		t.Fatal(err)
 	}
-	if second.LTP != 125.55 || second.PreviousClose != 120 {
-		t.Fatalf("update quote = %+v", second)
+
+	quotesByKey := make(map[string]*Quote, 3)
+	for range 3 {
+		quote := receiveQuote(t, quotes)
+		quotesByKey[quote.InstrumentKey] = quote
+	}
+	index := quotesByKey["if|nse_cm|Nifty 50"]
+	option := quotesByKey["sf|nse_fo|12345"]
+	mini := quotesByKey["sf|nse_fo|12346"]
+	if index == nil || option == nil || mini == nil {
+		t.Fatalf("received unexpected SFeed quotes: %+v", quotesByKey)
+	}
+	if index.InstrumentKey != "if|nse_cm|Nifty 50" || index.Identifier != "Nifty 50" ||
+		index.LTP != 25250 || index.PreviousClose != 25100 || index.Change != 150 ||
+		index.ChangePct != 0.5 || index.Timestamp != 1_761_566_400 {
+		t.Fatalf("index quote = %+v", index)
+	}
+	if option.InstrumentKey != "sf|nse_fo|12345" || option.Identifier != "NIFTY-TEST-CE" ||
+		option.LTP != 12345.5 || option.PreviousClose != 12000 ||
+		option.Change != 123.45 || option.ChangePct != 1.25 ||
+		option.Volume != 1000 || option.OI != 5000 ||
+		option.Bid != 12345 || option.Ask != 12346 ||
+		option.Timestamp != 1_761_566_400 {
+		t.Fatalf("option quote = %+v", option)
+	}
+	if mini.InstrumentKey != "sf|nse_fo|12346" || mini.Identifier != "NIFTY-TEST-PE" ||
+		mini.LTP != 12350 || mini.PreviousClose != 12000 || mini.Change != 350 ||
+		mini.ChangePct != 1.5 || mini.Timestamp != 1_761_566_400 {
+		t.Fatalf("mini-touch quote = %+v", mini)
 	}
 	client.Stop()
 	select {
 	case <-handlerDone:
 	case <-time.After(time.Second):
-		t.Fatal("HSM test server did not stop")
+		t.Fatal("SFeed test server did not stop")
 	}
 }
 
-func TestParseFrameRejectsTruncationAndLengthMismatch(t *testing.T) {
-	if _, err := ParseFrame([]byte{0, 3, 1}); err == nil {
-		t.Fatal("accepted truncated frame")
-	}
-	if _, err := ParseFrame([]byte{0, 5, 1, 0}); err == nil {
-		t.Fatal("accepted frame length mismatch")
+func TestSplitSFeedBatchRejectsTruncatedPackets(t *testing.T) {
+	for _, frame := range [][]byte{
+		{0x01},
+		{0x08, 0x00, 0, 0, 0, 0, 0, 0, 0, 0},
+		{0x0b, 0x00, 0, 0, 0, 0, 0, 0, 0, 0},
+	} {
+		if _, err := splitSFeedBatch(frame); err == nil {
+			t.Fatalf("accepted malformed SFeed batch %x", frame)
+		}
 	}
 }
 
-func TestEncodeConnectionRequestMatchesSDKWireFormat(t *testing.T) {
-	frame, err := encodeRequest(ConnectType, []requestField{
-		{id: 1, value: []byte("T")},
-		{id: 2, value: []byte("S")},
-		{id: 3, value: []byte("JS_API")},
+func TestSFeedAuthenticationRejectsFallbackAndUnexpectedResponses(t *testing.T) {
+	client := NewHSMClientWithLogger(DefaultURL, nil, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if err := client.handleTextMessage([]byte(`{"message_code":1119,"format":"native_fallback"}`)); err == nil {
+		t.Fatal("accepted native_fallback auth")
+	}
+	if err := client.handleTextMessage([]byte(`{"message_code":500}`)); err == nil {
+		t.Fatal("accepted unexpected auth response")
+	}
+	if client.IsConnected() {
+		t.Fatal("rejected auth response marked client connected")
+	}
+}
+
+func TestSFeedClientDoesNotLeakServerCloseReason(t *testing.T) {
+	err := sanitizedConnectionError(&websocket.CloseError{
+		Code: websocket.ClosePolicyViolation,
+		Text: "trade token must remain private",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []byte{
-		0x00, 0x13, 0x01, 0x03,
-		0x01, 0x00, 0x01, 'T',
-		0x02, 0x00, 0x01, 'S',
-		0x03, 0x00, 0x06, 'J', 'S', '_', 'A', 'P', 'I',
-	}
-	if !bytes.Equal(frame, want) {
-		t.Fatalf("connection frame = % x, want % x", frame, want)
+	if !strings.Contains(err.Error(), "close code 1008") ||
+		strings.Contains(err.Error(), "trade token") {
+		t.Fatalf("sanitized error = %v", err)
 	}
 }
 
-func TestHSMClientAcceptsTextConnectionAcknowledgements(t *testing.T) {
-	for _, response := range []string{
-		`[{"type":"cn"}]`,
-		`{"type":"cn","status":"success"}`,
+func TestSFeedSubscriptionLimitAndTokenValidation(t *testing.T) {
+	client := NewHSMClientWithLogger(DefaultURL, nil, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	client.connected = true
+	tokens := make([]string, maxSFeedTokens+1)
+	for i := range tokens {
+		tokens[i] = "nse_fo|" + strconv.Itoa(i)
+	}
+	if err := client.writeSubscription("subscribeScrips", "scrips", tokens, true); err == nil {
+		t.Fatal("accepted more than the maximum subscriptions")
+	}
+	if len(client.subs) != 0 {
+		t.Fatalf("failed subscription left state behind: %d", len(client.subs))
+	}
+	for _, token := range []string{"nse_fo|", "|123", "nse_fo|1,2", "nse_fo|1\n2"} {
+		if err := validateSFeedToken(token); err == nil {
+			t.Errorf("accepted invalid token %q", token)
+		}
+	}
+}
+
+func TestSFeedURLValidation(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://sfeed.kotaksecurities.com/apifeed",
+		"wss://kotaksecurities.com.attacker.example/apifeed",
+		"wss://sfeed.kotaksecurities.com/apifeed?token=secret",
 	} {
-		t.Run(response, func(t *testing.T) {
-			client := NewHSMClientWithLogger(DefaultURL, nil,
-				slog.New(slog.NewTextHandler(testDiscard{}, nil)))
-			if err := client.handleMessage(websocket.TextMessage, []byte(response)); err != nil {
-				t.Fatal(err)
-			}
-			if !client.IsConnected() {
-				t.Fatal("text connection acknowledgement did not mark client connected")
-			}
-			select {
-			case <-client.WaitForConnection():
-			default:
-				t.Fatal("connection acknowledgement did not notify waiters")
-			}
-		})
+		if err := validateSFeedURL(endpoint); err == nil {
+			t.Errorf("accepted unsafe endpoint %q", endpoint)
+		}
+	}
+	if err := validateSFeedURL(DefaultURL); err != nil {
+		t.Fatalf("rejected default SFeed URL: %v", err)
 	}
 }
 
-func TestHSMClientAcceptsServerMetadataBeforeConnectionAcknowledgement(t *testing.T) {
-	client := NewHSMClientWithLogger(DefaultURL, nil,
-		slog.New(slog.NewTextHandler(testDiscard{}, nil)))
-	metadata := []byte(
-		`{"message_code":1119,"id":"SFD_EPROD_702","version":1,"exchanges":{"nse_cm":{"value":1,"divider":100},"nse_fo":{"value":2,"divider":100}},"timestamp":"2026-10-28T14:37:24.569205019+05:30"}`,
-	)
-	if err := client.handleMessage(websocket.TextMessage, metadata); err != nil {
-		t.Fatalf("handle server metadata: %v", err)
-	}
-	if client.IsConnected() {
-		t.Fatal("server metadata incorrectly marked client connected")
-	}
-	select {
-	case <-client.WaitForConnection():
-		t.Fatal("server metadata notified connection waiters")
-	default:
-	}
-	if err := client.handleMessage(websocket.TextMessage, []byte(`[{"type":"cn"}]`)); err != nil {
-		t.Fatalf("handle connection acknowledgement after metadata: %v", err)
-	}
-	if !client.IsConnected() {
-		t.Fatal("connection acknowledgement did not mark client connected")
-	}
+func testIndexPacket() []byte {
+	body := make([]byte, 78)
+	binary.LittleEndian.PutUint32(body[0:4], 26000)
+	binary.LittleEndian.PutUint32(body[4:8], 2_500_000)
+	binary.LittleEndian.PutUint32(body[8:12], 2_510_000)
+	binary.LittleEndian.PutUint32(body[12:16], 2_530_000)
+	binary.LittleEndian.PutUint32(body[16:20], 2_490_000)
+	binary.LittleEndian.PutUint32(body[20:24], 2_525_000)
+	binary.LittleEndian.PutUint64(body[24:32], 1_761_566_400)
+	binary.LittleEndian.PutUint32(body[40:44], 50)
+	copy(body[57:78], "Nifty 50")
+	return testSFeedPacket(sfeedIndexCode, 1, 0, body)
 }
 
-func TestHSMClientHandshakeLogsSafeResponseSummary(t *testing.T) {
-	var output bytes.Buffer
-	client := NewHSMClientWithLogger(DefaultURL, nil,
-		slog.New(slog.NewTextHandler(&output, nil)))
-	client.logIncomingMessage(websocket.TextMessage, []byte(
-		`{"message_code":1119,"exchanges":{"nse_cm":{}},"token":"sensitive-token","sid":"sensitive-sid"}`,
-	))
-	log := output.String()
-	for _, expected := range []string{
-		"event=hsm_handshake_response",
-		"message_code=1119",
-		"exchange_count=1",
-	} {
-		if !strings.Contains(log, expected) {
-			t.Errorf("log does not contain %q: %s", expected, log)
-		}
-	}
-	for _, secret := range []string{"sensitive-token", "sensitive-sid"} {
-		if strings.Contains(log, secret) {
-			t.Errorf("log contains sensitive value %q", secret)
-		}
-	}
+func testMarketPicturePacket() []byte {
+	body := make([]byte, 135)
+	binary.LittleEndian.PutUint32(body[0:4], 12345)
+	binary.LittleEndian.PutUint64(body[20:28], 1000)
+	binary.LittleEndian.PutUint64(body[28:36], 1_761_566_400)
+	binary.LittleEndian.PutUint64(body[36:44], 1_761_566_400)
+	binary.LittleEndian.PutUint32(body[44:48], 1_220_000)
+	binary.LittleEndian.PutUint32(body[48:52], 1_200_000)
+	binary.LittleEndian.PutUint32(body[52:56], 1_240_000)
+	binary.LittleEndian.PutUint32(body[56:60], 1_190_000)
+	binary.LittleEndian.PutUint32(body[60:64], 1_234_550)
+	binary.LittleEndian.PutUint32(body[80:84], 1)
+	binary.LittleEndian.PutUint32(body[84:88], 1)
+	binary.LittleEndian.PutUint32(body[90:94], 125)
+	binary.LittleEndian.PutUint64(body[94:102], 5000)
+	binary.LittleEndian.PutUint32(body[106:110], 12345)
+
+	packet := testSFeedPacket(sfeedMarketPictureCode, 2, sfeedTouchLevel, body)
+	buy := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buy[0:8], 10)
+	binary.LittleEndian.PutUint32(buy[8:12], 1_234_500)
+	binary.LittleEndian.PutUint32(buy[12:16], 3)
+	sell := make([]byte, 16)
+	binary.LittleEndian.PutUint64(sell[0:8], 11)
+	binary.LittleEndian.PutUint32(sell[8:12], 1_234_600)
+	binary.LittleEndian.PutUint32(sell[12:16], 4)
+	packet = append(packet, buy...)
+	packet = append(packet, sell...)
+	binary.LittleEndian.PutUint16(packet[:2], uint16(len(packet)))
+	return packet
 }
 
-func TestHSMClientReturnsSanitizedCloseDuringAuthentication(t *testing.T) {
-	upgrader := websocket.Upgrader{}
-	handlerDone := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer close(handlerDone)
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade: %v", err)
-			return
-		}
-		defer conn.Close()
-		if err := conn.WriteMessage(websocket.TextMessage,
-			[]byte(`{"message_code":1119,"exchanges":{"nse_cm":{}}}`)); err != nil {
-			t.Errorf("write metadata: %v", err)
-			return
-		}
-		if _, _, err := conn.ReadMessage(); err != nil {
-			t.Errorf("read auth frame: %v", err)
-			return
-		}
-		if err := conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "sensitive server detail"),
-			time.Now().Add(time.Second)); err != nil {
-			t.Errorf("send close: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
-	client := NewHSMClientWithLogger(endpoint, nil,
-		slog.New(slog.NewTextHandler(testDiscard{}, nil)))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	err := client.Connect(ctx, "trade-token", "trade-sid")
-	if err == nil {
-		t.Fatal("expected authentication connection to fail after server close")
-	}
-	if !strings.Contains(err.Error(), "close code 1008") {
-		t.Fatalf("error does not identify close code: %v", err)
-	}
-	if strings.Contains(err.Error(), "sensitive server detail") {
-		t.Fatalf("error includes untrusted close reason: %v", err)
-	}
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("HSM test server did not stop")
-	}
+func testMiniTouchPacket() []byte {
+	body := make([]byte, 45)
+	binary.LittleEndian.PutUint32(body[0:4], 12346)
+	binary.LittleEndian.PutUint64(body[4:12], 1_761_566_400)
+	binary.LittleEndian.PutUint32(body[12:16], 1_235_000)
+	binary.LittleEndian.PutUint64(body[16:24], 25)
+	binary.LittleEndian.PutUint32(body[24:28], 1_200_000)
+	binary.LittleEndian.PutUint32(body[28:32], 150)
+	binary.LittleEndian.PutUint32(body[32:36], 35_000)
+	return testSFeedPacket(sfeedMarketPictureCode, 2, sfeedMiniTouchLevel, body)
 }
 
-func TestHSMClientRejectsTextConnectionAcknowledgementFailure(t *testing.T) {
-	client := NewHSMClientWithLogger(DefaultURL, nil,
-		slog.New(slog.NewTextHandler(testDiscard{}, nil)))
-	err := client.handleMessage(websocket.TextMessage,
-		[]byte(`[{"type":"error","message":"trade-token"}]`))
-	if err == nil {
-		t.Fatal("accepted failed text connection acknowledgement")
-	}
-	if strings.Contains(err.Error(), "trade-token") {
-		t.Fatal("text response error included a credential-bearing message")
-	}
-	if client.IsConnected() {
-		t.Fatal("failed text connection acknowledgement marked the client connected")
-	}
-}
-
-func TestEncodeScripBlobLimitsAndFormat(t *testing.T) {
-	blob, err := encodeScripBlob([]string{"if|nse_cm|Nifty 50", "sf|nse_fo|12345"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if binary.BigEndian.Uint16(blob[:2]) != 2 || string(blob[3:3+len("if|nse_cm|Nifty 50")]) != "if|nse_cm|Nifty 50" {
-		t.Fatalf("scrip blob = %x", blob)
-	}
-	if _, err := encodeScripBlob([]string{"nse_fo|12345"}); err == nil {
-		t.Fatal("accepted a scrip without an HSM topic prefix")
-	}
-	if _, err := encodeScripBlob([]string{""}); err == nil {
-		t.Fatal("accepted empty scrip")
-	}
+func testSFeedPacket(messageCode uint16, exchangeID, level uint8, body []byte) []byte {
+	packet := make([]byte, sfeedHeaderSize+len(body))
+	binary.LittleEndian.PutUint16(packet[:2], uint16(len(packet)))
+	binary.LittleEndian.PutUint16(packet[2:4], messageCode)
+	packet[4] = exchangeID
+	packet[5] = level
+	copy(packet[sfeedHeaderSize:], body)
+	return packet
 }
 
 func receiveQuote(t *testing.T, quotes <-chan *Quote) *Quote {
@@ -294,69 +312,9 @@ func receiveQuote(t *testing.T, quotes <-chan *Quote) *Quote {
 	case quote := <-quotes:
 		return quote
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for HSM quote")
+		t.Fatal("timed out waiting for SFeed quote")
 		return nil
 	}
-}
-
-func testDataFrame(snapshot bool, ltp int32) []byte {
-	const topicID = uint32(9)
-	var packet []byte
-	if snapshot {
-		name := "sf|nse_fo|12345"
-		packet = append(packet, 'S')
-		id := make([]byte, 4)
-		binary.BigEndian.PutUint32(id, topicID)
-		packet = append(packet, id...)
-		packet = append(packet, byte(len(name)))
-		packet = append(packet, name...)
-		packet = append(packet, 25)
-		values := make([]int32, 25)
-		for i := range values {
-			values[i] = trashValue
-		}
-		values[3] = 1_761_566_400
-		values[4] = 100
-		values[5] = ltp
-		values[9] = 12_340
-		values[10] = 12_350
-		values[21] = 12_000
-		values[22] = 500
-		values[23] = 1
-		values[24] = 2
-		for _, value := range values {
-			raw := make([]byte, 4)
-			binary.BigEndian.PutUint32(raw, uint32(value))
-			packet = append(packet, raw...)
-		}
-		packet = append(packet, 1, 52, 5)
-		packet = append(packet, "12345"...)
-	} else {
-		packet = append(packet, 'U')
-		id := make([]byte, 4)
-		binary.BigEndian.PutUint32(id, topicID)
-		packet = append(packet, id...)
-		packet = append(packet, 25)
-		for i := 0; i < 25; i++ {
-			value := trashValue
-			if i == 5 {
-				value = ltp
-			}
-			raw := make([]byte, 4)
-			binary.BigEndian.PutUint32(raw, uint32(value))
-			packet = append(packet, raw...)
-		}
-	}
-	payload := make([]byte, 2)
-	binary.BigEndian.PutUint16(payload, 1)
-	packetLength := make([]byte, 2)
-	binary.BigEndian.PutUint16(packetLength, uint16(len(packet)))
-	payload = append(payload, packetLength...)
-	payload = append(payload, packet...)
-	frame := make([]byte, 3, 3+len(payload))
-	binary.BigEndian.PutUint16(frame[:2], uint16(1+len(payload)))
-	frame[2] = byte(DataType)
-	return append(frame, payload...)
 }
 
 type testDiscard struct{}

@@ -95,7 +95,7 @@ func TestRunInvalidConfig(t *testing.T) {
 }
 
 func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
-	t.Setenv("KOTAK_ACCESS_TOKEN", "")
+	t.Setenv("KOTAK_CONSUMER_KEY", "")
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -143,7 +143,7 @@ func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
 }
 
 func TestRunBadListen(t *testing.T) {
-	t.Setenv("KOTAK_ACCESS_TOKEN", "")
+	t.Setenv("KOTAK_CONSUMER_KEY", "")
 	// A privileged port is not the point here: bind an address that cannot be
 	// listened on because the host does not resolve to a local interface.
 	path := writeConfig(t, "127.0.0.1:18082", filepath.Join(t.TempDir(), "scalper.db"))

@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
-	"github.com/gorilla/websocket"
 )
 
 type fakeDB struct{ err error }
@@ -39,13 +40,13 @@ type serverOpts struct {
 	db          DBPinger
 	degraded    bool
 	token       bool
+	mpin        string
 	now         func() time.Time
 	started     time.Time
 	cfg         *config.Config
 	authClient  auth.KotakAuthenticator
 	marketAPI   MarketAPI
 	paper       *paper.Service
-	tokenFnSet  bool
 	noTokenFunc bool
 }
 
@@ -66,6 +67,7 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 	opts := Options{
 		Logger:      testLogger(),
 		Config:      cfg,
+		MPIN:        o.mpin,
 		AuthClient:  o.authClient,
 		Market:      o.marketAPI,
 		Paper:       o.paper,
@@ -94,6 +96,9 @@ func TestWebSocketUpgradeThroughMiddleware(t *testing.T) {
 
 	endpoint := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws"
 	conn, response, err := websocket.DefaultDialer.Dial(endpoint, nil)
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("dial WebSocket: %v (response: %+v)", err, response)
 	}
@@ -131,12 +136,33 @@ func (f fakeMarketAPI) Quote(context.Context, string, string) (market.Quote, err
 	return f.quote, nil
 }
 
+func (fakeMarketAPI) Candles(context.Context, string, string, string) ([]market.Candle, error) {
+	return []market.Candle{{Time: 1793092500, Open: 100, High: 102, Low: 99, Close: 101, Volume: 42}}, nil
+}
+
 func (f fakeMarketAPI) Option(key string) (scrip.Option, bool) {
 	return f.instrument, key == f.instrument.InstrumentKey
 }
 
 func (f fakeMarketAPI) FindOption(segment, symbol string) (scrip.Option, bool) {
 	return f.instrument, segment == f.instrument.ExchangeSegment && symbol == f.instrument.PSymbol
+}
+
+func TestCandlesRoute(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/api/candles?instrument=nse_fo%7CNIFTY%7C2026-10-29%7C25000%7CCE&tf=5m"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Candles []market.Candle `json:"candles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Candles) != 1 || response.Candles[0].Close != 101 {
+		t.Fatalf("candles = %+v", response.Candles)
+	}
 }
 
 type fakePaperRepository struct {
@@ -209,12 +235,67 @@ func TestIndexPage(t *testing.T) {
 	if strings.Contains(body, "SIMULATED") || strings.Contains(body, "data-demo") {
 		t.Fatal("index page should not render fake-data controls")
 	}
+	if !strings.Contains(body, "id=\"mpin-input\"") {
+		t.Fatal("index page without configured MPIN should render the MPIN field")
+	}
 
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("Content-Type = %q", ct)
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestKotakLoginUsesConfiguredMPINWithoutExposingIt(t *testing.T) {
+	const configuredMPIN = "654321"
+	client := &testKotakAuthenticator{
+		view:  auth.ViewSession{Token: "view-token-secret", SID: "view-sid-secret"},
+		trade: auth.TradeSession{Token: "trade-token-secret", SID: "trade-sid-secret", BaseURL: "https://cis.kotaksecurities.com"},
+	}
+	s := newTestServer(t, serverOpts{db: fakeDB{}, authClient: client, mpin: configuredMPIN})
+
+	pageRec := do(t, s, localRequest(http.MethodGet, "/"))
+	if pageRec.Code != http.StatusOK {
+		t.Fatalf("index status = %d, body = %s", pageRec.Code, pageRec.Body.String())
+	}
+	if strings.Contains(pageRec.Body.String(), "id=\"mpin-input\"") ||
+		strings.Contains(pageRec.Body.String(), configuredMPIN) {
+		t.Fatal("configured MPIN field or secret was rendered in the page")
+	}
+	if !strings.Contains(pageRec.Body.String(), `"mpinConfigured":true`) {
+		t.Fatal("bootstrap config should indicate that MPIN is configured")
+	}
+
+	totpReq := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq.Header.Set("Content-Type", "application/json")
+	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
+	totpRec := do(t, s, totpReq)
+	if totpRec.Code != http.StatusOK {
+		t.Fatalf("TOTP status = %d, body = %s", totpRec.Code, totpRec.Body.String())
+	}
+	if client.totp != "123456" || client.mpin != configuredMPIN || client.viewUsed != client.view {
+		t.Fatalf("auto-login inputs: totp=%q mpin=%q view=%+v", client.totp, client.mpin, client.viewUsed)
+	}
+	for _, secret := range []string{
+		configuredMPIN, "view-token-secret", "view-sid-secret",
+		"trade-token-secret", "trade-sid-secret", "cis.kotaksecurities.com",
+	} {
+		if strings.Contains(totpRec.Body.String(), secret) {
+			t.Fatalf("TOTP response leaked %q", secret)
+		}
+	}
+	var clearedFlowCookie bool
+	for _, cookie := range totpRec.Result().Cookies() {
+		if cookie.Name == authFlowCookieName && cookie.MaxAge < 0 {
+			clearedFlowCookie = true
+		}
+	}
+	if !clearedFlowCookie {
+		t.Fatal("auto-login should clear the auth flow cookie")
+	}
+	if !strings.Contains(totpRec.Body.String(), `"login_method":"mpin"`) {
+		t.Fatalf("TOTP response does not contain the completed session: %s", totpRec.Body.String())
 	}
 }
 
@@ -276,7 +357,7 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 	}
 }
 
-func TestKotakLoginRequiresFlowAndAccessToken(t *testing.T) {
+func TestKotakLoginRequiresFlowAndConsumerKey(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 
 	mpinReq := localRequest(http.MethodPost, "/api/auth/mpin")
@@ -290,7 +371,7 @@ func TestKotakLoginRequiresFlowAndAccessToken(t *testing.T) {
 	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
 	totpRec := do(t, s, totpReq)
 	if totpRec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("TOTP without access token status = %d, want %d", totpRec.Code, http.StatusServiceUnavailable)
+		t.Fatalf("TOTP without consumer key status = %d, want %d", totpRec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -625,7 +706,9 @@ func TestRecoverPanicRepanicsAbort(t *testing.T) {
 		panic(http.ErrAbortHandler)
 	}))
 	defer func() {
-		if rec := recover(); rec != http.ErrAbortHandler {
+		rec := recover()
+		recoveredErr, ok := rec.(error)
+		if !ok || !errors.Is(recoveredErr, http.ErrAbortHandler) {
 			t.Fatalf("recovered %v, want ErrAbortHandler", rec)
 		}
 	}()

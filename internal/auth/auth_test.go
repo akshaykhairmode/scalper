@@ -1,3 +1,4 @@
+// Package auth tests Kotak authentication and local session management.
 package auth
 
 import (
@@ -6,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,11 +41,11 @@ func (f *fakeKotak) ValidateMPIN(_ context.Context, view ViewSession, mpin strin
 }
 
 func TestKotakClientLoginFlow(t *testing.T) {
-	const accessToken = "dashboard-token"
+	const consumerKey = "consumer-key-secret"
 	requests := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if got := r.Header.Get("Authorization"); got != accessToken {
+		if got := r.Header.Get("Authorization"); got != consumerKey {
 			t.Errorf("Authorization = %q", got)
 		}
 		if got := r.Header.Get("neo-fin-key"); got != "neotradeapi" {
@@ -76,7 +78,7 @@ func TestKotakClientLoginFlow(t *testing.T) {
 			if body["mpin"] != "123456" || len(body) != 1 {
 				t.Errorf("MPIN request body = %#v", body)
 			}
-			_, _ = fmt.Fprint(w, `{"data":{"token":"trade-secret","sid":"trade-sid","baseUrl":"https://cis.kotaksecurities.com","kType":"Trade","status":"success"}}`)
+			_, _ = fmt.Fprint(w, `{"data":{"token":"trade-secret","sid":"trade-sid","baseUrl":"https://cis.kotaksecurities.com","feedUrl":"wss://sfeed.kotaksecurities.com/apifeed","kType":"Trade","status":"success"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -86,7 +88,7 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	var logOutput bytes.Buffer
 	client := &kotakClient{
 		log:         slog.New(slog.NewTextHandler(&logOutput, nil)),
-		accessToken: accessToken,
+		consumerKey: consumerKey,
 		mobile:      "+911234567890",
 		ucc:         "client-1",
 		neoFinKey:   "neotradeapi",
@@ -104,7 +106,11 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateMPIN: %v", err)
 	}
-	if trade != (TradeSession{Token: "trade-secret", SID: "trade-sid", BaseURL: "https://cis.kotaksecurities.com"}) {
+	if trade != (TradeSession{
+		Token: "trade-secret", SID: "trade-sid",
+		BaseURL: "https://cis.kotaksecurities.com",
+		FeedURL: "wss://sfeed.kotaksecurities.com/apifeed",
+	}) {
 		t.Fatalf("trade session = %+v", trade)
 	}
 	if requests != 2 {
@@ -112,7 +118,7 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	}
 	logText := logOutput.String()
 	for _, secret := range []string{
-		accessToken, "neotradeapi", "+911234567890", "client-1", "123456",
+		consumerKey, "neotradeapi", "+911234567890", "client-1", "123456",
 		"view-secret", "view-sid", "trade-secret", "trade-sid",
 	} {
 		if strings.Contains(logText, secret) {
@@ -134,6 +140,72 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	}
 }
 
+func TestResolveFeedURLFromDataCenterConfiguration(t *testing.T) {
+	client := &kotakClient{
+		http: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host != "lapi.kotaksecurities.com" || req.URL.Path != "/5config/config" {
+				t.Errorf("configuration URL = %s", req.URL)
+			}
+			query := req.URL.Query()
+			if query.Get("appVersion") != sfeedSDKVersion ||
+				query.Get("platform") != "api" || query.Get("environment") != "prod" {
+				t.Errorf("configuration query = %v", query)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"data":{"configs":{"dc1_broadcast_source":"source1","dc1_source1_broadcast_endpoint":"wss://sfeed.kotaksecurities.com/apifeed"}}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})},
+	}
+	got, err := client.resolveFeedURL(context.Background(), "dc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "wss://sfeed.kotaksecurities.com/apifeed" {
+		t.Fatalf("resolved feed URL = %q", got)
+	}
+}
+
+func TestValidateMPINFallsBackToSessionFeedURLWhenDataCenterURLIsInvalid(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/1.0/tradeApiValidate":
+			_, _ = fmt.Fprint(w, `{"data":{"token":"trade-secret","sid":"trade-sid","baseUrl":"https://cis.kotaksecurities.com","dataCenter":"E43","feedUrl":"wss://sfeed.kotaksecurities.com/apifeed","status":"success"}}`)
+		case "/5config/config":
+			_, _ = fmt.Fprint(w, `{"data":{"configs":{"E43_broadcast_source":"source","E43_source_broadcast_endpoint":"https://example.com/feed"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	client := &kotakClient{
+		log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		consumerKey: "consumer-key",
+		loginURL:    api.URL,
+		http:        api.Client(),
+	}
+	trade, err := client.ValidateMPIN(context.Background(), ViewSession{
+		Token: "view-token",
+		SID:   "view-sid",
+	}, "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trade.FeedURL != "wss://sfeed.kotaksecurities.com/apifeed" {
+		t.Fatalf("feed URL = %q; want valid MPIN response URL", trade.FeedURL)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestKotakClientRejectsBadResponses(t *testing.T) {
 	tests := []struct {
 		name string
@@ -150,7 +222,7 @@ func TestKotakClientRejectsBadResponses(t *testing.T) {
 			}))
 			defer api.Close()
 			client := &kotakClient{
-				accessToken: "dashboard-token",
+				consumerKey: "consumer-key",
 				loginURL:    api.URL,
 				http:        api.Client(),
 			}
@@ -165,11 +237,11 @@ func TestKotakClientRejectsBadResponses(t *testing.T) {
 	}
 }
 
-func TestKotakClientRequiresAccessToken(t *testing.T) {
+func TestKotakClientRequiresConsumerKey(t *testing.T) {
 	client := NewKotakAuthenticator("", "mobile", "ucc", "neotradeapi")
 	_, err := client.LoginTOTP(context.Background(), "123456")
-	if !errors.Is(err, ErrMissingAccessToken) {
-		t.Fatalf("error = %v, want ErrMissingAccessToken", err)
+	if !errors.Is(err, ErrMissingConsumerKey) {
+		t.Fatalf("error = %v, want ErrMissingConsumerKey", err)
 	}
 }
 

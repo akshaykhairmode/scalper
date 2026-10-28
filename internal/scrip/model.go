@@ -34,8 +34,10 @@ const (
 type OptionType string
 
 const (
+	// Call identifies a call option contract.
 	Call OptionType = "CE"
-	Put  OptionType = "PE"
+	// Put identifies a put option contract.
+	Put OptionType = "PE"
 )
 
 // ist is the market timezone. A fixed zone avoids depending on tzdata for a
@@ -168,7 +170,7 @@ func NormalizeStrike(raw string) (int64, error) {
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: strike price %q: %v", ErrSchema, raw, err)
+		return 0, fmt.Errorf("%w: strike price %q: %w", ErrSchema, raw, err)
 	}
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0, fmt.Errorf("%w: strike price %q is not finite", ErrSchema, raw)

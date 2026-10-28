@@ -273,6 +273,7 @@ function normalizeTrade(raw) {
 
 function init() {
   S.boot = parseBootstrap();
+  initTheme();
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   S.qty.unit = S.boot.defaultUnit === "shares" ? "shares" : "lots";
@@ -287,6 +288,33 @@ function init() {
   checkSession();
   window.setInterval(refreshSession, 30000);
   loadMarket();
+}
+
+function initTheme() {
+  let theme = "dark";
+  try {
+    const savedTheme = localStorage.getItem("scalper-theme");
+    if (savedTheme === "light" || savedTheme === "dark") theme = savedTheme;
+  } catch (error) {
+    console.warn("Unable to read saved theme preference", error);
+  }
+  setTheme(theme, false);
+}
+
+function setTheme(theme, persist = true) {
+  document.body.dataset.theme = theme;
+  const toggle = $("theme-toggle");
+  const nextTheme = theme === "dark" ? "light" : "dark";
+  toggle.setAttribute("aria-label", `Switch to ${nextTheme} theme`);
+  toggle.title = `Switch to ${nextTheme} theme`;
+  document.querySelector('meta[name="color-scheme"]').content = theme;
+  for (const chart of Object.values(S.charts)) chart.schedule();
+  if (!persist) return;
+  try {
+    localStorage.setItem("scalper-theme", theme);
+  } catch (error) {
+    console.warn("Unable to save theme preference", error);
+  }
 }
 
 function buildTimeframes() {
@@ -336,7 +364,7 @@ async function checkSession() {
   await refreshSession();
   const wantsLogin = location.hash === "#login";
   if (wantsLogin || !S.session?.authenticated) {
-    openLogin(wantsLogin ? 1 : 1);
+    openLogin();
   } else {
     closeLogin();
     connectWebSocket();
@@ -1483,31 +1511,34 @@ function closeConfirm(value) {
 
 /* ── Login modal ──────────────────────────────────────── */
 
-let loginStep = 1;
+let totpAccepted = false;
 let loginBusy = false;
 
-function openLogin(step = 1) {
-  setLoginStep(step);
-  $("login-error").hidden = true;
+function openLogin() {
+  totpAccepted = false;
+  $("totp-input").value = "";
+  $("totp-input").disabled = false;
+  $("totp-hint").textContent = "Invalid code? Sync your device time and try again.";
+  if ($("mpin-input")) {
+    $("mpin-input").value = "";
+    $("mpin-input").disabled = true;
+  }
+  loginError("");
+  $("login-submit").textContent = "Continue";
   $("login-modal").hidden = false;
-  window.setTimeout(() => (step === 1 ? $("totp-input") : $("mpin-input")).focus(), 30);
+  window.setTimeout(() => $("totp-input").focus(), 30);
 }
 
 function closeLogin() {
   $("login-modal").hidden = true;
-  if (location.hash === "#login") history.replaceState(null, "", location.pathname);
-}
-
-function setLoginStep(step) {
-  loginStep = step;
-  $("login-step-1").hidden = step !== 1;
-  $("login-step-2").hidden = step !== 2;
-  for (const dot of $$("[data-step-dot]")) {
-    const n = num(dot.dataset.stepDot);
-    dot.classList.toggle("active", n === step);
-    dot.classList.toggle("done", n < step);
+  totpAccepted = false;
+  $("totp-input").value = "";
+  $("totp-input").disabled = false;
+  if ($("mpin-input")) {
+    $("mpin-input").value = "";
+    $("mpin-input").disabled = true;
   }
-  $("login-submit").textContent = step === 1 ? "Continue" : "Sign in";
+  if (location.hash === "#login") history.replaceState(null, "", location.pathname);
 }
 
 function loginError(message) {
@@ -1522,7 +1553,7 @@ async function submitLogin(event) {
   const submit = $("login-submit");
   loginError("");
 
-  if (loginStep === 1) {
+  if (!totpAccepted) {
     const totp = $("totp-input").value.trim();
     if (!/^\d{6}$/.test(totp)) {
       loginError("Enter the 6-digit TOTP from your authenticator.");
@@ -1532,16 +1563,26 @@ async function submitLogin(event) {
     submit.disabled = true;
     submit.textContent = "Checking…";
     try {
-      await postJSON("/api/auth/totp", { totp });
+      const result = await postJSON("/api/auth/totp", { totp });
       $("totp-input").value = "";
-      setLoginStep(2);
-      $("mpin-input").focus();
+      if (result.session_data) {
+        completeLogin(result);
+      } else if (S.boot.mpinConfigured) {
+        throw new Error("Login did not return a session. Please try again.");
+      } else {
+        totpAccepted = true;
+        $("totp-input").disabled = true;
+        $("totp-hint").textContent = "TOTP accepted.";
+        $("mpin-input").disabled = false;
+        $("login-submit").textContent = "Sign in";
+        $("mpin-input").focus();
+      }
     } catch (error) {
       loginError(error.message || "TOTP validation failed.");
     } finally {
       loginBusy = false;
       submit.disabled = false;
-      submit.textContent = loginStep === 1 ? "Continue" : "Sign in";
+      submit.textContent = totpAccepted ? "Sign in" : "Continue";
     }
     return;
   }
@@ -1557,21 +1598,25 @@ async function submitLogin(event) {
   try {
     const result = await postJSON("/api/auth/mpin", { mpin });
     $("mpin-input").value = "";
-    S.session = result.session_data || { authenticated: true, paper_mode: false };
-    S.session.authenticated = true;
-    updateAuthButton();
-    renderHeader();
-    closeLogin();
-    toast("Session active. Feeds are connecting.", "ok");
-    connectWebSocket();
-    if (!S.expiry) loadMarket();
+    completeLogin(result);
   } catch (error) {
     loginError(error.message || "MPIN validation failed.");
   } finally {
     loginBusy = false;
     submit.disabled = false;
-    submit.textContent = loginStep === 1 ? "Continue" : "Sign in";
+    submit.textContent = totpAccepted ? "Sign in" : "Continue";
   }
+}
+
+function completeLogin(result) {
+  S.session = result.session_data || { authenticated: true, paper_mode: false };
+  S.session.authenticated = true;
+  updateAuthButton();
+  renderHeader();
+  closeLogin();
+  toast("Session active. Feeds are connecting.", "ok");
+  connectWebSocket();
+  if (!S.expiry) loadMarket();
 }
 
 async function logout() {
@@ -1581,7 +1626,7 @@ async function logout() {
     console.warn("logout failed", error);
   }
   $("totp-input").value = "";
-  $("mpin-input").value = "";
+  if ($("mpin-input")) $("mpin-input").value = "";
   S.session = { authenticated: false };
   if (S.wsTimer) {
     window.clearTimeout(S.wsTimer);
@@ -1614,6 +1659,23 @@ function toast(message, kind = "ok", ms = 3500) {
 /* ── Events ───────────────────────────────────────────── */
 
 function bindEvents() {
+  $("chain-panel").addEventListener("toggle", (event) => {
+    const panel = event.currentTarget;
+    panel.closest(".terminal").classList.toggle("chain-collapsed", !panel.open);
+    panel.closest(".terminal").classList.toggle("chain-open", panel.open);
+  });
+  $("bottom-toggle").addEventListener("click", () => {
+    const panel = $("bottom-panel");
+    const collapsed = panel.classList.toggle("bottom-collapsed");
+    panel.closest(".terminal").classList.toggle("bottom-collapsed", collapsed);
+    panel.closest(".terminal").classList.toggle("bottom-open", !collapsed);
+    $("bottom-toggle").textContent = collapsed ? "Expand" : "Collapse";
+    $("bottom-toggle").setAttribute("aria-expanded", collapsed ? "false" : "true");
+  });
+  $("theme-toggle").addEventListener("click", () => {
+    setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+  });
+
   $("spot-strip").addEventListener("click", (event) => {
     const chip = event.target.closest(".spot-chip");
     if (!chip) return;
@@ -1707,7 +1769,7 @@ function bindEvents() {
   $("square-off-button").addEventListener("click", onSquareOffAll);
   $("auth-button").addEventListener("click", () => {
     if (S.session?.authenticated) logout();
-    else openLogin(1);
+    else openLogin();
   });
   $("login-close").addEventListener("click", closeLogin);
   $("login-paper").addEventListener("click", () => {

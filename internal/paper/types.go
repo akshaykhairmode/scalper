@@ -1,3 +1,4 @@
+// Package paper implements the local paper-trading account and order service.
 package paper
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
+// Account describes the paper account's balances and margin.
 type Account struct {
 	StartingCash float64 `json:"starting_cash"`
 	Cash         float64 `json:"cash"`
@@ -22,6 +24,7 @@ type Account struct {
 	Used         float64 `json:"used_margin"`
 }
 
+// Position describes an open paper-trading position.
 type Position struct {
 	InstrumentKey   string  `json:"instrument_key"`
 	ExchangeSegment string  `json:"exchange_segment"`
@@ -39,6 +42,7 @@ type Position struct {
 	Product         string  `json:"product"`
 }
 
+// Order describes a simulated paper order.
 type Order struct {
 	ID              string  `json:"id"`
 	InstrumentKey   string  `json:"instrument_key"`
@@ -58,6 +62,7 @@ type Order struct {
 	Mode            string  `json:"mode"`
 }
 
+// Trade describes an executed paper trade.
 type Trade struct {
 	ID            int64   `json:"id"`
 	InstrumentKey string  `json:"instrument_key"`
@@ -68,6 +73,7 @@ type Trade struct {
 	ExecutedAt    int64   `json:"executed_at"`
 }
 
+// Snapshot contains the current paper account and its books.
 type Snapshot struct {
 	Account   Account    `json:"account"`
 	Positions []Position `json:"positions"`
@@ -75,6 +81,7 @@ type Snapshot struct {
 	Trades    []Trade    `json:"trades"`
 }
 
+// OrderRequest contains the validated data needed to execute a paper trade.
 type OrderRequest struct {
 	ClientOrderID string
 	Instrument    scrip.Option
@@ -86,18 +93,21 @@ type OrderRequest struct {
 	FillPrice     float64
 }
 
+// Repository provides persistent storage for paper account data.
 type Repository interface {
 	EnsurePaperAccount(context.Context, float64) error
 	PaperSnapshot(context.Context, float64) (Snapshot, error)
 	ApplyPaperTrade(context.Context, OrderRequest, float64) (Order, error)
 }
 
+// Service validates and applies paper orders.
 type Service struct {
 	repository Repository
 	cfg        config.Trading
 	now        func() time.Time
 }
 
+// NewService initializes a paper account and returns its order service.
 func NewService(ctx context.Context, repository Repository, cfg config.Trading) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("paper: repository is required")
@@ -114,6 +124,7 @@ func NewService(ctx context.Context, repository Repository, cfg config.Trading) 
 	return &Service{repository: repository, cfg: cfg, now: time.Now}, nil
 }
 
+// Snapshot returns the latest paper account and trading books.
 func (s *Service) Snapshot(ctx context.Context) (Snapshot, error) {
 	snapshot, err := s.repository.PaperSnapshot(ctx, s.cfg.Paper.ShortMarginPct)
 	if err != nil {
@@ -122,6 +133,7 @@ func (s *Service) Snapshot(ctx context.Context) (Snapshot, error) {
 	return snapshot, nil
 }
 
+// PlaceOrder validates and persists a paper order.
 func (s *Service) PlaceOrder(ctx context.Context, request OrderRequest) (Order, error) {
 	if request.Instrument.InstrumentKey == "" || request.Instrument.PSymbol == "" {
 		return Order{}, errors.New("paper: instrument is not in the Scrip Master")

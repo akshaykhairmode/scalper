@@ -30,16 +30,16 @@ type HTTPDoer interface {
 
 // Client fetches the Scrip Master listing and CSV files.
 type Client struct {
-	HTTP  HTTPDoer
-	Token string
+	HTTP        HTTPDoer
+	ConsumerKey string
 }
 
-// NewClient builds a client with a bounded timeout. An empty token fails
-// closed: the listing endpoint requires the access token.
-func NewClient(token string) *Client {
+// NewClient builds a client with a bounded timeout. An empty consumer key
+// fails closed: the listing endpoint requires it.
+func NewClient(consumerKey string) *Client {
 	return &Client{
-		HTTP:  &http.Client{Timeout: defaultHTTPLimit},
-		Token: strings.TrimSpace(token),
+		HTTP:        &http.Client{Timeout: defaultHTTPLimit},
+		ConsumerKey: strings.TrimSpace(consumerKey),
 	}
 }
 
@@ -54,8 +54,8 @@ func (c *Client) ListFiles(ctx context.Context, baseURL string) (FileList, error
 	if c == nil || c.HTTP == nil {
 		return FileList{}, fmt.Errorf("scrip: http client is not configured")
 	}
-	if c.Token == "" {
-		return FileList{}, fmt.Errorf("scrip: access token is required: %w", errs.ErrNotLoggedIn)
+	if c.ConsumerKey == "" {
+		return FileList{}, fmt.Errorf("scrip: consumer key is required: %w", errs.ErrNotLoggedIn)
 	}
 	endpoint, err := joinURL(baseURL, FilePathsPath)
 	if err != nil {
@@ -65,8 +65,9 @@ func (c *Client) ListFiles(ctx context.Context, baseURL string) (FileList, error
 	if err != nil {
 		return FileList{}, fmt.Errorf("scrip: build file-paths request: %w", err)
 	}
-	req.Header.Set("Authorization", c.Token)
+	req.Header.Set("Authorization", c.ConsumerKey)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -109,7 +110,7 @@ func (c *Client) ListFiles(ctx context.Context, baseURL string) (FileList, error
 	return FileList{Paths: payload.Data.FilesPaths, BaseFolder: payload.Data.BaseFolder}, nil
 }
 
-// Download fetches one CSV. The access token is deliberately not forwarded:
+// Download fetches one CSV. The consumer key is deliberately not forwarded:
 // these are broker-provided download URLs and may point at a CDN.
 func (c *Client) Download(ctx context.Context, fileURL string) ([]byte, error) {
 	if c == nil || c.HTTP == nil {

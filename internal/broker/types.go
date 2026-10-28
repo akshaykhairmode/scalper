@@ -9,7 +9,7 @@ import (
 	"log/slog"
 )
 
-// BrokerInterface defines the contract for Kotak Neo broker operations.
+//nolint:revive // Preserve the established exported interface name.
 type BrokerInterface interface {
 	// GetPositions returns the current positions held.
 	GetPositions() ([]Position, error)
@@ -37,50 +37,50 @@ type BrokerInterface interface {
 
 // Position represents a holdings position.
 type Position struct {
-	InstrumentKey string  `json:"instrument_key"`
-	ExchangeSegment string `json:"exchange_segment"`
-	Symbol        string  `json:"symbol"`
-	Quantity      int64   `json:"quantity"`
-	AveragePrice  float64 `json:"average_price"`
-	MarketValue   float64 `json:"market_value"`
-	PnL           float64 `json:"pnl"`
-	TodayPL       float64 `json:"today_pnl"`
+	InstrumentKey   string  `json:"instrument_key"`
+	ExchangeSegment string  `json:"exchange_segment"`
+	Symbol          string  `json:"symbol"`
+	Quantity        int64   `json:"quantity"`
+	AveragePrice    float64 `json:"average_price"`
+	MarketValue     float64 `json:"market_value"`
+	PnL             float64 `json:"pnl"`
+	TodayPL         float64 `json:"today_pnl"`
 }
 
 // Trade represents a executed trade.
 type Trade struct {
-	ID            string  `json:"id"`
-	InstrumentKey string  `json:"instrument_key"`
-	ExchangeSegment string `json:"exchange_segment"`
-	Quantity      int64   `json:"quantity"`
-	Price         float64 `json:"price"`
-	BuySell       string  `json:"buy_sell"` // "B" for buy, "S" for sell
-	Timestamp     int64   `json:"timestamp"`
-	Status        string  
-	PnL          float64 `json:"status"`
+	ID              string  `json:"id"`
+	InstrumentKey   string  `json:"instrument_key"`
+	ExchangeSegment string  `json:"exchange_segment"`
+	Quantity        int64   `json:"quantity"`
+	Price           float64 `json:"price"`
+	BuySell         string  `json:"buy_sell"` // "B" for buy, "S" for sell
+	Timestamp       int64   `json:"timestamp"`
+	Status          string
+	PnL             float64 `json:"status"`
 }
 
 // Order represents a trading order.
 type Order struct {
-	ID           string  `json:"id"`
-	InstrumentKey string `json:"instrument_key"`
-	ExchangeSegment string `json:"exchange_segment"`
-	OrderType    string `json:"order_type"` // "MARKET", "LIMIT", etc.
-	Quantity     int64   `json:"quantity"`
-	Price        float64 `json:"price"` // for LIMIT orders
-	BuySell      string  `json:"buy_sell"` // "B" for buy, "S" for sell
-	Status       string  `json:"status"` // "PENDING", "EXECUTED", "CANCELLED", "REJECTED"
-	Timestamp    int64   `json:"timestamp"`
-	TriggerPrice float64 `json:"trigger_price"` // for SL orders
-	Reason       string `json:"reason,omitempty"` // rejection reason
+	ID              string  `json:"id"`
+	InstrumentKey   string  `json:"instrument_key"`
+	ExchangeSegment string  `json:"exchange_segment"`
+	OrderType       string  `json:"order_type"` // "MARKET", "LIMIT", etc.
+	Quantity        int64   `json:"quantity"`
+	Price           float64 `json:"price"`    // for LIMIT orders
+	BuySell         string  `json:"buy_sell"` // "B" for buy, "S" for sell
+	Status          string  `json:"status"`   // "PENDING", "EXECUTED", "CANCELLED", "REJECTED"
+	Timestamp       int64   `json:"timestamp"`
+	TriggerPrice    float64 `json:"trigger_price"`    // for SL orders
+	Reason          string  `json:"reason,omitempty"` // rejection reason
 }
 
 // AvailableMargin represents the available and required margin.
 type AvailableMargin struct {
-	TotalMargin     float64 `json:"total_margin"`      // total margin available
-	UsedMargin      float64 `json:"used_margin"`       // margin currently used
-	AvailableMargin float64 `json:"available_margin"`  // margin available for new orders
-	FundsAvailable  float64 `json:"funds_available"`   // funds available for trading
+	TotalMargin     float64 `json:"total_margin"`     // total margin available
+	UsedMargin      float64 `json:"used_margin"`      // margin currently used
+	AvailableMargin float64 `json:"available_margin"` // margin available for new orders
+	FundsAvailable  float64 `json:"funds_available"`  // funds available for trading
 }
 
 // RiskManager defines the risk management rules.
@@ -95,19 +95,18 @@ type RiskManager interface {
 
 // KotakBroker implements BrokerInterface for Kotak Neo.
 type KotakBroker struct {
-	mu         sync.Mutex
-	api        *APIClient
-	riskMgr    RiskManager
-	session    *Session
-	logger     *slog.Logger
+	mu          sync.Mutex
+	api         *APIClient
+	riskMgr     RiskManager
+	logger      *slog.Logger
 	initialized bool
 }
 
 // APIClient represents the Kotak Neo API client.
 type APIClient struct {
-	baseURL    string
+	baseURL     string
 	accessToken string
-	client     *http.Client
+	client      *http.Client
 }
 
 // Session represents the user session.
@@ -124,29 +123,29 @@ type Session struct {
 // NewKotakBroker creates a new KotakBroker instance.
 func NewKotakBroker(cfg *Config, riskMgr RiskManager) *KotakBroker {
 	return &KotakBroker{
-		api:      NewAPIClient(cfg),
-		riskMgr:  riskMgr,
-		logger:   slog.Default(),
+		api:         NewAPIClient(cfg),
+		riskMgr:     riskMgr,
+		logger:      slog.Default(),
 		initialized: false,
 	}
 }
 
 // Config holds the broker configuration.
 type Config struct {
-	AccessToken      string
-	BaseURL          string
-	PaperMode      bool
-	MaxOrdersPerSecond int
+	AccessToken            string
+	BaseURL                string
+	PaperMode              bool
+	MaxOrdersPerSecond     int
 	MaxExitOrdersPerSecond int
-	SquareOffTime   string // e.g., "15:30:00"
+	SquareOffTime          string // e.g., "15:30:00"
 }
 
 // NewAPIClient creates a new API client.
 func NewAPIClient(cfg *Config) *APIClient {
 	return &APIClient{
-		baseURL:      cfg.BaseURL,
-		accessToken:  cfg.AccessToken,
-		client:     &http.Client{Timeout: 30 * time.Second},
+		baseURL:     cfg.BaseURL,
+		accessToken: cfg.AccessToken,
+		client:      &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -230,7 +229,7 @@ func (kb *KotakBroker) PlaceOrder(order *Order) error {
 }
 
 // ModifyOrder implements BrokerInterface.
-func (kb *KotakBroker) ModifyOrder(order *Order) error {
+func (kb *KotakBroker) ModifyOrder(_ *Order) error {
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
@@ -242,7 +241,7 @@ func (kb *KotakBroker) ModifyOrder(order *Order) error {
 }
 
 // CancelOrder implements BrokerInterface.
-func (kb *KotakBroker) CancelOrder(orderID string) error {
+func (kb *KotakBroker) CancelOrder(_ string) error {
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
@@ -285,7 +284,7 @@ func (kb *KotakBroker) IsMarketHours() (bool, error) {
 	if hour == 15 {
 		isOpen = now.Minute() < 30
 	}
-	
+
 	return isOpen, nil
 }
 
@@ -352,7 +351,7 @@ func (kb *KotakBroker) CheckMargin(requiredMargin float64) error {
 	}
 
 	if requiredMargin > margin.AvailableMargin {
-		return fmt.Errorf("insufficient margin: required %.2f, available %.2f", 
+		return fmt.Errorf("insufficient margin: required %.2f, available %.2f",
 			requiredMargin, margin.AvailableMargin)
 	}
 

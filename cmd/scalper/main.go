@@ -46,7 +46,9 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return err
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "scalper %s go=%s\n", version.String(), runtime.Version())
+		if _, err := fmt.Fprintf(stdout, "scalper %s go=%s\n", version.String(), runtime.Version()); err != nil {
+			return fmt.Errorf("write version: %w", err)
+		}
 		return nil
 	}
 	if *configPath == "" {
@@ -95,13 +97,14 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		log.Warn("logging is degraded", "event", "logging_degraded", "error", logHandle.SinkError())
 	}
 
-	accessToken := strings.TrimSpace(os.Getenv("KOTAK_ACCESS_TOKEN"))
-	hasToken := accessToken != ""
-	if hasToken {
-		log.Info("access token present", "event", "access_token_present")
+	consumerKey := strings.TrimSpace(os.Getenv("KOTAK_CONSUMER_KEY"))
+	mpin := strings.TrimSpace(os.Getenv("KOTAK_MPIN"))
+	hasConsumerKey := consumerKey != ""
+	if hasConsumerKey {
+		log.Info("Kotak consumer key present", "event", "consumer_key_present")
 	} else {
-		log.Warn("KOTAK_ACCESS_TOKEN not set; Kotak login is disabled and trading remains paper",
-			"event", "access_token_missing")
+		log.Warn("KOTAK_CONSUMER_KEY not set; Kotak login is disabled and trading remains paper",
+			"event", "consumer_key_missing")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -136,7 +139,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	scripManager, err := scrip.NewManager(scrip.ManagerConfig{
 		Segments:    cfg.Scrip.Segments,
 		Underlyings: underlyings,
-		Client:      scrip.NewClient(accessToken),
+		Client:      scrip.NewClient(consumerKey),
 		Repository:  st,
 		Logger:      log,
 	})
@@ -146,7 +149,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	if err := scripManager.Load(ctx); err != nil {
 		log.Warn("Scrip Master cache load failed", "event", "scrip_load_failed", "error", err)
 	}
-	if hasToken {
+	if hasConsumerKey {
 		go func() {
 			refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
@@ -155,7 +158,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 			}
 		}()
 	}
-	quotes := market.NewQuotesClient(accessToken, log)
+	quotes := market.NewQuotesClient(consumerKey, log)
 	marketService, err := market.NewService(cfg, scripManager, quotes)
 	if err != nil {
 		return fmt.Errorf("configure live market data: %w", err)
@@ -170,13 +173,14 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	srv, err := web.New(web.Options{
 		Logger:       log,
 		Config:       cfg,
-		AccessToken:  accessToken,
+		ConsumerKey:  consumerKey,
+		MPIN:         mpin,
 		Market:       marketService,
 		Paper:        paperService,
 		HSM:          hsmFeed,
 		DB:           st,
 		LogDegraded:  logHandle.Degraded,
-		TokenPresent: func() bool { return hasToken },
+		TokenPresent: func() bool { return hasConsumerKey },
 	})
 	if err != nil {
 		log.Error("web startup failed", "event", "startup_failed", "error", err)

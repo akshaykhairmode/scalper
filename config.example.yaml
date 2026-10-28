@@ -3,8 +3,9 @@
 # Copy to config.yaml (git-ignored) and adjust. All keys are strict: a typo is a
 # startup error. Relative paths are resolved from the process working directory.
 #
-# KOTAK_ACCESS_TOKEN is read from the environment only. It is required for
-# live Kotak quotes and login. Orders are always paper-only.
+# KOTAK_CONSUMER_KEY is read from the environment only. It is required for
+# Kotak REST requests and login. KOTAK_MPIN is optional; when set, only TOTP is
+# requested in the login dialog. Orders are always paper-only.
 
 app:
   listen: "127.0.0.1:8080"
@@ -25,12 +26,12 @@ kotak:
   mobile_number: "+91XXXXXXXXXX"
   ucc: "XXXXXXXX"
   neo_fin_key: "neotradeapi"
-  # KOTAK_ACCESS_TOKEN is sent with both Kotak login steps.
-  # TOTP and 6-digit MPIN are entered in the UI and never stored.
+  # KOTAK_CONSUMER_KEY is sent with Kotak REST requests and login.
+  # TOTP is entered in the UI; MPIN may be entered there or set via KOTAK_MPIN.
 
 market:
   data_mode: "websocket"     # websocket = REST quotes + authenticated HSM; poll = REST only
-  hsm_url: "wss://sfeed.kotaksecurities.com/wsfeed"
+  hsm_url: ""                 # optional SFeed endpoint override; empty uses Kotak's resolved/default URL
   indices:
     - key: "NIFTY"
       display_name: "NIFTY"
@@ -72,7 +73,7 @@ market:
   chain:
     visible_poll_ms: 1000
     full_poll_ms: 5000
-    batch_size: 50
+    batch_size: 40
     visible_priority: true
   depth:
     enabled: true

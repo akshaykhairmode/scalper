@@ -46,8 +46,8 @@ type Logging struct {
 	Redact            bool   `yaml:"redact"`
 }
 
-// Kotak holds the non-secret parts of the broker identity. The access token is
-// read from KOTAK_ACCESS_TOKEN only; TOTP and MPIN are never configured.
+// Kotak holds the non-secret parts of the broker identity. The consumer key is
+// read from KOTAK_CONSUMER_KEY only; TOTP and MPIN are never configured.
 type Kotak struct {
 	MobileNumber string `yaml:"mobile_number"`
 	UCC          string `yaml:"ucc"`
@@ -206,7 +206,7 @@ func Default() Config {
 		Kotak: Kotak{NeoFinKey: "neotradeapi"},
 		Market: Market{
 			DataMode: "websocket",
-			HSMURL:   "wss://sfeed.kotaksecurities.com/wsfeed",
+			HSMURL:   "",
 			Indices: []Index{
 				{
 					Key: "NIFTY", DisplayName: "NIFTY",
@@ -242,7 +242,7 @@ func Default() Config {
 			Chain: Chain{
 				VisiblePollMS:   1000,
 				FullPollMS:      5000,
-				BatchSize:       50,
+				BatchSize:       40,
 				VisiblePriority: true,
 			},
 			Depth: Depth{Enabled: true, Mode: "poll"},
@@ -304,7 +304,8 @@ func Load(path string) (Config, error) {
 	if path == "" {
 		return Config{}, &errs.ConfigError{Err: errors.New("config path is empty")}
 	}
-	data, err := os.ReadFile(path)
+	// The path is supplied explicitly by the local operator via -config.
+	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return Config{}, &errs.ConfigError{Path: path, Err: fmt.Errorf("read: %w", err)}
 	}
@@ -337,7 +338,7 @@ func LoadBytes(data []byte, path string) (Config, error) {
 	}
 	// Reject a second YAML document: silently ignoring it hides mistakes.
 	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return Config{}, &errs.ConfigError{Path: path, Err: errors.New("multiple YAML documents are not supported")}
 		}

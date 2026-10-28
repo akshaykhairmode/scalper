@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/logging"
@@ -29,7 +31,6 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/version"
-	"github.com/gorilla/websocket"
 )
 
 //go:embed templates/index.html
@@ -43,11 +44,13 @@ type DBPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// MarketAPI is the market data subset used by the web server.
 type MarketAPI interface {
 	Indices(context.Context, string) ([]market.IndexQuote, error)
 	Expiries(string) ([]scrip.ExpiryInfo, error)
 	Chain(context.Context, string, string, string) ([]market.ChainRow, error)
 	Quote(context.Context, string, string) (market.Quote, error)
+	Candles(context.Context, string, string, string) ([]market.Candle, error)
 	Option(string) (scrip.Option, bool)
 	FindOption(string, string) (scrip.Option, bool)
 }
@@ -56,7 +59,8 @@ type MarketAPI interface {
 type Options struct {
 	Logger       *slog.Logger
 	Config       config.Config
-	AccessToken  string
+	ConsumerKey  string
+	MPIN         string
 	AuthClient   auth.KotakAuthenticator
 	Market       MarketAPI
 	Paper        *paper.Service
@@ -72,6 +76,7 @@ type Options struct {
 type Server struct {
 	log          *slog.Logger
 	cfg          config.Config
+	mpin         string
 	db           DBPinger
 	logDegraded  func() bool
 	tokenPresent func() bool
@@ -109,6 +114,7 @@ type bootstrapConfig struct {
 	PayoffRangePct    int              `json:"payoffRangePct"`
 	PayoffPoints      int              `json:"payoffPoints"`
 	Version           string           `json:"version"`
+	MPINConfigured    bool             `json:"mpinConfigured"`
 }
 
 type bootstrapIndex struct {
@@ -121,7 +127,7 @@ type bootstrapIndex struct {
 	DefaultExpiry   string `json:"defaultExpiry"`
 }
 
-func newBootstrap(cfg config.Config) (template.JS, error) {
+func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 	boot := bootstrapConfig{
 		Timeframes:        append([]string(nil), cfg.Charts.Timeframes...),
 		DefaultTimeframe:  cfg.Charts.DefaultTimeframe,
@@ -135,6 +141,7 @@ func newBootstrap(cfg config.Config) (template.JS, error) {
 		PayoffRangePct:    cfg.Trading.RiskView.PayoffRangePct,
 		PayoffPoints:      cfg.Trading.RiskView.PayoffPoints,
 		Version:           version.Version,
+		MPINConfigured:    mpinConfigured,
 	}
 	for _, idx := range cfg.Market.Indices {
 		boot.Indices = append(boot.Indices, bootstrapIndex{
@@ -151,7 +158,8 @@ func newBootstrap(cfg config.Config) (template.JS, error) {
 	if err != nil {
 		return "", fmt.Errorf("web: encode bootstrap config: %w", err)
 	}
-	return template.JS(data), nil
+	// JSON marshaling escapes script-sensitive characters before template.JS.
+	return template.JS(data), nil // #nosec G203
 }
 
 // New builds the handler. It fails only if the embedded templates cannot be
@@ -170,11 +178,11 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
-	bootstrap, err := newBootstrap(opts.Config)
+	bootstrap, err := newBootstrap(opts.Config, strings.TrimSpace(opts.MPIN) != "")
 	if err != nil {
 		return nil, err
 	}
-	authServer := auth.NewServer(opts.Logger, opts.Config, opts.AccessToken)
+	authServer := auth.NewServer(opts.Logger, opts.Config, opts.ConsumerKey)
 	if opts.AuthClient != nil {
 		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient)
 	}
@@ -182,6 +190,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		log:          opts.Logger,
 		cfg:          opts.Config,
+		mpin:         strings.TrimSpace(opts.MPIN),
 		db:           opts.DB,
 		logDegraded:  opts.LogDegraded,
 		tokenPresent: opts.TokenPresent,
@@ -248,6 +257,7 @@ func New(opts Options) (*Server, error) {
 // Handler returns the complete middleware chain.
 func (s *Server) Handler() http.Handler { return s.handler }
 
+// Close stops the server's feed event forwarding and WebSocket clients.
 func (s *Server) Close() {
 	if s.feedCancel != nil {
 		s.feedCancel()
@@ -261,17 +271,18 @@ func (s *Server) Close() {
 }
 
 type pageData struct {
-	Title        string
-	Mode         string
-	Version      string
-	Commit       string
-	Indices      []string
-	Uptime       string
-	Now          string
-	TokenPresent bool
-	LogDegraded  bool
-	DBOK         bool
-	Bootstrap    template.JS
+	Title          string
+	Mode           string
+	Version        string
+	Commit         string
+	Indices        []string
+	Uptime         string
+	Now            string
+	TokenPresent   bool
+	LogDegraded    bool
+	DBOK           bool
+	MPINConfigured bool
+	Bootstrap      template.JS
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -290,17 +301,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		indices = append(indices, idx.Key)
 	}
 	data := pageData{
-		Title:        "Scalper",
-		Mode:         "PAPER",
-		Version:      version.Version,
-		Commit:       version.Commit,
-		Indices:      indices,
-		Uptime:       s.now().Sub(s.started).Round(time.Second).String(),
-		Now:          s.now().In(s.cfg.Location()).Format("15:04:05 IST"),
-		TokenPresent: token,
-		LogDegraded:  s.loggingDegraded(),
-		DBOK:         dbOK,
-		Bootstrap:    s.bootstrap,
+		Title:          "Scalper",
+		Mode:           "PAPER",
+		Version:        version.Version,
+		Commit:         version.Commit,
+		Indices:        indices,
+		Uptime:         s.now().Sub(s.started).Round(time.Second).String(),
+		Now:            s.now().In(s.cfg.Location()).Format("15:04:05 IST"),
+		TokenPresent:   token,
+		LogDegraded:    s.loggingDegraded(),
+		DBOK:           dbOK,
+		MPINConfigured: s.mpin != "",
+		Bootstrap:      s.bootstrap,
 	}
 	var buf strings.Builder
 	if err := s.tmpl.ExecuteTemplate(&buf, "index.html", data); err != nil {
@@ -405,6 +417,10 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
+	if s.mpin != "" {
+		s.finishMPINLogin(w, r, flowID, s.mpin)
+		return
+	}
 	if err := writeJSON(w, http.StatusOK, map[string]bool{"success": true}); err != nil {
 		s.log.Warn("write login response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
@@ -426,13 +442,17 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, auth.ErrNoPendingLogin)
 		return
 	}
-	session, err := s.a.CompleteLogin(r.Context(), flowID, req.MPIN)
+	s.finishMPINLogin(w, r, flowID, req.MPIN)
+}
+
+func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID, mpin string) {
+	session, err := s.a.CompleteLogin(r.Context(), flowID, mpin)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	if s.hsm != nil && s.cfg.Market.DataMode == "websocket" {
-		if err := s.hsm.Start(session.BrokerToken, session.BrokerSID); err != nil {
+		if err := s.hsm.Start(s.cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
 			s.log.Error("start Kotak HSM feed", "event", "hsm_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
@@ -446,7 +466,7 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	clearAuthFlowCookie(w)
 	if err := writeJSON(w, http.StatusOK, resp); err != nil {
-		s.log.Warn("write mpin login response", "event", "http_write_failed", "error", err,
+		s.log.Warn("write login response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
 }
@@ -475,7 +495,7 @@ func authFlowID(w http.ResponseWriter, r *http.Request, create bool) (string, er
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int((5 * time.Minute).Seconds()),
-	})
+	}) // #nosec G124 -- localhost-only app serves over HTTP
 	return value, nil
 }
 
@@ -487,7 +507,7 @@ func clearAuthFlowCookie(w http.ResponseWriter) {
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
-	})
+	}) // #nosec G124 -- localhost-only app serves over HTTP
 }
 
 func writeAuthError(w http.ResponseWriter, err error) {
@@ -495,7 +515,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	var inputErr *auth.InputError
 	var apiErr *auth.APIError
 	switch {
-	case errors.Is(err, auth.ErrMissingAccessToken):
+	case errors.Is(err, auth.ErrMissingConsumerKey):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, auth.ErrNoPendingLogin):
 		status = http.StatusConflict
@@ -555,7 +575,7 @@ func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
 	}
 	session := healthCheck{Status: "unauthenticated", Detail: "login required"}
 	if token {
-		session = healthCheck{Status: "ok", Detail: "access token present; session not established"}
+		session = healthCheck{Status: "ok", Detail: "consumer key present; session not established"}
 	}
 	checks["session"] = session
 
@@ -573,7 +593,7 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 			if rec == nil {
 				return
 			}
-			if rec == http.ErrAbortHandler {
+			if recoveredErr, ok := rec.(error); ok && errors.Is(recoveredErr, http.ErrAbortHandler) {
 				panic(rec)
 			}
 			s.log.Error("panic recovered",

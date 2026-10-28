@@ -1,3 +1,4 @@
+// Package market provides Kotak REST quotes and SFeed market data.
 package market
 
 import (
@@ -13,26 +14,35 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
+// HSMEvent reports feed status changes and market updates.
 type HSMEvent struct {
 	Status string
 	Quote  *hsm.Quote
 }
 
+type hsmSubscription struct {
+	token string
+	index bool
+}
+
+// HSMFeed manages the authenticated Kotak SFeed connection.
 type HSMFeed struct {
 	cfg    config.Config
 	scrips *scrip.Manager
 	log    *slog.Logger
 
-	mu     sync.RWMutex
-	client *hsm.HSMClient
-	token  string
-	sid    string
-	subs   map[string]string
-	events chan HSMEvent
-	cancel func()
-	done   chan struct{}
+	mu      sync.RWMutex
+	client  *hsm.HSMClient
+	user    string
+	auth    string
+	feedURL string
+	subs    map[string]hsmSubscription
+	events  chan HSMEvent
+	cancel  func()
+	done    chan struct{}
 }
 
+// NewHSMFeed creates a market feed using the configured Scrip Master.
 func NewHSMFeed(cfg config.Config, scripts *scrip.Manager, logger *slog.Logger) *HSMFeed {
 	if logger == nil {
 		logger = slog.Default()
@@ -41,21 +51,23 @@ func NewHSMFeed(cfg config.Config, scripts *scrip.Manager, logger *slog.Logger) 
 		cfg:    cfg,
 		scrips: scripts,
 		log:    logger,
-		subs:   make(map[string]string),
+		subs:   make(map[string]hsmSubscription),
 		events: make(chan HSMEvent, 512),
 	}
 }
 
-func (f *HSMFeed) Start(token, sid string) error {
-	if strings.TrimSpace(token) == "" || strings.TrimSpace(sid) == "" {
-		return errors.New("HSM session token and SID are required")
+// Start authenticates and starts the SFeed reconnect loop.
+func (f *HSMFeed) Start(user, auth, feedURL string) error {
+	if strings.TrimSpace(user) == "" || strings.TrimSpace(auth) == "" {
+		return errors.New("SFeed user and auth values are required")
 	}
 	f.mu.Lock()
 	if f.cancel != nil {
 		f.mu.Unlock()
 		return errors.New("HSM feed is already started")
 	}
-	f.token, f.sid = token, sid
+	f.user, f.auth = strings.TrimSpace(user), strings.TrimSpace(auth)
+	f.feedURL = strings.TrimSpace(feedURL)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	f.cancel = cancel
@@ -68,6 +80,7 @@ func (f *HSMFeed) Start(token, sid string) error {
 	return nil
 }
 
+// Stop closes the feed and waits for its reconnect loop to exit.
 func (f *HSMFeed) Stop() {
 	f.mu.Lock()
 	client := f.client
@@ -86,7 +99,7 @@ func (f *HSMFeed) Stop() {
 	f.mu.Lock()
 	if f.done == done {
 		f.client = nil
-		f.token, f.sid = "", ""
+		f.user, f.auth, f.feedURL = "", "", ""
 		f.cancel = nil
 		f.done = nil
 	}
@@ -94,10 +107,12 @@ func (f *HSMFeed) Stop() {
 	f.emit(HSMEvent{Status: "polling"})
 }
 
+// Events returns the feed status and market update stream.
 func (f *HSMFeed) Events() <-chan HSMEvent {
 	return f.events
 }
 
+// IsConnected reports whether the SFeed socket is authenticated.
 func (f *HSMFeed) IsConnected() bool {
 	f.mu.RLock()
 	client := f.client
@@ -105,8 +120,9 @@ func (f *HSMFeed) IsConnected() bool {
 	return client != nil && client.IsConnected()
 }
 
+// Subscribe adds instrument keys to the feed subscription set.
 func (f *HSMFeed) Subscribe(keys []string) error {
-	var subscribe []string
+	var scripTokens, indexTokens []string
 	f.mu.Lock()
 	client := f.client
 	for _, key := range keys {
@@ -114,7 +130,7 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 		if key == "" {
 			continue
 		}
-		topic, err := f.topicForKey(key)
+		subscription, err := f.topicForKey(key)
 		if err != nil {
 			f.mu.Unlock()
 			return err
@@ -122,32 +138,56 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 		if _, exists := f.subs[key]; exists {
 			continue
 		}
-		f.subs[key] = topic
-		subscribe = append(subscribe, topic)
+		f.subs[key] = subscription
+		if subscription.index {
+			indexTokens = append(indexTokens, subscription.token)
+		} else {
+			scripTokens = append(scripTokens, subscription.token)
+		}
 	}
 	f.mu.Unlock()
-	if len(subscribe) > 0 && client != nil && client.IsConnected() {
-		if err := client.Subscribe(subscribe); err != nil {
-			return err
+	if client != nil && client.IsConnected() {
+		if len(indexTokens) > 0 {
+			if err := client.SubscribeIndices(indexTokens); err != nil {
+				return err
+			}
+		}
+		if len(scripTokens) > 0 {
+			if err := client.SubscribeScrips(scripTokens); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
+// Unsubscribe removes instrument keys from the feed subscription set.
 func (f *HSMFeed) Unsubscribe(keys []string) error {
-	var unsubscribe []string
+	var scripTokens, indexTokens []string
 	f.mu.Lock()
 	client := f.client
 	for _, key := range keys {
-		if topic, ok := f.subs[key]; ok {
-			unsubscribe = append(unsubscribe, topic)
+		key = strings.TrimSpace(key)
+		if subscription, ok := f.subs[key]; ok {
+			if subscription.index {
+				indexTokens = append(indexTokens, subscription.token)
+			} else {
+				scripTokens = append(scripTokens, subscription.token)
+			}
 			delete(f.subs, key)
 		}
 	}
 	f.mu.Unlock()
-	if len(unsubscribe) > 0 && client != nil && client.IsConnected() {
-		if err := client.Unsubscribe(unsubscribe); err != nil {
-			return err
+	if client != nil && client.IsConnected() {
+		if len(indexTokens) > 0 {
+			if err := client.UnsubscribeIndices(indexTokens); err != nil {
+				return err
+			}
+		}
+		if len(scripTokens) > 0 {
+			if err := client.UnsubscribeScrips(scripTokens); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -162,11 +202,11 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 		default:
 		}
 		quotes := make(chan *hsm.Quote, 256)
-		client := hsm.NewHSMClientWithLogger(f.cfg.Market.HSMURL, quotes, f.log)
+		client := hsm.NewHSMClientWithLogger(f.feedEndpoint(), quotes, f.log)
 		f.mu.RLock()
-		token, sid := f.token, f.sid
+		user, auth := f.user, f.auth
 		f.mu.RUnlock()
-		connectErr := client.Connect(ctx, token, sid)
+		connectErr := client.Connect(ctx, user, auth)
 		if connectErr != nil {
 			client.Stop()
 			f.emit(HSMEvent{Status: "degraded"})
@@ -189,33 +229,53 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 			return
 		}
 		f.client = client
-		topics := make([]string, 0, len(f.subs)+len(f.cfg.Market.Indices))
-		seen := make(map[string]bool)
+		indexTokens := make([]string, 0, len(f.cfg.Market.Indices))
+		scripTokens := make([]string, 0, len(f.subs))
 		for _, index := range f.cfg.Market.Indices {
-			topic := "if|" + index.IndexSegment + "|" + index.IndexSymbol
-			if !seen[topic] {
-				topics = append(topics, topic)
-				seen[topic] = true
-			}
+			indexTokens = append(indexTokens, index.IndexSegment+"|"+index.IndexSymbol)
 		}
-		for _, topic := range f.subs {
-			if !seen[topic] {
-				topics = append(topics, topic)
-				seen[topic] = true
+		for _, subscription := range f.subs {
+			if subscription.index {
+				indexTokens = append(indexTokens, subscription.token)
+			} else {
+				scripTokens = append(scripTokens, subscription.token)
 			}
 		}
 		f.mu.Unlock()
-		if err := client.Subscribe(topics); err != nil {
+		if err := client.SubscribeIndices(indexTokens); err != nil {
+			f.log.Error("Kotak SFeed index subscription failed", "event", "sfeed_subscribe_failed", "error", err)
+			f.emit(HSMEvent{Status: "degraded"})
+			f.clearClient(client)
+			client.Stop()
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		if err := client.SubscribeScrips(scripTokens); err != nil {
 			f.log.Error("Kotak HSM initial subscription failed", "event", "hsm_subscribe_failed", "error", err)
 			f.emit(HSMEvent{Status: "degraded"})
 			f.clearClient(client)
 			client.Stop()
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
 			continue
 		}
 		backoff = time.Second
 		f.emit(HSMEvent{Status: "live"})
 		f.log.Info("Kotak HSM subscriptions active",
-			"event", "hsm_subscribed", "count", len(topics))
+			"event", "sfeed_subscribed", "index_count", len(indexTokens), "scrip_count", len(scripTokens))
 		disconnected := false
 		for !disconnected {
 			select {
@@ -262,15 +322,33 @@ func (f *HSMFeed) clearClient(client *hsm.HSMClient) {
 	f.mu.Unlock()
 }
 
-func (f *HSMFeed) topicForKey(key string) (string, error) {
-	if option, ok := f.scrips.Option(key); ok {
-		return "sf|" + option.ExchangeSegment + "|" + option.PSymbol, nil
+func (f *HSMFeed) topicForKey(key string) (hsmSubscription, error) {
+	if f.scrips != nil {
+		if option, ok := f.scrips.Option(key); ok {
+			return hsmSubscription{token: option.ExchangeSegment + "|" + option.PSymbol}, nil
+		}
 	}
 	for _, index := range f.cfg.Market.Indices {
 		spotKey := index.IndexSegment + "|" + index.ScripName
 		if key == spotKey {
-			return "if|" + index.IndexSegment + "|" + index.IndexSymbol, nil
+			return hsmSubscription{
+				token: index.IndexSegment + "|" + index.IndexSymbol,
+				index: true,
+			}, nil
 		}
 	}
-	return "", errors.New("instrument is not available for HSM subscription")
+	return hsmSubscription{}, errors.New("instrument is not available for HSM subscription")
+}
+
+func (f *HSMFeed) feedEndpoint() string {
+	f.mu.RLock()
+	sessionURL := f.feedURL
+	f.mu.RUnlock()
+	if configured := strings.TrimSpace(f.cfg.Market.HSMURL); configured != "" {
+		return configured
+	}
+	if sessionURL != "" {
+		return sessionURL
+	}
+	return hsm.DefaultURL
 }

@@ -105,7 +105,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 		if errors.Is(err, io.EOF) {
 			return SegmentData{}, fmt.Errorf("%w: %s: file is empty", ErrSchema, segment)
 		}
-		return SegmentData{}, fmt.Errorf("%w: %s: read header: %v", ErrSchema, segment, err)
+		return SegmentData{}, fmt.Errorf("%w: %s: read header: %w", ErrSchema, segment, err)
 	}
 	cols, err := buildColumns(header)
 	if err != nil {
@@ -123,7 +123,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 		}
 		line++
 		if err != nil {
-			return SegmentData{}, fmt.Errorf("%w: %s line %d: %v", ErrSchema, segment, line, err)
+			return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
 		}
 		if len(record) < len(header) {
 			return SegmentData{}, fmt.Errorf("%w: %s line %d: %d fields, want %d",
@@ -145,7 +145,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 		if instType == "OPTIDX" {
 			opt, matched, err := parseOptionRow(segment, record, cols, name, underlyings, cfg)
 			if err != nil {
-				return SegmentData{}, fmt.Errorf("%w: %s line %d: %v", ErrSchema, segment, line, err)
+				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
 			}
 			if !matched {
 				data.Skipped++
@@ -167,7 +167,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 		if instType == "" {
 			spot, matched, err := parseSpotRow(segment, record, cols, name, underlyings)
 			if err != nil {
-				return SegmentData{}, fmt.Errorf("%w: %s line %d: %v", ErrSchema, segment, line, err)
+				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
 			}
 			if !matched {
 				data.Skipped++

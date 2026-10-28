@@ -8,5 +8,5 @@ kotak-neo-api-v2.md
 GO_STANDARDS.md
 *.png
 data
-scalper.log
+logs
 config.yaml

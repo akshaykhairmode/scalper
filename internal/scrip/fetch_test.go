@@ -75,7 +75,7 @@ func TestClientListFilesErrors(t *testing.T) {
 		if !errors.As(err, &be) {
 			t.Fatalf("err = %T %v", err, err)
 		}
-		if !be.Retryable || be.StatusCode != 500 || !strings.Contains(be.Message, "boom") {
+		if !be.Retryable || be.StatusCode != http.StatusInternalServerError || !strings.Contains(be.Message, "boom") {
 			t.Fatalf("broker error = %+v", be)
 		}
 	})
@@ -169,7 +169,7 @@ func TestClientDownload(t *testing.T) {
 }
 
 func TestClientDownloadEmptyBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
 	c := NewClient("t")
 	c.HTTP = srv.Client()
@@ -181,15 +181,15 @@ func TestClientDownloadEmptyBody(t *testing.T) {
 
 func TestSegmentForURL(t *testing.T) {
 	cases := map[string]string{
-		"https://x/prod/2025-01-22/transformed/nse_fo.csv":         SegmentNSEFO,
-		"https://x/prod/2025-01-22/transformed/bse_fo.csv":         SegmentBSEFO,
-		"https://x/prod/2025-01-22/transformed/nse_cm.csv":         SegmentNSECM,
-		"https://x/prod/2025-01-22/transformed-v1/nse_cm-v1.csv":   SegmentNSECM,
-		"https://x/prod/2025-01-22/transformed/nse_com.csv":        SegmentNSECM,
-		"https://x/prod/2025-01-22/transformed/bse_cm.csv":         SegmentBSECM,
-		"https://x/prod/2025-01-22/transformed/cde_fo.csv":         "",
-		"https://x/prod/2025-01-22/transformed/mcx_fo.csv":         "",
-		"http://x/nse_fo-v1.csv":                                   SegmentNSEFO,
+		"https://x/prod/2025-01-22/transformed/nse_fo.csv":       SegmentNSEFO,
+		"https://x/prod/2025-01-22/transformed/bse_fo.csv":       SegmentBSEFO,
+		"https://x/prod/2025-01-22/transformed/nse_cm.csv":       SegmentNSECM,
+		"https://x/prod/2025-01-22/transformed-v1/nse_cm-v1.csv": SegmentNSECM,
+		"https://x/prod/2025-01-22/transformed/nse_com.csv":      SegmentNSECM,
+		"https://x/prod/2025-01-22/transformed/bse_cm.csv":       SegmentBSECM,
+		"https://x/prod/2025-01-22/transformed/cde_fo.csv":       "",
+		"https://x/prod/2025-01-22/transformed/mcx_fo.csv":       "",
+		"http://x/nse_fo-v1.csv":                                 SegmentNSEFO,
 	}
 	for in, want := range cases {
 		got, ok := SegmentForURL(in)
@@ -210,11 +210,11 @@ func TestSelectFiles(t *testing.T) {
 		"https://x/bse_fo.csv",
 		"https://x/mcx_fo.csv",
 	}
-	got, err := SelectFiles(paths, []string{SegmentNSEFO, SegmentBSEFO, SegmentNSECM, SegmentBSECM})
+	_, err := SelectFiles(paths, []string{SegmentNSEFO, SegmentBSEFO, SegmentNSECM, SegmentBSECM})
 	if err == nil {
 		t.Fatal("missing bse_cm should fail")
 	}
-	got, err = SelectFiles(paths, []string{SegmentNSECM, SegmentBSEFO})
+	got, err := SelectFiles(paths, []string{SegmentNSECM, SegmentBSEFO})
 	if err != nil {
 		t.Fatalf("SelectFiles: %v", err)
 	}

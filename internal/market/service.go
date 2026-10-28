@@ -5,17 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
+// Service combines Scrip Master data with Kotak market quotes.
 type Service struct {
 	cfg    config.Config
 	scrips *scrip.Manager
 	client *QuotesClient
 }
 
+// NewService creates a market data service.
 func NewService(cfg config.Config, scripts *scrip.Manager, client *QuotesClient) (*Service, error) {
 	if scripts == nil {
 		return nil, errors.New("market: scrip master is required")
@@ -26,6 +29,7 @@ func NewService(cfg config.Config, scripts *scrip.Manager, client *QuotesClient)
 	return &Service{cfg: cfg, scrips: scripts, client: client}, nil
 }
 
+// IndexQuote is a normalized quote for a configured market index.
 type IndexQuote struct {
 	Key             string  `json:"key"`
 	DisplayName     string  `json:"display_name"`
@@ -42,6 +46,7 @@ type IndexQuote struct {
 	UpdatedAt       int64   `json:"updated_at"`
 }
 
+// OptionQuote is a normalized quote for an option contract.
 type OptionQuote struct {
 	InstrumentKey   string  `json:"instrument_key"`
 	ExchangeSegment string  `json:"exchange_segment"`
@@ -64,10 +69,22 @@ type OptionQuote struct {
 	QuoteAvailable  bool    `json:"quote_available"`
 }
 
+// ChainRow holds the call and put quotes for one strike.
 type ChainRow struct {
 	Strike float64      `json:"strike"`
 	Call   *OptionQuote `json:"call,omitempty"`
 	Put    *OptionQuote `json:"put,omitempty"`
+}
+
+// Candle is one normalized historical OHLCV bar.
+type Candle struct {
+	Time         int64   `json:"time"`
+	Open         float64 `json:"open"`
+	High         float64 `json:"high"`
+	Low          float64 `json:"low"`
+	Close        float64 `json:"close"`
+	Volume       int64   `json:"volume"`
+	OpenInterest int64   `json:"oi,omitempty"`
 }
 
 type keyedInstrument struct {
@@ -75,6 +92,7 @@ type keyedInstrument struct {
 	instrument QuoteInstrument
 }
 
+// Indices fetches the latest quotes for configured indices.
 func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, error) {
 	instruments := make([]QuoteInstrument, 0, len(s.cfg.Market.Indices))
 	for _, index := range s.cfg.Market.Indices {
@@ -112,13 +130,14 @@ func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, er
 		result = append(result, item)
 	}
 	if available == 0 {
-		return nil, errors.New("Kotak returned no live quotes for configured indices")
+		return nil, errors.New("kotak returned no live quotes for configured indices")
 	}
 	return result, nil
 }
 
+// Expiries returns the available expiries for a configured index.
 func (s *Service) Expiries(indexKey string) ([]scrip.ExpiryInfo, error) {
-	if _, ok := s.configuredIndex(indexKey); !ok {
+	if !s.configuredIndex(indexKey) {
 		return nil, fmt.Errorf("unknown index %q", indexKey)
 	}
 	expiries := s.scrips.Expiries(indexKey)
@@ -128,8 +147,9 @@ func (s *Service) Expiries(indexKey string) ([]scrip.ExpiryInfo, error) {
 	return expiries, nil
 }
 
+// Chain fetches option quotes for a configured index and expiry.
 func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) ([]ChainRow, error) {
-	if _, ok := s.configuredIndex(indexKey); !ok {
+	if !s.configuredIndex(indexKey) {
 		return nil, fmt.Errorf("unknown index %q", indexKey)
 	}
 	if !s.validExpiry(indexKey, expiry) {
@@ -194,7 +214,7 @@ func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) (
 			row.Put = converted
 		}
 	}
-	sortStrikeRows(strikes, byStrike)
+	sortStrikeRows(strikes)
 	result := make([]ChainRow, 0, len(strikes))
 	for _, strike := range strikes {
 		result = append(result, *byStrike[strike])
@@ -202,6 +222,7 @@ func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) (
 	return result, nil
 }
 
+// Quote fetches the latest quote for one Scrip Master instrument.
 func (s *Service) Quote(ctx context.Context, baseURL, instrumentKey string) (Quote, error) {
 	option, ok := s.scrips.Option(instrumentKey)
 	if !ok {
@@ -216,18 +237,85 @@ func (s *Service) Quote(ctx context.Context, baseURL, instrumentKey string) (Quo
 	}
 	quote, ok := quotes[quoteKey(option.ExchangeSegment, option.PSymbol)]
 	if !ok {
-		return Quote{}, fmt.Errorf("Kotak returned no live quote for %s", option.PTrdSymbol)
+		return Quote{}, fmt.Errorf("kotak returned no live quote for %s", option.PTrdSymbol)
 	}
 	if quote.LTP <= 0 {
-		return Quote{}, fmt.Errorf("Kotak live quote for %s has no positive LTP", option.PTrdSymbol)
+		return Quote{}, fmt.Errorf("kotak live quote for %s has no positive LTP", option.PTrdSymbol)
 	}
 	return quote, nil
 }
 
+// Candles fetches recent historical candles for an option or configured spot.
+func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe string) ([]Candle, error) {
+	interval, maxDays, ok := historicalTimeframe(timeframe)
+	if !ok {
+		return nil, fmt.Errorf("unsupported chart timeframe %q", timeframe)
+	}
+	var segment, symbol string
+	if option, found := s.scrips.Option(instrumentKey); found {
+		segment, symbol = option.ExchangeSegment, option.PSymbol
+	} else {
+		spot, found := s.scrips.Spot(instrumentKey)
+		if !found {
+			spot, found = s.configuredSpot(instrumentKey)
+		}
+		if !found {
+			return nil, fmt.Errorf("unknown market instrument %q", instrumentKey)
+		}
+		segment, symbol = spot.ExchangeSegment, spot.PSymbol
+	}
+	if segment == "" || symbol == "" {
+		return nil, fmt.Errorf("market instrument %q has no Kotak pSymbol", instrumentKey)
+	}
+	days := s.cfg.Charts.RetentionDays
+	if days <= 0 || days > maxDays {
+		days = maxDays
+	}
+	now := time.Now().In(time.FixedZone("IST", 5*60*60+30*60))
+	fromDate := now.AddDate(0, 0, -days).Format("2006-01-02")
+	toDate := now.Format("2006-01-02")
+	return s.client.Historical(ctx, baseURL, segment+"|"+symbol, interval, fromDate, toDate)
+}
+
+func (s *Service) configuredSpot(instrumentKey string) (scrip.Spot, bool) {
+	for _, index := range s.cfg.Market.Indices {
+		name := strings.TrimSpace(index.ScripName)
+		if name == "" {
+			name = index.Key
+		}
+		if instrumentKey != index.IndexSegment+"|"+name && instrumentKey != scrip.SpotKey(index.IndexSegment, name) {
+			continue
+		}
+		if spot, ok := s.scrips.FindSpot(index.IndexSegment, name); ok {
+			return spot, true
+		}
+	}
+	return scrip.Spot{}, false
+}
+
+func historicalTimeframe(timeframe string) (string, int, bool) {
+	switch timeframe {
+	case "1m":
+		return "1min", 30, true
+	case "3m":
+		return "3min", 30, true
+	case "5m":
+		return "5min", 30, true
+	case "15m":
+		return "15min", 60, true
+	case "1h":
+		return "60min", 90, true
+	default:
+		return "", 0, false
+	}
+}
+
+// Option looks up an instrument in the Scrip Master by its canonical key.
 func (s *Service) Option(instrumentKey string) (scrip.Option, bool) {
 	return s.scrips.Option(instrumentKey)
 }
 
+// FindOption looks up an instrument by exchange segment and broker symbol.
 func (s *Service) FindOption(segment, symbol string) (scrip.Option, bool) {
 	return s.scrips.FindOption(segment, symbol)
 }
@@ -286,13 +374,13 @@ func quoteKey(segment, symbol string) string {
 	return strings.ToUpper(strings.TrimSpace(segment)) + "|" + normalizeSymbol(symbol)
 }
 
-func (s *Service) configuredIndex(key string) (config.Index, bool) {
+func (s *Service) configuredIndex(key string) bool {
 	for _, index := range s.cfg.Market.Indices {
 		if index.Key == key {
-			return index, true
+			return true
 		}
 	}
-	return config.Index{}, false
+	return false
 }
 
 func (s *Service) validExpiry(indexKey, expiry string) bool {
@@ -304,7 +392,7 @@ func (s *Service) validExpiry(indexKey, expiry string) bool {
 	return false
 }
 
-func sortStrikeRows(strikes []int64, rows map[int64]*ChainRow) {
+func sortStrikeRows(strikes []int64) {
 	for i := 1; i < len(strikes); i++ {
 		for j := i; j > 0 && strikes[j] < strikes[j-1]; j-- {
 			strikes[j], strikes[j-1] = strikes[j-1], strikes[j]

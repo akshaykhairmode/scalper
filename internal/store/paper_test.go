@@ -28,7 +28,7 @@ func TestPaperOrderUsesCashAndRealisesPnL(t *testing.T) {
 		OptionType:      scrip.Call,
 		LotSize:         25,
 	}
-	place := func(side, intent string, quantity int64, price float64) paper.Order {
+	place := func(side, intent string, quantity int64, price float64) {
 		t.Helper()
 		order, err := service.PlaceOrder(ctx, paper.OrderRequest{
 			Instrument: instrument,
@@ -44,7 +44,6 @@ func TestPaperOrderUsesCashAndRealisesPnL(t *testing.T) {
 		if order.Status != "EXECUTED" || order.Mode != "paper" || order.Price != price {
 			t.Fatalf("paper order = %+v", order)
 		}
-		return order
 	}
 
 	place("B", "ENTRY", 50, 100)
