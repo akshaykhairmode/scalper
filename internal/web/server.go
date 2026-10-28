@@ -115,6 +115,13 @@ type bootstrapConfig struct {
 	PayoffPoints      int              `json:"payoffPoints"`
 	Version           string           `json:"version"`
 	MPINConfigured    bool             `json:"mpinConfigured"`
+	MarketSession     bootstrapSession `json:"marketSession"`
+}
+
+type bootstrapSession struct {
+	Open     string   `json:"open"`
+	Close    string   `json:"close"`
+	Holidays []string `json:"holidays"`
 }
 
 type bootstrapIndex struct {
@@ -142,6 +149,11 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 		PayoffPoints:      cfg.Trading.RiskView.PayoffPoints,
 		Version:           version.Version,
 		MPINConfigured:    mpinConfigured,
+		MarketSession: bootstrapSession{
+			Open:     cfg.Trading.Session.Open,
+			Close:    cfg.Trading.Session.Close,
+			Holidays: append([]string(nil), cfg.Market.Holidays...),
+		},
 	}
 	for _, idx := range cfg.Market.Indices {
 		boot.Indices = append(boot.Indices, bootstrapIndex{

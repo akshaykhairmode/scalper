@@ -49,12 +49,20 @@
     <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe"></div>
 
     <span class="atm-chip">ATM <b id="atm-value">—</b></span>
+    <label class="select-field compact product-control">
+      <span>PRODUCT</span>
+      <select id="product-select">
+        <option value="MIS">MIS</option>
+        <option value="NRML">NRML</option>
+      </select>
+    </label>
+    <button type="button" class="ghost small" id="strike-search-button" title="Search a strike (/)">Strike <kbd>/</kbd></button>
     <span class="toolbar-spacer"></span>
     <button type="button" class="ghost small" id="refresh-button" title="Refresh chain">Refresh</button>
     <button type="button" class="ghost small" id="fullscreen-button">Fullscreen</button>
   </nav>
 
-  <main class="terminal chain-collapsed bottom-collapsed">
+  <main class="terminal bottom-collapsed">
     <section class="charts-row" id="charts-row" aria-label="Charts">
       <article class="pane" data-pane="ce">
         <div class="pane-head">
@@ -77,29 +85,22 @@
           </div>
           <div class="chart-hint" id="hint-ce">Collecting live candles…</div>
         </div>
-      </article>
-
-      <article class="pane" data-pane="spot">
-        <div class="pane-head">
-          <div class="pane-id">
-            <span class="pane-title" id="spot-title">SPOT</span>
-            <span class="pane-sub" id="spot-sub">index</span>
+        <section class="leg-orderpad call" aria-label="Call order pad">
+          <div class="leg-order-info">
+            <span class="leg-name" id="leg-call-name">CALL</span>
+            <span class="leg-size" id="leg-call-size">Select a strike</span>
           </div>
-          <div class="pane-quote">
-            <span class="pane-ltp" id="spot-ltp">—</span>
-            <span class="pane-change" id="spot-change">—</span>
+          <div class="leg-order-actions">
+            <div class="lot-control">
+              <span>LOTS</span>
+              <button type="button" data-qty-step="CE" data-step="-1" aria-label="Decrease call lots">−</button>
+              <input id="call-lots" data-lots="CE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Call lots">
+              <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call lots">+</button>
+            </div>
+            <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
+            <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
           </div>
-        </div>
-        <div class="chart-frame">
-          <canvas id="chart-spot"></canvas>
-          <div class="chart-tools" aria-label="SPOT chart zoom controls">
-            <button type="button" data-chart="spot" data-chart-action="in" title="Zoom in (time + price)" aria-label="Zoom in time and price">+</button>
-            <button type="button" data-chart="spot" data-chart-action="out" title="Zoom out (time + price)" aria-label="Zoom out time and price">−</button>
-            <button type="button" data-chart="spot" data-chart-action="reset" title="Reset time + price zoom" aria-label="Reset time and price zoom">↺</button>
-            <button type="button" data-chart="spot" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
-          </div>
-          <div class="chart-hint" id="hint-spot">Collecting live candles…</div>
-        </div>
+        </section>
       </article>
 
       <article class="pane" data-pane="pe">
@@ -123,113 +124,23 @@
           </div>
           <div class="chart-hint" id="hint-pe">Collecting live candles…</div>
         </div>
-      </article>
-    </section>
-
-    <section class="middle-grid">
-      <details class="panel chain-panel" id="chain-panel" aria-label="Option chain">
-        <summary class="panel-head chain-summary">
-          <div class="chain-summary-title">
-            <h2>Strike ladder</h2>
-            <span class="panel-sub" id="chain-sub">all strikes · polled</span>
-          </div>
-          <span class="chain-summary-meta">
-            <span class="panel-meta" id="chain-meta">—</span>
-            <span class="chain-toggle" aria-hidden="true"></span>
-          </span>
-        </summary>
-        <div class="chain-head" role="row">
-          <span class="col-ce">CE LTP</span>
-          <span class="col-ce">CE %</span>
-          <span class="col-ce">CE OI</span>
-          <span class="col-strike">STRIKE</span>
-          <span class="col-pe">PE LTP</span>
-          <span class="col-pe">PE %</span>
-          <span class="col-pe">PE OI</span>
-        </div>
-        <div class="chain-body" id="chain-body" role="table" tabindex="0">
-          <div class="empty-state">Waiting for the option chain…</div>
-        </div>
-      </details>
-
-      <aside class="panel orderpad" aria-label="Order pad">
-        <div class="orderpad-head">
-          <div>
-            <h2>Order pad</h2>
-            <div class="op-contract" id="op-contract">Select a strike</div>
-            <div class="op-sub" id="op-lot">—</div>
-          </div>
-          <div class="qty-control">
-            <span class="metric-label">QTY</span>
-            <div class="stepper">
-              <button type="button" id="qty-minus" aria-label="Decrease quantity">−</button>
-              <input id="qty-input" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Quantity">
-              <button type="button" id="qty-plus" aria-label="Increase quantity">+</button>
-            </div>
-            <div class="unit-toggle" role="group" aria-label="Quantity unit">
-              <button type="button" data-unit="lots" class="active">Lots</button>
-              <button type="button" data-unit="shares">Shares</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="op-toolbar">
-          <label class="select-field compact">
-            <span>PRODUCT</span>
-            <select id="product-select">
-              <option value="MIS">MIS</option>
-              <option value="NRML">NRML</option>
-            </select>
-          </label>
-          <div class="op-available">
-            <span class="metric-label">AVAILABLE</span>
-            <b id="op-available">—</b>
-            <span class="op-shares" id="op-shares">—</span>
-          </div>
-        </div>
-
-        <div class="leg-block call" id="leg-call">
-          <div class="leg-head">
-            <span class="leg-name" id="leg-call-name">CALL</span>
-            <span class="leg-ltp">LTP <b id="leg-call-ltp">—</b></span>
-            <span class="leg-change" id="leg-call-change">—</span>
-          </div>
-          <div class="leg-preview">
-            <span>Buy <b id="call-buy-value">—</b> <em>premium</em></span>
-            <span>Sell <b id="call-sell-value">—</b> <em>margin</em></span>
-            <span>After buy <b id="call-after-value">—</b></span>
-          </div>
-          <div class="leg-actions">
-            <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
-            <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
-          </div>
-        </div>
-
-        <div class="leg-block put" id="leg-put">
-          <div class="leg-head">
+        <section class="leg-orderpad put" aria-label="Put order pad">
+          <div class="leg-order-info">
             <span class="leg-name" id="leg-put-name">PUT</span>
-            <span class="leg-ltp">LTP <b id="leg-put-ltp">—</b></span>
-            <span class="leg-change" id="leg-put-change">—</span>
+            <span class="leg-size" id="leg-put-size">Select a strike</span>
           </div>
-          <div class="leg-preview">
-            <span>Buy <b id="put-buy-value">—</b> <em>premium</em></span>
-            <span>Sell <b id="put-sell-value">—</b> <em>margin</em></span>
-            <span>After buy <b id="put-after-value">—</b></span>
-          </div>
-          <div class="leg-actions">
+          <div class="leg-order-actions">
+            <div class="lot-control">
+              <span>LOTS</span>
+              <button type="button" data-qty-step="PE" data-step="-1" aria-label="Decrease put lots">−</button>
+              <input id="put-lots" data-lots="PE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Put lots">
+              <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put lots">+</button>
+            </div>
             <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
             <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>
           </div>
-        </div>
-
-        <div class="risk-preview">
-          <div class="risk-line" id="risk-preview-line">
-            <span class="metric-label">AT EXPIRY · GROSS</span>
-            <span id="risk-preview-text">Select a strike to preview max profit / loss.</span>
-          </div>
-          <span class="risk-note">theoretical · informational only</span>
-        </div>
-      </aside>
+        </section>
+      </article>
     </section>
 
     <section class="panel bottom-panel bottom-collapsed" id="bottom-panel" aria-label="Positions and books">
@@ -244,8 +155,8 @@
         </div>
         <div class="bottom-actions">
           <span class="paper-note" id="paper-note">paper P&amp;L is gross of charges</span>
-          <button type="button" class="danger" id="square-off-button">SQUARE OFF ALL</button>
         </div>
+        <button type="button" class="danger square-off-button" id="square-off-button">SQUARE OFF ALL</button>
         <button type="button" class="ghost small bottom-toggle" id="bottom-toggle" aria-controls="tab-content" aria-expanded="false">Expand</button>
       </div>
       <div class="tab-content" id="tab-content">
@@ -322,6 +233,33 @@
         <button type="button" class="primary" id="confirm-ok">Confirm</button>
       </div>
     </div>
+  </div>
+
+  <!-- Strike search modal -->
+  <div class="modal-backdrop" id="strike-modal" hidden>
+    <section class="modal strike-modal" role="dialog" aria-modal="true" aria-labelledby="strike-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">OPTION CHAIN · / TO SEARCH</span>
+          <h2 id="strike-title">Choose a strike</h2>
+        </div>
+        <button type="button" class="icon-button" id="strike-close" aria-label="Close strike search">×</button>
+      </div>
+      <label class="strike-search">
+        <span class="sr-only">Search strike price</span>
+        <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Type a strike, e.g. 22500">
+        <span>Enter selects the matching strike · choose CALL or PUT</span>
+      </label>
+      <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
+      <div class="chain-head" role="row">
+        <span class="col-ce">CALL</span>
+        <span class="col-strike">STRIKE</span>
+        <span class="col-pe">PUT</span>
+      </div>
+      <div class="chain-body" id="chain-body" role="table" tabindex="0">
+        <div class="empty-state">Waiting for the option chain…</div>
+      </div>
+    </section>
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>

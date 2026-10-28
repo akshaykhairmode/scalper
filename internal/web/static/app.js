@@ -75,8 +75,7 @@ const S = {
   chain: [],
   spots: new Map(),
   selected: { strike: null, type: "CE", call: null, put: null },
-  preview: { type: "CE", side: "B" },
-  qty: { unit: "lots", lots: 1, shares: 75 },
+  qty: { CE: 1, PE: 1 },
   product: "MIS",
   positions: [],
   orders: [],
@@ -93,7 +92,9 @@ const S = {
   feedSubscriptions: [],
   charts: {},
   candles: {},
-  lastFetch: 0,
+  historicalCache: new Map(),
+  chartLoadID: 0,
+  marketOpen: null,
   focusedChart: null,
 };
 
@@ -276,15 +277,20 @@ function init() {
   initTheme();
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
-  S.qty.unit = S.boot.defaultUnit === "shares" ? "shares" : "lots";
-  S.qty.lots = Math.max(1, num(S.boot.defaultLots, 1));
+  const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
+  S.qty.CE = defaultLots;
+  S.qty.PE = defaultLots;
   S.activeIndex = S.boot.indices?.[0]?.key || "NIFTY";
 
+  updateMarketPhase(false);
   buildTimeframes();
   buildCharts();
   bindEvents();
   updateClock();
-  window.setInterval(updateClock, 1000);
+  window.setInterval(() => {
+    updateClock();
+    updateMarketPhase();
+  }, 1000);
   checkSession();
   window.setInterval(refreshSession, 30000);
   loadMarket();
@@ -325,7 +331,6 @@ function buildTimeframes() {
 
 function buildCharts() {
   S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false });
   S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true });
 }
 
@@ -387,7 +392,7 @@ function updateAuthButton() {
 async function loadMarket() {
   try {
     await loadFromAPI();
-    S.feed = "polling";
+    if (S.feed !== "live") S.feed = S.session?.authenticated ? "connecting" : "degraded";
     S.apiAvailable = true;
     startLivePolling();
     if (S.session?.authenticated) connectWebSocket();
@@ -400,7 +405,7 @@ async function loadMarket() {
       marketRetryTimer = window.setTimeout(() => {
         marketRetryTimer = null;
         loadMarket();
-      }, 5000);
+      }, 30000);
     }
   }
 }
@@ -418,6 +423,7 @@ async function loadFromAPI() {
   selectDefaultStrike();
   S.chainScrolled = false;
   renderAll();
+  loadCharts();
 }
 
 function applyIndexQuotes(indexRaw) {
@@ -473,16 +479,17 @@ function pickExpiry(list) {
   return first?.date || "";
 }
 
-async function refreshBooksFromAPI() {
+async function refreshBooksFromAPI(includePositions = true) {
   const [positions, orders, trades, limits, risk] = await Promise.allSettled([
-    getJSON("/api/positions"),
+    includePositions ? getJSON("/api/positions") : Promise.resolve(null),
     getJSON("/api/orders"),
     getJSON("/api/trades"),
     getJSON("/api/limits"),
     getJSON("/api/risk"),
   ]);
-  if (positions.status === "fulfilled") {
+  if (includePositions && positions.status === "fulfilled") {
     S.positions = toArray(positions.value).map(normalizePosition);
+    updateFeedSubscriptions();
   }
   if (orders.status === "fulfilled") {
     S.orders = toArray(orders.value).map(normalizeOrder);
@@ -516,7 +523,9 @@ function toArray(value) {
 let liveTimer = null;
 function startLivePolling() {
   if (liveTimer) return;
-  liveTimer = window.setInterval(pollLive, 2000);
+  liveTimer = window.setInterval(() => {
+    refreshBooksFromAPI(false).catch((error) => console.warn("account refresh failed", error));
+  }, 15000);
 }
 
 async function pollLive() {
@@ -524,13 +533,15 @@ async function pollLive() {
   S.polling = true;
   try {
     applyIndexQuotes(await getJSON("/api/indices"));
-    await refreshBooksFromAPI();
+    await refreshBooksFromAPI(true);
     if (S.activeIndex && S.expiry) {
       const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
       S.chain = normalizeChain(chainRaw);
+      selectStrike(S.selected.strike, S.selected.type, false, false);
     }
-    if (S.ws?.readyState !== WebSocket.OPEN || S.feed !== "live") S.feed = "polling";
+    renderChain(true);
     renderAll(true);
+    loadCharts();
   } catch (error) {
     console.warn("live poll failed", error);
     S.feed = "degraded";
@@ -558,6 +569,7 @@ function connectWebSocket() {
     });
     ws.addEventListener("close", () => {
       S.ws = null;
+      S.feedSubscriptions = [];
       S.feed = "degraded";
       renderFeed();
       if (S.session?.authenticated && !S.wsTimer) {
@@ -583,9 +595,20 @@ function handleSocketEvent(event) {
   if (event.type === "feed_status") {
     S.feed = data?.status || "polling";
     renderFeed();
+    if (S.marketOpen) {
+      for (const type of ["CE", "PE"]) {
+        const option = selectedOption(type);
+        if (!option) continue;
+        const key = `${option.instrumentKey}|${S.timeframe}`;
+        const hasCandles = Boolean(S.candles[key]?.length);
+        setChartHint(type === "CE" ? "ce" : "pe", hasCandles ? ""
+          : S.feed === "live" ? "Waiting for live ticks…" : "Waiting for authenticated live feed…");
+      }
+    }
     return;
   }
   if (event.type === "tick") {
+    updateLiveCandle(data.key, data.ltp, data.timestamp);
     for (const spot of S.spots.values()) {
       if (spot.spotKey !== data.key) continue;
       spot.ltp = num(data.ltp, spot.ltp);
@@ -595,7 +618,19 @@ function handleSocketEvent(event) {
         spot.prevClose ? ((spot.ltp - spot.prevClose) / spot.prevClose) * 100 : 0);
       renderHeader();
       renderPaneHeaders();
+      renderOrderPad();
       return;
+    }
+    let updatedPosition = false;
+    for (const position of S.positions) {
+      if (position.instrument_key !== data.key) continue;
+      position.ltp = num(data.ltp, position.ltp);
+      position.pnl = (position.ltp - position.average_price) * position.quantity;
+      updatedPosition = true;
+    }
+    if (updatedPosition) {
+      renderHeader();
+      if (S.tab === "positions") renderTab();
     }
     const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
     if (row) {
@@ -607,9 +642,22 @@ function handleSocketEvent(event) {
       opt.volume = num(data.volume, opt.volume);
       opt.oi = num(data.oi, opt.oi);
       opt.quoteAvailable = opt.ltp > 0;
+      opt.change = opt.ltp - opt.prevClose;
       opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
-      renderChain(true);
-      renderOrderPad();
+      const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
+      const cell = [...$("chain-body").querySelectorAll(".chain-row")]
+        .find((item) => item.dataset.strike === String(row.strike))
+        ?.querySelector(`[data-select="${type}"]`);
+      if (cell) {
+        cell.textContent = fmt(opt.ltp);
+        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}%`;
+        cell.classList.toggle("up", opt.changePct > 0);
+        cell.classList.toggle("down", opt.changePct < 0);
+      }
+      if (selectedOption(type)?.instrumentKey === data.key) {
+        renderPaneHeaders();
+        renderOrderPad();
+      }
     }
     return;
   }
@@ -618,12 +666,9 @@ function handleSocketEvent(event) {
     renderChain(true);
     return;
   }
-  if (event.type === "candle") {
-    // Candle events are merged on the next poll for now.
-    return;
-  }
   if (event.type === "position") {
     S.positions = toArray(data).map(normalizePosition);
+    updateFeedSubscriptions();
     renderTab();
     return;
   }
@@ -639,15 +684,15 @@ function handleSocketEvent(event) {
 }
 
 function updateFeedSubscriptions() {
-  const keys = [selectedOption("CE")?.instrumentKey, selectedOption("PE")?.instrumentKey]
+  const keys = [selectedOption("CE")?.instrumentKey, selectedOption("PE")?.instrumentKey,
+    ...S.positions.map((position) => position.instrument_key)]
     .filter(Boolean);
   const desired = [...new Set(keys)];
-  if (S.ws?.readyState === WebSocket.OPEN) {
-    const remove = S.feedSubscriptions.filter((key) => !desired.includes(key));
-    const add = desired.filter((key) => !S.feedSubscriptions.includes(key));
-    if (remove.length) S.ws.send(JSON.stringify({ type: "unsubscribe", keys: remove }));
-    if (add.length) S.ws.send(JSON.stringify({ type: "subscribe", keys: add }));
-  }
+  if (S.ws?.readyState !== WebSocket.OPEN) return;
+  const remove = S.feedSubscriptions.filter((key) => !desired.includes(key));
+  const add = desired.filter((key) => !S.feedSubscriptions.includes(key));
+  if (remove.length) S.ws.send(JSON.stringify({ type: "unsubscribe", keys: remove }));
+  if (add.length) S.ws.send(JSON.stringify({ type: "subscribe", keys: add }));
   S.feedSubscriptions = desired;
 }
 
@@ -674,18 +719,18 @@ function selectDefaultStrike() {
     return;
   }
   const atm = computeATM() ?? S.chain[Math.floor(S.chain.length / 2)].strike;
-  selectStrike(atm, "CE", false);
+  selectStrike(atm, "CE", false, false);
   S.chainScrolled = false;
 }
 
-function selectStrike(strike, type, rerender = true) {
+function selectStrike(strike, type, rerender = true, reloadCharts = true) {
   const row = S.chain.find((r) => r.strike === strike);
   if (!row) return;
   S.selected = { strike, type, call: row.call, put: row.put };
-  S.preview = { type, side: "B" };
   S.chainScrolled = true;
   updateFeedSubscriptions();
-  loadCharts();
+  if (reloadCharts) loadCharts();
+  renderPaneHeaders();
   if (rerender) {
     renderChain(true);
     renderOrderPad();
@@ -697,78 +742,132 @@ function selectedOption(type) {
   return type === "CE" ? S.selected.call : S.selected.put;
 }
 
-function lotSize() {
-  const option = selectedOption("CE") || selectedOption("PE");
+function lotSize(type = S.selected.type) {
+  const option = selectedOption(type) || selectedOption(type === "CE" ? "PE" : "CE");
   return option?.lotSize || 0;
 }
 
 /* ── Charts ────────────────────────────────────────────── */
 
-function spotKey() {
-  const spot = S.spots.get(S.activeIndex);
-  return spot?.spotKey || `${S.boot.indices?.find((i) => i.key === S.activeIndex)?.indexSegment || "nse_cm"}|${S.activeIndex}`;
+function chartInstrument(type) {
+  return selectedOption(type)?.instrumentKey || "";
 }
 
 async function loadCharts() {
-  const keys = [
-    ["ce", selectedOption("CE")?.instrumentKey],
-    ["spot", spotKey()],
-    ["pe", selectedOption("PE")?.instrumentKey],
-  ];
-  for (const [pane, key] of keys) {
+  const loadID = ++S.chartLoadID;
+  for (const [pane, type] of [["ce", "CE"], ["pe", "PE"]]) {
+    const key = chartInstrument(type);
     const chart = S.charts[pane];
     chart.resetView();
     if (!key) {
       chart.setData([]);
-      $("hint-" + pane).hidden = false;
+      setChartHint(pane, "Choose a strike to show chart data.");
+      continue;
+    }
+    chart.setData([]);
+    if (S.marketOpen) {
+      const live = S.candles[`${key}|${S.timeframe}`] || [];
+      chart.setData(live);
+      setChartHint(pane, live.length ? "" : S.feed === "live"
+        ? "Waiting for live ticks…"
+        : "Waiting for authenticated live feed…");
       continue;
     }
     try {
-      const raw = await getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`);
-      const candles = (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
-        time: num(c.time ?? c.ts),
-        open: num(c.open),
-        high: num(c.high),
-        low: num(c.low),
-        close: num(c.close),
-        volume: num(c.volume),
-      }));
-      S.candles[pane] = candles;
+      const cacheKey = `${key}|${S.timeframe}`;
+      let candles = S.historicalCache.get(cacheKey);
+      if (!candles) {
+        setChartHint(pane, "Loading historical candles…");
+        const request = getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`)
+          .then((raw) => (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
+            time: num(c.time ?? c.ts),
+            open: num(c.open),
+            high: num(c.high),
+            low: num(c.low),
+            close: num(c.close),
+            volume: num(c.volume),
+          })));
+        S.historicalCache.set(cacheKey, request);
+        try {
+          candles = await request;
+          S.historicalCache.set(cacheKey, candles);
+        } catch (error) {
+          S.historicalCache.delete(cacheKey);
+          throw error;
+        }
+      }
+      if (loadID !== S.chartLoadID || chartInstrument(type) !== key || S.marketOpen) return;
       chart.setData(candles);
-      $("hint-" + pane).hidden = candles.length > 8;
+      setChartHint(pane, candles.length ? "" : "No historical candles returned for this contract.");
     } catch (error) {
-      console.warn("candle data unavailable", { pane, error });
+      if (loadID !== S.chartLoadID || chartInstrument(type) !== key) return;
+      console.warn("historical candles unavailable", { pane, error });
       chart.setData([]);
-      $("hint-" + pane).hidden = false;
+      setChartHint(pane, `Historical data unavailable: ${error.message}`);
     }
   }
   renderPaneHeaders();
 }
 
+function setChartHint(pane, message) {
+  const hint = $("hint-" + pane);
+  hint.textContent = message;
+  hint.hidden = !message;
+}
+
+function updateLiveCandle(key, price, timestamp) {
+  if (!S.marketOpen || S.feed !== "live" || !Number.isFinite(Number(price)) || Number(price) <= 0) return;
+  const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
+  const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
+  const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600 })[S.timeframe];
+  if (!interval) return;
+  const openMatch = /^(\d{2}):(\d{2})$/.exec(S.boot.marketSession?.open || "09:15");
+  const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
+  const localDayStart = Math.floor((time + 19800) / 86400) * 86400 - 19800;
+  const sessionStart = localDayStart + openSeconds;
+  const bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
+  const value = Number(price);
+  const cacheKey = `${key}|${S.timeframe}`;
+  const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
+  let candle = candles[candles.length - 1];
+  if (!candle || candle.time !== bucket) {
+    candle = { time: bucket, open: value, high: value, low: value, close: value, volume: 0 };
+    candles.push(candle);
+    if (candles.length > 500) candles.shift();
+  } else {
+    candle.high = Math.max(candle.high, value);
+    candle.low = Math.min(candle.low, value);
+    candle.close = value;
+  }
+  for (const type of ["CE", "PE"]) {
+    if (chartInstrument(type) !== key) continue;
+    const pane = type === "CE" ? "ce" : "pe";
+    S.charts[pane].setData(candles);
+    setChartHint(pane, "");
+  }
+}
+
 function renderPaneHeaders() {
-  const spot = S.spots.get(S.activeIndex);
   const expiryLabel = expiryText(S.expiry);
-  const lot = lotSize();
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
 
-  $("spot-title").textContent = `${S.activeIndex} SPOT`;
-  $("spot-sub").textContent = `${spot?.symbol || "index"} · ${S.timeframe}`;
-  $("spot-ltp").textContent = spot ? fmt(spot.ltp) : "—";
-  $("spot-change").textContent = spot ? `${fmtSigned(spot.change)} (${fmtSigned(spot.changePct)}%)` : "—";
-  $("spot-change").className = "pane-change " + directionClass(spot?.changePct);
-
   $("ce-title").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
-  $("ce-sub").textContent = ce ? `${expiryLabel} · ${lot} lot · ${S.timeframe}` : "select a strike";
+  $("ce-sub").textContent = ce ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
   $("ce-ltp").textContent = ce ? fmt(ce.ltp) : "—";
   $("ce-change").textContent = ce ? `${fmtSigned(ce.change)} (${fmtSigned(ce.changePct)}%)` : "—";
   $("ce-change").className = "pane-change " + directionClass(ce?.changePct);
 
   $("pe-title").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
-  $("pe-sub").textContent = pe ? `${expiryLabel} · ${lot} lot · ${S.timeframe}` : "select a strike";
+  $("pe-sub").textContent = pe ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
   $("pe-ltp").textContent = pe ? fmt(pe.ltp) : "—";
   $("pe-change").textContent = pe ? `${fmtSigned(pe.change)} (${fmtSigned(pe.changePct)}%)` : "—";
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
+
+  $("leg-call-name").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
+  $("leg-call-size").textContent = ce ? `${ce.lotSize} shares / lot · LTP ${fmt(ce.ltp)}` : "Choose a strike";
+  $("leg-put-name").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
+  $("leg-put-size").textContent = pe ? `${pe.lotSize} shares / lot · LTP ${fmt(pe.ltp)}` : "Choose a strike";
 }
 
 function expiryText(date) {
@@ -859,42 +958,63 @@ function renderChain(preserveScroll = false) {
   const body = $("chain-body");
   if (!S.chain.length) {
     body.innerHTML = `<div class="empty-state">Waiting for the option chain…</div>`;
-    $("chain-meta").textContent = "—";
-    $("chain-sub").textContent = "all strikes · polled";
+    $("strike-meta").textContent = "—";
     return;
   }
   const scrollTop = preserveScroll ? body.scrollTop : 0;
   const atm = computeATM();
   body.innerHTML = S.chain.map((row) => {
-    const selectedCall = S.selected.call?.instrumentKey && row.call?.instrumentKey === S.selected.call.instrumentKey;
-    const selectedPut = S.selected.put?.instrumentKey && row.put?.instrumentKey === S.selected.put.instrumentKey;
     const call = row.call;
     const put = row.put;
-    return `<div class="chain-row${row.strike === atm ? " atm" : ""}" data-strike="${row.strike}" role="row">
-      <button type="button" class="cell-ce${selectedCall ? " selected" : ""}" data-select="CE" data-strike="${row.strike}">${call ? fmt(call.ltp) : "—"}</button>
-      <button type="button" class="cell-ce ${directionClass(call?.changePct)}" data-select="CE" data-strike="${row.strike}">${call ? fmtSigned(call.changePct) + "%" : "—"}</button>
-      <button type="button" class="cell-oi cell-ce" data-select="CE" data-strike="${row.strike}">${call ? fmtCompact(call.oi) : "—"}</button>
-      <span class="cell-strike">${row.strike === atm ? '<span class="atm-dot">◆</span>' : ""}${fmtStrike(row.strike)}</span>
-      <button type="button" class="cell-pe${selectedPut ? " selected" : ""}" data-select="PE" data-strike="${row.strike}">${put ? fmt(put.ltp) : "—"}</button>
-      <button type="button" class="cell-pe ${directionClass(put?.changePct)}" data-select="PE" data-strike="${row.strike}">${put ? fmtSigned(put.changePct) + "%" : "—"}</button>
-      <button type="button" class="cell-oi cell-pe" data-select="PE" data-strike="${row.strike}">${put ? fmtCompact(put.oi) : "—"}</button>
+    const active = row.strike === S.selected.strike;
+    return `<div class="chain-row${row.strike === atm ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
+      <button type="button" class="cell-ce${active && S.selected.type === "CE" ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}%` : "Call quote unavailable"}">${call ? fmt(call.ltp) : "—"}</button>
+      <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${row.strike === atm ? '<span class="atm-dot">◆</span>' : ""}${fmtStrike(row.strike)}</button>
+      <button type="button" class="cell-pe${active && S.selected.type === "PE" ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}%` : "Put quote unavailable"}">${put ? fmt(put.ltp) : "—"}</button>
     </div>`;
   }).join("");
-  $("chain-meta").textContent = `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
-  $("chain-sub").textContent = "all strikes · polled";
+  $("strike-meta").textContent = `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
 
   body.scrollTop = scrollTop;
+  applyStrikeFilter();
   if (!S.chainScrolled) {
     scrollATMIntoView();
     S.chainScrolled = true;
   }
 }
 
+function applyStrikeFilter() {
+  const query = $("strike-search-input").value.trim().replace(/,/g, "");
+  const rows = $$("#chain-body .chain-row");
+  let visible = 0;
+  for (const row of rows) {
+    const matches = !query || row.dataset.strike.includes(query);
+    row.hidden = !matches;
+    if (matches) visible++;
+  }
+  $("strike-meta").textContent = query
+    ? `${visible} matching strike${visible === 1 ? "" : "s"} · ${S.chain.length} available`
+    : `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
+}
+
+function openStrikeModal() {
+  $("strike-search-input").value = "";
+  applyStrikeFilter();
+  $("strike-modal").hidden = false;
+  $("strike-search-input").focus();
+  requestAnimationFrame(scrollATMIntoView);
+}
+
+function closeStrikeModal() {
+  $("strike-modal").hidden = true;
+}
+
 function scrollATMIntoView() {
   const body = $("chain-body");
   const atm = computeATM();
   if (!atm) return;
-  const target = [...body.querySelectorAll(".chain-row")].find((row) => num(row.dataset.strike) === atm);
+  const selected = S.selected.strike || atm;
+  const target = [...body.querySelectorAll(".chain-row")].find((row) => num(row.dataset.strike) === selected);
   if (target) {
     const bodyRect = body.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
@@ -905,80 +1025,24 @@ function scrollATMIntoView() {
 function renderOrderPad() {
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
-  const option = ce || pe;
-  const lot = lotSize();
-  const shares = resolvedShares(lot);
   const available = num(S.limits?.available);
-  const expiryLabel = expiryText(S.expiry);
-
-  $("op-contract").textContent = option
-    ? `${S.activeIndex} ${fmtStrike(S.selected.strike)} · ${expiryLabel}`
-    : "Select a strike";
-  $("op-lot").textContent = option
-    ? `lot ${lot} · ${S.product} · ${S.selected.type} selected`
-    : "all strikes · click a CE or PE cell";
-  $("op-available").textContent = available ? `₹${fmt(available, 0)}` : "—";
-  $("op-shares").textContent = shares ? `${shares} sh` : "invalid qty";
-
-  const qtyInput = $("qty-input");
-  qtyInput.value = S.qty.unit === "lots" ? String(S.qty.lots) : String(S.qty.shares);
-  qtyInput.step = S.qty.unit === "lots" ? "1" : String(lot);
-  for (const button of $$(".unit-toggle button")) {
-    button.classList.toggle("active", button.dataset.unit === S.qty.unit);
+  for (const [type, option] of [["CE", ce], ["PE", pe]]) {
+    const lot = lotSize(type);
+    const shares = Math.max(0, Math.round(num(S.qty[type])) * lot);
+    const prefix = type === "CE" ? "call" : "put";
+    const input = $(`${prefix}-lots`);
+    input.value = String(S.qty[type]);
+    input.disabled = !option;
+    $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
+      const required = requiredMargin(option, shares, button.dataset.action === "buy" ? "B" : "S");
+      button.disabled = !option || !option.quoteAvailable || option.ltp <= 0 ||
+        !shares || !Number.isFinite(required) || required > available;
+    });
   }
-
-  const callBuy = ce ? ce.ltp * shares : 0;
-  const putBuy = pe ? pe.ltp * shares : 0;
-  const callSell = ce ? requiredMargin(ce, shares, "S") : 0;
-  const putSell = pe ? requiredMargin(pe, shares, "S") : 0;
-
-  $("leg-call-name").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
-  $("leg-call-ltp").textContent = ce ? fmt(ce.ltp) : "—";
-  $("leg-call-change").textContent = ce ? `${fmtSigned(ce.changePct)}%` : "—";
-  $("leg-call-change").className = "leg-change " + directionClass(ce?.changePct);
-  $("leg-put-name").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
-  $("leg-put-ltp").textContent = pe ? fmt(pe.ltp) : "—";
-  $("leg-put-change").textContent = pe ? `${fmtSigned(pe.changePct)}%` : "—";
-  $("leg-put-change").className = "leg-change " + directionClass(pe?.changePct);
-
-  setMoney("call-buy-value", callBuy);
-  setMoney("call-sell-value", callSell);
-  setMoney("put-buy-value", putBuy);
-  setMoney("put-sell-value", putSell);
-  setAfter("call-after-value", available - callBuy);
-  setAfter("put-after-value", available - putBuy);
-
-  const disabledBase = !option || !shares || shares <= 0;
-  $$(".leg-block.call .trade").forEach((button) => {
-    const buy = button.dataset.action === "buy";
-    button.disabled = disabledBase || (buy ? callBuy > available : callSell > available);
-  });
-  $$(".leg-block.put .trade").forEach((button) => {
-    const buy = button.dataset.action === "buy";
-    button.disabled = disabledBase || (buy ? putBuy > available : putSell > available);
-  });
-
-  renderRiskPreview();
 }
 
-function setMoney(id, value) {
-  $(id).textContent = value ? `₹${fmt(value, 0)}` : "—";
-}
-
-function setAfter(id, value) {
-  const el = $(id);
-  if (!Number.isFinite(value) || value === 0) {
-    el.textContent = "—";
-    el.className = "";
-    return;
-  }
-  el.textContent = `${value < 0 ? "−" : ""}₹${fmt(Math.abs(value), 0)}`;
-  el.className = value < 0 ? "down" : "up";
-}
-
-function resolvedShares(lot) {
-  if (S.qty.unit === "shares") return Math.max(0, Math.round(num(S.qty.shares)));
-  return Math.max(0, Math.round(num(S.qty.lots)) * lot);
+function resolvedShares(lot, type = S.selected.type) {
+  return Math.max(0, Math.round(num(S.qty[type])) * lot);
 }
 
 function requiredMargin(option, shares, side) {
@@ -987,30 +1051,6 @@ function requiredMargin(option, shares, side) {
   const spot = S.spots.get(option.underlying)?.ltp || 0;
   if (spot <= 0) return Infinity;
   return spot * shares * (num(S.boot.shortMarginPct, 15) / 100) + option.ltp * shares;
-}
-
-function renderRiskPreview() {
-  const option = selectedOption(S.preview.type);
-  const lot = lotSize();
-  const shares = resolvedShares(lot);
-  const legs = groupLegs(true);
-  const result = computePayoff(legs);
-  const el = $("risk-preview-text");
-  if (!option || !shares) {
-    el.textContent = "Select a strike to preview max profit / loss.";
-    return;
-  }
-  if (!result.points.length) {
-    el.textContent = "No open legs in this group.";
-    return;
-  }
-  const side = S.preview.side === "B" ? "buy" : "sell";
-  const maxP = result.maxProfit === Infinity ? "∞" : `₹${fmt(result.maxProfit, 0)}`;
-  const maxL = result.maxLoss === -Infinity ? "∞" : `₹${fmt(result.maxLoss, 0)}`;
-  const be = result.breakevens.length ? result.breakevens.map((b) => fmt(b, 2)).join(", ") : "—";
-  el.innerHTML = `incl. ${side} ${fmtStrike(option.strike)} ${esc(option.type)} · ` +
-    `Max P <b>${maxP}</b> · Max L <b>${maxL}</b> · BE <b>${be}</b>` +
-    (result.unlimitedLoss ? ` <span class="risk-unlimited">unlimited loss</span>` : "");
 }
 
 /* ── Payoff math ───────────────────────────────────────── */
@@ -1059,34 +1099,6 @@ function computePayoff(legs) {
     }
   }
   return { points, maxProfit, maxLoss, breakevens, unlimitedProfit, unlimitedLoss };
-}
-
-function groupLegs(includePreview = false) {
-  const legs = [];
-  for (const position of S.positions) {
-    if (!position.underlying || position.underlying !== S.activeIndex) continue;
-    if (position.expiry !== S.expiry) continue;
-    if (!position.strike || !position.option_type) continue;
-    legs.push({
-      type: position.option_type,
-      strike: position.strike,
-      qty: num(position.quantity),
-      avg: num(position.average_price),
-    });
-  }
-  if (includePreview) {
-    const option = selectedOption(S.preview.type);
-    const shares = resolvedShares(lotSize());
-    if (option && shares > 0) {
-      legs.push({
-        type: option.type,
-        strike: option.strike,
-        qty: S.preview.side === "B" ? shares : -shares,
-        avg: option.ltp,
-      });
-    }
-  }
-  return legs;
 }
 
 function buildRiskGroups(positions) {
@@ -1350,14 +1362,10 @@ function renderFooter() {
 
 /* ── Trading actions ──────────────────────────────────── */
 
-function validateQuantity(lot) {
-  if (S.qty.unit === "shares") {
-    const shares = num(S.qty.shares);
-    if (!Number.isInteger(shares) || shares <= 0) return "Enter a positive share quantity.";
-    if (shares % lot !== 0) return `Shares must be a multiple of the lot size (${lot}).`;
-    return "";
+function validateQuantity(type) {
+  if (!Number.isInteger(num(S.qty[type])) || num(S.qty[type]) <= 0) {
+    return `Enter a positive ${type} lot quantity.`;
   }
-  if (!Number.isInteger(S.qty.lots) || S.qty.lots <= 0) return "Enter a positive lot quantity.";
   return "";
 }
 
@@ -1371,13 +1379,13 @@ async function onTrade(action, type) {
     toast("No live quote is available for this contract; order was not submitted.", "error", 6000);
     return;
   }
-  const lot = lotSize();
-  const error = validateQuantity(lot);
+  const lot = lotSize(type);
+  const error = validateQuantity(type);
   if (error) {
     toast(error, "error");
     return;
   }
-  const shares = resolvedShares(lot);
+  const shares = resolvedShares(lot, type);
   const side = action === "buy" ? "B" : "S";
   const required = requiredMargin(option, shares, side);
   const available = num(S.limits?.available);
@@ -1413,7 +1421,7 @@ async function onTrade(action, type) {
   try {
     const result = await postOrder(payload);
     toast(`Paper order ${result?.status?.toLowerCase() || "submitted"} at live quote ₹${fmt(result?.price ?? option.ltp)}.`, "ok");
-    window.setTimeout(pollLive, 400);
+    window.setTimeout(() => refreshBooksFromAPI(true), 400);
   } catch (err) {
     toast(`Order rejected: ${err.message}`, "error", 6000);
   }
@@ -1451,7 +1459,7 @@ async function onExit(instrumentKey) {
       mode: tradingMode(),
     });
     toast("Paper exit filled at live quote.", "ok");
-    window.setTimeout(pollLive, 400);
+    window.setTimeout(() => refreshBooksFromAPI(true), 400);
   } catch (err) {
     toast(`Exit failed: ${err.message}`, "error", 6000);
   }
@@ -1477,7 +1485,7 @@ async function onSquareOffAll() {
       return postJSON("/api/broker/square-off-all", { confirm: true, mode: tradingMode() });
     });
     toast("Square-off orders sent", "ok");
-    window.setTimeout(pollLive, 500);
+    window.setTimeout(() => refreshBooksFromAPI(true), 500);
   } catch (err) {
     toast(`Square off failed: ${err.message}`, "error", 6000);
   }
@@ -1659,11 +1667,6 @@ function toast(message, kind = "ok", ms = 3500) {
 /* ── Events ───────────────────────────────────────────── */
 
 function bindEvents() {
-  $("chain-panel").addEventListener("toggle", (event) => {
-    const panel = event.currentTarget;
-    panel.closest(".terminal").classList.toggle("chain-collapsed", !panel.open);
-    panel.closest(".terminal").classList.toggle("chain-open", panel.open);
-  });
   $("bottom-toggle").addEventListener("click", () => {
     const panel = $("bottom-panel");
     const collapsed = panel.classList.toggle("bottom-collapsed");
@@ -1695,6 +1698,25 @@ function bindEvents() {
   });
   $("refresh-button").addEventListener("click", refreshMarket);
   $("fullscreen-button").addEventListener("click", toggleFullscreen);
+  $("strike-search-button").addEventListener("click", openStrikeModal);
+  $("strike-close").addEventListener("click", closeStrikeModal);
+  $("strike-modal").addEventListener("click", (event) => {
+    if (event.target === $("strike-modal")) closeStrikeModal();
+  });
+  $("strike-search-input").addEventListener("input", applyStrikeFilter);
+  $("strike-search-input").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const query = event.currentTarget.value.trim().replace(/,/g, "");
+    const targetStrike = Number(query);
+    const row = S.chain.find((item) => Number.isFinite(targetStrike) && item.strike === targetStrike);
+    if (!row) {
+      toast("No exact matching strike. Choose a visible CALL or PUT.", "warn");
+      return;
+    }
+    selectStrike(row.strike, S.selected.type);
+    closeStrikeModal();
+    event.preventDefault();
+  });
 
   for (const button of $$(".chart-tools button")) {
     button.addEventListener("click", () => {
@@ -1715,6 +1737,7 @@ function bindEvents() {
     const cell = event.target.closest("[data-select]");
     if (cell) {
       selectStrike(num(cell.dataset.strike), cell.dataset.select);
+      closeStrikeModal();
     }
   });
 
@@ -1728,30 +1751,25 @@ function bindEvents() {
     event.preventDefault();
   });
 
-  $("qty-minus").addEventListener("click", () => stepQuantity(-1));
-  $("qty-plus").addEventListener("click", () => stepQuantity(1));
-  $("qty-input").addEventListener("change", onQtyInput);
-  $("qty-input").addEventListener("keydown", (event) => {
-    if (event.key === "ArrowUp") {
-      stepQuantity(1);
-      event.preventDefault();
-    } else if (event.key === "ArrowDown") {
-      stepQuantity(-1);
-      event.preventDefault();
-    }
-  });
-  for (const button of $$(".unit-toggle button")) {
-    button.addEventListener("click", () => switchUnit(button.dataset.unit));
+  for (const button of $$("[data-qty-step]")) {
+    button.addEventListener("click", () => stepQuantity(button.dataset.qtyStep, num(button.dataset.step)));
+  }
+  for (const input of $$("[data-lots]")) {
+    input.addEventListener("change", () => updateLotInput(input.dataset.lots, input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        stepQuantity(input.dataset.lots, event.key === "ArrowUp" ? 1 : -1);
+        event.preventDefault();
+      }
+    });
   }
   $("product-select").addEventListener("change", (event) => {
     S.product = event.target.value;
     renderOrderPad();
   });
 
-  for (const button of $$(".leg-actions .trade")) {
+  for (const button of $$(".leg-orderpad .trade")) {
     button.addEventListener("click", () => onTrade(button.dataset.action, button.dataset.type));
-    button.addEventListener("mouseenter", () => setPreview(button.dataset.type, button.dataset.action));
-    button.addEventListener("focus", () => setPreview(button.dataset.type, button.dataset.action));
   }
 
   $("tabs").addEventListener("click", (event) => {
@@ -1783,58 +1801,34 @@ function bindEvents() {
     if (event.target === $("confirm-modal")) closeConfirm(false);
   });
   document.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const typing = target instanceof HTMLElement &&
+      (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+    if (!typing && (event.key === "/" || (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)))) {
+      event.preventDefault();
+      openStrikeModal();
+      return;
+    }
     if (event.key !== "Escape") return;
     if (!$("confirm-modal").hidden) {
       closeConfirm(false);
+      return;
+    }
+    if (!$("strike-modal").hidden) {
+      closeStrikeModal();
       return;
     }
     if (S.focusedChart) setFocusedChart(null);
   });
 }
 
-function setPreview(type, action) {
-  S.preview = { type, side: action === "sell" ? "S" : "B" };
-  renderRiskPreview();
-}
-
-function stepQuantity(direction) {
-  const lot = lotSize();
-  if (S.qty.unit === "lots") {
-    S.qty.lots = Math.max(1, Math.round(num(S.qty.lots)) + direction);
-    S.qty.shares = S.qty.lots * lot;
-  } else {
-    const next = Math.max(lot, Math.round(num(S.qty.shares)) + direction * lot);
-    S.qty.shares = next;
-    S.qty.lots = Math.max(1, Math.round(next / lot));
-  }
+function stepQuantity(type, direction) {
+  S.qty[type] = Math.max(1, Math.round(num(S.qty[type], 1)) + direction);
   renderOrderPad();
 }
 
-function onQtyInput() {
-  const lot = lotSize();
-  const raw = Math.max(1, Math.round(num($("qty-input").value, 1)));
-  if (S.qty.unit === "lots") {
-    S.qty.lots = raw;
-    S.qty.shares = raw * lot;
-  } else {
-    S.qty.shares = raw;
-    S.qty.lots = Math.max(1, Math.round(raw / lot));
-  }
-  renderOrderPad();
-}
-
-function switchUnit(unit) {
-  if (!S.boot.allowShares && unit === "shares") {
-    toast("Share entry is disabled in config.", "warn");
-    return;
-  }
-  const lot = lotSize();
-  if (unit === "shares") {
-    S.qty.shares = Math.max(lot, S.qty.lots * lot);
-  } else {
-    S.qty.lots = Math.max(1, Math.round(S.qty.shares / lot));
-  }
-  S.qty.unit = unit;
+function updateLotInput(type, value) {
+  S.qty[type] = Math.max(1, Math.round(num(value, 1)));
   renderOrderPad();
 }
 
@@ -1895,6 +1889,45 @@ function updateClock() {
     timeZone: "Asia/Kolkata",
   });
   clock.textContent = `${text} IST`;
+}
+
+function currentMarketState() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const date = `${values.year}-${values.month}-${values.day}`;
+  if (values.weekday === "Sat" || values.weekday === "Sun" ||
+      (S.boot.marketSession?.holidays || []).includes(date)) return false;
+  const toMinutes = (value, fallback) => {
+    const match = /^(\d{2}):(\d{2})$/.exec(value || "");
+    return match ? Number(match[1]) * 60 + Number(match[2]) : fallback;
+  };
+  const open = toMinutes(S.boot.marketSession?.open, 9 * 60 + 15);
+  const close = toMinutes(S.boot.marketSession?.close, 15 * 60 + 30);
+  const now = Number(values.hour) * 60 + Number(values.minute);
+  return now >= open && now < close;
+}
+
+function updateMarketPhase(reloadOnChange = true) {
+  const open = currentMarketState();
+  if (S.marketOpen === open) return;
+  const wasKnown = S.marketOpen !== null;
+  S.marketOpen = open;
+  if (!wasKnown || !reloadOnChange || !S.expiry) return;
+  if (open) {
+    S.candles = {};
+    loadCharts();
+  } else {
+    loadCharts();
+  }
 }
 
 /* ── Boot ──────────────────────────────────────────────── */
