@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -113,3 +117,59 @@ jobs:
         with:
           go-version-file: go.mod
           go-package: ./...
+
+  release-version:
+    name: determine release version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, cross-build, lint, vuln]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.version.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next semantic version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9]*)$ ]]; then
+              echo "$tag"
+              break
+            fi
+          done)"
+
+          if [[ -n "$latest" ]]; then
+            commits="$(git rev-list "$latest..$GITHUB_SHA")"
+            if [[ -z "$commits" ]]; then
+              echo "No commits since $latest; skipping release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version="$(git log -z --format=%B "$latest..$GITHUB_SHA" | ./scripts/next-version.sh "$latest")"
+          else
+            version="$(git log -z --format=%B "$GITHUB_SHA" | ./scripts/next-version.sh)"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "Tag $version already exists; skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Next release: $version"
+
+  release:
+    name: publish semantic version release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-version.outputs.skip != 'true'
+    needs: release-version
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.release-version.outputs.version }}
