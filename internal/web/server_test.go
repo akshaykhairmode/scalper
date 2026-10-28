@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 )
 
@@ -37,6 +38,7 @@ type serverOpts struct {
 	now         func() time.Time
 	started     time.Time
 	cfg         *config.Config
+	authClient  auth.KotakAuthenticator
 	tokenFnSet  bool
 	noTokenFunc bool
 }
@@ -58,6 +60,7 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 	opts := Options{
 		Logger:      testLogger(),
 		Config:      cfg,
+		AuthClient:  o.authClient,
 		DB:          o.db,
 		LogDegraded: func() bool { return o.degraded },
 		Started:     started,
@@ -71,6 +74,25 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+type testKotakAuthenticator struct {
+	view     auth.ViewSession
+	trade    auth.TradeSession
+	totp     string
+	mpin     string
+	viewUsed auth.ViewSession
+}
+
+func (f *testKotakAuthenticator) LoginTOTP(_ context.Context, totp string) (auth.ViewSession, error) {
+	f.totp = totp
+	return f.view, nil
+}
+
+func (f *testKotakAuthenticator) ValidateMPIN(_ context.Context, view auth.ViewSession, mpin string) (auth.TradeSession, error) {
+	f.viewUsed = view
+	f.mpin = mpin
+	return f.trade, nil
 }
 
 func do(t *testing.T, s *Server, req *http.Request) *httptest.ResponseRecorder {
@@ -92,17 +114,87 @@ func TestIndexPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+
 	body := rec.Body.String()
 	for _, want := range []string{"Scalper", "PAPER", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
 	}
+
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("Content-Type = %q", ct)
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
+	client := &testKotakAuthenticator{
+		view:  auth.ViewSession{Token: "view-token-secret", SID: "view-sid-secret"},
+		trade: auth.TradeSession{Token: "trade-token-secret", SID: "trade-sid-secret", BaseURL: "https://cis.kotaksecurities.com"},
+	}
+	s := newTestServer(t, serverOpts{db: fakeDB{}, authClient: client})
+
+	totpReq := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq.Header.Set("Content-Type", "application/json")
+	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
+	totpRec := do(t, s, totpReq)
+	if totpRec.Code != http.StatusOK {
+		t.Fatalf("TOTP status = %d, body = %s", totpRec.Code, totpRec.Body.String())
+	}
+	if client.totp != "123456" {
+		t.Fatalf("TOTP sent to client = %q", client.totp)
+	}
+	cookies := totpRec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authFlowCookieName || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("auth flow cookie = %+v", cookies)
+	}
+	for _, secret := range []string{"view-token-secret", "view-sid-secret"} {
+		if strings.Contains(totpRec.Body.String(), secret) {
+			t.Fatalf("TOTP response leaked %q", secret)
+		}
+	}
+
+	mpinReq := localRequest(http.MethodPost, "/api/auth/mpin")
+	mpinReq.Header.Set("Content-Type", "application/json")
+	mpinReq.Body = io.NopCloser(strings.NewReader(`{"mpin":"654321"}`))
+	mpinReq.AddCookie(cookies[0])
+	mpinRec := do(t, s, mpinReq)
+	if mpinRec.Code != http.StatusOK {
+		t.Fatalf("MPIN status = %d, body = %s", mpinRec.Code, mpinRec.Body.String())
+	}
+	if client.mpin != "654321" || client.viewUsed != client.view {
+		t.Fatalf("MPIN client inputs: mpin=%q view=%+v", client.mpin, client.viewUsed)
+	}
+	for _, secret := range []string{"trade-token-secret", "trade-sid-secret", "cis.kotaksecurities.com"} {
+		if strings.Contains(mpinRec.Body.String(), secret) {
+			t.Fatalf("MPIN response leaked %q", secret)
+		}
+	}
+	statusRec := do(t, s, localRequest(http.MethodGet, "/api/session"))
+	if !strings.Contains(statusRec.Body.String(), `"authenticated":true`) ||
+		!strings.Contains(statusRec.Body.String(), `"paper_mode":false`) {
+		t.Fatalf("session status = %s", statusRec.Body.String())
+	}
+}
+
+func TestKotakLoginRequiresFlowAndAccessToken(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+
+	mpinReq := localRequest(http.MethodPost, "/api/auth/mpin")
+	mpinReq.Body = io.NopCloser(strings.NewReader(`{"mpin":"123456"}`))
+	mpinRec := do(t, s, mpinReq)
+	if mpinRec.Code != http.StatusConflict {
+		t.Fatalf("MPIN without TOTP flow status = %d, want %d", mpinRec.Code, http.StatusConflict)
+	}
+
+	totpReq := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
+	totpRec := do(t, s, totpReq)
+	if totpRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("TOTP without access token status = %d, want %d", totpRec.Code, http.StatusServiceUnavailable)
 	}
 }
 

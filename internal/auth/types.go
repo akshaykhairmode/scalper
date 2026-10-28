@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"sync"
 	"time"
 )
@@ -19,22 +21,24 @@ const (
 
 // Session represents an authenticated user session.
 type Session struct {
-	AccessToken    string    `json:"access_token"`
-	TokenExpiry    time.Time `json:"-"`
-	TOTP           string    `json:"-"`
-	MPINRedacted   string    `json:"-"`
-	LoginMethod    LoginMethod `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastActivity   time.Time `json:"last_activity"`
+	AccessToken  string      `json:"-"`
+	TokenExpiry  time.Time   `json:"-"`
+	TOTP         string      `json:"-"`
+	MPINRedacted string      `json:"-"`
+	LoginMethod  LoginMethod `json:"-"`
+	PaperMode    bool        `json:"-"`
+	BrokerToken  string      `json:"-"`
+	BrokerSID    string      `json:"-"`
+	BaseURL      string      `json:"-"`
+	CreatedAt    time.Time   `json:"created_at"`
+	LastActivity time.Time   `json:"last_activity"`
 }
 
 // SessionData is the data returned to the client upon login.
 type SessionData struct {
-	SessionID     string    `json:"session_id"`
-	AccessToken   string    `json:"access_token"`
-	LoginMethod   LoginMethod `json:"login_method"`
-	PaperMode     bool      `json:"paper_mode"`
-	ExpiresIn     int       `json:"expires_in"`
+	LoginMethod LoginMethod `json:"login_method"`
+	PaperMode   bool        `json:"paper_mode"`
+	ExpiresIn   int         `json:"expires_in"`
 }
 
 // SessionManager manages authenticated sessions in memory.
@@ -80,17 +84,38 @@ func (sm *SessionManager) NewSession(accessToken string, loginMethod LoginMethod
 	defer sm.mu.Unlock()
 
 	session := &Session{
-		AccessToken:    accessToken,
-		TokenExpiry:    time.Now().Add(24 * time.Hour),
-		TOTP:           "",
-		MPINRedacted:   "***",
-		LoginMethod:    loginMethod,
-		CreatedAt:      time.Now(),
-		LastActivity:   time.Now(),
+		AccessToken:  accessToken,
+		TokenExpiry:  time.Now().Add(sm.maxAge),
+		TOTP:         "",
+		MPINRedacted: "***",
+		LoginMethod:  loginMethod,
+		PaperMode:    paperMode,
+		CreatedAt:    time.Now(),
+		LastActivity: time.Now(),
 	}
-
 	sm.sessions[accessToken] = session
 	return session
+}
+
+func (sm *SessionManager) NewBrokerSession(broker TradeSession, loginMethod LoginMethod) (*Session, error) {
+	var id [32]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return nil, err
+	}
+	session := &Session{
+		AccessToken:  hex.EncodeToString(id[:]),
+		TokenExpiry:  time.Now().Add(sm.maxAge),
+		LoginMethod:  loginMethod,
+		BrokerToken:  broker.Token,
+		BrokerSID:    broker.SID,
+		BaseURL:      broker.BaseURL,
+		CreatedAt:    time.Now(),
+		LastActivity: time.Now(),
+	}
+	sm.mu.Lock()
+	sm.sessions[session.AccessToken] = session
+	sm.mu.Unlock()
+	return session, nil
 }
 
 // RenewSession renews the token expiry for a session.
@@ -129,11 +154,11 @@ func (sm *SessionManager) IsSessionValid(accessToken string) bool {
 
 // SessionInfo returns limited session info for display.
 type SessionInfo struct {
-	LoginMethod LoginMethod `json:"login_method"`
-	CreatedAt   string      `json:"created_at"`
-	LastActivity string     `json:"last_activity"`
-	PaperMode   bool        `json:"paper_mode"`
-	ExpiresIn   int         `json:"expires_in"`
+	LoginMethod  LoginMethod `json:"login_method"`
+	CreatedAt    string      `json:"created_at"`
+	LastActivity string      `json:"last_activity"`
+	PaperMode    bool        `json:"paper_mode"`
+	ExpiresIn    int         `json:"expires_in"`
 }
 
 // GetSessionInfo returns limited session info.
@@ -143,11 +168,11 @@ func (sm *SessionManager) GetSessionInfo(accessToken string) *SessionInfo {
 		return nil
 	}
 	return &SessionInfo{
-		LoginMethod: session.LoginMethod,
-		CreatedAt:   session.CreatedAt.Format("2006-01-02 15:04:05"),
+		LoginMethod:  session.LoginMethod,
+		CreatedAt:    session.CreatedAt.Format("2006-01-02 15:04:05"),
 		LastActivity: session.LastActivity.Format("2006-01-02 15:04:05"),
-		PaperMode:   session.AccessToken == "",
-		ExpiresIn:   int(time.Until(session.TokenExpiry).Minutes()),
+		PaperMode:    session.PaperMode,
+		ExpiresIn:    int(time.Until(session.TokenExpiry).Minutes()),
 	}
 }
 
@@ -156,18 +181,16 @@ func (sm *SessionManager) cleanupLoop() {
 	ticker := time.NewTicker(sm.maxAge / 4)
 	defer ticker.Stop()
 	for range ticker.C {
-		sm.RevokeAll()
+		sm.CleanupExpired()
 	}
 }
 
 // ToSessionData converts a Session to a SessionData suitable for API responses.
 func ToSessionData(s *Session) *SessionData {
 	return &SessionData{
-		SessionID:    s.AccessToken,
-		AccessToken:  s.AccessToken,
-		LoginMethod:  s.LoginMethod,
-		PaperMode:    s.AccessToken == "",
-		ExpiresIn:    0,
+		LoginMethod: s.LoginMethod,
+		PaperMode:   s.PaperMode,
+		ExpiresIn:   int(time.Until(s.TokenExpiry).Minutes()),
 	}
 }
 

@@ -1587,6 +1587,7 @@ async function submitLogin(event) {
     submit.textContent = "Checking…";
     try {
       await postJSON("/api/auth/totp", { totp });
+      $("totp-input").value = "";
       setLoginStep(2);
       $("mpin-input").focus();
     } catch (error) {
@@ -1600,16 +1601,18 @@ async function submitLogin(event) {
   }
 
   const mpin = $("mpin-input").value.trim();
-  if (!/^\d{4}$/.test(mpin)) {
-    loginError("Enter your 4-digit MPIN.");
+  if (!/^\d{6}$/.test(mpin)) {
+    loginError("Enter your 6-digit MPIN.");
     return;
   }
   loginBusy = true;
   submit.disabled = true;
   submit.textContent = "Signing in…";
   try {
-    await postJSON("/api/auth/mpin", { mpin });
-    S.session = { authenticated: true, paper_mode: true };
+    const result = await postJSON("/api/auth/mpin", { mpin });
+    $("mpin-input").value = "";
+    S.session = result.session_data || { authenticated: true, paper_mode: false };
+    S.session.authenticated = true;
     updateAuthButton();
     closeLogin();
     toast("Session active. Feeds are connecting.", "ok");
@@ -1629,6 +1632,8 @@ async function logout() {
   } catch (error) {
     console.warn("logout failed", error);
   }
+  $("totp-input").value = "";
+  $("mpin-input").value = "";
   S.session = { authenticated: false };
   updateAuthButton();
   openLogin(1);

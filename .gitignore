@@ -9,3 +9,4 @@ GO_STANDARDS.md
 *.png
 scalper.db
 scalper.log
+config.yaml

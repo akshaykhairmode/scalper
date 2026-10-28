@@ -3,8 +3,11 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -38,6 +41,8 @@ type DBPinger interface {
 type Options struct {
 	Logger       *slog.Logger
 	Config       config.Config
+	AccessToken  string
+	AuthClient   auth.KotakAuthenticator
 	DB           DBPinger
 	LogDegraded  func() bool
 	TokenPresent func() bool
@@ -149,6 +154,10 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	authServer := auth.NewServer(opts.Logger, opts.Config, opts.AccessToken)
+	if opts.AuthClient != nil {
+		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient)
+	}
 	s := &Server{
 		log:          opts.Logger,
 		cfg:          opts.Config,
@@ -159,7 +168,7 @@ func New(opts Options) (*Server, error) {
 		now:          opts.Now,
 		tmpl:         tmpl,
 		bootstrap:    bootstrap,
-		a:            auth.NewServer(opts.Logger, opts.Config, opts.TokenPresent),
+		a:            authServer,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -312,7 +321,9 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout clears every in-memory session.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.a.CancelAllLogins()
 	s.a.SessionManager().RevokeAll()
+	clearAuthFlowCookie(w)
 	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
 	if err := writeJSON(w, http.StatusOK, map[string]any{"success": true}); err != nil {
 		s.log.Warn("write logout response", "event", "http_write_failed", "error", err,
@@ -325,41 +336,21 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TOTP string `json:"totp"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	if req.TOTP == "" {
-		http.Error(w, "TOTP code required", http.StatusBadRequest)
-		return
-	}
-
-	// Use the auth server to authenticate
-	accessToken, err := s.a.Login(req.TOTP, "")
+	flowID, err := authFlowID(w, r, true)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		http.Error(w, "could not start login flow", http.StatusInternalServerError)
 		return
 	}
-
-	// Get the session and convert to SessionData
-	session := s.a.SessionManager().GetSession(accessToken)
-	if session == nil {
-		http.Error(w, "session creation failed", http.StatusInternalServerError)
+	if err := s.a.BeginLogin(r.Context(), flowID, req.TOTP); err != nil {
+		writeAuthError(w, err)
 		return
 	}
-
-	resp := struct {
-		Success bool              `json:"success"`
-		Session *auth.SessionData `json:"session_data,omitempty"`
-	}{
-		Success: true,
-		Session: auth.ToSessionData(session),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	if err := writeJSON(w, http.StatusOK, map[string]bool{"success": true}); err != nil {
 		s.log.Warn("write login response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
@@ -370,30 +361,21 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MPIN string `json:"mpin"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	if req.MPIN == "" {
-		http.Error(w, "MPIN required", http.StatusBadRequest)
+	flowID, err := authFlowID(w, r, false)
+	if err != nil || flowID == "" {
+		writeAuthError(w, auth.ErrNoPendingLogin)
 		return
 	}
-
-	// Use the auth server to authenticate
-	accessToken, err := s.a.Login("", req.MPIN)
+	session, err := s.a.CompleteLogin(r.Context(), flowID, req.MPIN)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeAuthError(w, err)
 		return
 	}
-
-	// Get the session and convert to SessionData
-	session := s.a.SessionManager().GetSession(accessToken)
-	if session == nil {
-		http.Error(w, "session creation failed", http.StatusInternalServerError)
-		return
-	}
-
 	resp := struct {
 		Success bool              `json:"success"`
 		Session *auth.SessionData `json:"session_data,omitempty"`
@@ -401,13 +383,71 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		Session: auth.ToSessionData(session),
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	clearAuthFlowCookie(w)
+	if err := writeJSON(w, http.StatusOK, resp); err != nil {
 		s.log.Warn("write mpin login response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
+}
+
+const authFlowCookieName = "scalper_auth_flow"
+
+func authFlowID(w http.ResponseWriter, r *http.Request, create bool) (string, error) {
+	cookie, err := r.Cookie(authFlowCookieName)
+	if err == nil && len(cookie.Value) == 64 {
+		if _, decodeErr := hex.DecodeString(cookie.Value); decodeErr == nil {
+			return cookie.Value, nil
+		}
+	}
+	if !create {
+		return "", nil
+	}
+	var id [32]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	value := hex.EncodeToString(id[:])
+	http.SetCookie(w, &http.Cookie{
+		Name:     authFlowCookieName,
+		Value:    value,
+		Path:     "/api/auth",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int((5 * time.Minute).Seconds()),
+	})
+	return value, nil
+}
+
+func clearAuthFlowCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authFlowCookieName,
+		Value:    "",
+		Path:     "/api/auth",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
+func writeAuthError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	var inputErr *auth.InputError
+	var apiErr *auth.APIError
+	switch {
+	case errors.Is(err, auth.ErrMissingAccessToken):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, auth.ErrNoPendingLogin):
+		status = http.StatusConflict
+	case errors.As(err, &inputErr):
+		status = http.StatusBadRequest
+	case errors.As(err, &apiErr):
+		if apiErr.HTTPStatus == http.StatusUnauthorized ||
+			apiErr.HTTPStatus == http.StatusForbidden ||
+			apiErr.HTTPStatus == http.StatusBadRequest {
+			status = http.StatusUnauthorized
+		}
+	}
+	http.Error(w, err.Error(), status)
 }
 
 // handleSessionStatus returns the current session status.

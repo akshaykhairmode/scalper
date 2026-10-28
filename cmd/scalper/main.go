@@ -93,8 +93,8 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		log.Warn("logging is degraded", "event", "logging_degraded", "error", logHandle.SinkError())
 	}
 
-	_, hasToken := os.LookupEnv("KOTAK_ACCESS_TOKEN")
-	hasToken = hasToken && strings.TrimSpace(os.Getenv("KOTAK_ACCESS_TOKEN")) != ""
+	accessToken := strings.TrimSpace(os.Getenv("KOTAK_ACCESS_TOKEN"))
+	hasToken := accessToken != ""
 	if cfg.IsLive() && !hasToken {
 		log.Error("live mode requires KOTAK_ACCESS_TOKEN", "event", "startup_failed")
 		return errors.New("KOTAK_ACCESS_TOKEN is required when trading.mode is live")
@@ -127,6 +127,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	srv, err := web.New(web.Options{
 		Logger:       log,
 		Config:       cfg,
+		AccessToken:  accessToken,
 		DB:           st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasToken },

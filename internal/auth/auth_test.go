@@ -1,228 +1,271 @@
 package auth
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/akshaykhairmode/scalper/internal/config"
 	"log/slog"
 )
+
+type fakeKotak struct {
+	view          ViewSession
+	trade         TradeSession
+	loginErr      error
+	validateErr   error
+	loginCalls    int
+	validateCalls int
+	gotView       ViewSession
+	gotMPIN       string
+}
+
+func (f *fakeKotak) LoginTOTP(context.Context, string) (ViewSession, error) {
+	f.loginCalls++
+	return f.view, f.loginErr
+}
+
+func (f *fakeKotak) ValidateMPIN(_ context.Context, view ViewSession, mpin string) (TradeSession, error) {
+	f.validateCalls++
+	f.gotView = view
+	f.gotMPIN = mpin
+	return f.trade, f.validateErr
+}
+
+func TestKotakClientLoginFlow(t *testing.T) {
+	const accessToken = "dashboard-token"
+	requests := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("Authorization"); got != accessToken {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("neo-fin-key"); got != "neotradeapi" {
+			t.Errorf("neo-fin-key = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		switch r.URL.Path {
+		case "/login/1.0/tradeApiLogin":
+			if r.Header.Get("Auth") != "" || r.Header.Get("sid") != "" {
+				t.Error("initial login unexpectedly included a view session")
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode TOTP body: %v", err)
+			}
+			if body["mobileNumber"] != "+911234567890" || body["ucc"] != "client-1" || body["totp"] != "123456" {
+				t.Errorf("TOTP request body = %#v", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"token":"view-secret","sid":"view-sid","kType":"View","status":"success"}}`)
+		case "/login/1.0/tradeApiValidate":
+			if r.Header.Get("Auth") != "view-secret" || r.Header.Get("sid") != "view-sid" {
+				t.Errorf("MPIN headers Auth=%q sid=%q", r.Header.Get("Auth"), r.Header.Get("sid"))
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode MPIN body: %v", err)
+			}
+			if body["mpin"] != "123456" || len(body) != 1 {
+				t.Errorf("MPIN request body = %#v", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"token":"trade-secret","sid":"trade-sid","baseUrl":"https://cis.kotaksecurities.com","kType":"Trade","status":"success"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	client := &kotakClient{
+		accessToken: accessToken,
+		mobile:      "+911234567890",
+		ucc:         "client-1",
+		neoFinKey:   "neotradeapi",
+		loginURL:    api.URL,
+		http:        api.Client(),
+	}
+	view, err := client.LoginTOTP(context.Background(), "123456")
+	if err != nil {
+		t.Fatalf("LoginTOTP: %v", err)
+	}
+	if view != (ViewSession{Token: "view-secret", SID: "view-sid"}) {
+		t.Fatalf("view session = %+v", view)
+	}
+	trade, err := client.ValidateMPIN(context.Background(), view, "123456")
+	if err != nil {
+		t.Fatalf("ValidateMPIN: %v", err)
+	}
+	if trade != (TradeSession{Token: "trade-secret", SID: "trade-sid", BaseURL: "https://cis.kotaksecurities.com"}) {
+		t.Fatalf("trade session = %+v", trade)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestKotakClientRejectsBadResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "API rejection", body: `{"status":"error","message":"secret response"}`, want: "HTTP 401"},
+		{name: "missing token", body: `{"data":{"sid":"view-sid","status":"success"}}`, want: "missing its view session"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, tt.body)
+			}))
+			defer api.Close()
+			client := &kotakClient{
+				accessToken: "dashboard-token",
+				loginURL:    api.URL,
+				http:        api.Client(),
+			}
+			_, err := client.LoginTOTP(context.Background(), "123456")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "secret response") {
+				t.Fatal("API response body leaked through error")
+			}
+		})
+	}
+}
+
+func TestKotakClientRequiresAccessToken(t *testing.T) {
+	client := NewKotakAuthenticator("", "mobile", "ucc", "neotradeapi")
+	_, err := client.LoginTOTP(context.Background(), "123456")
+	if !errors.Is(err, ErrMissingAccessToken) {
+		t.Fatalf("error = %v, want ErrMissingAccessToken", err)
+	}
+}
+
+func TestValidateBaseURL(t *testing.T) {
+	if _, err := validateBaseURL("http://untrusted.example"); err == nil {
+		t.Fatal("accepted non-HTTPS base URL")
+	}
+	if _, err := validateBaseURL("https://user:pass@example.com"); err == nil {
+		t.Fatal("accepted base URL with user info")
+	}
+	if _, err := validateBaseURL("https://cis.kotaksecurities.com.attacker.example"); err == nil {
+		t.Fatal("accepted base URL outside Kotak domain")
+	}
+	if got, err := validateBaseURL("https://cis.kotaksecurities.com/"); err != nil || got != "https://cis.kotaksecurities.com" {
+		t.Fatalf("validateBaseURL = %q, %v", got, err)
+	}
+}
 
 func TestSessionManagerNewSession(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
 	token := "test-token-" + fmt.Sprintf("%08d", time.Now().Unix()%100000000)
 	session := sm.NewSession(token, LoginMethodTOTP, false)
-
-	if session == nil {
-		t.Fatal("NewSession should return a non-nil session")
+	if session == nil || session.AccessToken != token || session.LoginMethod != LoginMethodTOTP {
+		t.Fatalf("NewSession = %+v", session)
 	}
-	if session.AccessToken != token {
-		t.Fatalf("Session access token should match, got %s", session.AccessToken)
-	}
-	if session.LoginMethod != LoginMethodTOTP {
-		t.Fatalf("Session login method should be TOTP, got %s", session.LoginMethod)
-	}
-	// Paper mode is determined by whether access token is empty
-	if session.AccessToken == "" {
-		t.Fatal("Session access token should not be empty after NewSession")
+	if session.PaperMode {
+		t.Fatal("live session marked as paper")
 	}
 }
 
-func TestSessionManagerGetSession(t *testing.T) {
-	sm := NewSessionManager(1 * time.Minute) // short expiry for testing
-
-	token := "test-session-" + fmt.Sprintf("%04d", time.Now().Unix()%10000)
-	sm.NewSession(token, LoginMethodMPIN, true)
-
-	// Session should exist immediately
-	session := sm.GetSession(token)
-	if session == nil {
-		t.Fatal("GetSession should return the created session")
-	}
-	if session.AccessToken != token {
-		t.Fatalf("Session access token should match")
-	}
-}
-
-func TestSessionManagerIsSessionValid(t *testing.T) {
+func TestSessionManagerGetAndRevoke(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
-
-	token := "test-valid-" + fmt.Sprintf("%04d", time.Now().Unix()%10000)
-	sm.NewSession(token, LoginMethodTOTP, false)
-
-	if !sm.IsSessionValid(token) {
-		t.Fatal("IsSessionValid should return true for valid session")
+	session := sm.NewSession("test-session", LoginMethodMPIN, true)
+	if got := sm.GetSession("test-session"); got != session {
+		t.Fatal("GetSession did not return created session")
+	}
+	if !sm.IsSessionValid("test-session") {
+		t.Fatal("session should be valid")
+	}
+	sm.RevokeSession("test-session")
+	if sm.IsSessionValid("test-session") {
+		t.Fatal("session should be invalid after revocation")
 	}
 }
 
-func TestSessionManagerIsSessionValidExpired(t *testing.T) {
-	sm := NewSessionManager(1 * time.Hour) // short expiry for testing
-
-	token := "test-expired-" + fmt.Sprintf("%04d", time.Now().Unix()%10000)
-	sm.NewSession(token, LoginMethodTOTP, false)
-
-	// Immediately check - should be valid since we just created it
-	if sm.IsSessionValid(token) {
-		// This is expected right after creation; wait a bit and check again
-	}
-}
-
-func TestSessionManagerRevokeSession(t *testing.T) {
+func TestSessionManagerCleanupExpired(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
-
-	token := "test-revoke-" + fmt.Sprintf("%04d", time.Now().Unix()%10000)
-	sm.NewSession(token, LoginMethodTOTP, false)
-
-	if !sm.IsSessionValid(token) {
-		t.Fatal("Session should be valid before revocation")
-	}
-
-	sm.RevokeSession(token)
-
-	if sm.IsSessionValid(token) {
-		t.Fatal("Session should be invalid after revocation")
+	sm.NewSession("expired", LoginMethodMPIN, false).TokenExpiry = time.Now().Add(-time.Minute)
+	sm.NewSession("active", LoginMethodMPIN, false)
+	sm.CleanupExpired()
+	if sm.IsSessionValid("expired") || !sm.IsSessionValid("active") {
+		t.Fatal("CleanupExpired did not remove only the expired session")
 	}
 }
 
-func TestSessionManagerRevokeAll(t *testing.T) {
-	sm := NewSessionManager(24 * time.Hour)
-
-	token1 := "revoke-token-1"
-	token2 := "revoke-token-2"
-
-	sm.NewSession(token1, LoginMethodTOTP, false)
-	sm.NewSession(token2, LoginMethodMPIN, true)
-
-	if !sm.IsSessionValid(token1) {
-		t.Fatal("Token1 should be valid before revoke all")
+func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
+	client := &fakeKotak{
+		view:  ViewSession{Token: "view-secret", SID: "view-sid"},
+		trade: TradeSession{Token: "trade-secret", SID: "trade-sid", BaseURL: "https://cis.kotaksecurities.com"},
 	}
-	if !sm.IsSessionValid(token2) {
-		t.Fatal("Token2 should be valid before revoke all")
+	server := NewServerWithAuthenticator(slog.Default(), client)
+	if err := server.BeginLogin(context.Background(), "flow-1", "123456"); err != nil {
+		t.Fatalf("BeginLogin: %v", err)
 	}
-
-	sm.RevokeAll()
-
-	if sm.IsSessionValid(token1) {
-		t.Fatal("Token1 should be invalid after revoke all")
-	}
-	if sm.IsSessionValid(token2) {
-		t.Fatal("Token2 should be invalid after revoke all")
-	}
-}
-
-func TestSessionManagerGetSessionInfo(t *testing.T) {
-	sm := NewSessionManager(24 * time.Hour)
-
-	token := "test-info-" + fmt.Sprintf("%04d", time.Now().Unix()%10000)
-	_ = sm.NewSession(token, LoginMethodTOTP, false)
-
-	info := sm.GetSessionInfo(token)
-	if info == nil {
-		t.Fatal("GetSessionInfo should return non-nil info")
-	}
-	if info.LoginMethod != LoginMethodTOTP {
-		t.Fatalf("Login method should be TOTP, got %s", info.LoginMethod)
-	}
-	// Paper mode: TOTP login starts in live mode (paperMode=false), so PaperMode should be false
-	if info.PaperMode != false {
-		t.Fatalf("Paper mode should be false for TOTP auth, got %v", info.PaperMode)
-	}
-}
-
-func TestSessionManagerGetSessionInfoNotFound(t *testing.T) {
-	sm := NewSessionManager(24 * time.Hour)
-
-	info := sm.GetSessionInfo("nonexistent-token")
-	if info != nil {
-		t.Fatal("GetSessionInfo should return nil for non-existent token")
-	}
-}
-
-func TestServerNewServer(t *testing.T) {
-	log := slog.Default()
-	cfg := config.Default()
-	tokenPresent := func() bool { return false }
-
-	server := NewServer(log, cfg, tokenPresent)
-	if server == nil {
-		t.Fatal("NewServer should return non-nil server")
-	}
-	if server.SessionManager() == nil {
-		t.Fatal("SessionManager should not be nil")
-	}
-}
-
-func TestServerLoginTOTP(t *testing.T) {
-	log := slog.Default()
-	cfg := config.Default()
-	tokenPresent := func() bool { return false }
-
-	server := NewServer(log, cfg, tokenPresent)
-
-	token, err := server.Login("123456", "")
+	session, err := server.CompleteLogin(context.Background(), "flow-1", "654321")
 	if err != nil {
-		t.Fatalf("Server.Login with TOTP should not error: %v", err)
+		t.Fatalf("CompleteLogin: %v", err)
 	}
-	if token == "" {
-		t.Fatal("Server.Login should return a token")
+	if client.gotView.Token != "view-secret" || client.gotMPIN != "654321" {
+		t.Fatalf("validation inputs were not forwarded: view=%+v mpin=%q", client.gotView, client.gotMPIN)
 	}
-}
-
-func TestServerLoginMPIN(t *testing.T) {
-	log := slog.Default()
-	cfg := config.Default()
-	tokenPresent := func() bool { return false }
-
-	server := NewServer(log, cfg, tokenPresent)
-
-	token, err := server.Login("", "1234")
+	if session.BrokerToken != "trade-secret" || session.BrokerSID != "trade-sid" || session.BaseURL != "https://cis.kotaksecurities.com" {
+		t.Fatalf("broker session not retained: %+v", session)
+	}
+	status := server.SessionStatus()
+	if !status.Authenticated || status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
+		t.Fatalf("SessionStatus = %+v", status)
+	}
+	data, err := json.Marshal(ToSessionData(session))
 	if err != nil {
-		t.Fatalf("Server.Login with MPIN should not error: %v", err)
+		t.Fatal(err)
 	}
-	if token == "" {
-		t.Fatal("Server.Login should return a token")
-	}
-}
-
-func TestServerSessionStatus(t *testing.T) {
-	log := slog.Default()
-	cfg := config.Default()
-	tokenPresent := func() bool { return false }
-
-	server := NewServer(log, cfg, tokenPresent)
-
-	status := server.SessionStatus()
-	if status == nil {
-		t.Fatal("SessionStatus should return non-nil status")
-	}
-	if status.Authenticated {
-		t.Fatal("SessionStatus should show unauthenticated initially")
-	}
-	if !status.PaperMode {
-		t.Fatal("SessionStatus should show paper mode initially")
+	for _, secret := range []string{"trade-secret", "trade-sid", "cis.kotaksecurities.com", session.AccessToken} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("session data leaked %q: %s", secret, data)
+		}
 	}
 }
 
-func TestServerSessionStatusAfterLogin(t *testing.T) {
-	log := slog.Default()
-	cfg := config.Default()
-	tokenPresent := func() bool { return false }
+func TestServerLoginFlowValidatesAndExpiresPendingLogin(t *testing.T) {
+	client := &fakeKotak{view: ViewSession{Token: "view", SID: "sid"}}
+	server := NewServerWithAuthenticator(slog.Default(), client)
+	if err := server.BeginLogin(context.Background(), "flow", "12345x"); err == nil {
+		t.Fatal("accepted malformed TOTP")
+	}
+	if client.loginCalls != 0 {
+		t.Fatal("sent invalid TOTP to Kotak")
+	}
+	if err := server.BeginLogin(context.Background(), "flow", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.CompleteLogin(context.Background(), "flow", "1234"); err == nil {
+		t.Fatal("accepted four-digit MPIN")
+	}
+	if client.validateCalls != 0 {
+		t.Fatal("sent invalid MPIN to Kotak")
+	}
+	server.pendingMu.Lock()
+	pending := server.pendingLogins["flow"]
+	pending.expiresAt = time.Now().Add(-time.Second)
+	server.pendingLogins["flow"] = pending
+	server.pendingMu.Unlock()
+	if _, err := server.CompleteLogin(context.Background(), "flow", "123456"); !errors.Is(err, ErrNoPendingLogin) {
+		t.Fatalf("expired login error = %v", err)
+	}
+}
 
-	server := NewServer(log, cfg, tokenPresent)
-
-	// Login first
-	server.Login("123456", "")
-
+func TestServerSessionStatusWithoutLogin(t *testing.T) {
+	server := NewServerWithAuthenticator(slog.Default(), &fakeKotak{})
 	status := server.SessionStatus()
-	if !status.Authenticated {
-		t.Fatal("SessionStatus should show authenticated after login")
-	}
-	// After TOTP login, paper mode should be false
-	if status.PaperMode {
-		t.Fatal("SessionStatus should not show paper mode after TOTP login")
-	}
-	if status.LoginMethod != "totp" {
-		t.Fatalf("Login method should be totp, got %s", status.LoginMethod)
+	if status.Authenticated || !status.PaperMode {
+		t.Fatalf("unauthenticated status = %+v", status)
 	}
 }

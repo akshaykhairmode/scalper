@@ -25,8 +25,8 @@ kotak:
   mobile_number: "+91XXXXXXXXXX"
   ucc: "XXXXXXXX"
   neo_fin_key: "neotradeapi"
-  # Access token: KOTAK_ACCESS_TOKEN only.
-  # TOTP and MPIN are entered in the UI and never stored.
+  # KOTAK_ACCESS_TOKEN is sent with both Kotak login steps.
+  # TOTP and 6-digit MPIN are entered in the UI and never stored.
 
 market:
   data_mode: "websocket"     # websocket | poll
