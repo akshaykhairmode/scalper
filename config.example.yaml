@@ -128,3 +128,7 @@ scrip:
 
 web:
   open_browser: true
+
+fake_data:
+  enabled: true
+  interval_seconds: 5

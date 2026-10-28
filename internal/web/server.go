@@ -56,9 +56,77 @@ type Server struct {
 	now          func() time.Time
 	tmpl         *template.Template
 	handler      http.Handler
+	bootstrap    template.JS
 
 	// Auth is the authentication handler.
 	a *auth.Server
+}
+
+// bootstrapConfig is rendered into the page so the frontend can start without
+// a round-trip. It contains no secrets: only display settings and the index list.
+type bootstrapConfig struct {
+	Mode              string           `json:"mode"`
+	Paper             bool             `json:"paper"`
+	Demo              bool             `json:"demo"`
+	Indices           []bootstrapIndex `json:"indices"`
+	Timeframes        []string         `json:"timeframes"`
+	DefaultTimeframe  string           `json:"defaultTimeframe"`
+	DefaultProduct    string           `json:"defaultProduct"`
+	DefaultLots       int              `json:"defaultLots"`
+	DefaultUnit       string           `json:"defaultUnit"`
+	AllowShares       bool             `json:"allowShares"`
+	ConfirmLiveOrders bool             `json:"confirmLiveOrders"`
+	StartingCash      float64          `json:"startingCash"`
+	ShortMarginPct    float64          `json:"shortMarginPct"`
+	PayoffRangePct    int              `json:"payoffRangePct"`
+	PayoffPoints      int              `json:"payoffPoints"`
+	Version           string           `json:"version"`
+}
+
+type bootstrapIndex struct {
+	Key             string `json:"key"`
+	DisplayName     string `json:"displayName"`
+	ExchangeSegment string `json:"exchangeSegment"`
+	IndexSegment    string `json:"indexSegment"`
+	IndexSymbol     string `json:"indexSymbol"`
+	ExpiryMode      string `json:"expiryMode"`
+	DefaultExpiry   string `json:"defaultExpiry"`
+}
+
+func newBootstrap(cfg config.Config) (template.JS, error) {
+	boot := bootstrapConfig{
+		Mode:              cfg.Trading.Mode,
+		Paper:             !cfg.IsLive(),
+		Demo:              cfg.FakeData.Enabled,
+		Timeframes:        append([]string(nil), cfg.Charts.Timeframes...),
+		DefaultTimeframe:  cfg.Charts.DefaultTimeframe,
+		DefaultProduct:    cfg.Trading.DefaultProduct,
+		DefaultLots:       cfg.Trading.Quantity.DefaultLots,
+		DefaultUnit:       cfg.Trading.Quantity.DefaultUnit,
+		AllowShares:       cfg.Trading.Quantity.AllowShares,
+		ConfirmLiveOrders: cfg.Trading.ConfirmLiveOrders,
+		StartingCash:      cfg.Trading.Paper.StartingCash,
+		ShortMarginPct:    cfg.Trading.Paper.ShortMarginPct,
+		PayoffRangePct:    cfg.Trading.RiskView.PayoffRangePct,
+		PayoffPoints:      cfg.Trading.RiskView.PayoffPoints,
+		Version:           version.Version,
+	}
+	for _, idx := range cfg.Market.Indices {
+		boot.Indices = append(boot.Indices, bootstrapIndex{
+			Key:             idx.Key,
+			DisplayName:     idx.DisplayName,
+			ExchangeSegment: idx.ExchangeSegment,
+			IndexSegment:    idx.IndexSegment,
+			IndexSymbol:     idx.IndexSymbol,
+			ExpiryMode:      idx.ExpiryMode,
+			DefaultExpiry:   idx.DefaultExpiry,
+		})
+	}
+	data, err := json.Marshal(boot)
+	if err != nil {
+		return "", fmt.Errorf("web: encode bootstrap config: %w", err)
+	}
+	return template.JS(data), nil
 }
 
 // New builds the handler. It fails only if the embedded templates cannot be
@@ -77,6 +145,10 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
+	bootstrap, err := newBootstrap(opts.Config)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		log:          opts.Logger,
 		cfg:          opts.Config,
@@ -86,6 +158,7 @@ func New(opts Options) (*Server, error) {
 		started:      opts.Started,
 		now:          opts.Now,
 		tmpl:         tmpl,
+		bootstrap:    bootstrap,
 		a:            auth.NewServer(opts.Logger, opts.Config, opts.TokenPresent),
 	}
 
@@ -107,6 +180,8 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("POST /api/auth/totp", s.handleTotpLogin)
 	mux.HandleFunc("POST /api/auth/mpin", s.handleMPINLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
 
 	var h http.Handler = mux
@@ -133,6 +208,8 @@ type pageData struct {
 	TokenPresent bool
 	LogDegraded  bool
 	DBOK         bool
+	Demo         bool
+	Bootstrap    template.JS
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +238,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		TokenPresent: token,
 		LogDegraded:  s.loggingDegraded(),
 		DBOK:         dbOK,
+		Demo:         s.cfg.FakeData.Enabled,
+		Bootstrap:    s.bootstrap,
 	}
 	var buf strings.Builder
 	if err := s.tmpl.ExecuteTemplate(&buf, "index.html", data); err != nil {
@@ -224,16 +303,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLoginPage serves the login page.
+// handleLoginPage sends legacy /login links to the terminal, which opens the
+// login modal itself. Keeping the modal in the main page avoids a second window
+// and keeps the feed/UI state alive across authentication.
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	data := pageData{
-		Title: "Login",
-		Mode:  strings.ToUpper(s.cfg.Trading.Mode),
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if err := s.tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
-		s.log.Error("render login page", "event", "http_render_failed", "error", err,
+	http.Redirect(w, r, "/#login", http.StatusSeeOther)
+}
+
+// handleLogout clears every in-memory session.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.a.SessionManager().RevokeAll()
+	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
+	if err := writeJSON(w, http.StatusOK, map[string]any{"success": true}); err != nil {
+		s.log.Warn("write logout response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
 }
@@ -268,7 +350,7 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := struct {
-		Success bool `json:"success"`
+		Success bool              `json:"success"`
 		Session *auth.SessionData `json:"session_data,omitempty"`
 	}{
 		Success: true,
@@ -313,7 +395,7 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := struct {
-		Success bool `json:"success"`
+		Success bool              `json:"success"`
 		Session *auth.SessionData `json:"session_data,omitempty"`
 	}{
 		Success: true,

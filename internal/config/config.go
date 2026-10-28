@@ -17,14 +17,15 @@ import (
 
 // Config is the root of config.yaml.
 type Config struct {
-	App     App     `yaml:"app"`
-	Logging Logging `yaml:"logging"`
-	Kotak   Kotak   `yaml:"kotak"`
-	Market  Market  `yaml:"market"`
-	Charts  Charts  `yaml:"charts"`
-	Trading Trading `yaml:"trading"`
-	Scrip   Scrip   `yaml:"scrip"`
-	Web     Web     `yaml:"web"`
+	App      App      `yaml:"app"`
+	Logging  Logging  `yaml:"logging"`
+	Kotak    Kotak    `yaml:"kotak"`
+	Market   Market   `yaml:"market"`
+	Charts   Charts   `yaml:"charts"`
+	Trading  Trading  `yaml:"trading"`
+	Scrip    Scrip    `yaml:"scrip"`
+	Web      Web      `yaml:"web"`
+	FakeData FakeData `yaml:"fake_data"`
 }
 
 // App holds process-level settings.
@@ -182,6 +183,12 @@ type Scrip struct {
 // Web holds browser settings.
 type Web struct {
 	OpenBrowser bool `yaml:"open_browser"`
+}
+
+// FakeData holds fake/mock data generator settings.
+type FakeData struct {
+	Enabled  bool `yaml:"enabled"`
+	Interval int  `yaml:"interval_seconds"`
 }
 
 // Default returns the documented defaults. A minimal config file can omit any

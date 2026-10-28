@@ -3,91 +3,334 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}}</title>
+  <meta name="color-scheme" content="dark">
+  <title>{{.Title}} · options terminal</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body data-mode="{{.Mode}}" data-demo="{{if .Demo}}true{{else}}false{{end}}">
+  <div class="sr-only" id="diagnostics">
+    Database {{if .DBOK}}ready{{else}}unavailable{{end}} · Access token {{if .TokenPresent}}present{{else}}not set{{end}} · Log sink {{if .LogDegraded}}degraded{{else}}healthy{{end}} · Uptime {{.Uptime}}
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="mark">S</span>
-      <span class="name">{{.Title}}</span>
-      <span class="tag">manual options terminal</span>
+      <span class="name">Scalper</span>
+      <span class="tag">NEO terminal</span>
     </div>
+
+    <div class="spot-strip" id="spot-strip" aria-label="Index spot prices">
+      {{range .Indices}}<span class="spot-chip" data-index="{{.}}"><span class="spot-name">{{.}}</span><span class="spot-price">—</span><span class="spot-change">—</span></span>{{end}}
+    </div>
+
     <div class="topbar-right">
-      <span class="badge {{if eq .Mode "LIVE"}}live{{else}}paper{{end}}">{{.Mode}}</span>
-      <span class="muted">{{.Now}}</span>
-      <span class="muted">v{{.Version}}</span>
+      <span class="metric"><span class="metric-label">MARGIN</span><span class="metric-value" id="margin-chip">—</span></span>
+      <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value" id="pnl-chip">—</span></span>
+      <span class="feed-badge connecting" id="feed-badge"><i></i><span id="feed-label">connecting</span></span>
+      <span class="badge {{if eq .Mode "LIVE"}}live{{else}}paper{{end}}" id="mode-badge">{{.Mode}}</span>
+      <span class="clock" id="clock">{{.Now}}</span>
+      <button type="button" class="ghost" id="auth-button">Login</button>
     </div>
   </header>
 
-  <main class="shell">
-    <section class="panel hero">
-      <div class="hero-copy">
-        <p class="eyebrow">Phase 1 · foundation</p>
-        <h1>Localhost trading terminal</h1>
-        <p class="lede">
-          Config, structured logging, SQLite migrations and the web shell are
-          running. Market feeds, the option chain and order entry arrive in the
-          next phases.
-        </p>
-      </div>
-      <dl class="status-grid">
-        <div>
-          <dt>Mode</dt>
-          <dd>{{.Mode}}</dd>
+  <nav class="toolbar" aria-label="Chain controls">
+    <label class="select-field">
+      <span>INDEX</span>
+      <select id="index-select">
+        {{range .Indices}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+    </label>
+
+    <label class="select-field">
+      <span>EXPIRY</span>
+      <select id="expiry-select"><option value="">loading…</option></select>
+    </label>
+
+    <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe"></div>
+
+    <span class="atm-chip">ATM <b id="atm-value">—</b></span>
+    <span class="demo-badge" id="demo-badge" hidden>SIMULATED</span>
+    <span class="toolbar-spacer"></span>
+    <button type="button" class="ghost small" id="refresh-button" title="Refresh chain">Refresh</button>
+    <button type="button" class="ghost small" id="fullscreen-button">Fullscreen</button>
+  </nav>
+
+  <main class="terminal">
+    <section class="charts-row" id="charts-row" aria-label="Charts">
+      <article class="pane" data-pane="ce">
+        <div class="pane-head">
+          <div class="pane-id">
+            <span class="pane-title" id="ce-title">CALL</span>
+            <span class="pane-sub" id="ce-sub">select a strike</span>
+          </div>
+          <div class="pane-quote">
+            <span class="pane-ltp" id="ce-ltp">—</span>
+            <span class="pane-change" id="ce-change">—</span>
+          </div>
         </div>
-        <div>
-          <dt>Uptime</dt>
-          <dd>{{.Uptime}}</dd>
+        <div class="chart-frame">
+          <canvas id="chart-ce"></canvas>
+          <div class="chart-tools" aria-label="CALL chart zoom controls">
+            <button type="button" data-chart="ce" data-chart-action="in" title="Zoom in (time + price)" aria-label="Zoom in time and price">+</button>
+            <button type="button" data-chart="ce" data-chart-action="out" title="Zoom out (time + price)" aria-label="Zoom out time and price">−</button>
+            <button type="button" data-chart="ce" data-chart-action="reset" title="Reset time + price zoom" aria-label="Reset time and price zoom">↺</button>
+            <button type="button" data-chart="ce" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
+          </div>
+          <div class="chart-hint" id="hint-ce">Collecting live candles…</div>
         </div>
-        <div>
-          <dt>Database</dt>
-          <dd>{{if .DBOK}}ready{{else}}unavailable{{end}}</dd>
+      </article>
+
+      <article class="pane" data-pane="spot">
+        <div class="pane-head">
+          <div class="pane-id">
+            <span class="pane-title" id="spot-title">SPOT</span>
+            <span class="pane-sub" id="spot-sub">index</span>
+          </div>
+          <div class="pane-quote">
+            <span class="pane-ltp" id="spot-ltp">—</span>
+            <span class="pane-change" id="spot-change">—</span>
+          </div>
         </div>
-        <div>
-          <dt>Access token</dt>
-          <dd>{{if .TokenPresent}}present{{else}}not set{{end}}</dd>
+        <div class="chart-frame">
+          <canvas id="chart-spot"></canvas>
+          <div class="chart-tools" aria-label="SPOT chart zoom controls">
+            <button type="button" data-chart="spot" data-chart-action="in" title="Zoom in (time + price)" aria-label="Zoom in time and price">+</button>
+            <button type="button" data-chart="spot" data-chart-action="out" title="Zoom out (time + price)" aria-label="Zoom out time and price">−</button>
+            <button type="button" data-chart="spot" data-chart-action="reset" title="Reset time + price zoom" aria-label="Reset time and price zoom">↺</button>
+            <button type="button" data-chart="spot" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
+          </div>
+          <div class="chart-hint" id="hint-spot">Collecting live candles…</div>
         </div>
-        <div>
-          <dt>Log sink</dt>
-          <dd>{{if .LogDegraded}}degraded{{else}}healthy{{end}}</dd>
+      </article>
+
+      <article class="pane" data-pane="pe">
+        <div class="pane-head">
+          <div class="pane-id">
+            <span class="pane-title" id="pe-title">PUT</span>
+            <span class="pane-sub" id="pe-sub">select a strike</span>
+          </div>
+          <div class="pane-quote">
+            <span class="pane-ltp" id="pe-ltp">—</span>
+            <span class="pane-change" id="pe-change">—</span>
+          </div>
         </div>
-        <div>
-          <dt>Build</dt>
-          <dd>{{.Commit}}</dd>
+        <div class="chart-frame">
+          <canvas id="chart-pe"></canvas>
+          <div class="chart-tools" aria-label="PUT chart zoom controls">
+            <button type="button" data-chart="pe" data-chart-action="in" title="Zoom in (time + price)" aria-label="Zoom in time and price">+</button>
+            <button type="button" data-chart="pe" data-chart-action="out" title="Zoom out (time + price)" aria-label="Zoom out time and price">−</button>
+            <button type="button" data-chart="pe" data-chart-action="reset" title="Reset time + price zoom" aria-label="Reset time and price zoom">↺</button>
+            <button type="button" data-chart="pe" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
+          </div>
+          <div class="chart-hint" id="hint-pe">Collecting live candles…</div>
         </div>
-      </dl>
+      </article>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Configured indices</h2>
-        <span class="muted">chart-only streaming, ladder polled</span>
-      </div>
-      <ul class="chips">
-        {{range .Indices}}<li>{{.}}</li>{{end}}
-      </ul>
+    <section class="middle-grid">
+      <section class="panel chain-panel" aria-label="Option chain">
+        <div class="panel-head">
+          <div>
+            <h2>Strike ladder</h2>
+            <span class="panel-sub" id="chain-sub">all strikes · polled</span>
+          </div>
+          <span class="panel-meta" id="chain-meta">—</span>
+        </div>
+        <div class="chain-head" role="row">
+          <span class="col-ce">CE LTP</span>
+          <span class="col-ce">CE %</span>
+          <span class="col-ce">CE OI</span>
+          <span class="col-strike">STRIKE</span>
+          <span class="col-pe">PE LTP</span>
+          <span class="col-pe">PE %</span>
+          <span class="col-pe">PE OI</span>
+        </div>
+        <div class="chain-body" id="chain-body" role="table" tabindex="0">
+          <div class="empty-state">Waiting for the option chain…</div>
+        </div>
+      </section>
+
+      <aside class="panel orderpad" aria-label="Order pad">
+        <div class="orderpad-head">
+          <div>
+            <h2>Order pad</h2>
+            <div class="op-contract" id="op-contract">Select a strike</div>
+            <div class="op-sub" id="op-lot">—</div>
+          </div>
+          <div class="qty-control">
+            <span class="metric-label">QTY</span>
+            <div class="stepper">
+              <button type="button" id="qty-minus" aria-label="Decrease quantity">−</button>
+              <input id="qty-input" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Quantity">
+              <button type="button" id="qty-plus" aria-label="Increase quantity">+</button>
+            </div>
+            <div class="unit-toggle" role="group" aria-label="Quantity unit">
+              <button type="button" data-unit="lots" class="active">Lots</button>
+              <button type="button" data-unit="shares">Shares</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="op-toolbar">
+          <label class="select-field compact">
+            <span>PRODUCT</span>
+            <select id="product-select">
+              <option value="MIS">MIS</option>
+              <option value="NRML">NRML</option>
+            </select>
+          </label>
+          <div class="op-available">
+            <span class="metric-label">AVAILABLE</span>
+            <b id="op-available">—</b>
+            <span class="op-shares" id="op-shares">—</span>
+          </div>
+        </div>
+
+        <div class="leg-block call" id="leg-call">
+          <div class="leg-head">
+            <span class="leg-name" id="leg-call-name">CALL</span>
+            <span class="leg-ltp">LTP <b id="leg-call-ltp">—</b></span>
+            <span class="leg-change" id="leg-call-change">—</span>
+          </div>
+          <div class="leg-preview">
+            <span>Buy <b id="call-buy-value">—</b> <em>premium</em></span>
+            <span>Sell <b id="call-sell-value">—</b> <em>margin</em></span>
+            <span>After buy <b id="call-after-value">—</b></span>
+          </div>
+          <div class="leg-actions">
+            <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
+            <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
+          </div>
+        </div>
+
+        <div class="leg-block put" id="leg-put">
+          <div class="leg-head">
+            <span class="leg-name" id="leg-put-name">PUT</span>
+            <span class="leg-ltp">LTP <b id="leg-put-ltp">—</b></span>
+            <span class="leg-change" id="leg-put-change">—</span>
+          </div>
+          <div class="leg-preview">
+            <span>Buy <b id="put-buy-value">—</b> <em>premium</em></span>
+            <span>Sell <b id="put-sell-value">—</b> <em>margin</em></span>
+            <span>After buy <b id="put-after-value">—</b></span>
+          </div>
+          <div class="leg-actions">
+            <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
+            <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>
+          </div>
+        </div>
+
+        <div class="risk-preview">
+          <div class="risk-line" id="risk-preview-line">
+            <span class="metric-label">AT EXPIRY · GROSS</span>
+            <span id="risk-preview-text">Select a strike to preview max profit / loss.</span>
+          </div>
+          <span class="risk-note">theoretical · informational only</span>
+        </div>
+      </aside>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Next up</h2>
-        <span class="muted">Phase 2 → authentication</span>
+    <section class="panel bottom-panel" aria-label="Positions and books">
+      <div class="bottom-head">
+        <div class="tabs" role="tablist" id="tabs">
+          <button type="button" role="tab" data-tab="positions" class="active">Positions</button>
+          <button type="button" role="tab" data-tab="risk">Risk</button>
+          <button type="button" role="tab" data-tab="orders">Orders</button>
+          <button type="button" role="tab" data-tab="trades">Trades</button>
+          <button type="button" role="tab" data-tab="depth">Depth</button>
+        </div>
+        <div class="bottom-actions">
+          <span class="paper-note" id="paper-note">paper P&amp;L is gross of charges</span>
+          <button type="button" class="danger" id="square-off-button">SQUARE OFF ALL</button>
+        </div>
       </div>
-      <ol class="roadmap">
-        <li><strong>TOTP → MPIN</strong><span>manual login, session kept in memory</span></li>
-        <li><strong>Scrip Master</strong><span>option chain derived from the CSV</span></li>
-        <li><strong>Market data</strong><span>HSM ticks for the two chart contracts</span></li>
-        <li><strong>Charts</strong><span>CE · spot · PE, persisted candles</span></li>
-        <li><strong>Orders</strong><span>paper first, live behind a confirmation</span></li>
-      </ol>
+      <div class="tab-content" id="tab-content">
+        <div class="empty-state">No open positions.</div>
+      </div>
     </section>
   </main>
 
   <footer class="footer">
-    <span>bound to localhost only</span>
-    <a href="/healthz">health</a>
-    <span class="muted">no automatic square-off</span>
+    <span class="footer-brand">SCALPER <span id="footer-version">v{{.Version}}</span></span>
+    <span class="dot-sep">·</span>
+    <span>127.0.0.1 only</span>
+    <span class="dot-sep">·</span>
+    <span id="footer-feed">feed connecting</span>
+    <span class="dot-sep">·</span>
+    <span>no automatic square-off</span>
+    <span class="toolbar-spacer"></span>
+    <a href="/healthz" target="_blank" rel="noreferrer">health</a>
+    <span class="footer-uptime" title="Diagnostics">DB {{if .DBOK}}ok{{else}}down{{end}} · token {{if .TokenPresent}}present{{else}}missing{{end}}</span>
   </footer>
+
+  <!-- Login modal -->
+  <div class="modal-backdrop" id="login-modal" hidden>
+    <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">KOTAK NEO · MANUAL LOGIN</span>
+          <h2 id="login-title">Sign in to trade</h2>
+        </div>
+        <button type="button" class="icon-button" id="login-close" aria-label="Close login">×</button>
+      </div>
+
+      <div class="login-progress" aria-hidden="true">
+        <span class="step active" data-step-dot="1"><b>1</b> TOTP</span>
+        <span class="step-line"></span>
+        <span class="step" data-step-dot="2"><b>2</b> MPIN</span>
+      </div>
+
+      <form id="login-form" novalidate>
+        <div class="login-step" id="login-step-1">
+          <p class="modal-copy">
+            Enter the 6-digit code from your authenticator. TOTP and MPIN are kept
+            in memory only — never written to disk.
+          </p>
+          <label class="field">
+            <span>TOTP code</span>
+            <input id="totp-input" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
+                   maxlength="6" pattern="[0-9]{6}" placeholder="000000" required>
+          </label>
+          <p class="field-hint">Invalid code? Sync your device time and try again.</p>
+        </div>
+
+        <div class="login-step" id="login-step-2" hidden>
+          <p class="modal-copy">TOTP accepted. Enter your 4-digit MPIN to open the trading session.</p>
+          <label class="field">
+            <span>MPIN</span>
+            <input id="mpin-input" name="mpin" type="password" inputmode="numeric"
+                   maxlength="4" pattern="[0-9]{4}" placeholder="••••" required>
+          </label>
+          <p class="field-hint">MPIN is never stored by the app.</p>
+        </div>
+
+        <p class="form-error" id="login-error" role="alert" hidden></p>
+
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="login-paper">Continue in paper mode</button>
+          <button type="submit" class="primary" id="login-submit">Continue</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Confirmation modal -->
+  <div class="modal-backdrop" id="confirm-modal" hidden>
+    <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-head">
+        <h2 id="confirm-title">Confirm</h2>
+      </div>
+      <div class="confirm-body" id="confirm-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="confirm-cancel">Cancel</button>
+        <button type="button" class="primary" id="confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+  <script id="bootstrap" type="application/json">{{.Bootstrap}}</script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>
