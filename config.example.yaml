@@ -5,7 +5,8 @@
 #
 # KOTAK_CONSUMER_KEY is read from the environment only. It is required for
 # Kotak REST requests and login. KOTAK_MPIN is optional; when set, only TOTP is
-# requested in the login dialog. Orders are always paper-only.
+# requested in the login dialog. Orders are sent to Kotak after authentication
+# and per-order confirmation.
 
 app:
   listen: "127.0.0.1:8080"
@@ -53,7 +54,7 @@ market:
       display_name: "MIDCPNIFTY"
       exchange_segment: "nse_fo"
       index_segment: "nse_cm"
-      index_symbol: "Nifty Midcap Select"
+      index_symbol: "NIFTY MID SELECT"
       scrip_name: "MIDCPNIFTY"
       expiry_mode: "both"
       default_expiry: "nearest_weekly"
@@ -65,6 +66,19 @@ market:
       scrip_name: "SENSEX"
       expiry_mode: "both"
       default_expiry: "nearest_weekly"
+  commodities:
+    - key: "CRUDEOIL"
+      display_name: "CRUDE OIL"
+      exchange_segment: "mcx_fo"
+      scrip_name: "CRUDEOIL"
+    - key: "GOLD"
+      display_name: "GOLD"
+      exchange_segment: "mcx_fo"
+      scrip_name: "GOLD"
+    - key: "NATURALGAS"
+      display_name: "NATURAL GAS"
+      exchange_segment: "mcx_fo"
+      scrip_name: "NATURALGAS"
   india_vix:
     enabled: true
     exchange_segment: "nse_cm"
@@ -96,10 +110,6 @@ trading:
     default_lots: 1
     default_unit: "lots"     # lots | shares
     allow_shares: true
-  paper:
-    starting_cash: 1000000
-    slippage_ticks: 1
-    short_margin_pct: 15
   margin:
     check_before_order: true
     fail_closed: true
@@ -125,7 +135,7 @@ trading:
 
 scrip:
   refresh_at: "08:45"
-  segments: ["nse_fo", "bse_fo", "nse_cm", "bse_cm"]
+  segments: ["nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"]
 
 web:
   open_browser: true

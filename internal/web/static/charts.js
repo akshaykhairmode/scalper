@@ -1,398 +1,180 @@
-// Minimal dependency-free candlestick chart. The plan calls for TradingView
-// Lightweight Charts; this canvas renderer keeps the single-binary, no-CDN
-// constraint while matching the terminal's active theme. It can be
-// swapped for the vendored library without changing app state.
+import { CandlestickSeries, HistogramSeries, createChart } from "./lightweight-charts.standalone.production.js";
 
-function chartColors(element) {
+const chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
   return {
     bg: color("--chart-bg", "#07090c"),
     grid: color("--chart-grid", "#141c24"),
     text: color("--chart-text", "#8292a2"),
-    crosshair: color("--chart-crosshair", "#5d6b79"),
     up: color("--green", "#35c46a"),
     down: color("--red", "#ff5d5d"),
-    last: color("--accent", "#f0b429"),
-    volumeUp: color("--chart-volume-up", "#35c46a44"),
-    volumeDown: color("--chart-volume-down", "#ff5d5d44"),
-    markerBg: color("--chart-marker-bg", "#3a2c08"),
-    labelBg: color("--chart-label-bg", "#0d1319dd"),
-    labelText: color("--chart-label-text", "#d4dee7"),
+    border: color("--line", "#24303a"),
   };
-}
+};
 
-function fmt(n, digits = 2) {
-  if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
+const axisTime = (time) => new Date(Number(time) * 1000).toLocaleTimeString("en-GB", {
+  hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
+});
+const istDateFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+});
+const istDayKey = (time) => {
+  const parts = Object.fromEntries(istDateFormatter.formatToParts(new Date(time * 1000)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 
 export class CandleChart {
-  constructor(canvas, { showVolume = true } = {}) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
+  constructor(container, { showVolume = true } = {}) {
+    this.container = container;
     this.data = [];
-    this.showVolume = showVolume;
-    this.hover = null;
-    this.lastWidth = 0;
-    this.lastHeight = 0;
-    this.raf = 0;
-    // null = auto-fit the latest bars. { count, offset } lets the user zoom and
-    // pan, where offset is the number of bars between the right edge and the
-    // newest candle.
-    this.view = null;
-    this.drag = null;
-    this.priceZoom = 1;
-    canvas.title = "Scroll to zoom time + price · Shift+scroll for price · drag to pan · double-click to reset";
-    canvas.setAttribute("aria-label", "Candlestick chart. Scroll to zoom time and price, drag to pan, double-click to reset.");
-
-    this.onMove = (event) => {
-      const rect = this.canvas.getBoundingClientRect();
-      this.hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      this.schedule();
-    };
-    this.onLeave = () => {
-      if (this.drag) return;
-      this.hover = null;
-      this.schedule();
-    };
-    this.onWheel = (event) => {
-      if (!this.data.length) return;
-      event.preventDefault();
-      const rect = this.canvas.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const { width, right } = this.viewGeometry();
-      const overPriceAxis = x >= width - right;
-      const priceOnly = event.shiftKey || overPriceAxis;
-      const timeOnly = event.altKey && !event.shiftKey && !overPriceAxis;
-      this.zoomBy(event.deltaY > 0 ? 1.18 : 1 / 1.18, x, {
-        time: !priceOnly,
-        price: !timeOnly,
+    this.colors = chartColors(container);
+    this.chart = createChart(container, {
+      autoSize: true,
+      width: container.clientWidth || 320,
+      height: container.clientHeight || 240,
+      layout: {
+        background: { type: "solid", color: this.colors.bg },
+        textColor: this.colors.text,
+        attributionLogo: true,
+      },
+      localization: {
+        locale: "en-IN",
+        priceFormatter: (price) => Number(price).toLocaleString("en-IN", {
+          minimumFractionDigits: 2, maximumFractionDigits: 2,
+        }),
+      },
+      grid: {
+        vertLines: { color: this.colors.grid },
+        horzLines: { color: this.colors.grid },
+      },
+      rightPriceScale: { borderColor: this.colors.border, minimumWidth: 58 },
+      timeScale: {
+        borderColor: this.colors.border,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 4,
+        tickMarkFormatter: (time) => axisTime(time),
+      },
+      crosshair: { vertLine: { color: this.colors.text }, horzLine: { color: this.colors.text } },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: true }, axisDoubleClickReset: true },
+    });
+    this.candles = this.chart.addSeries(CandlestickSeries, {
+      upColor: this.colors.up,
+      downColor: this.colors.down,
+      borderVisible: false,
+      wickUpColor: this.colors.up,
+      wickDownColor: this.colors.down,
+      priceLineVisible: true,
+    });
+    if (showVolume) {
+      this.volumePane = this.chart.addPane();
+      this.volumePane.setStretchFactor(0.22);
+      this.volume = this.volumePane.addSeries(HistogramSeries, {
+        priceFormat: { type: "volume" },
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
-    };
-    this.onPointerDown = (event) => {
-      if (event.button !== 0 || !this.data.length) return;
-      event.preventDefault();
-      const count = this.visibleCount();
-      this.drag = { x: event.clientX, offset: this.currentOffset(count) };
-      this.canvas.classList.add("dragging");
-      this.canvas.setPointerCapture?.(event.pointerId);
-    };
-    this.onPointerMove = (event) => {
-      if (!this.drag) return;
-      const count = this.visibleCount();
-      const { plotW } = this.viewGeometry();
-      const barSlot = plotW / count;
-      const offset = this.drag.offset + (event.clientX - this.drag.x) / Math.max(1, barSlot);
-      this.setOffset(offset, count);
-    };
-    this.onPointerUp = (event) => {
-      if (!this.drag) return;
-      this.drag = null;
-      this.canvas.classList.remove("dragging");
-      this.canvas.releasePointerCapture?.(event.pointerId);
-      this.schedule();
-    };
-    this.onDoubleClick = () => this.resetView();
-
-    canvas.addEventListener("mousemove", this.onMove);
-    canvas.addEventListener("mouseleave", this.onLeave);
-    canvas.addEventListener("wheel", this.onWheel, { passive: false });
-    canvas.addEventListener("pointerdown", this.onPointerDown);
-    canvas.addEventListener("pointermove", this.onPointerMove);
-    canvas.addEventListener("pointerup", this.onPointerUp);
-    canvas.addEventListener("pointercancel", this.onPointerUp);
-    canvas.addEventListener("dblclick", this.onDoubleClick);
-
-    if (typeof ResizeObserver !== "undefined") {
-      this.observer = new ResizeObserver(() => this.schedule());
-      this.observer.observe(canvas.parentElement || canvas);
+      // Keep the scale widget present: Lightweight Charts 5.2 dereferences
+      // each pane's scale during ResizeObserver layout, and visible:false
+      // leaves a null widget that throws "Value is null" on resize.
+      this.volume.priceScale().applyOptions({
+        borderVisible: false,
+        ticksVisible: false,
+      });
     }
+    this.emptyData = [];
   }
 
-  setData(data) {
-    this.data = Array.isArray(data) ? data.filter((c) => Number.isFinite(c?.close)) : [];
-    // Keep an explicit zoom/pan when live candles are refreshed. The range is
-    // clamped to the new data length during render.
-    this.schedule();
-  }
-
-  viewGeometry() {
-    const width = this.canvas.clientWidth || 320;
-    const height = this.canvas.clientHeight || 180;
-    const right = 50;
-    const left = 4;
-    const plotW = Math.max(10, width - left - right);
-    return { width, height, left, right, plotW };
-  }
-
-  visibleCount() {
-    const { plotW } = this.viewGeometry();
-    const total = this.data.length;
-    if (!total) return 1;
-    // The default shows roughly the latest 70 candles, regardless of pane width.
-    const auto = Math.max(12, Math.min(total, Math.floor(plotW / 6)));
-    if (!this.view) return auto;
-    return Math.max(Math.min(8, total), Math.min(total, Math.round(this.view.count)));
-  }
-
-  currentOffset(count = this.visibleCount()) {
-    const max = Math.max(0, this.data.length - count);
-    return Math.max(0, Math.min(max, Math.round(this.view?.offset || 0)));
-  }
-
-  setOffset(offset, count = this.visibleCount()) {
-    const max = Math.max(0, this.data.length - count);
-    this.view = { count, offset: Math.max(0, Math.min(max, Math.round(offset))) };
-    this.schedule();
-  }
-
-  zoomBy(factor, anchorX, { time = true, price = true } = {}) {
-    const total = this.data.length;
-    if (!total) return;
-    if (time) {
-      const count = this.visibleCount();
-      const offset = this.currentOffset(count);
-      const { left, plotW } = this.viewGeometry();
-      const ratio = Math.max(0, Math.min(1, (anchorX - left) / plotW));
-      const start = Math.max(0, total - offset - count);
-      const anchorIndex = start + ratio * count;
-      const nextCount = Math.max(Math.min(8, total), Math.min(total, Math.round(count * factor)));
-      if (nextCount !== count) {
-        let nextStart = Math.round(anchorIndex - ratio * nextCount);
-        nextStart = Math.max(0, Math.min(total - nextCount, nextStart));
-        this.view = { count: nextCount, offset: total - nextStart - nextCount };
+  setData(data, { fitSession = true } = {}) {
+    const byTime = new Map();
+    if (Array.isArray(data)) {
+      for (const candle of data) {
+        if (!Number.isFinite(candle?.time) || !Number.isFinite(candle?.open) ||
+            !Number.isFinite(candle?.high) || !Number.isFinite(candle?.low) ||
+            !Number.isFinite(candle?.close)) continue;
+        byTime.set(candle.time, candle);
       }
     }
-    if (price) {
-      // Keep the current price centred while the y-range expands/contracts.
-      this.priceZoom = Math.max(0.2, Math.min(24, this.priceZoom / factor));
+    this.data = [...byTime.values()].sort((a, b) => a.time - b.time);
+    this.candles.setData(this.data);
+    if (this.volume) {
+      this.volume.setData(this.data.map((c) => ({
+        time: c.time,
+        value: Number.isFinite(c.volume) ? c.volume : 0,
+        color: c.close >= c.open ? `${this.colors.up}55` : `${this.colors.down}55`,
+      })));
     }
-    this.schedule();
+    if (fitSession && this.data.length) this.fitLatestSession();
   }
 
-  zoomIn() {
-    const { left, plotW } = this.viewGeometry();
-    this.zoomBy(0.72, left + plotW / 2);
-  }
-
-  zoomOut() {
-    const { left, plotW } = this.viewGeometry();
-    this.zoomBy(1.38, left + plotW / 2);
-  }
-
-  resetView() {
-    this.view = null;
-    this.priceZoom = 1;
-    this.schedule();
-  }
-
-  schedule() {
-    if (this.raf) return;
-    this.raf = requestAnimationFrame(() => {
-      this.raf = 0;
-      this.render();
-    });
-  }
-
-  layout() {
-    const dpr = window.devicePixelRatio || 1;
-    const width = this.canvas.clientWidth || 320;
-    const height = this.canvas.clientHeight || 180;
-    if (this.lastWidth !== width || this.lastHeight !== height) {
-      this.lastWidth = width;
-      this.lastHeight = height;
-      this.canvas.width = Math.round(width * dpr);
-      this.canvas.height = Math.round(height * dpr);
-    }
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { width, height, dpr };
-  }
-
-  render() {
-    const { width, height } = this.layout();
-    const ctx = this.ctx;
-    const colors = chartColors(this.canvas);
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = colors.bg;
-    ctx.fillRect(0, 0, width, height);
-
+  fitLatestSession() {
     if (!this.data.length) return;
-
-    const right = 50;
-    const left = 4;
-    const top = 6;
-    const bottom = 16;
-    const volumeH = this.showVolume ? Math.min(46, (height - top - bottom) * 0.24) : 0;
-    const plotH = height - top - bottom - volumeH;
-    const plotW = Math.max(10, width - left - right);
-
-    const count = this.visibleCount();
-    const offset = this.currentOffset(count);
-    const start = Math.max(0, this.data.length - offset - count);
-    const data = this.data.slice(start, start + count);
-    const barSlot = plotW / Math.max(1, data.length);
-
-    let min = Infinity;
-    let max = -Infinity;
-    let maxVol = 0;
-    for (const c of data) {
-      min = Math.min(min, c.low);
-      max = Math.max(max, c.high);
-      maxVol = Math.max(maxVol, c.volume || 0);
+    const latest = this.data[this.data.length - 1];
+    const latestDay = istDayKey(latest.time);
+    const session = this.data.filter((candle) => istDayKey(candle.time) === latestDay);
+    if (!session.length) {
+      this.chart.timeScale().fitContent();
+      return;
     }
-    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
-    const pad = Math.max((max - min) * 0.08, max * 0.001, 0.01);
-    min -= pad;
-    max += pad;
-    if (this.priceZoom !== 1) {
-      const anchor = data[data.length - 1].close;
-      const span = Math.max((max - min) / this.priceZoom, Math.max(0.01, Math.abs(anchor) * 0.0005));
-      min = anchor - span / 2;
-      max = anchor + span / 2;
-    }
-    const range = Math.max(max - min, 1e-6);
-    const yOf = (price) => top + ((max - price) / range) * plotH;
-
-    // Horizontal grid + price labels.
-    ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
-    ctx.fillStyle = colors.text;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    const gridLines = 4;
-    for (let i = 0; i <= gridLines; i++) {
-      const y = top + (plotH / gridLines) * i;
-      ctx.strokeStyle = colors.grid;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(left, Math.round(y) + 0.5);
-      ctx.lineTo(width - right, Math.round(y) + 0.5);
-      ctx.stroke();
-      const price = max - (range / gridLines) * i;
-      ctx.fillText(fmt(price), width - right + 5, y);
-    }
-
-    // Volume separators.
-    const volumeTop = top + plotH + 4;
-    if (this.showVolume) {
-      ctx.strokeStyle = colors.grid;
-      ctx.beginPath();
-      ctx.moveTo(left, volumeTop - 2.5);
-      ctx.lineTo(width - right, volumeTop - 2.5);
-      ctx.stroke();
-    }
-
-    // Candles.
-    data.forEach((c, i) => {
-      const x = left + i * barSlot + barSlot / 2;
-      const up = c.close >= c.open;
-      const color = up ? colors.up : colors.down;
-      const bodyW = Math.max(1, Math.min(barSlot - 2, 14));
-      const yHigh = yOf(c.high);
-      const yLow = yOf(c.low);
-      const yOpen = yOf(c.open);
-      const yClose = yOf(c.close);
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(Math.round(x) + 0.5, yHigh);
-      ctx.lineTo(Math.round(x) + 0.5, yLow);
-      ctx.stroke();
-
-      const bodyTop = Math.min(yOpen, yClose);
-      const bodyH = Math.max(1, Math.abs(yClose - yOpen));
-      ctx.fillStyle = color;
-      ctx.fillRect(Math.round(x - bodyW / 2), Math.round(bodyTop), bodyW, Math.round(bodyH));
-
-      if (this.showVolume && maxVol > 0) {
-        const vh = ((c.volume || 0) / maxVol) * Math.max(2, volumeH - 4);
-        ctx.fillStyle = up ? colors.volumeUp : colors.volumeDown;
-        ctx.fillRect(Math.round(x - bodyW / 2), volumeTop + (volumeH - vh), bodyW, Math.max(1, vh));
-      }
+    const last = session[session.length - 1];
+    const prior = session.length > 1 ? session[session.length - 2] : null;
+    const interval = prior ? Math.max(60, last.time - prior.time) : 300;
+    this.chart.timeScale().setVisibleRange({
+      from: session[0].time - interval,
+      to: last.time + interval * 3,
     });
-
-    // Last price marker.
-    const last = data[data.length - 1];
-    const yLast = yOf(last.close);
-    ctx.strokeStyle = colors.last;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(left, Math.round(yLast) + 0.5);
-    ctx.lineTo(width - right, Math.round(yLast) + 0.5);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    const label = fmt(last.close);
-    ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
-    const labelW = ctx.measureText(label).width + 8;
-    ctx.fillStyle = colors.markerBg;
-    ctx.fillRect(width - right + 2, yLast - 7, Math.min(labelW, right - 4), 14);
-    ctx.fillStyle = colors.last;
-    ctx.fillText(label, width - right + 6, yLast);
-
-    // Time labels.
-    ctx.fillStyle = colors.text;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    const labelCount = Math.min(5, data.length);
-    for (let i = 0; i < labelCount; i++) {
-      const idx = Math.floor((data.length - 1) * (i / Math.max(1, labelCount - 1)));
-      const c = data[idx];
-      const x = left + idx * barSlot + barSlot / 2;
-      const d = new Date(c.time * 1000);
-      const text = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
-      ctx.fillText(text, Math.min(width - right - 12, Math.max(left + 14, x)), height - bottom + 4);
-    }
-
-    // Crosshair + OHLC legend.
-    if (this.hover && this.hover.x >= left && this.hover.x <= width - right && this.hover.y <= top + plotH) {
-      const idx = Math.max(0, Math.min(data.length - 1, Math.floor((this.hover.x - left) / barSlot)));
-      const c = data[idx];
-      const x = left + idx * barSlot + barSlot / 2;
-      const y = this.hover.y;
-
-      ctx.strokeStyle = colors.crosshair;
-      ctx.setLineDash([2, 3]);
-      ctx.beginPath();
-      ctx.moveTo(Math.round(x) + 0.5, top);
-      ctx.lineTo(Math.round(x) + 0.5, top + plotH);
-      ctx.moveTo(left, Math.round(y) + 0.5);
-      ctx.lineTo(width - right, Math.round(y) + 0.5);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      const price = max - ((y - top) / plotH) * range;
-      ctx.fillStyle = colors.labelBg;
-      ctx.fillRect(width - right + 2, y - 7, right - 4, 14);
-      ctx.fillStyle = colors.labelText;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(fmt(price), width - right + 5, y);
-
-      const legend = `O ${fmt(c.open)}  H ${fmt(c.high)}  L ${fmt(c.low)}  C ${fmt(c.close)}`;
-      ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
-      const legendW = ctx.measureText(legend).width + 12;
-      ctx.fillStyle = colors.labelBg;
-      ctx.fillRect(left + 3, top + 2, legendW, 15);
-      ctx.fillStyle = c.close >= c.open ? colors.up : colors.down;
-      ctx.textBaseline = "middle";
-      ctx.fillText(legend, left + 9, top + 10);
-    }
-
-    // Keep the crosshair index in sync with rendered slice for future use.
-    this.visibleStart = start;
   }
 
-  destroy() {
-    this.canvas.removeEventListener("mousemove", this.onMove);
-    this.canvas.removeEventListener("mouseleave", this.onLeave);
-    this.canvas.removeEventListener("wheel", this.onWheel);
-    this.canvas.removeEventListener("pointerdown", this.onPointerDown);
-    this.canvas.removeEventListener("pointermove", this.onPointerMove);
-    this.canvas.removeEventListener("pointerup", this.onPointerUp);
-    this.canvas.removeEventListener("pointercancel", this.onPointerUp);
-    this.canvas.removeEventListener("dblclick", this.onDoubleClick);
-    this.observer?.disconnect();
+  update(candle) {
+    if (!candle || !Number.isFinite(candle.time)) return;
+    this.candles.update({
+      time: candle.time, open: candle.open, high: candle.high,
+      low: candle.low, close: candle.close,
+    });
+    if (this.volume) {
+      this.volume.update({
+        time: candle.time,
+        value: Number.isFinite(candle.volume) ? candle.volume : 0,
+        color: candle.close >= candle.open ? `${this.colors.up}55` : `${this.colors.down}55`,
+      });
+    }
   }
+
+  zoomBy(factor) {
+    const scale = this.chart.timeScale();
+    const range = scale.getVisibleLogicalRange();
+    if (!range) {
+      this.fitLatestSession();
+      return;
+    }
+    const center = (range.from + range.to) / 2;
+    const halfSpan = Math.max(2, (range.to - range.from) * factor / 2);
+    scale.setVisibleLogicalRange({ from: center - halfSpan, to: center + halfSpan });
+  }
+
+  zoomIn() { this.zoomBy(0.72); }
+  zoomOut() { this.zoomBy(1.38); }
+  resetView() { this.fitLatestSession(); }
+
+  applyTheme() {
+    this.colors = chartColors(this.container);
+    const visibleRange = this.chart.timeScale().getVisibleLogicalRange();
+    this.chart.applyOptions({
+      layout: { background: { type: "solid", color: this.colors.bg }, textColor: this.colors.text },
+      grid: { vertLines: { color: this.colors.grid }, horzLines: { color: this.colors.grid } },
+      rightPriceScale: { borderColor: this.colors.border },
+      timeScale: { borderColor: this.colors.border },
+    });
+    this.candles.applyOptions({
+      upColor: this.colors.up, wickUpColor: this.colors.up,
+      downColor: this.colors.down, wickDownColor: this.colors.down,
+    });
+    this.setData(this.data, { fitSession: false });
+    if (visibleRange) this.chart.timeScale().setVisibleLogicalRange(visibleRange);
+  }
+
+  schedule() { this.chart.resize(this.container.clientWidth, this.container.clientHeight); }
+  destroy() { this.chart.remove(); }
 }

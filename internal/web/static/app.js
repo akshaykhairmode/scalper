@@ -63,7 +63,7 @@ function parseBootstrap() {
 }
 
 function tradingMode() {
-  return "paper";
+  return "live";
 }
 
 const S = {
@@ -73,17 +73,24 @@ const S = {
   timeframe: "5m",
   expiries: [],
   chain: [],
+  chainRequestID: 0,
+  chainMore: { above: false, below: false },
+  chainLoading: false,
   spots: new Map(),
-  selected: { strike: null, type: "CE", call: null, put: null },
+  selected: { type: "CE", CE: null, PE: null },
+  strikeSearchTarget: "CE",
   qty: { CE: 1, PE: 1 },
   product: "MIS",
   positions: [],
   orders: [],
   trades: [],
-  limits: { available: 0 },
+  limits: { available: 0, used: 0, total: 0, loaded: false, error: "" },
   risk: [],
   tab: "positions",
   feed: "connecting",
+  orderFeed: "disconnected",
+  mode: "live",
+  bookMode: "live",
   session: null,
   chainScrolled: false,
   polling: false,
@@ -99,6 +106,7 @@ const S = {
 };
 
 let marketRetryTimer = null;
+let chartRetryTimer = null;
 
 /* ── API helpers ───────────────────────────────────────── */
 
@@ -120,6 +128,7 @@ async function requestJSON(url, options = {}) {
     const message = data?.error || text || `${response.status} ${response.statusText}`;
     const error = new Error(message);
     error.status = response.status;
+    error.retryAfter = response.headers.get("Retry-After") || "";
     throw error;
   }
   return data;
@@ -129,11 +138,18 @@ const getJSON = (url) => requestJSON(url);
 const postJSON = (url, body) => requestJSON(url, { method: "POST", body: JSON.stringify(body) });
 
 function postOrder(payload) {
-  return postJSON("/api/orders", payload).catch((error) => {
-    if (error.status !== 404) throw error;
-    // Compatibility with the broker server's current route.
-    return postJSON("/api/broker/order", payload);
-  });
+	return postJSON("/api/broker/orders", {
+		exchange_segment: payload.exchange_segment,
+		trading_symbol: payload.trading_symbol || payload.symbol,
+		transaction_type: payload.side,
+		product: payload.product,
+		order_type: payload.order_type,
+		quantity: payload.quantity,
+		price: payload.price,
+		trigger_price: payload.trigger_price || 0,
+		validity: "DAY",
+		confirm: true,
+	});
 }
 
 /* ── Normalisers for the documented API shapes ─────────── */
@@ -199,6 +215,83 @@ function normalizeChain(raw) {
   return [...byStrike.values()].sort((a, b) => a.strike - b.strike);
 }
 
+function chainURL({ center = 0, count = 19, direction = "around" } = {}) {
+  const query = new URLSearchParams({
+    index: S.activeIndex,
+    expiry: S.expiry,
+    center: String(center),
+    count: String(count),
+    direction,
+  });
+  return `/api/chain?${query}`;
+}
+
+function acceptChainPage(page, append = false) {
+  const rows = normalizeChain(page);
+  if (append) {
+    const byStrike = new Map(S.chain.map((row) => [row.strike, row]));
+    for (const row of rows) byStrike.set(row.strike, row);
+    S.chain = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+  } else {
+    S.chain = rows;
+  }
+  S.chainMore = {
+    above: S.chain.length > 0 && Boolean(page?.has_more_above ?? page?.hasMoreAbove),
+    below: S.chain.length > 0 && Boolean(page?.has_more_below ?? page?.hasMoreBelow),
+  };
+  for (const type of ["CE", "PE"]) {
+    const current = S.selected[type];
+    const refreshed = current && S.chain.find((row) => row.strike === current.strike)?.[type === "CE" ? "call" : "put"];
+    if (refreshed) S.selected[type] = refreshed;
+  }
+}
+
+function renderChainMoreControls() {
+  const above = $("load-more-above");
+  const below = $("load-more-below");
+  if (!above || !below) return;
+  above.hidden = !S.chainMore.above;
+  below.hidden = !S.chainMore.below;
+  above.disabled = S.chainLoading;
+  below.disabled = S.chainLoading;
+  if (S.chainLoading) {
+    (S.chainLoading === "above" ? above : below).textContent = "Loading…";
+  } else {
+    above.textContent = "Load more above";
+    below.textContent = "Load more below";
+  }
+}
+
+async function loadMoreChain(direction) {
+  if (S.chainLoading || !S.chain.length || !S.chainMore[direction]) return;
+  const requestID = S.chainRequestID;
+  const index = S.activeIndex;
+  const expiry = S.expiry;
+  const anchor = direction === "above" ? S.chain[0].strike : S.chain[S.chain.length - 1].strike;
+  const oldHeight = $("chain-body").scrollHeight;
+  const oldTop = $("chain-body").scrollTop;
+  S.chainLoading = direction;
+  renderChainMoreControls();
+  try {
+    const apiDirection = direction === "above" ? "below" : "above";
+    const page = await getJSON(chainURL({ center: anchor, count: 10, direction: apiDirection }));
+    if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+    acceptChainPage(page, true);
+    renderChain(true);
+    if (direction === "above") {
+      const body = $("chain-body");
+      body.scrollTop = oldTop + (body.scrollHeight - oldHeight);
+    }
+  } catch (error) {
+    if (requestID === S.chainRequestID) toast(`Could not load more strikes: ${error.message}`, "error");
+  } finally {
+    if (requestID === S.chainRequestID) {
+      S.chainLoading = false;
+      renderChainMoreControls();
+    }
+  }
+}
+
 function normalizeExpiry(value) {
   if (typeof value === "string") {
     const date = new Date(value + "T00:00:00");
@@ -226,47 +319,60 @@ function normalizeExpiry(value) {
 }
 
 function normalizePosition(raw) {
+  const bought = num(raw.flBuyQty ?? raw.fl_buy_qty);
+  const sold = num(raw.flSellQty ?? raw.fl_sell_qty);
+  const carriedBought = num(raw.cfBuyQty ?? raw.cf_buy_qty);
+  const carriedSold = num(raw.cfSellQty ?? raw.cf_sell_qty);
+  const quantity = num(raw.quantity ?? raw.net_qty ?? raw.netQty ?? raw.qty ?? raw.netqty, bought + carriedBought - sold - carriedSold);
+  let average = num(raw.average_price ?? raw.averagePrice ?? raw.avg_price ?? raw.avgPrice ?? raw.avgPrc ?? raw.avg);
+  if (!average && quantity > 0 && bought + carriedBought > 0) {
+    average = (num(raw.buyAmt ?? raw.buy_amt) + num(raw.cfBuyAmt ?? raw.cf_buy_amt)) / (bought + carriedBought);
+  } else if (!average && quantity < 0 && sold + carriedSold > 0) {
+    average = (num(raw.sellAmt ?? raw.sell_amt) + num(raw.cfSellAmt ?? raw.cf_sell_amt)) / (sold + carriedSold);
+  }
+  const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice, 0);
+  const reportedPnL = raw.pnl ?? raw.unrealised_pnl ?? raw.unrealizedPnl ?? raw.today_pnl ?? raw.todayPnl ?? raw.rPnl ?? raw.unRlzPnL;
   return {
-    instrument_key: raw.instrument_key ?? raw.instrumentKey ?? "",
-    exchange_segment: raw.exchange_segment ?? raw.exchangeSegment ?? "nse_fo",
-    symbol: raw.symbol ?? raw.trading_symbol ?? raw.trdSymbol ?? "",
+    instrument_key: raw.instrument_key ?? raw.instrumentKey ?? raw.tok ?? "",
+    exchange_segment: raw.exchange_segment ?? raw.exchangeSegment ?? raw.exSeg ?? "nse_fo",
+    symbol: raw.symbol ?? raw.trading_symbol ?? raw.trdSymbol ?? raw.trdSym ?? "",
     underlying: raw.underlying ?? "",
     expiry: raw.expiry ?? "",
     strike: normalizeStrike(raw.strike ?? raw.strike_paise ?? 0),
     option_type: String(raw.option_type ?? raw.optionType ?? raw.type ?? "").toUpperCase(),
     lot_size: num(raw.lot_size ?? raw.lotSize, 1),
-    quantity: num(raw.quantity ?? raw.net_qty ?? raw.netQty ?? raw.qty),
-    average_price: num(raw.average_price ?? raw.averagePrice ?? raw.avg_price ?? raw.avgPrice ?? raw.avg),
-    ltp: num(raw.ltp ?? raw.last_price ?? raw.lastPrice, 0),
-    pnl: num(raw.pnl ?? raw.unrealised_pnl ?? raw.unrealizedPnl ?? raw.today_pnl ?? raw.todayPnl, 0),
-    product: raw.product ?? "MIS",
+    quantity,
+    average_price: average,
+    ltp,
+    pnl: reportedPnL == null ? (ltp > 0 ? (ltp - average) * quantity : 0) : num(reportedPnL),
+    product: raw.product ?? raw.prod ?? "MIS",
   };
 }
 
 function normalizeOrder(raw) {
   return {
-    id: raw.id ?? raw.client_order_id ?? raw.order_id ?? raw.broker_order_id ?? "—",
-    symbol: raw.symbol ?? raw.trading_symbol ?? raw.instrument_key ?? "",
+    id: raw.id ?? raw.client_order_id ?? raw.order_id ?? raw.broker_order_id ?? raw.nOrdNo ?? "—",
+    symbol: raw.symbol ?? raw.trading_symbol ?? raw.trdSym ?? raw.instrument_key ?? "",
     instrument_key: raw.instrument_key ?? raw.instrumentKey ?? "",
-    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? "",
+    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? raw.trnsTp ?? "",
     quantity: num(raw.quantity ?? raw.qty),
-    price: num(raw.price),
-    status: raw.status ?? "",
+    price: num(raw.price ?? raw.prc ?? raw.avgPrc),
+    status: raw.status ?? raw.ordSt ?? "",
     reason: raw.reason ?? raw.reject_reason ?? "",
-    timestamp: raw.timestamp ?? raw.created_at ?? raw.updated_at ?? 0,
-    product: raw.product ?? "MIS",
+    timestamp: raw.timestamp ?? raw.created_at ?? raw.updated_at ?? raw.ordDtTm ?? 0,
+    product: raw.product ?? raw.prod ?? "MIS",
     mode: raw.mode ?? "",
   };
 }
 
 function normalizeTrade(raw) {
   return {
-    id: raw.id ?? raw.trade_id ?? raw.order_id ?? "—",
-    symbol: raw.symbol ?? raw.instrument_key ?? "",
-    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? "",
+    id: raw.id ?? raw.trade_id ?? raw.order_id ?? raw.nOrdNo ?? raw.exOrdId ?? "—",
+    symbol: raw.symbol ?? raw.trdSym ?? raw.instrument_key ?? "",
+    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? raw.trnsTp ?? "",
     quantity: num(raw.quantity ?? raw.qty),
-    price: num(raw.price),
-    timestamp: raw.timestamp ?? raw.executed_at ?? raw.executedAt ?? 0,
+    price: num(raw.price ?? raw.prc ?? raw.avgPrc),
+    timestamp: raw.timestamp ?? raw.executed_at ?? raw.executedAt ?? raw.ordDtTm ?? 0,
   };
 }
 
@@ -274,13 +380,15 @@ function normalizeTrade(raw) {
 
 function init() {
   S.boot = parseBootstrap();
+  S.mode = "live";
+  S.bookMode = S.mode;
   initTheme();
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
   S.qty.CE = defaultLots;
   S.qty.PE = defaultLots;
-  S.activeIndex = S.boot.indices?.[0]?.key || "NIFTY";
+  S.activeIndex = S.boot.indices?.[0]?.key || S.boot.commodities?.[0]?.key || "NIFTY";
 
   updateMarketPhase(false);
   buildTimeframes();
@@ -314,7 +422,7 @@ function setTheme(theme, persist = true) {
   toggle.setAttribute("aria-label", `Switch to ${nextTheme} theme`);
   toggle.title = `Switch to ${nextTheme} theme`;
   document.querySelector('meta[name="color-scheme"]').content = theme;
-  for (const chart of Object.values(S.charts)) chart.schedule();
+  for (const chart of Object.values(S.charts)) chart.applyTheme();
   if (!persist) return;
   try {
     localStorage.setItem("scalper-theme", theme);
@@ -355,14 +463,25 @@ function setFocusedChart(pane) {
 }
 
 async function refreshSession() {
-  const previousMode = tradingMode();
   try {
     S.session = await getJSON("/api/session");
   } catch {
     S.session = null;
   }
+  if (!S.session?.authenticated) clearBooksForMode("live");
   updateAuthButton();
-  if (tradingMode() !== previousMode) renderHeader();
+}
+
+function clearBooksForMode(mode) {
+  S.bookMode = mode;
+  S.positions = [];
+  S.orders = [];
+  S.trades = [];
+  S.limits = { available: 0, used: 0, total: 0, loaded: false, error: "" };
+  S.risk = [];
+  updateFeedSubscriptions();
+  renderHeader();
+  renderTab();
 }
 
 async function checkSession() {
@@ -373,6 +492,7 @@ async function checkSession() {
   } else {
     closeLogin();
     connectWebSocket();
+    refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
   }
 }
 
@@ -417,8 +537,13 @@ async function loadFromAPI() {
   S.expiries = normalizeExpiryList(expiryRaw);
   S.expiry = pickExpiry(S.expiries);
 
-  const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
-  S.chain = normalizeChain(chainRaw);
+  const requestID = ++S.chainRequestID;
+  const chainIndex = S.activeIndex;
+  const chainExpiry = S.expiry;
+  const center = num(S.spots.get(chainIndex)?.ltp);
+  const chainRaw = await getJSON(chainURL({ center }));
+  if (requestID !== S.chainRequestID || chainIndex !== S.activeIndex || chainExpiry !== S.expiry) return;
+  acceptChainPage(chainRaw);
   await refreshBooksFromAPI();
   selectDefaultStrike();
   S.chainScrolled = false;
@@ -448,21 +573,21 @@ function applyIndexQuotes(indexRaw) {
       spotKey: item.instrument_key ?? item.instrumentKey ?? `${item.index_segment ?? "nse_cm"}|${key}`,
     });
   }
-  for (const idx of S.boot.indices || []) {
+  for (const idx of [...(S.boot.indices || []), ...(S.boot.commodities || [])]) {
     if (!map.has(idx.key)) {
       map.set(idx.key, {
         key: idx.key,
         displayName: idx.displayName || idx.key,
         exchangeSegment: idx.exchangeSegment,
-        indexSegment: idx.indexSegment,
-        symbol: idx.indexSymbol,
+        indexSegment: idx.indexSegment || "",
+        symbol: idx.indexSymbol || idx.key,
         ltp: 0,
         prevClose: 0,
         close: 0,
         change: 0,
         changePct: 0,
         volume: 0,
-        spotKey: `${idx.indexSegment}|${idx.key}`,
+        spotKey: idx.indexSegment ? `${idx.indexSegment}|${idx.key}` : "",
       });
     }
   }
@@ -480,35 +605,47 @@ function pickExpiry(list) {
 }
 
 async function refreshBooksFromAPI(includePositions = true) {
-  const [positions, orders, trades, limits, risk] = await Promise.allSettled([
-    includePositions ? getJSON("/api/positions") : Promise.resolve(null),
-    getJSON("/api/orders"),
-    getJSON("/api/trades"),
-    getJSON("/api/limits"),
-    getJSON("/api/risk"),
+  if (!S.session?.authenticated) return;
+  const [positions, orders, trades, limits] = await Promise.allSettled([
+    includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
+    getJSON("/api/broker/orders"),
+    getJSON("/api/broker/trades"),
+    getJSON("/api/broker/limits"),
   ]);
+  if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
   if (includePositions && positions.status === "fulfilled") {
     S.positions = toArray(positions.value).map(normalizePosition);
+    updateFeedSubscriptions();
+  } else if (includePositions && positions.status === "rejected") {
+    S.positions = [];
     updateFeedSubscriptions();
   }
   if (orders.status === "fulfilled") {
     S.orders = toArray(orders.value).map(normalizeOrder);
+  } else {
+    S.orders = [];
   }
   if (trades.status === "fulfilled") {
     S.trades = toArray(trades.value).map(normalizeTrade);
+  } else {
+    S.trades = [];
   }
   if (limits.status === "fulfilled") {
     const value = limits.value || {};
+    const available = value.available_margin ?? value.availableMargin ?? value.available ?? value.Net ?? value.net ?? value.data?.availableMargin ?? value.data?.Net;
     S.limits = {
-      available: num(value.available_margin ?? value.availableMargin ?? value.available ?? value.Net ?? value.net),
-      used: num(value.used_margin ?? value.usedMargin ?? value.used ?? value.MarginUsed),
-      total: num(value.total_margin ?? value.totalMargin ?? value.total ?? value.Net ?? value.net),
+      available: num(available),
+      used: num(value.used_margin ?? value.usedMargin ?? value.used ?? value.MarginUsed ?? value.data?.MarginUsed),
+      total: num(value.total_margin ?? value.totalMargin ?? value.total ?? value.Net ?? value.net ?? value.data?.Net),
+      loaded: available != null,
+      error: available == null ? "Account response did not include available margin." : "",
     };
+  } else {
+    S.limits = { available: 0, used: 0, total: 0, loaded: false, error: limits.reason?.message || "Account limits are unavailable." };
   }
-  if (risk.status === "fulfilled") {
-    const value = risk.value;
-    S.risk = Array.isArray(value) ? value : (value?.groups || []);
-  }
+  S.risk = [];
+  renderHeader();
+  renderTab();
 }
 
 function toArray(value) {
@@ -521,31 +658,51 @@ function toArray(value) {
 }
 
 let liveTimer = null;
+let underlyingTimer = null;
 function startLivePolling() {
-  if (liveTimer) return;
-  liveTimer = window.setInterval(() => {
-    refreshBooksFromAPI(false).catch((error) => console.warn("account refresh failed", error));
-  }, 15000);
+  if (!liveTimer) {
+    liveTimer = window.setInterval(() => {
+      refreshBooksFromAPI(false).catch((error) => console.warn("account refresh failed", error));
+    }, 15000);
+  }
+  // The Scrip Master refresh can finish after the first page quote request.
+  // Poll underlying prices independently so new spot/future tokens are picked
+  // up and subscribed without requiring a manual Refresh click.
+  if (!underlyingTimer) {
+    underlyingTimer = window.setInterval(async () => {
+      try {
+        applyIndexQuotes(await getJSON("/api/indices"));
+        updateFeedSubscriptions();
+        renderHeader();
+      } catch (error) {
+        console.warn("underlying quote refresh failed", error);
+      }
+    }, 10000);
+  }
 }
 
-async function pollLive() {
+async function pollLive({ refreshChain = false } = {}) {
   if (S.polling) return;
   S.polling = true;
   try {
     applyIndexQuotes(await getJSON("/api/indices"));
     await refreshBooksFromAPI(true);
-    if (S.activeIndex && S.expiry) {
-      const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(S.expiry)}`);
-      S.chain = normalizeChain(chainRaw);
-      selectStrike(S.selected.strike, S.selected.type, false, false);
+    if (refreshChain && S.activeIndex && S.expiry) {
+      const requestID = ++S.chainRequestID;
+      const chainIndex = S.activeIndex;
+      const chainExpiry = S.expiry;
+      const center = num(S.spots.get(chainIndex)?.ltp);
+      const chainRaw = await getJSON(chainURL({ center }));
+      if (requestID !== S.chainRequestID || chainIndex !== S.activeIndex || chainExpiry !== S.expiry) return;
+      acceptChainPage(chainRaw);
+      renderChain(true);
+      renderPaneHeaders();
     }
-    renderChain(true);
     renderAll(true);
-    loadCharts();
   } catch (error) {
     console.warn("live poll failed", error);
-    S.feed = "degraded";
-    renderFeed();
+    // REST polling failures do not imply that the authenticated market socket
+    // disconnected. Its feed_status/close events own the feed badge state.
   } finally {
     S.polling = false;
   }
@@ -607,6 +764,15 @@ function handleSocketEvent(event) {
     }
     return;
   }
+  if (event.type === "order_feed_status") {
+    S.orderFeed = data?.status || "disconnected";
+    renderFeed();
+    return;
+  }
+  if (event.type === "broker_order" || event.type === "broker_position") {
+    window.setTimeout(() => refreshBooksFromAPI(true), 250);
+    return;
+  }
   if (event.type === "tick") {
     updateLiveCandle(data.key, data.ltp, data.timestamp);
     for (const spot of S.spots.values()) {
@@ -649,12 +815,24 @@ function handleSocketEvent(event) {
         .find((item) => item.dataset.strike === String(row.strike))
         ?.querySelector(`[data-select="${type}"]`);
       if (cell) {
-        cell.textContent = fmt(opt.ltp);
-        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}%`;
+        cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
+        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Volume ${fmtCompact(opt.volume)}`;
         cell.classList.toggle("up", opt.changePct > 0);
         cell.classList.toggle("down", opt.changePct < 0);
       }
       if (selectedOption(type)?.instrumentKey === data.key) {
+        renderPaneHeaders();
+        renderOrderPad();
+      }
+    } else {
+      let updatedSelected = false;
+      for (const type of ["CE", "PE"]) {
+        const option = selectedOption(type);
+        if (option?.instrumentKey !== data.key) continue;
+        updateOptionFromTick(option, data);
+        updatedSelected = true;
+      }
+      if (updatedSelected) {
         renderPaneHeaders();
         renderOrderPad();
       }
@@ -667,12 +845,14 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "position") {
+    if (S.bookMode !== "live") return;
     S.positions = toArray(data).map(normalizePosition);
     updateFeedSubscriptions();
     renderTab();
     return;
   }
   if (event.type === "margin") {
+    if (S.bookMode !== "live") return;
     S.limits.available = num(data?.available ?? data?.available_margin ?? data?.availableMargin);
     renderHeader();
     renderOrderPad();
@@ -685,7 +865,8 @@ function handleSocketEvent(event) {
 
 function updateFeedSubscriptions() {
   const keys = [selectedOption("CE")?.instrumentKey, selectedOption("PE")?.instrumentKey,
-    ...S.positions.map((position) => position.instrument_key)]
+    ...S.positions.map((position) => position.instrument_key),
+    ...[...S.spots.values()].map((spot) => spot.spotKey)]
     .filter(Boolean);
   const desired = [...new Set(keys)];
   if (S.ws?.readyState !== WebSocket.OPEN) return;
@@ -700,7 +881,7 @@ function updateFeedSubscriptions() {
 
 function computeATM() {
   const spot = S.spots.get(S.activeIndex);
-  if (!spot?.ltp || !S.chain.length) return null;
+  if (!spot?.ltp || !S.chain.length) return S.chain.length ? S.chain[Math.floor(S.chain.length / 2)].strike : null;
   let best = S.chain[0];
   let bestDiff = Infinity;
   for (const row of S.chain) {
@@ -715,18 +896,22 @@ function computeATM() {
 
 function selectDefaultStrike() {
   if (!S.chain.length) {
-    S.selected = { strike: null, type: "CE", call: null, put: null };
+    S.selected = { type: "CE", CE: null, PE: null };
     return;
   }
   const atm = computeATM() ?? S.chain[Math.floor(S.chain.length / 2)].strike;
   selectStrike(atm, "CE", false, false);
+  selectStrike(atm, "PE", false, false);
+  S.selected.type = "CE";
   S.chainScrolled = false;
 }
 
 function selectStrike(strike, type, rerender = true, reloadCharts = true) {
   const row = S.chain.find((r) => r.strike === strike);
-  if (!row) return;
-  S.selected = { strike, type, call: row.call, put: row.put };
+  const option = row?.[type === "CE" ? "call" : "put"];
+  if (!option) return;
+  S.selected[type] = option;
+  S.selected.type = type;
   S.chainScrolled = true;
   updateFeedSubscriptions();
   if (reloadCharts) loadCharts();
@@ -739,7 +924,19 @@ function selectStrike(strike, type, rerender = true, reloadCharts = true) {
 }
 
 function selectedOption(type) {
-  return type === "CE" ? S.selected.call : S.selected.put;
+  return S.selected[type];
+}
+
+function updateOptionFromTick(option, data) {
+  option.ltp = num(data.ltp, option.ltp);
+  option.prevClose = num(data.prev_close, option.prevClose);
+  option.bid = num(data.bid, option.bid);
+  option.ask = num(data.ask, option.ask);
+  option.volume = num(data.volume, option.volume);
+  option.oi = num(data.oi, option.oi);
+  option.quoteAvailable = option.ltp > 0;
+  option.change = option.ltp - option.prevClose;
+  option.changePct = option.prevClose ? (option.change / option.prevClose) * 100 : 0;
 }
 
 function lotSize(type = S.selected.type) {
@@ -753,8 +950,17 @@ function chartInstrument(type) {
   return selectedOption(type)?.instrumentKey || "";
 }
 
+function activeCommodity() {
+  return (S.boot.commodities || []).find((item) => item.key === S.activeIndex) || null;
+}
+
 async function loadCharts() {
   const loadID = ++S.chartLoadID;
+  const dateParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date());
+  const dateValues = Object.fromEntries(dateParts.map((part) => [part.type, part.value]));
+  const sessionDate = `${dateValues.year}-${dateValues.month}-${dateValues.day}`;
   for (const [pane, type] of [["ce", "CE"], ["pe", "PE"]]) {
     const key = chartInstrument(type);
     const chart = S.charts[pane];
@@ -765,40 +971,69 @@ async function loadCharts() {
       continue;
     }
     chart.setData([]);
-    if (S.marketOpen) {
-      const live = S.candles[`${key}|${S.timeframe}`] || [];
+    const liveKey = `${key}|${S.timeframe}`;
+    if (key.startsWith("mcx_fo|")) {
+      const live = S.candles[liveKey] || [];
       chart.setData(live);
-      setChartHint(pane, live.length ? "" : S.feed === "live"
-        ? "Waiting for live ticks…"
-        : "Waiting for authenticated live feed…");
+      setChartHint(pane, S.marketOpen
+        ? (live.length ? "" : "Waiting for live ticks…")
+        : "Kotak does not provide historical MCX candles. Live candles appear during MCX trading hours.");
       continue;
     }
     try {
-      const cacheKey = `${key}|${S.timeframe}`;
+      const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
       let candles = S.historicalCache.get(cacheKey);
+      if (candles?.retryAt) {
+        if (Date.now() < candles.retryAt) throw candles.error;
+        S.historicalCache.delete(cacheKey);
+        candles = null;
+      }
+      if (candles && typeof candles.then === "function") candles = await candles;
       if (!candles) {
         setChartHint(pane, "Loading historical candles…");
         const request = getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`)
-          .then((raw) => (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
-            time: num(c.time ?? c.ts),
-            open: num(c.open),
-            high: num(c.high),
-            low: num(c.low),
-            close: num(c.close),
-            volume: num(c.volume),
-          })));
-        S.historicalCache.set(cacheKey, request);
-        try {
-          candles = await request;
-          S.historicalCache.set(cacheKey, candles);
-        } catch (error) {
-          S.historicalCache.delete(cacheKey);
+          .then((raw) => ({
+            candles: (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
+              time: num(c.time ?? c.ts),
+              open: num(c.open),
+              high: num(c.high),
+              low: num(c.low),
+              close: num(c.close),
+              volume: num(c.volume),
+            })),
+            warning: raw?.warning || "",
+          }));
+        const guardedRequest = request.catch((error) => {
+          const retryHeader = Number(error.retryAfter);
+          const retryDelay = Number.isFinite(retryHeader) && retryHeader > 0
+            ? Math.min(15 * 60_000, retryHeader * 1000)
+            : error.status === 429 ? 180_000 : 60_000;
+          const retryAt = Date.now() + retryDelay;
+          S.historicalCache.set(cacheKey, { retryAt, error });
+          if (chartRetryTimer) window.clearTimeout(chartRetryTimer);
+          chartRetryTimer = window.setTimeout(() => {
+            chartRetryTimer = null;
+            loadCharts();
+          }, retryDelay + 100);
           throw error;
-        }
+        });
+        S.historicalCache.set(cacheKey, guardedRequest);
+        try {
+          candles = await guardedRequest;
+          S.historicalCache.set(cacheKey, candles);
+        } catch (error) { throw error; }
       }
-      if (loadID !== S.chartLoadID || chartInstrument(type) !== key || S.marketOpen) return;
-      chart.setData(candles);
-      setChartHint(pane, candles.length ? "" : "No historical candles returned for this contract.");
+      if (loadID !== S.chartLoadID || chartInstrument(type) !== key) return;
+      if (S.marketOpen) {
+        if (!S.candles[liveKey]?.length) {
+          S.candles[liveKey] = candles.candles.slice(-500).map((candle) => ({ ...candle }));
+        }
+        chart.setData(mergeChartCandles(candles.candles, S.candles[liveKey] || []));
+        setChartHint(pane, candles.warning || (candles.candles.length ? "" : "Waiting for live ticks…"));
+      } else {
+        chart.setData(candles.candles);
+        setChartHint(pane, candles.warning || (candles.candles.length ? "" : "No historical candles returned for this contract."));
+      }
     } catch (error) {
       if (loadID !== S.chartLoadID || chartInstrument(type) !== key) return;
       console.warn("historical candles unavailable", { pane, error });
@@ -807,6 +1042,12 @@ async function loadCharts() {
     }
   }
   renderPaneHeaders();
+}
+
+function mergeChartCandles(historical, live) {
+  const byTime = new Map(historical.map((candle) => [candle.time, candle]));
+  for (const candle of live) byTime.set(candle.time, candle);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 function setChartHint(pane, message) {
@@ -821,7 +1062,8 @@ function updateLiveCandle(key, price, timestamp) {
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
   const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600 })[S.timeframe];
   if (!interval) return;
-  const openMatch = /^(\d{2}):(\d{2})$/.exec(S.boot.marketSession?.open || "09:15");
+  const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
+  const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
   const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
   const localDayStart = Math.floor((time + 19800) / 86400) * 86400 - 19800;
   const sessionStart = localDayStart + openSeconds;
@@ -842,7 +1084,7 @@ function updateLiveCandle(key, price, timestamp) {
   for (const type of ["CE", "PE"]) {
     if (chartInstrument(type) !== key) continue;
     const pane = type === "CE" ? "ce" : "pe";
-    S.charts[pane].setData(candles);
+    S.charts[pane].update(candle);
     setChartHint(pane, "");
   }
 }
@@ -857,17 +1099,41 @@ function renderPaneHeaders() {
   $("ce-ltp").textContent = ce ? fmt(ce.ltp) : "—";
   $("ce-change").textContent = ce ? `${fmtSigned(ce.change)} (${fmtSigned(ce.changePct)}%)` : "—";
   $("ce-change").className = "pane-change " + directionClass(ce?.changePct);
+  renderOptionStrikeSelect("CE", ce);
 
   $("pe-title").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
   $("pe-sub").textContent = pe ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
   $("pe-ltp").textContent = pe ? fmt(pe.ltp) : "—";
   $("pe-change").textContent = pe ? `${fmtSigned(pe.change)} (${fmtSigned(pe.changePct)}%)` : "—";
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
+  renderOptionStrikeSelect("PE", pe);
 
   $("leg-call-name").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
   $("leg-call-size").textContent = ce ? `${ce.lotSize} shares / lot · LTP ${fmt(ce.ltp)}` : "Choose a strike";
   $("leg-put-name").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
   $("leg-put-size").textContent = pe ? `${pe.lotSize} shares / lot · LTP ${fmt(pe.ltp)}` : "Choose a strike";
+}
+
+function renderOptionStrikeSelect(type, selected) {
+  const select = $(type === "CE" ? "ce-strike-select" : "pe-strike-select");
+  if (!select) return;
+  const field = type === "CE" ? "call" : "put";
+  const strikes = S.chain
+    .filter((row) => row[field])
+    .map((row) => row.strike);
+  const options = strikes.map((strike) => `<option value="${strike}">${fmtStrike(strike)}</option>`);
+  if (selected && !S.chain.some((row) => row.strike === selected.strike && row[field])) {
+    options.push(`<option value="${selected.strike}">${fmtStrike(selected.strike)}</option>`);
+    strikes.push(selected.strike);
+  }
+  const optionsKey = strikes.join(",");
+  if (select.dataset.optionsKey !== optionsKey) {
+    select.innerHTML = options.length ? options.join("") : '<option value="">—</option>';
+    select.dataset.optionsKey = optionsKey;
+  }
+  select.value = selected ? String(selected.strike) : "";
+  select.disabled = options.length === 0;
+  select.setAttribute("aria-label", `${type === "CE" ? "Call" : "Put"} strike`);
 }
 
 function expiryText(date) {
@@ -888,7 +1154,7 @@ function renderAll(preserveChainScroll = false) {
 }
 
 function renderHeader() {
-  const order = (S.boot.indices || []).map((i) => i.key);
+  const order = [...(S.boot.indices || []), ...(S.boot.commodities || [])].map((i) => i.key);
   if (S.spots.has("INDIA VIX")) order.push("INDIA VIX");
   $("spot-strip").innerHTML = order.map((key) => {
     const spot = S.spots.get(key);
@@ -904,16 +1170,15 @@ function renderHeader() {
     </span>`;
   }).join("");
 
-  const available = S.limits?.available || 0;
-  $("margin-chip").textContent = available ? `₹${fmt(available, 0)}` : "—";
+  const available = num(S.limits?.available);
+  $("margin-chip").textContent = S.limits?.loaded ? `₹${fmt(available, 0)}` : (S.limits?.error ? "N/A" : "—");
+  $("margin-chip").title = S.limits?.error || (S.limits?.loaded ? "Available account margin" : "Account margin not loaded");
   const totalPnl = (S.positions || []).reduce((sum, p) => sum + num(p.pnl), 0);
   const pnlChip = $("pnl-chip");
   pnlChip.textContent = totalPnl ? `₹${fmtSigned(totalPnl, 0)}` : "—";
   pnlChip.className = "metric-value " + directionClass(totalPnl);
 
-  const mode = tradingMode().toUpperCase();
-  $("mode-badge").textContent = mode;
-  $("mode-badge").className = "badge " + (mode === "LIVE" ? "live" : "paper");
+  $("mode-badge").textContent = "LIVE";
   renderFeed();
 }
 
@@ -925,6 +1190,9 @@ function renderFeed() {
   badge.className = `feed-badge ${cls}`;
   label.textContent = feed;
   $("footer-feed").textContent = `${feed} feed`;
+  const orderStatus = S.orderFeed || "disconnected";
+  $("order-feed-badge").className = `feed-badge ${orderStatus === "live" ? "live" : orderStatus === "connecting" ? "connecting" : "degraded"}`;
+  $("order-feed-label").textContent = `orders ${orderStatus}`;
 }
 
 function renderToolbar() {
@@ -959,6 +1227,7 @@ function renderChain(preserveScroll = false) {
   if (!S.chain.length) {
     body.innerHTML = `<div class="empty-state">Waiting for the option chain…</div>`;
     $("strike-meta").textContent = "—";
+    renderChainMoreControls();
     return;
   }
   const scrollTop = preserveScroll ? body.scrollTop : 0;
@@ -966,14 +1235,17 @@ function renderChain(preserveScroll = false) {
   body.innerHTML = S.chain.map((row) => {
     const call = row.call;
     const put = row.put;
-    const active = row.strike === S.selected.strike;
+    const callSelected = S.selected.CE?.strike === row.strike;
+    const putSelected = S.selected.PE?.strike === row.strike;
+    const active = callSelected || putSelected;
     return `<div class="chain-row${row.strike === atm ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
-      <button type="button" class="cell-ce${active && S.selected.type === "CE" ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}%` : "Call quote unavailable"}">${call ? fmt(call.ltp) : "—"}</button>
+      <button type="button" class="cell-ce${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Volume ${fmtCompact(call.volume)}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
       <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${row.strike === atm ? '<span class="atm-dot">◆</span>' : ""}${fmtStrike(row.strike)}</button>
-      <button type="button" class="cell-pe${active && S.selected.type === "PE" ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}%` : "Put quote unavailable"}">${put ? fmt(put.ltp) : "—"}</button>
+      <button type="button" class="cell-pe${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Volume ${fmtCompact(put.volume)}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
     </div>`;
   }).join("");
   $("strike-meta").textContent = `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
+  renderChainMoreControls();
 
   body.scrollTop = scrollTop;
   applyStrikeFilter();
@@ -997,9 +1269,12 @@ function applyStrikeFilter() {
     : `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
 }
 
-function openStrikeModal() {
+function openStrikeModal(targetType = S.selected.type) {
+  S.strikeSearchTarget = targetType === "PE" ? "PE" : "CE";
+  $("strike-target-select").value = S.strikeSearchTarget;
   $("strike-search-input").value = "";
   applyStrikeFilter();
+  renderChainMoreControls();
   $("strike-modal").hidden = false;
   $("strike-search-input").focus();
   requestAnimationFrame(scrollATMIntoView);
@@ -1009,11 +1284,43 @@ function closeStrikeModal() {
   $("strike-modal").hidden = true;
 }
 
+async function selectSearchedStrike(value, targetType = S.strikeSearchTarget) {
+  const target = Number(String(value).trim().replace(/,/g, ""));
+  if (!Number.isFinite(target) || target <= 0) {
+    toast("Enter a valid strike price.", "warn");
+    return;
+  }
+  let row = S.chain.find((item) => item.strike === target);
+  if (!row) {
+    const requestID = ++S.chainRequestID;
+    const index = S.activeIndex;
+    const expiry = S.expiry;
+    try {
+      const page = await getJSON(chainURL({ center: target, count: 19 }));
+      if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+      acceptChainPage(page);
+      row = S.chain.find((item) => item.strike === target);
+      if (!row) {
+        renderChain();
+        toast(`Strike ${fmtStrike(target)} is not available for ${index} ${expiry}.`, "warn", 5000);
+        return;
+      }
+    } catch (error) {
+      if (requestID === S.chainRequestID) toast(`Could not search strikes: ${error.message}`, "error");
+      return;
+    }
+  }
+  S.chainScrolled = false;
+  selectStrike(row.strike, targetType === "PE" ? "PE" : "CE", false, true);
+  renderAll();
+  closeStrikeModal();
+}
+
 function scrollATMIntoView() {
   const body = $("chain-body");
   const atm = computeATM();
   if (!atm) return;
-  const selected = S.selected.strike || atm;
+  const selected = selectedOption(S.selected.type)?.strike || atm;
   const target = [...body.querySelectorAll(".chain-row")].find((row) => num(row.dataset.strike) === selected);
   if (target) {
     const bodyRect = body.getBoundingClientRect();
@@ -1129,7 +1436,6 @@ function renderTab() {
   for (const button of $$("#tabs button")) {
     button.classList.toggle("active", button.dataset.tab === S.tab);
   }
-  $("paper-note").textContent = "P&L is gross of charges";
 
   if (S.tab === "positions") content.innerHTML = positionsHTML();
   else if (S.tab === "risk") {
@@ -1141,7 +1447,7 @@ function renderTab() {
 }
 
 function positionsHTML() {
-  if (!S.positions.length) return `<div class="empty-state">No open positions. Use the order pad to place a paper trade.</div>`;
+  if (!S.positions.length) return `<div class="empty-state">No open positions. Sign in with Kotak to view your account or place an order.</div>`;
   const groups = new Map();
   for (const p of S.positions) {
     const key = `${p.underlying || S.activeIndex}|${p.expiry || S.expiry}`;
@@ -1370,6 +1676,8 @@ function validateQuantity(type) {
 }
 
 async function onTrade(action, type) {
+  const orderMode = tradingMode();
+  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before placing an order.", "warn"); return; }
   const option = selectedOption(type);
   if (!option) {
     toast(`Select a ${type} strike first.`, "warn");
@@ -1389,11 +1697,11 @@ async function onTrade(action, type) {
   const side = action === "buy" ? "B" : "S";
   const required = requiredMargin(option, shares, side);
   const available = num(S.limits?.available);
-  if (!Number.isFinite(required)) {
+  if (orderMode !== "live" && !Number.isFinite(required) && (S.boot.indices || []).some((index) => index.key === S.activeIndex)) {
     toast("A live underlying quote is required to calculate short-order margin.", "error", 6000);
     return;
   }
-  if (required > available) {
+  if (orderMode !== "live" && required > available) {
     toast(`Insufficient margin: required ₹${fmt(required, 0)}, available ₹${fmt(available, 0)}.`, "error", 5000);
     return;
   }
@@ -1414,13 +1722,21 @@ async function onTrade(action, type) {
     order_type: "MARKET",
     product: S.product,
     intent: "ENTRY",
-    mode: tradingMode(),
+    mode: orderMode,
     lot_size: lot,
   };
 
   try {
+    if (orderMode === "live") {
+      const ok = await confirmAction({ title: "Submit live order", body: `${side === "B" ? "Buy" : "Sell"} <b>${shares}</b> ${esc(option.symbol)} as a live ${esc(S.product)} order?`, okLabel: "Submit Order", danger: true });
+      if (!ok) return;
+      if (tradingMode() !== orderMode) {
+        toast("Trading mode changed; order was not sent. Review the selected account and try again.", "warn", 5000);
+        return;
+      }
+    }
     const result = await postOrder(payload);
-    toast(`Paper order ${result?.status?.toLowerCase() || "submitted"} at live quote ₹${fmt(result?.price ?? option.ltp)}.`, "ok");
+    toast(`Live order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
     window.setTimeout(() => refreshBooksFromAPI(true), 400);
   } catch (err) {
     toast(`Order rejected: ${err.message}`, "error", 6000);
@@ -1428,6 +1744,8 @@ async function onTrade(action, type) {
 }
 
 async function onExit(instrumentKey) {
+  const orderMode = tradingMode();
+  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before exiting a position.", "warn"); return; }
   const position = S.positions.find((p) => p.instrument_key === instrumentKey);
   if (!position) return;
   const side = position.quantity > 0 ? "S" : "B";
@@ -1439,10 +1757,15 @@ async function onExit(instrumentKey) {
     danger: true,
   });
   if (!ok) return;
+  if (tradingMode() !== orderMode) {
+    toast("Trading mode changed; exit was not sent. Review the selected account and try again.", "warn", 5000);
+    return;
+  }
 
   try {
     await postOrder({
       instrument_key: instrumentKey,
+      exchange_segment: position.exchange_segment,
       symbol: position.symbol,
       underlying: position.underlying,
       expiry: position.expiry,
@@ -1456,9 +1779,9 @@ async function onExit(instrumentKey) {
       order_type: "MARKET",
       product: position.product || S.product,
       intent: "EXIT",
-      mode: tradingMode(),
+      mode: orderMode,
     });
-    toast("Paper exit filled at live quote.", "ok");
+    toast("Live exit order submitted.", "ok");
     window.setTimeout(() => refreshBooksFromAPI(true), 400);
   } catch (err) {
     toast(`Exit failed: ${err.message}`, "error", 6000);
@@ -1466,25 +1789,35 @@ async function onExit(instrumentKey) {
 }
 
 async function onSquareOffAll() {
-  if (!S.positions.length) {
+  const orderMode = tradingMode();
+  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before squaring off positions.", "warn"); return; }
+  const positions = S.positions.slice();
+  if (!positions.length) {
     toast("No open positions to square off.", "warn");
     return;
   }
   const ok = await confirmAction({
     title: "Square off all",
-    body: `Close <b>${S.positions.length}</b> open position${S.positions.length === 1 ? "" : "s"} at market? ` +
+    body: `Close <b>${positions.length}</b> open position${positions.length === 1 ? "" : "s"} at market? ` +
       `<span class="warn">This cannot be undone.</span>`,
     okLabel: "Square Off All",
     danger: true,
   });
   if (!ok) return;
+  if (tradingMode() !== orderMode) {
+    toast("Trading mode changed; square-off was not sent. Review the selected account and try again.", "warn", 5000);
+    return;
+  }
 
   try {
-    await postJSON("/api/orders/square-off-all", { confirm: true, mode: tradingMode() }).catch((error) => {
-      if (error.status !== 404) throw error;
-      return postJSON("/api/broker/square-off-all", { confirm: true, mode: tradingMode() });
-    });
-    toast("Square-off orders sent", "ok");
+    for (const position of positions) {
+      const quantity = Math.abs(num(position.quantity));
+      if (!quantity || !position.instrument_key || !position.exchange_segment) continue;
+      await postOrder({ mode: "live", instrument_key: position.instrument_key, exchange_segment: position.exchange_segment,
+        symbol: position.symbol, side: position.quantity > 0 ? "S" : "B", quantity, product: position.product || S.product,
+        order_type: "MARKET", price: 0 });
+    }
+    toast("Live square-off orders submitted.", "ok");
     window.setTimeout(() => refreshBooksFromAPI(true), 500);
   } catch (err) {
     toast(`Square off failed: ${err.message}`, "error", 6000);
@@ -1636,6 +1969,7 @@ async function logout() {
   $("totp-input").value = "";
   if ($("mpin-input")) $("mpin-input").value = "";
   S.session = { authenticated: false };
+  clearBooksForMode("live");
   if (S.wsTimer) {
     window.clearTimeout(S.wsTimer);
     S.wsTimer = null;
@@ -1648,7 +1982,7 @@ async function logout() {
   updateAuthButton();
   renderHeader();
   closeLogin();
-  toast("Signed out. Paper mode remains available.", "warn");
+  toast("Signed out. Sign in with Kotak to view account data or place orders.", "warn");
 }
 
 /* ── Toasts ───────────────────────────────────────────── */
@@ -1689,6 +2023,10 @@ function bindEvents() {
 
   $("index-select").addEventListener("change", (event) => switchIndex(event.target.value));
   $("expiry-select").addEventListener("change", (event) => switchExpiry(event.target.value));
+  $("ce-strike-select").addEventListener("change", (event) => selectStrike(num(event.target.value), "CE"));
+  $("pe-strike-select").addEventListener("change", (event) => selectStrike(num(event.target.value), "PE"));
+  $("load-more-above").addEventListener("click", () => loadMoreChain("above"));
+  $("load-more-below").addEventListener("click", () => loadMoreChain("below"));
   $("tf-group").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-tf]");
     if (!button) return;
@@ -1699,23 +2037,18 @@ function bindEvents() {
   $("refresh-button").addEventListener("click", refreshMarket);
   $("fullscreen-button").addEventListener("click", toggleFullscreen);
   $("strike-search-button").addEventListener("click", openStrikeModal);
+  $("strike-target-select").addEventListener("change", (event) => {
+    S.strikeSearchTarget = event.target.value === "PE" ? "PE" : "CE";
+  });
   $("strike-close").addEventListener("click", closeStrikeModal);
   $("strike-modal").addEventListener("click", (event) => {
     if (event.target === $("strike-modal")) closeStrikeModal();
   });
   $("strike-search-input").addEventListener("input", applyStrikeFilter);
-  $("strike-search-input").addEventListener("keydown", (event) => {
+  $("strike-search-input").addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") return;
-    const query = event.currentTarget.value.trim().replace(/,/g, "");
-    const targetStrike = Number(query);
-    const row = S.chain.find((item) => Number.isFinite(targetStrike) && item.strike === targetStrike);
-    if (!row) {
-      toast("No exact matching strike. Choose a visible CALL or PUT.", "warn");
-      return;
-    }
-    selectStrike(row.strike, S.selected.type);
-    closeStrikeModal();
     event.preventDefault();
+    await selectSearchedStrike(event.currentTarget.value);
   });
 
   for (const button of $$(".chart-tools button")) {
@@ -1745,7 +2078,7 @@ function bindEvents() {
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const rows = [...$("chain-body").querySelectorAll(".chain-row")];
     if (!rows.length) return;
-    const current = rows.findIndex((row) => num(row.dataset.strike) === S.selected.strike);
+    const current = rows.findIndex((row) => num(row.dataset.strike) === selectedOption(S.selected.type)?.strike);
     const next = Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
     selectStrike(num(rows[next].dataset.strike), S.selected.type);
     event.preventDefault();
@@ -1790,10 +2123,6 @@ function bindEvents() {
     else openLogin();
   });
   $("login-close").addEventListener("click", closeLogin);
-  $("login-paper").addEventListener("click", () => {
-    closeLogin();
-    toast("Continuing without a broker session — paper mode.", "warn");
-  });
   $("login-form").addEventListener("submit", submitLogin);
   $("confirm-cancel").addEventListener("click", () => closeConfirm(false));
   $("confirm-ok").addEventListener("click", () => closeConfirm(true));
@@ -1834,16 +2163,37 @@ function updateLotInput(type, value) {
 
 async function switchIndex(key) {
   if (!key) return;
+  const requestID = ++S.chainRequestID;
   S.activeIndex = key;
   S.expiry = "";
+  S.expiries = [];
+  S.chain = [];
+  S.chainMore = { above: false, below: false };
+  S.chainLoading = false;
+  S.selected = { type: "CE", CE: null, PE: null };
   S.chainScrolled = false;
+  updateFeedSubscriptions();
+  renderAll();
   try {
     const raw = await getJSON(`/api/expiries?index=${encodeURIComponent(key)}`);
+    if (requestID !== S.chainRequestID || key !== S.activeIndex) return;
     S.expiries = normalizeExpiryList(raw);
     S.expiry = pickExpiry(S.expiries);
-    const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(key)}&expiry=${encodeURIComponent(S.expiry)}`);
-    S.chain = normalizeChain(chainRaw);
+    renderToolbar();
+    if (!S.expiry) {
+      renderAll();
+      toast(`No active expiries are available for ${key}.`, "warn", 6000);
+      return;
+    }
+    const chainIndex = S.activeIndex;
+    const chainExpiry = S.expiry;
+    const center = num(S.spots.get(chainIndex)?.ltp);
+    const chainRaw = await getJSON(chainURL({ center }));
+    if (requestID !== S.chainRequestID || chainIndex !== S.activeIndex || chainExpiry !== S.expiry) return;
+    acceptChainPage(chainRaw);
   } catch (error) {
+    if (requestID !== S.chainRequestID) return;
+    renderAll();
     toast(`Could not load ${key}: ${error.message}`, "error");
     return;
   }
@@ -1854,12 +2204,24 @@ async function switchIndex(key) {
 
 async function switchExpiry(date) {
   if (!date) return;
+  const requestID = ++S.chainRequestID;
   S.expiry = date;
+  S.chain = [];
+  S.chainMore = { above: false, below: false };
+  S.chainLoading = false;
+  S.selected = { type: "CE", CE: null, PE: null };
   S.chainScrolled = false;
+  updateFeedSubscriptions();
+  renderAll();
   try {
-    const chainRaw = await getJSON(`/api/chain?index=${encodeURIComponent(S.activeIndex)}&expiry=${encodeURIComponent(date)}`);
-    S.chain = normalizeChain(chainRaw);
+    const chainIndex = S.activeIndex;
+    const chainExpiry = date;
+    const center = num(S.spots.get(chainIndex)?.ltp);
+    const chainRaw = await getJSON(chainURL({ center }));
+    if (requestID !== S.chainRequestID || chainIndex !== S.activeIndex || chainExpiry !== S.expiry) return;
+    acceptChainPage(chainRaw);
   } catch (error) {
+    if (requestID !== S.chainRequestID) return;
     toast(`Could not load expiry: ${error.message}`, "error");
     return;
   }
@@ -1869,7 +2231,7 @@ async function switchExpiry(date) {
 }
 
 function refreshMarket() {
-  pollLive();
+  pollLive({ refreshChain: true });
   toast("Refreshed", "ok", 1200);
 }
 
@@ -1910,8 +2272,26 @@ function currentMarketState() {
     const match = /^(\d{2}):(\d{2})$/.exec(value || "");
     return match ? Number(match[1]) * 60 + Number(match[2]) : fallback;
   };
-  const open = toMinutes(S.boot.marketSession?.open, 9 * 60 + 15);
-  const close = toMinutes(S.boot.marketSession?.close, 15 * 60 + 30);
+  let open;
+  let close;
+  if (activeCommodity()) {
+    open = 9 * 60;
+    const year = Number(values.year);
+    const firstSunday = (month) => {
+      const weekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+      return 1 + ((7 - weekday) % 7);
+    };
+    const secondSundayInMarch = firstSunday(3) + 7;
+    const firstSundayInNovember = firstSunday(11);
+    const dstStart = `${year}-03-${String(secondSundayInMarch).padStart(2, "0")}`;
+    const dstEnd = `${year}-11-${String(firstSundayInNovember).padStart(2, "0")}`;
+    // MCX non-agri contracts close at 23:30 during US daylight time and
+    // 23:55 outside it. The exchange is closed on the transition Sundays.
+    close = date >= dstStart && date < dstEnd ? 23 * 60 + 30 : 23 * 60 + 55;
+  } else {
+    open = toMinutes(S.boot.marketSession?.open, 9 * 60 + 15);
+    close = toMinutes(S.boot.marketSession?.close, 15 * 60 + 30);
+  }
   const now = Number(values.hour) * 60 + Number(values.minute);
   return now >= open && now < close;
 }
@@ -1924,8 +2304,12 @@ function updateMarketPhase(reloadOnChange = true) {
   if (!wasKnown || !reloadOnChange || !S.expiry) return;
   if (open) {
     S.candles = {};
+    S.historicalCache.clear();
     loadCharts();
   } else {
+    // The earlier chart fetch may have occurred before today's session ended.
+    // Re-request once closed so the backend can fill and save the final bars.
+    S.historicalCache.clear();
     loadCharts();
   }
 }

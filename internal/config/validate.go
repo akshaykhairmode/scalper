@@ -22,7 +22,7 @@ var chartTimeframes = map[string]bool{
 }
 
 var scripSegments = map[string]bool{
-	"nse_fo": true, "bse_fo": true, "nse_cm": true, "bse_cm": true,
+	"nse_fo": true, "bse_fo": true, "nse_cm": true, "bse_cm": true, "mcx_fo": true,
 }
 
 // Validate checks every documented rule. It returns a *errs.ConfigError with
@@ -138,8 +138,8 @@ func (c Config) validateMarket() error {
 		return fieldErr("market.indices", "at least one index is required")
 	}
 
-	seen := make(map[string]bool, len(c.Market.Indices))
-	scripSeen := make(map[string]bool, len(c.Market.Indices))
+	seen := make(map[string]bool, len(c.Market.Indices)+len(c.Market.Commodities))
+	scripSeen := make(map[string]bool, len(c.Market.Indices)+len(c.Market.Commodities))
 	for i, idx := range c.Market.Indices {
 		prefix := fmt.Sprintf("market.indices[%d]", i)
 		if strings.TrimSpace(idx.Key) == "" {
@@ -184,6 +184,33 @@ func (c Config) validateMarket() error {
 		default:
 			return fieldErr(prefix+".default_expiry", "must be nearest_weekly|nearest_monthly, got %q", idx.DefaultExpiry)
 		}
+	}
+	for i, commodity := range c.Market.Commodities {
+		prefix := fmt.Sprintf("market.commodities[%d]", i)
+		if strings.TrimSpace(commodity.Key) == "" {
+			return fieldErr(prefix+".key", "must not be empty")
+		}
+		if seen[commodity.Key] {
+			return fieldErr(prefix+".key", "duplicate key %q", commodity.Key)
+		}
+		seen[commodity.Key] = true
+		if strings.TrimSpace(commodity.DisplayName) == "" {
+			return fieldErr(prefix+".display_name", "must not be empty")
+		}
+		switch commodity.ExchangeSegment {
+		case "mcx_fo":
+		default:
+			return fieldErr(prefix+".exchange_segment", "must be mcx_fo, got %q", commodity.ExchangeSegment)
+		}
+		scripName := strings.TrimSpace(commodity.ScripName)
+		if scripName == "" {
+			scripName = commodity.Key
+		}
+		normalized := normalizeScripName(scripName)
+		if scripSeen[normalized] {
+			return fieldErr(prefix+".scrip_name", "duplicate scrip name %q", scripName)
+		}
+		scripSeen[normalized] = true
 	}
 	if c.Market.IndiaVIX.Enabled {
 		switch c.Market.IndiaVIX.ExchangeSegment {
@@ -376,6 +403,11 @@ func (c Config) validateScrip() error {
 		}
 		if !seen[idx.IndexSegment] {
 			return fieldErr("scrip.segments", "missing %q required by index %s spot", idx.IndexSegment, idx.Key)
+		}
+	}
+	for _, commodity := range c.Market.Commodities {
+		if !seen[commodity.ExchangeSegment] {
+			return fieldErr("scrip.segments", "missing %q required by commodity %s", commodity.ExchangeSegment, commodity.Key)
 		}
 	}
 	if c.Market.IndiaVIX.Enabled && !seen[c.Market.IndiaVIX.ExchangeSegment] {

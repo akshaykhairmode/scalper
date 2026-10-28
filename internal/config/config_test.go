@@ -54,6 +54,9 @@ func TestLoadExample(t *testing.T) {
 	if cfg.Market.Indices[3].Key != "SENSEX" || cfg.Market.Indices[3].ExchangeSegment != "bse_fo" {
 		t.Fatalf("unexpected SENSEX config: %+v", cfg.Market.Indices[3])
 	}
+	if len(cfg.Market.Commodities) != 3 || cfg.Market.Commodities[0].ExchangeSegment != "mcx_fo" {
+		t.Fatalf("commodities = %+v", cfg.Market.Commodities)
+	}
 	if !cfg.Logging.Redact {
 		t.Fatal("redact must be true")
 	}
@@ -226,6 +229,7 @@ func TestValidate(t *testing.T) {
 		{name: "no segments", mutate: func(c *Config) { c.Scrip.Segments = nil }, wantField: "scrip.segments"},
 		{name: "bad segment", mutate: func(c *Config) { c.Scrip.Segments[0] = "nse_eq" }, wantField: "scrip.segments[0]"},
 		{name: "duplicate segment", mutate: func(c *Config) { c.Scrip.Segments = []string{"nse_fo", "nse_fo", "bse_fo", "nse_cm", "bse_cm"} }, wantField: "scrip.segments[1]"},
+		{name: "MCX commodity segment", mutate: func(c *Config) { c.Scrip.Segments = []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm"} }, wantField: "scrip.segments"},
 		{name: "missing index segment", mutate: func(c *Config) { c.Scrip.Segments = []string{"nse_fo", "nse_cm"} }, wantField: "scrip.segments"},
 		{name: "missing vix segment", mutate: func(c *Config) {
 			c.Market.Indices = c.Market.Indices[:1]

@@ -317,7 +317,7 @@ func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
 		t.Fatalf("broker session not retained: %+v", session)
 	}
 	status := server.SessionStatus()
-	if !status.Authenticated || !status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
+	if !status.Authenticated || status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
 		t.Fatalf("SessionStatus = %+v", status)
 	}
 	data, err := json.Marshal(ToSessionData(session))
@@ -362,7 +362,7 @@ func TestServerLoginFlowValidatesAndExpiresPendingLogin(t *testing.T) {
 func TestServerSessionStatusWithoutLogin(t *testing.T) {
 	server := NewServerWithAuthenticator(slog.Default(), &fakeKotak{})
 	status := server.SessionStatus()
-	if status.Authenticated || !status.PaperMode {
+	if status.Authenticated || status.PaperMode {
 		t.Fatalf("unauthenticated status = %+v", status)
 	}
 }

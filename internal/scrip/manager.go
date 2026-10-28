@@ -97,6 +97,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 func normalizeSegments(list []string) ([]string, error) {
 	allowed := map[string]bool{
 		SegmentNSEFO: true, SegmentBSEFO: true, SegmentNSECM: true, SegmentBSECM: true,
+		SegmentMCXFO: true,
 	}
 	seen := make(map[string]bool, len(list))
 	var out []string
@@ -296,6 +297,7 @@ func (m *Manager) apply(options []Option, spots []Spot, syncedAt time.Time, sour
 	}
 	for _, spot := range snap.spots {
 		snap.spotByKey[spot.InstrumentKey] = spot
+		snap.spotByFeed[spot.ExchangeSegment+"|"+NormalizeName(spot.PSymbol)] = spot
 		scripName := spot.InstrumentKey
 		if i := strings.LastIndex(scripName, "|"); i >= 0 {
 			scripName = scripName[i+1:]

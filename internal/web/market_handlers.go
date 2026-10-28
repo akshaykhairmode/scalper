@@ -7,6 +7,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,9 +36,9 @@ func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, index := range result {
 		if !index.QuoteAvailable {
-			s.log.Warn("Kotak did not return a quote for a configured index",
-				"event", "market_index_quote_missing",
-				"index", index.Key,
+			s.log.Warn("Kotak did not return a quote for a configured underlying",
+				"event", "market_underlying_quote_missing",
+				"underlying", index.Key,
 				"symbol", index.IndexSymbol,
 				"request_id", logging.RequestID(r.Context()))
 		}
@@ -71,6 +73,38 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 	expiry := strings.TrimSpace(r.URL.Query().Get("expiry"))
 	if index == "" || expiry == "" {
 		s.writeRouteError(w, r, http.StatusBadRequest, "index and expiry are required", nil)
+		return
+	}
+	if countRaw := r.URL.Query().Get("count"); countRaw != "" {
+		count, err := strconv.Atoi(countRaw)
+		if err != nil || count < 1 || count > 20 {
+			s.writeRouteError(w, r, http.StatusBadRequest, "count must be between 1 and 20", nil)
+			return
+		}
+		center, err := strconv.ParseFloat(r.URL.Query().Get("center"), 64)
+		if err != nil || math.IsNaN(center) || math.IsInf(center, 0) || center < 0 {
+			s.writeRouteError(w, r, http.StatusBadRequest, "a non-negative center strike is required", nil)
+			return
+		}
+		direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+		if direction == "" {
+			direction = "around"
+		}
+		if direction != "around" && direction != "above" && direction != "below" {
+			s.writeRouteError(w, r, http.StatusBadRequest, "direction must be around, above, or below", nil)
+			return
+		}
+		windowAPI, ok := s.market.(chainWindowAPI)
+		if !ok {
+			s.writeRouteError(w, r, http.StatusNotImplemented, "selective chain loading is unavailable", nil)
+			return
+		}
+		page, err := windowAPI.ChainWindow(r.Context(), s.marketBaseURL(), index, expiry, center, count, direction)
+		if err != nil {
+			s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+			return
+		}
+		s.writeRouteJSON(w, r, http.StatusOK, page)
 		return
 	}
 	rows, err := s.market.Chain(r.Context(), s.marketBaseURL(), index, expiry)
@@ -172,12 +206,106 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "unsupported chart timeframe", nil)
 		return
 	}
-	candles, err := s.market.Candles(r.Context(), s.marketBaseURL(), instrument, timeframe)
+	now := s.now()
+	location := s.cfg.Location()
+	localNow := now.In(location)
+	sessionDate := localNow.Format("2006-01-02")
+	var cached []market.Candle
+	if s.candleStore != nil {
+		var cacheErr error
+		cached, cacheErr = s.candleStore.ReadCandles(r.Context(), instrument, timeframe)
+		if cacheErr != nil {
+			s.log.Warn("read historical candles from SQLite", "event", "candle_cache_read_failed", "error", cacheErr,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
+			cached = nil
+		}
+		syncedAt, synced, syncErr := s.candleStore.CandleSyncAt(r.Context(), instrument, timeframe, sessionDate)
+		if syncErr != nil {
+			s.log.Warn("read historical candle sync marker", "event", "candle_sync_read_failed", "error", syncErr,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
+		}
+		if len(cached) > 0 && syncErr == nil && synced && !candleRefreshDue(
+			localNow, s.cfg.Trading.Session.Open, s.cfg.Trading.Session.Close, syncedAt) {
+			s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": cached, "source": "sqlite"})
+			return
+		}
+	}
+
+	fetched, err := s.market.Candles(r.Context(), s.marketBaseURL(), instrument, timeframe)
 	if err != nil {
-		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+		if len(cached) > 0 {
+			s.log.Warn("historical candle refresh failed; using cached bars", "event", "candle_refresh_failed",
+				"error", err, "instrument", instrument, "timeframe", timeframe)
+			s.writeRouteJSON(w, r, http.StatusOK, map[string]any{
+				"candles": cached, "source": "sqlite", "stale": true,
+				"warning": "Kotak historical refresh failed; showing saved candles.",
+			})
+			return
+		}
+		status := http.StatusBadGateway
+		var upstream *market.HTTPStatusError
+		if errors.As(err, &upstream) && upstream.StatusCode >= 400 && upstream.StatusCode <= 599 {
+			status = upstream.StatusCode
+			if upstream.RetryAfter != "" {
+				w.Header().Set("Retry-After", upstream.RetryAfter)
+			}
+		}
+		s.writeRouteError(w, r, status, err.Error(), err)
 		return
 	}
-	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": candles})
+
+	if s.candleStore != nil {
+		if err := s.candleStore.WriteCandles(r.Context(), instrument, timeframe, fetched); err != nil {
+			s.log.Warn("save historical candles to SQLite", "event", "candle_cache_write_failed", "error", err,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
+		} else if err := s.candleStore.MarkCandlesSynced(r.Context(), instrument, timeframe, sessionDate, localNow.Unix()); err != nil {
+			s.log.Warn("save historical candle sync marker", "event", "candle_sync_write_failed", "error", err,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
+		}
+	}
+
+	if len(fetched) == 0 && len(cached) > 0 {
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{
+			"candles": cached, "source": "sqlite", "stale": true,
+			"warning": "Kotak returned no candles; showing saved candles.",
+		})
+		return
+	}
+	candles := mergeCandles(cached, fetched)
+	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": candles, "source": "kotak"})
+}
+
+func candleRefreshDue(now time.Time, openText, closeText string, syncedAt int64) bool {
+	openTime, openErr := time.Parse("15:04", openText)
+	closeTime, err := time.Parse("15:04", closeText)
+	if openErr != nil || err != nil {
+		return false
+	}
+	openAt := time.Date(now.Year(), now.Month(), now.Day(), openTime.Hour(), openTime.Minute(), 0, 0, now.Location())
+	closeAt := time.Date(now.Year(), now.Month(), now.Day(), closeTime.Hour(), closeTime.Minute(), 0, 0, now.Location())
+	if !now.Before(closeAt) {
+		return syncedAt < closeAt.Unix()
+	}
+	if !now.Before(openAt) {
+		return syncedAt < openAt.Unix() || now.Unix()-syncedAt > int64(5*time.Minute/time.Second)
+	}
+	return false
+}
+
+func mergeCandles(cached, fetched []market.Candle) []market.Candle {
+	byTime := make(map[int64]market.Candle, len(cached)+len(fetched))
+	for _, candle := range cached {
+		byTime[candle.Time] = candle
+	}
+	for _, candle := range fetched {
+		byTime[candle.Time] = candle
+	}
+	out := make([]market.Candle, 0, len(byTime))
+	for _, candle := range byTime {
+		out = append(out, candle)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Time < out[j].Time })
+	return out
 }
 
 type paperOrderRequest struct {

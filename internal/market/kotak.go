@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/logging"
@@ -58,6 +59,18 @@ type QuotesClient struct {
 	consumerKey string
 	http        HTTPDoer
 	log         *slog.Logger
+	rateMu      sync.Mutex
+	nextRequest time.Time
+}
+
+// HTTPStatusError preserves upstream status and retry advice for API handlers.
+type HTTPStatusError struct {
+	StatusCode int
+	RetryAfter string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("kotak historical data request failed (HTTP %d)", e.StatusCode)
 }
 
 // NewQuotesClient creates a Kotak REST quotes client.
@@ -95,6 +108,9 @@ func (c *QuotesClient) Fetch(ctx context.Context, baseURL string, instruments []
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
+	if err := c.waitRate(ctx); err != nil {
+		return nil, fmt.Errorf("wait to send Kotak quotes request: %w", err)
+	}
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -161,6 +177,9 @@ func (c *QuotesClient) Historical(
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
+	if err := c.waitRate(ctx); err != nil {
+		return nil, fmt.Errorf("wait to send Kotak historical request: %w", err)
+	}
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -185,13 +204,38 @@ func (c *QuotesClient) Historical(
 	}
 	c.logExchange(req, resp, nil, started, nil)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("kotak historical data request failed (HTTP %d)", resp.StatusCode)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After")}
 	}
 	candles, err := decodeHistoricalCandles(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode Kotak historical data response: %w", err)
 	}
 	return candles, nil
+}
+
+// waitRate spaces market-data REST requests to stay below Kotak's documented
+// shared request-per-second ceiling while still honoring caller cancellation.
+func (c *QuotesClient) waitRate(ctx context.Context) error {
+	const spacing = 125 * time.Millisecond
+	c.rateMu.Lock()
+	now := time.Now()
+	wait := c.nextRequest.Sub(now)
+	if wait < 0 {
+		wait = 0
+	}
+	c.nextRequest = now.Add(wait + spacing)
+	c.rateMu.Unlock()
+	if wait == 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func quoteEndpoint(baseURL string, instruments []QuoteInstrument) (string, error) {

@@ -150,9 +150,9 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            version="$(git log -z --format=%B "$latest..$GITHUB_SHA" | ./scripts/next-version.sh "$latest")"
+            version="$(git log -z --format=%B "$latest..$GITHUB_SHA" | bash ./scripts/next-version.sh "$latest")"
           else
-            version="$(git log -z --format=%B "$GITHUB_SHA" | ./scripts/next-version.sh)"
+            version="$(git log -z --format=%B "$GITHUB_SHA" | bash ./scripts/next-version.sh)"
           fi
 
           if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then

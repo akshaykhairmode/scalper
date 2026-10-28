@@ -232,7 +232,7 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 		indexTokens := make([]string, 0, len(f.cfg.Market.Indices))
 		scripTokens := make([]string, 0, len(f.subs))
 		for _, index := range f.cfg.Market.Indices {
-			indexTokens = append(indexTokens, index.IndexSegment+"|"+index.IndexSymbol)
+			indexTokens = append(indexTokens, index.IndexSegment+"|"+IndexQuoteSymbol(index))
 		}
 		for _, subscription := range f.subs {
 			if subscription.index {
@@ -327,12 +327,15 @@ func (f *HSMFeed) topicForKey(key string) (hsmSubscription, error) {
 		if option, ok := f.scrips.Option(key); ok {
 			return hsmSubscription{token: option.ExchangeSegment + "|" + option.PSymbol}, nil
 		}
+		if spot, ok := f.scrips.Spot(key); ok && spot.ExchangeSegment == scrip.SegmentMCXFO {
+			return hsmSubscription{token: spot.ExchangeSegment + "|" + spot.PSymbol}, nil
+		}
 	}
 	for _, index := range f.cfg.Market.Indices {
 		spotKey := index.IndexSegment + "|" + index.ScripName
 		if key == spotKey {
 			return hsmSubscription{
-				token: index.IndexSegment + "|" + index.IndexSymbol,
+				token: index.IndexSegment + "|" + IndexQuoteSymbol(index),
 				index: true,
 			}, nil
 		}

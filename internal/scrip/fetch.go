@@ -208,6 +208,8 @@ func SegmentForURL(raw string) (string, bool) {
 		return SegmentNSECM, true
 	case strings.HasPrefix(name, "bse_cm"):
 		return SegmentBSECM, true
+	case strings.HasPrefix(name, "mcx_fo"):
+		return SegmentMCXFO, true
 	default:
 		return "", false
 	}

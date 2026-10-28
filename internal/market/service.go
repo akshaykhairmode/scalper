@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -76,6 +77,13 @@ type ChainRow struct {
 	Put    *OptionQuote `json:"put,omitempty"`
 }
 
+// ChainPage is one selectively loaded strike window.
+type ChainPage struct {
+	Rows         []ChainRow `json:"rows"`
+	HasMoreAbove bool       `json:"has_more_above"`
+	HasMoreBelow bool       `json:"has_more_below"`
+}
+
 // Candle is one normalized historical OHLCV bar.
 type Candle struct {
 	Time         int64   `json:"time"`
@@ -92,31 +100,62 @@ type keyedInstrument struct {
 	instrument QuoteInstrument
 }
 
-// Indices fetches the latest quotes for configured indices.
+// IndexQuoteSymbol returns Kotak's exact quote/feed name for a configured index.
+func IndexQuoteSymbol(index config.Index) string {
+	if strings.EqualFold(strings.TrimSpace(index.IndexSymbol), "Nifty Midcap Select") {
+		return "NIFTY MID SELECT"
+	}
+	return index.IndexSymbol
+}
+
+// Indices fetches configured index quotes and the nearest MCX futures quote for
+// each commodity. Commodity futures share the header ticker shape with index
+// spots, but their pSymbol comes from the Scrip Master.
 func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, error) {
-	instruments := make([]QuoteInstrument, 0, len(s.cfg.Market.Indices))
+	instruments := make([]QuoteInstrument, 0, len(s.cfg.Market.Indices)+len(s.cfg.Market.Commodities))
 	for _, index := range s.cfg.Market.Indices {
 		instruments = append(instruments, QuoteInstrument{
 			ExchangeSegment: index.IndexSegment,
-			Symbol:          index.IndexSymbol,
+			Symbol:          IndexQuoteSymbol(index),
+		})
+	}
+	commoditySpots := make(map[string]scrip.Spot, len(s.cfg.Market.Commodities))
+	for _, commodity := range s.cfg.Market.Commodities {
+		name := strings.TrimSpace(commodity.ScripName)
+		if name == "" {
+			name = commodity.Key
+		}
+		spot, ok := s.scrips.Spot(scrip.SpotKey(commodity.ExchangeSegment, name))
+		if !ok {
+			continue
+		}
+		commoditySpots[commodity.Key] = spot
+		instruments = append(instruments, QuoteInstrument{
+			ExchangeSegment: spot.ExchangeSegment,
+			Symbol:          spot.PSymbol,
 		})
 	}
 	quotes, err := s.fetch(ctx, baseURL, instruments)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]IndexQuote, 0, len(s.cfg.Market.Indices))
+	result := make([]IndexQuote, 0, len(s.cfg.Market.Indices)+len(s.cfg.Market.Commodities))
 	available := 0
 	for _, index := range s.cfg.Market.Indices {
-		quote, ok := quotes[quoteKey(index.IndexSegment, index.IndexSymbol)]
+		indexSymbol := IndexQuoteSymbol(index)
+		quote, ok := quotes[quoteKey(index.IndexSegment, indexSymbol)]
+		spot, hasSpot := s.scrips.Spot(scrip.SpotKey(index.IndexSegment, index.ScripName))
 		item := IndexQuote{
 			Key:             index.Key,
 			DisplayName:     index.DisplayName,
 			ExchangeSegment: index.ExchangeSegment,
 			IndexSegment:    index.IndexSegment,
-			IndexSymbol:     index.IndexSymbol,
+			IndexSymbol:     indexSymbol,
 			InstrumentKey:   index.IndexSegment + "|" + index.ScripName,
 			QuoteAvailable:  ok,
+		}
+		if hasSpot {
+			item.InstrumentKey = spot.InstrumentKey
 		}
 		if ok {
 			available++
@@ -129,6 +168,32 @@ func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, er
 		}
 		result = append(result, item)
 	}
+	for _, commodity := range s.cfg.Market.Commodities {
+		spot, hasSpot := commoditySpots[commodity.Key]
+		item := IndexQuote{
+			Key:             commodity.Key,
+			DisplayName:     commodity.DisplayName,
+			ExchangeSegment: commodity.ExchangeSegment,
+			IndexSegment:    commodity.ExchangeSegment,
+			IndexSymbol:     spot.Symbol,
+			QuoteAvailable:  false,
+		}
+		if hasSpot {
+			item.InstrumentKey = spot.InstrumentKey
+			quote, ok := quotes[quoteKey(spot.ExchangeSegment, spot.PSymbol)]
+			item.QuoteAvailable = ok
+			if ok {
+				available++
+				item.LTP = quote.LTP
+				item.PreviousClose = quote.PreviousClose
+				item.Change = quote.Change
+				item.ChangePct = quote.ChangePct
+				item.Volume = quote.Volume
+				item.UpdatedAt = quote.UpdatedAt
+			}
+		}
+		result = append(result, item)
+	}
 	if available == 0 {
 		return nil, errors.New("kotak returned no live quotes for configured indices")
 	}
@@ -137,8 +202,8 @@ func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, er
 
 // Expiries returns the available expiries for a configured index.
 func (s *Service) Expiries(indexKey string) ([]scrip.ExpiryInfo, error) {
-	if !s.configuredIndex(indexKey) {
-		return nil, fmt.Errorf("unknown index %q", indexKey)
+	if !s.configuredUnderlying(indexKey) {
+		return nil, fmt.Errorf("unknown underlying %q", indexKey)
 	}
 	expiries := s.scrips.Expiries(indexKey)
 	if len(expiries) == 0 {
@@ -149,16 +214,78 @@ func (s *Service) Expiries(indexKey string) ([]scrip.ExpiryInfo, error) {
 
 // Chain fetches option quotes for a configured index and expiry.
 func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) ([]ChainRow, error) {
-	if !s.configuredIndex(indexKey) {
-		return nil, fmt.Errorf("unknown index %q", indexKey)
+	page, err := s.ChainWindow(ctx, baseURL, indexKey, expiry, 0, 0, "")
+	return page.Rows, err
+}
+
+// ChainWindow fetches at most count strikes around center or adjacent to it.
+// An empty direction with count=0 preserves the full-chain behavior.
+func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry string, center float64, count int, direction string) (ChainPage, error) {
+	if !s.configuredUnderlying(indexKey) {
+		return ChainPage{}, fmt.Errorf("unknown underlying %q", indexKey)
 	}
 	if !s.validExpiry(indexKey, expiry) {
-		return nil, fmt.Errorf("expiry %q is unavailable for %s", expiry, indexKey)
+		return ChainPage{}, fmt.Errorf("expiry %q is unavailable for %s", expiry, indexKey)
 	}
 	options := s.scrips.Options(indexKey, expiry)
 	if len(options) == 0 {
-		return nil, fmt.Errorf("no option contracts in the Scrip Master for %s %s", indexKey, expiry)
+		return ChainPage{}, fmt.Errorf("no option contracts in the Scrip Master for %s %s", indexKey, expiry)
 	}
+	if count < 0 || count > 20 {
+		return ChainPage{}, errors.New("chain strike count must be between 1 and 20")
+	}
+
+	allStrikes := make([]int64, 0, len(options)/2)
+	seenStrikes := make(map[int64]struct{}, len(options)/2)
+	for _, option := range options {
+		if _, exists := seenStrikes[option.StrikePaise]; exists {
+			continue
+		}
+		seenStrikes[option.StrikePaise] = struct{}{}
+		allStrikes = append(allStrikes, option.StrikePaise)
+	}
+	sort.Slice(allStrikes, func(i, j int) bool { return allStrikes[i] < allStrikes[j] })
+	selectedStrikes := allStrikes
+	if count > 0 {
+		if direction != "" && direction != "around" && direction != "above" && direction != "below" {
+			return ChainPage{}, errors.New("chain direction must be around, above, or below")
+		}
+		centerPaise := int64(center * 100)
+		pivot := sort.Search(len(allStrikes), func(i int) bool { return allStrikes[i] >= centerPaise })
+		start, end := 0, 0
+		switch direction {
+		case "above":
+			start = sort.Search(len(allStrikes), func(i int) bool { return allStrikes[i] > centerPaise })
+			end = min(start+count, len(allStrikes))
+		case "below":
+			end = sort.Search(len(allStrikes), func(i int) bool { return allStrikes[i] >= centerPaise })
+			start = max(0, end-count)
+		default:
+			if pivot == len(allStrikes) {
+				pivot = len(allStrikes) - 1
+			}
+			start = max(0, pivot-count/2)
+			end = min(start+count, len(allStrikes))
+			start = max(0, end-count)
+		}
+		selectedStrikes = allStrikes[start:end]
+		selectedSet := make(map[int64]struct{}, len(selectedStrikes))
+		for _, strike := range selectedStrikes {
+			selectedSet[strike] = struct{}{}
+		}
+		filtered := make([]scrip.Option, 0, len(selectedStrikes)*2)
+		for _, option := range options {
+			if _, ok := selectedSet[option.StrikePaise]; ok {
+				filtered = append(filtered, option)
+			}
+		}
+		options = filtered
+		return s.chainQuotes(ctx, baseURL, options, start > 0, end < len(allStrikes))
+	}
+	return s.chainQuotes(ctx, baseURL, options, false, false)
+}
+
+func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scrip.Option, hasMoreAbove, hasMoreBelow bool) (ChainPage, error) {
 
 	keyed := make([]keyedInstrument, 0, len(options))
 	for _, option := range options {
@@ -172,7 +299,7 @@ func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) (
 	}
 	quotes, err := s.fetchKeyed(ctx, baseURL, keyed)
 	if err != nil {
-		return nil, err
+		return ChainPage{}, err
 	}
 	byStrike := make(map[int64]*ChainRow, len(options)/2)
 	strikes := make([]int64, 0, len(options)/2)
@@ -219,7 +346,7 @@ func (s *Service) Chain(ctx context.Context, baseURL, indexKey, expiry string) (
 	for _, strike := range strikes {
 		result = append(result, *byStrike[strike])
 	}
-	return result, nil
+	return ChainPage{Rows: result, HasMoreAbove: hasMoreAbove, HasMoreBelow: hasMoreBelow}, nil
 }
 
 // Quote fetches the latest quote for one Scrip Master instrument.
@@ -267,12 +394,17 @@ func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe
 	if segment == "" || symbol == "" {
 		return nil, fmt.Errorf("market instrument %q has no Kotak pSymbol", instrumentKey)
 	}
+	if segment == scrip.SegmentMCXFO {
+		return nil, errors.New("Kotak historical candles are not available for MCX contracts")
+	}
 	days := s.cfg.Charts.RetentionDays
 	if days <= 0 || days > maxDays {
 		days = maxDays
 	}
 	now := time.Now().In(time.FixedZone("IST", 5*60*60+30*60))
-	fromDate := now.AddDate(0, 0, -days).Format("2006-01-02")
+	// Kotak counts both endpoints in its date-window limit. Request at most
+	// `days` calendar dates, including today, rather than `days + 1`.
+	fromDate := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 	toDate := now.Format("2006-01-02")
 	return s.client.Historical(ctx, baseURL, segment+"|"+symbol, interval, fromDate, toDate)
 }
@@ -320,6 +452,11 @@ func (s *Service) FindOption(segment, symbol string) (scrip.Option, bool) {
 	return s.scrips.FindOption(segment, symbol)
 }
 
+// FindSpot resolves a cash index or commodity reference instrument by symbol.
+func (s *Service) FindSpot(segment, symbol string) (scrip.Spot, bool) {
+	return s.scrips.FindSpot(segment, symbol)
+}
+
 func (s *Service) fetch(ctx context.Context, baseURL string, instruments []QuoteInstrument) (map[string]Quote, error) {
 	keyed := make([]keyedInstrument, 0, len(instruments))
 	for _, instrument := range instruments {
@@ -335,6 +472,11 @@ func (s *Service) fetchKeyed(ctx context.Context, baseURL string, instruments []
 	batchSize := s.cfg.Market.Chain.BatchSize
 	if batchSize < 1 {
 		return nil, errors.New("market chain batch_size must be positive")
+	}
+	// Kotak returns HTTP 400 for 50-symbol requests on some MCX chain calls,
+	// despite documenting a 50-symbol maximum. Keep a margin below that limit.
+	if batchSize > 40 {
+		batchSize = 40
 	}
 	result := make(map[string]Quote, len(instruments))
 	for start := 0; start < len(instruments); start += batchSize {
@@ -377,6 +519,18 @@ func quoteKey(segment, symbol string) string {
 func (s *Service) configuredIndex(key string) bool {
 	for _, index := range s.cfg.Market.Indices {
 		if index.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) configuredUnderlying(key string) bool {
+	if s.configuredIndex(key) {
+		return true
+	}
+	for _, commodity := range s.cfg.Market.Commodities {
+		if commodity.Key == key {
 			return true
 		}
 	}

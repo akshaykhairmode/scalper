@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/akshaykhairmode/scalper/internal/hsm"
+	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
 var feedUpgrader = websocket.Upgrader{
@@ -33,8 +35,8 @@ type feedCommand struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if s.hsm == nil {
-		http.Error(w, "HSM feed is not configured", http.StatusServiceUnavailable)
+	if s.hsm == nil && s.orderFeed == nil {
+		http.Error(w, "market and order feeds are not configured", http.StatusServiceUnavailable)
 		return
 	}
 	conn, err := feedUpgrader.Upgrade(w, r, nil)
@@ -43,12 +45,27 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(16 << 10)
+	status := "polling"
+	if s.hsm != nil && s.hsm.IsConnected() {
+		status = "live"
+	}
 	if err := conn.WriteJSON(map[string]any{
 		"type": "feed_status",
 		"data": map[string]string{
-			"status": feedStatus(s.hsm.IsConnected()),
+			"status": status,
 		},
 	}); err != nil {
+		_ = conn.Close()
+		return
+	}
+	orderStatus := "disconnected"
+	if s.orderFeed != nil {
+		orderStatus = "connecting"
+		if s.orderFeed.Connected() {
+			orderStatus = "live"
+		}
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "order_feed_status", "data": map[string]string{"status": orderStatus}}); err != nil {
 		_ = conn.Close()
 		return
 	}
@@ -78,15 +95,39 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		switch command.Type {
 		case "subscribe":
+			if s.hsm == nil {
+				continue
+			}
 			if err := s.hsm.Subscribe(command.Keys); err != nil {
 				s.log.Warn("HSM subscription failed", "event", "hsm_subscribe_failed", "error", err)
 			}
 		case "unsubscribe":
+			if s.hsm == nil {
+				continue
+			}
 			if err := s.hsm.Unsubscribe(command.Keys); err != nil {
 				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "error", err)
 			}
 		default:
 			s.log.Warn("unknown browser feed command", "event", "websocket_command_invalid", "type", command.Type)
+		}
+	}
+}
+
+func (s *Server) forwardOrderFeedEvents() {
+	for {
+		select {
+		case <-s.feedCtx.Done():
+			return
+		case event := <-s.orderFeed.Events():
+			if event.Status != "" {
+				s.broadcast(map[string]any{"type": "order_feed_status", "data": map[string]string{"status": event.Status}})
+				continue
+			}
+			if len(event.Data) == 0 {
+				continue
+			}
+			s.broadcast(map[string]any{"type": "broker_" + event.Type, "data": event.Data})
 		}
 	}
 }
@@ -148,13 +189,23 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 			symbol = parts[2]
 		}
 		instrument, found := s.market.FindOption(parts[1], symbol)
-		if !found {
-			return "", errors.New("option symbol is not in the Scrip Master")
+		if found {
+			return instrument.InstrumentKey, nil
 		}
-		return instrument.InstrumentKey, nil
+		spotResolver, canResolveSpot := s.market.(interface {
+			FindSpot(string, string) (scrip.Spot, bool)
+		})
+		if !canResolveSpot {
+			return "", errors.New("market does not support spot-symbol resolution")
+		}
+		spot, found := spotResolver.FindSpot(parts[1], symbol)
+		if !found {
+			return "", errors.New("scrip symbol is not in the Scrip Master")
+		}
+		return spot.InstrumentKey, nil
 	case "if":
 		for _, index := range s.cfg.Market.Indices {
-			if index.IndexSegment == parts[1] && index.IndexSymbol == parts[2] {
+			if index.IndexSegment == parts[1] && market.IndexQuoteSymbol(index) == parts[2] {
 				return index.IndexSegment + "|" + index.ScripName, nil
 			}
 		}
@@ -165,6 +216,8 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 }
 
 func (s *Server) broadcast(value any) {
+	s.feedWriteMu.Lock()
+	defer s.feedWriteMu.Unlock()
 	s.feedMu.RLock()
 	clients := make([]*websocket.Conn, 0, len(s.feedClients))
 	for client := range s.feedClients {

@@ -28,6 +28,7 @@ const (
 	SegmentBSEFO = "bse_fo"
 	SegmentNSECM = "nse_cm"
 	SegmentBSECM = "bse_cm"
+	SegmentMCXFO = "mcx_fo"
 )
 
 // OptionType is a CE or PE contract.
@@ -57,7 +58,8 @@ type Option struct {
 	LotSize         int64      `json:"lot_size"`
 }
 
-// Spot is an index or volatility instrument in the cash segment.
+// Spot is a non-option reference instrument used for the header ticker. It may
+// be a cash index or the nearest-expiry MCX future for a commodity.
 type Spot struct {
 	InstrumentKey   string `json:"instrument_key"`
 	ExchangeSegment string `json:"exchange_segment"`

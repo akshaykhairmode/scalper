@@ -19,9 +19,10 @@ import (
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
+	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
-	"github.com/akshaykhairmode/scalper/internal/paper"
+	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/store"
 	"github.com/akshaykhairmode/scalper/internal/version"
@@ -103,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	if hasConsumerKey {
 		log.Info("Kotak consumer key present", "event", "consumer_key_present")
 	} else {
-		log.Warn("KOTAK_CONSUMER_KEY not set; Kotak login is disabled and trading remains paper",
+		log.Warn("KOTAK_CONSUMER_KEY not set; Kotak login and live trading are disabled",
 			"event", "consumer_key_missing")
 	}
 
@@ -125,7 +126,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}
 	log.Info("schema ready", "event", "db_schema", "version", versionApplied, "path", st.Path())
 
-	underlyings := make([]scrip.Underlying, 0, len(cfg.Market.Indices))
+	underlyings := make([]scrip.Underlying, 0, len(cfg.Market.Indices)+len(cfg.Market.Commodities))
 	for _, index := range cfg.Market.Indices {
 		underlyings = append(underlyings, scrip.Underlying{
 			Key:             index.Key,
@@ -134,6 +135,13 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 			SpotSymbol:      index.IndexSymbol,
 			ExchangeSegment: index.ExchangeSegment,
 			SpotSegment:     index.IndexSegment,
+		})
+	}
+	for _, commodity := range cfg.Market.Commodities {
+		underlyings = append(underlyings, scrip.Underlying{
+			Key: commodity.Key, DisplayName: commodity.DisplayName,
+			ScripName: commodity.ScripName, ExchangeSegment: commodity.ExchangeSegment,
+			SpotSegment: commodity.ExchangeSegment,
 		})
 	}
 	scripManager, err := scrip.NewManager(scrip.ManagerConfig{
@@ -163,12 +171,9 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	if err != nil {
 		return fmt.Errorf("configure live market data: %w", err)
 	}
-	paperService, err := paper.NewService(ctx, st, cfg.Trading)
-	if err != nil {
-		return fmt.Errorf("configure paper trading: %w", err)
-	}
 	hsmFeed := market.NewHSMFeed(cfg, scripManager, log)
 	defer hsmFeed.Stop()
+	orderFeedClient := orderfeed.New(log)
 
 	srv, err := web.New(web.Options{
 		Logger:       log,
@@ -176,9 +181,11 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		ConsumerKey:  consumerKey,
 		MPIN:         mpin,
 		Market:       marketService,
-		Paper:        paperService,
 		HSM:          hsmFeed,
+		Kotak:        kotakapi.NewClient(log),
+		OrderFeed:    orderFeedClient,
 		DB:           st,
+		CandleStore:  st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasConsumerKey },
 	})

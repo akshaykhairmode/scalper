@@ -212,7 +212,7 @@ func (a *Server) SessionStatus() *struct {
 		PaperMode     bool   `json:"paper_mode"`
 		LoginMethod   string `json:"login_method"`
 		ExpiresIn     int    `json:"expires_in"`
-	}{Authenticated: found, PaperMode: true}
+	}{Authenticated: found, PaperMode: false}
 	if found {
 		status.LoginMethod = string(foundSession.LoginMethod)
 		status.ExpiresIn = int(time.Until(foundSession.TokenExpiry).Minutes())

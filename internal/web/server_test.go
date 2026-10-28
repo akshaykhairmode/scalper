@@ -344,7 +344,7 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 	}
 	statusRec := do(t, s, localRequest(http.MethodGet, "/api/session"))
 	if !strings.Contains(statusRec.Body.String(), `"authenticated":true`) ||
-		!strings.Contains(statusRec.Body.String(), `"paper_mode":true`) {
+		!strings.Contains(statusRec.Body.String(), `"paper_mode":false`) {
 		t.Fatalf("session status = %s", statusRec.Body.String())
 	}
 	healthRec := do(t, s, localRequest(http.MethodGet, "/api/health"))
@@ -352,8 +352,8 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 	if err := json.Unmarshal(healthRec.Body.Bytes(), &health); err != nil {
 		t.Fatalf("decode health after login: %v", err)
 	}
-	if health.Mode != "paper" {
-		t.Fatalf("health mode after login = %q, want paper", health.Mode)
+	if health.Mode != "live" {
+		t.Fatalf("health mode after login = %q, want live", health.Mode)
 	}
 }
 

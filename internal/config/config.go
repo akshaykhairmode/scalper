@@ -56,13 +56,22 @@ type Kotak struct {
 
 // Market holds index, chain and feed settings.
 type Market struct {
-	DataMode string   `yaml:"data_mode"`
-	HSMURL   string   `yaml:"hsm_url"`
-	Indices  []Index  `yaml:"indices"`
-	IndiaVIX IndiaVIX `yaml:"india_vix"`
-	Chain    Chain    `yaml:"chain"`
-	Depth    Depth    `yaml:"depth"`
-	Holidays []string `yaml:"holidays"`
+	DataMode    string      `yaml:"data_mode"`
+	HSMURL      string      `yaml:"hsm_url"`
+	Indices     []Index     `yaml:"indices"`
+	Commodities []Commodity `yaml:"commodities"`
+	IndiaVIX    IndiaVIX    `yaml:"india_vix"`
+	Chain       Chain       `yaml:"chain"`
+	Depth       Depth       `yaml:"depth"`
+	Holidays    []string    `yaml:"holidays"`
+}
+
+// Commodity is an option underlying traded on a commodity exchange.
+type Commodity struct {
+	Key             string `yaml:"key"`
+	DisplayName     string `yaml:"display_name"`
+	ExchangeSegment string `yaml:"exchange_segment"`
+	ScripName       string `yaml:"scrip_name"`
 }
 
 // Index is one configurable underlying.
@@ -223,7 +232,7 @@ func Default() Config {
 				{
 					Key: "MIDCPNIFTY", DisplayName: "MIDCPNIFTY",
 					ExchangeSegment: "nse_fo", IndexSegment: "nse_cm",
-					IndexSymbol: "Nifty Midcap Select", ScripName: "MIDCPNIFTY", ExpiryMode: "both",
+					IndexSymbol: "NIFTY MID SELECT", ScripName: "MIDCPNIFTY", ExpiryMode: "both",
 					DefaultExpiry: "nearest_weekly",
 				},
 				{
@@ -232,6 +241,11 @@ func Default() Config {
 					IndexSymbol: "SENSEX", ScripName: "SENSEX", ExpiryMode: "both",
 					DefaultExpiry: "nearest_weekly",
 				},
+			},
+			Commodities: []Commodity{
+				{Key: "CRUDEOIL", DisplayName: "CRUDE OIL", ExchangeSegment: "mcx_fo", ScripName: "CRUDEOIL"},
+				{Key: "GOLD", DisplayName: "GOLD", ExchangeSegment: "mcx_fo", ScripName: "GOLD"},
+				{Key: "NATURALGAS", DisplayName: "NATURAL GAS", ExchangeSegment: "mcx_fo", ScripName: "NATURALGAS"},
 			},
 			IndiaVIX: IndiaVIX{
 				Enabled:         true,
@@ -293,7 +307,7 @@ func Default() Config {
 		},
 		Scrip: Scrip{
 			RefreshAt: "08:45",
-			Segments:  []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm"},
+			Segments:  []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"},
 		},
 		Web: Web{OpenBrowser: true},
 	}
@@ -422,7 +436,6 @@ func (c Config) Summary() map[string]any {
 		"data_mode":  c.Market.DataMode,
 		"hsm_url":    c.Market.HSMURL,
 		"indices":    keys,
-		"paper_cash": c.Trading.Paper.StartingCash,
 		"risk_caps_disabled": c.Trading.Risk.MaxLotsPerOrder == 0 &&
 			c.Trading.Risk.MaxOpenLotsPerIndex == 0 && c.Trading.Risk.MaxOrderValueINR == 0,
 	}

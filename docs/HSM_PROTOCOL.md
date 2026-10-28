@@ -6,8 +6,9 @@ implemented by the current
 not the older HSM binary request/response protocol described in previous
 versions of this document.
 
-The application still places and fills orders locally as paper trades. This
-document covers authentication and live market data only.
+This document covers authentication and live market data only. Kotak order
+updates use the separate order-feed WebSocket documented in
+[`KOTAK_TRADING_API.md`](KOTAK_TRADING_API.md).
 
 ## Credentials and endpoint selection
 

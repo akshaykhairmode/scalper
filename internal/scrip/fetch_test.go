@@ -188,7 +188,7 @@ func TestSegmentForURL(t *testing.T) {
 		"https://x/prod/2025-01-22/transformed/nse_com.csv":      SegmentNSECM,
 		"https://x/prod/2025-01-22/transformed/bse_cm.csv":       SegmentBSECM,
 		"https://x/prod/2025-01-22/transformed/cde_fo.csv":       "",
-		"https://x/prod/2025-01-22/transformed/mcx_fo.csv":       "",
+		"https://x/prod/2025-01-22/transformed/mcx_fo.csv":       SegmentMCXFO,
 		"http://x/nse_fo-v1.csv":                                 SegmentNSEFO,
 	}
 	for in, want := range cases {

@@ -26,8 +26,10 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
+	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/version"
@@ -44,6 +46,14 @@ type DBPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// CandleStore caches normalized historical bars in SQLite.
+type CandleStore interface {
+	ReadCandles(ctx context.Context, instrumentKey, timeframe string) ([]market.Candle, error)
+	WriteCandles(ctx context.Context, instrumentKey, timeframe string, candles []market.Candle) error
+	CandleSyncAt(ctx context.Context, instrumentKey, timeframe, sessionDate string) (int64, bool, error)
+	MarkCandlesSynced(ctx context.Context, instrumentKey, timeframe, sessionDate string, syncedAt int64) error
+}
+
 // MarketAPI is the market data subset used by the web server.
 type MarketAPI interface {
 	Indices(context.Context, string) ([]market.IndexQuote, error)
@@ -53,6 +63,10 @@ type MarketAPI interface {
 	Candles(context.Context, string, string, string) ([]market.Candle, error)
 	Option(string) (scrip.Option, bool)
 	FindOption(string, string) (scrip.Option, bool)
+}
+
+type chainWindowAPI interface {
+	ChainWindow(context.Context, string, string, string, float64, int, string) (market.ChainPage, error)
 }
 
 // Options configures the HTTP server.
@@ -65,7 +79,10 @@ type Options struct {
 	Market       MarketAPI
 	Paper        *paper.Service
 	HSM          *market.HSMFeed
+	Kotak        *kotakapi.Client
+	OrderFeed    *orderfeed.Client
 	DB           DBPinger
+	CandleStore  CandleStore
 	LogDegraded  func() bool
 	TokenPresent func() bool
 	Started      time.Time
@@ -78,6 +95,7 @@ type Server struct {
 	cfg          config.Config
 	mpin         string
 	db           DBPinger
+	candleStore  CandleStore
 	logDegraded  func() bool
 	tokenPresent func() bool
 	started      time.Time
@@ -87,12 +105,16 @@ type Server struct {
 	bootstrap    template.JS
 
 	// Auth is the authentication handler.
-	a      *auth.Server
-	market MarketAPI
-	paper  *paper.Service
-	hsm    *market.HSMFeed
+	a           *auth.Server
+	market      MarketAPI
+	paper       *paper.Service
+	hsm         *market.HSMFeed
+	kotak       *kotakapi.Client
+	orderFeed   *orderfeed.Client
+	consumerKey string
 
 	feedMu      sync.RWMutex
+	feedWriteMu sync.Mutex
 	feedClients map[*websocket.Conn]struct{}
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
@@ -101,21 +123,22 @@ type Server struct {
 // bootstrapConfig is rendered into the page so the frontend can start without
 // a round-trip. It contains no secrets: only display settings and the index list.
 type bootstrapConfig struct {
-	Indices           []bootstrapIndex `json:"indices"`
-	Timeframes        []string         `json:"timeframes"`
-	DefaultTimeframe  string           `json:"defaultTimeframe"`
-	DefaultProduct    string           `json:"defaultProduct"`
-	DefaultLots       int              `json:"defaultLots"`
-	DefaultUnit       string           `json:"defaultUnit"`
-	AllowShares       bool             `json:"allowShares"`
-	ConfirmLiveOrders bool             `json:"confirmLiveOrders"`
-	StartingCash      float64          `json:"startingCash"`
-	ShortMarginPct    float64          `json:"shortMarginPct"`
-	PayoffRangePct    int              `json:"payoffRangePct"`
-	PayoffPoints      int              `json:"payoffPoints"`
-	Version           string           `json:"version"`
-	MPINConfigured    bool             `json:"mpinConfigured"`
-	MarketSession     bootstrapSession `json:"marketSession"`
+	Indices           []bootstrapIndex     `json:"indices"`
+	Commodities       []bootstrapCommodity `json:"commodities,omitempty"`
+	Timeframes        []string             `json:"timeframes"`
+	DefaultTimeframe  string               `json:"defaultTimeframe"`
+	DefaultProduct    string               `json:"defaultProduct"`
+	DefaultLots       int                  `json:"defaultLots"`
+	DefaultUnit       string               `json:"defaultUnit"`
+	AllowShares       bool                 `json:"allowShares"`
+	ConfirmLiveOrders bool                 `json:"confirmLiveOrders"`
+	StartingCash      float64              `json:"startingCash"`
+	ShortMarginPct    float64              `json:"shortMarginPct"`
+	PayoffRangePct    int                  `json:"payoffRangePct"`
+	PayoffPoints      int                  `json:"payoffPoints"`
+	Version           string               `json:"version"`
+	MPINConfigured    bool                 `json:"mpinConfigured"`
+	MarketSession     bootstrapSession     `json:"marketSession"`
 }
 
 type bootstrapSession struct {
@@ -132,6 +155,12 @@ type bootstrapIndex struct {
 	IndexSymbol     string `json:"indexSymbol"`
 	ExpiryMode      string `json:"expiryMode"`
 	DefaultExpiry   string `json:"defaultExpiry"`
+}
+
+type bootstrapCommodity struct {
+	Key             string `json:"key"`
+	DisplayName     string `json:"displayName"`
+	ExchangeSegment string `json:"exchangeSegment"`
 }
 
 func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
@@ -164,6 +193,12 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 			IndexSymbol:     idx.IndexSymbol,
 			ExpiryMode:      idx.ExpiryMode,
 			DefaultExpiry:   idx.DefaultExpiry,
+		})
+	}
+	for _, commodity := range cfg.Market.Commodities {
+		boot.Commodities = append(boot.Commodities, bootstrapCommodity{
+			Key: commodity.Key, DisplayName: commodity.DisplayName,
+			ExchangeSegment: commodity.ExchangeSegment,
 		})
 	}
 	data, err := json.Marshal(boot)
@@ -204,6 +239,7 @@ func New(opts Options) (*Server, error) {
 		cfg:          opts.Config,
 		mpin:         strings.TrimSpace(opts.MPIN),
 		db:           opts.DB,
+		candleStore:  opts.CandleStore,
 		logDegraded:  opts.LogDegraded,
 		tokenPresent: opts.TokenPresent,
 		started:      opts.Started,
@@ -214,6 +250,9 @@ func New(opts Options) (*Server, error) {
 		market:       opts.Market,
 		paper:        opts.Paper,
 		hsm:          opts.HSM,
+		kotak:        opts.Kotak,
+		orderFeed:    opts.OrderFeed,
+		consumerKey:  strings.TrimSpace(opts.ConsumerKey),
 		feedClients:  make(map[*websocket.Conn]struct{}),
 		feedCtx:      feedCtx,
 		feedCancel:   feedCancel,
@@ -243,14 +282,18 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/indices", s.handleIndices)
 	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
 	mux.HandleFunc("GET /api/chain", s.handleChain)
-	mux.HandleFunc("GET /api/positions", s.handlePositions)
-	mux.HandleFunc("GET /api/orders", s.handleOrders)
-	mux.HandleFunc("GET /api/trades", s.handleTrades)
-	mux.HandleFunc("GET /api/limits", s.handleLimits)
-	mux.HandleFunc("GET /api/risk", s.handleRisk)
+	// Account books and order actions are available only through authenticated broker APIs.
+	mux.HandleFunc("GET /api/broker/orders", s.handleBrokerOrders)
+	mux.HandleFunc("GET /api/broker/orders/{id}", s.handleBrokerOrder)
+	mux.HandleFunc("GET /api/broker/orders/{id}/history", s.handleBrokerOrderHistory)
+	mux.HandleFunc("POST /api/broker/orders", s.handleBrokerPlaceOrder)
+	mux.HandleFunc("PATCH /api/broker/orders/{id}", s.handleBrokerModifyOrder)
+	mux.HandleFunc("DELETE /api/broker/orders/{id}", s.handleBrokerCancelOrder)
+	mux.HandleFunc("GET /api/broker/trades", s.handleBrokerTrades)
+	mux.HandleFunc("GET /api/broker/positions", s.handleBrokerPositions)
+	mux.HandleFunc("GET /api/broker/holdings", s.handleBrokerHoldings)
+	mux.HandleFunc("GET /api/broker/limits", s.handleBrokerLimits)
 	mux.HandleFunc("GET /api/candles", s.handleCandles)
-	mux.HandleFunc("POST /api/orders", s.handlePaperOrder)
-	mux.HandleFunc("POST /api/orders/square-off-all", s.handleSquareOffAll)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	var h http.Handler = mux
@@ -263,6 +306,9 @@ func New(opts Options) (*Server, error) {
 	if s.hsm != nil {
 		go s.forwardHSMEvents()
 	}
+	if s.orderFeed != nil {
+		go s.forwardOrderFeedEvents()
+	}
 	return s, nil
 }
 
@@ -271,6 +317,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close stops the server's feed event forwarding and WebSocket clients.
 func (s *Server) Close() {
+	if s.orderFeed != nil {
+		s.orderFeed.Stop()
+	}
 	if s.feedCancel != nil {
 		s.feedCancel()
 	}
@@ -287,7 +336,7 @@ type pageData struct {
 	Mode           string
 	Version        string
 	Commit         string
-	Indices        []string
+	Underlyings    []pageUnderlying
 	Uptime         string
 	Now            string
 	TokenPresent   bool
@@ -295,6 +344,11 @@ type pageData struct {
 	DBOK           bool
 	MPINConfigured bool
 	Bootstrap      template.JS
+}
+
+type pageUnderlying struct {
+	Key   string
+	Label string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -308,16 +362,23 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if s.tokenPresent != nil {
 		token = s.tokenPresent()
 	}
-	indices := make([]string, 0, len(s.cfg.Market.Indices))
+	underlyings := make([]pageUnderlying, 0, len(s.cfg.Market.Indices)+len(s.cfg.Market.Commodities))
 	for _, idx := range s.cfg.Market.Indices {
-		indices = append(indices, idx.Key)
+		underlyings = append(underlyings, pageUnderlying{
+			Key: idx.Key, Label: underlyingLabel(idx.DisplayName, idx.ExchangeSegment),
+		})
+	}
+	for _, commodity := range s.cfg.Market.Commodities {
+		underlyings = append(underlyings, pageUnderlying{
+			Key: commodity.Key, Label: underlyingLabel(commodity.DisplayName, commodity.ExchangeSegment),
+		})
 	}
 	data := pageData{
 		Title:          "Scalper",
-		Mode:           "PAPER",
+		Mode:           "LIVE",
 		Version:        version.Version,
 		Commit:         version.Commit,
-		Indices:        indices,
+		Underlyings:    underlyings,
 		Uptime:         s.now().Sub(s.started).Round(time.Second).String(),
 		Now:            s.now().In(s.cfg.Location()).Format("15:04:05 IST"),
 		TokenPresent:   token,
@@ -342,6 +403,27 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("write index response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
+}
+
+func underlyingLabel(name, segment string) string {
+	exchange := ""
+	switch segment {
+	case "nse_fo", "nse_cm":
+		exchange = "NSE"
+	case "bse_fo", "bse_cm":
+		exchange = "BSE"
+	case "mcx_fo":
+		exchange = "MCX"
+	default:
+		exchange = strings.ToUpper(strings.TrimSuffix(segment, "_fo"))
+	}
+	if strings.TrimSpace(name) == "" {
+		name = segment
+	}
+	if exchange == "" {
+		return name
+	}
+	return name + " · " + exchange
 }
 
 type healthCheck struct {
@@ -401,6 +483,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.a.SessionManager().RevokeAll()
 	if s.hsm != nil {
 		s.hsm.Stop()
+	}
+	if s.orderFeed != nil {
+		s.orderFeed.Stop()
 	}
 	clearAuthFlowCookie(w)
 	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
@@ -466,6 +551,12 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 	if s.hsm != nil && s.cfg.Market.DataMode == "websocket" {
 		if err := s.hsm.Start(s.cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
 			s.log.Error("start Kotak HSM feed", "event", "hsm_start_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+		}
+	}
+	if s.orderFeed != nil {
+		if err := s.orderFeed.Start(s.feedCtx, orderfeed.Session{BaseURL: session.BaseURL, SID: session.BrokerSID, Token: session.BrokerToken}); err != nil {
+			s.log.Error("start Kotak order feed", "event", "order_feed_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
 	}
@@ -554,7 +645,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) currentMode() string {
-	return "paper"
+	return "live"
 }
 
 func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
@@ -663,7 +754,8 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "+
+			"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "+
+				"font-src 'self'; "+
 				"connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")

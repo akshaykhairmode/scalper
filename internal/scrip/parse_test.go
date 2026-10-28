@@ -29,6 +29,11 @@ func optionCSVRow(segment, name, trd, optionType string, lot int, expiry int64, 
 	})
 }
 
+func commodityOptionCSVRow(name, trd, optionType string, lot int, expiry int64, strike string) string {
+	row := optionCSVRow(SegmentMCXFO, name, trd, optionType, lot, expiry, strike)
+	return strings.Replace(row, ",OPTIDX,", ",OPTFUT,", 1)
+}
+
 func spotCSVRow(segment, name, token string) string {
 	return csvRow(map[int]string{
 		0: token, 2: segment, 4: name, 5: name, 16: "-1", 17: "-1", 19: "2", 20: "-1",
@@ -151,6 +156,31 @@ func TestParseSegmentBSEExpiryHasNoOffset(t *testing.T) {
 	}
 	if len(spot.Spots) != 1 || spot.Spots[0].InstrumentKey != "bse_cm|SENSEX" {
 		t.Fatalf("spot = %+v", spot.Spots)
+	}
+}
+
+func TestParseMCXCommodityOptions(t *testing.T) {
+	expiry := time.Date(2026, 11, 26, 20, 0, 0, 0, ist).Unix()
+	for _, instType := range []string{"OPTFUT", "OPTFUTIDX"} {
+		t.Run(instType, func(t *testing.T) {
+			underlyings := []Underlying{{
+				Key: "CRUDEOIL", DisplayName: "CRUDE OIL", ScripName: "CRUDEOIL",
+				ExchangeSegment: SegmentMCXFO,
+			}}
+			ce := strings.Replace(commodityOptionCSVRow("CRUDEOIL", "CRUDEOIL26NOV6000CE", "CE", 100, expiry, "600000"), "OPTFUT", instType, 1)
+			pe := strings.Replace(commodityOptionCSVRow("CRUDEOIL", "CRUDEOIL26NOV6000PE", "PE", 100, expiry, "600000"), "OPTFUT", instType, 1)
+			body := strings.Join([]string{testHeader, ce, pe}, "\n")
+			data, err := ParseSegment(SegmentMCXFO, strings.NewReader(body), ParseConfig{Underlyings: underlyings})
+			if err != nil {
+				t.Fatalf("ParseSegment: %v", err)
+			}
+			if len(data.Options) != 2 {
+				t.Fatalf("options = %+v", data.Options)
+			}
+			if data.Options[0].InstrumentKey != "mcx_fo|CRUDEOIL|2026-11-26|6000|CE" {
+				t.Fatalf("option = %+v", data.Options[0])
+			}
+		})
 	}
 }
 

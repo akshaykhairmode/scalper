@@ -85,8 +85,8 @@ func field(record []string, i int) string {
 }
 
 // ParseSegment parses one Scrip Master CSV for the given exchange segment.
-// Rows for other underlyings, stocks, futures and non-configured segments are
-// counted as skipped, not treated as errors.
+// Rows for other underlyings, stocks, unconfigured derivatives and
+// non-configured segments are counted as skipped, not treated as errors.
 func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, error) {
 	if strings.TrimSpace(segment) == "" {
 		return SegmentData{}, fmt.Errorf("%w: empty segment", ErrSchema)
@@ -115,6 +115,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 	data := SegmentData{Segment: segment}
 	options := make(map[string]Option)
 	spots := make(map[string]Spot)
+	spotExpiries := make(map[string]string)
 	line := 1
 	for {
 		record, err := reader.Read()
@@ -142,7 +143,32 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 		instType := strings.ToUpper(field(record, cols.pInstType))
 		name := field(record, cols.pSymbolName)
 
-		if instType == "OPTIDX" {
+		if segment == SegmentMCXFO && (instType == "FUTCOM" || instType == "FUTIDX") {
+			spot, expiry, matched, err := parseCommodityFutureRow(segment, record, cols, name, underlyings, cfg)
+			if err != nil {
+				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
+			}
+			if !matched {
+				data.Skipped++
+				continue
+			}
+			today := cfg.Now
+			if today.IsZero() {
+				today = time.Now()
+			}
+			if expiry < today.In(ist).Format("2006-01-02") {
+				data.Skipped++
+				continue
+			}
+			key := spot.InstrumentKey
+			if current, ok := spotExpiries[key]; !ok || expiry < current {
+				spots[key] = spot
+				spotExpiries[key] = expiry
+			}
+			continue
+		}
+
+		if instType == "OPTIDX" || (segment == SegmentMCXFO && (instType == "OPTFUT" || instType == "OPTFUTIDX")) {
 			opt, matched, err := parseOptionRow(segment, record, cols, name, underlyings, cfg)
 			if err != nil {
 				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
@@ -202,6 +228,40 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 	SortOptions(data.Options)
 	SortSpots(data.Spots)
 	return data, nil
+}
+
+func parseCommodityFutureRow(
+	segment string,
+	record []string,
+	cols csvColumns,
+	name string,
+	underlyings map[string]Underlying,
+	cfg ParseConfig,
+) (Spot, string, bool, error) {
+	u, ok := underlyings[NormalizeName(name)]
+	if !ok || u.ExchangeSegment != segment || u.SpotSegment != segment {
+		return Spot{}, "", false, nil
+	}
+	rawExpiry, err := strconv.ParseInt(field(record, cols.expiry), 10, 64)
+	if err != nil {
+		return Spot{}, "", false, fmt.Errorf("future expiry %q is not epoch seconds", field(record, cols.expiry))
+	}
+	expiry, err := ParseExpiry(rawExpiry, field(record, cols.pTrdSymbol), cfg.ExpiryOffset)
+	if err != nil {
+		return Spot{}, "", false, err
+	}
+	symbol := field(record, cols.pTrdSymbol)
+	spot := Spot{
+		InstrumentKey:   SpotKey(segment, u.ScripNameOrKey()),
+		ExchangeSegment: segment,
+		Symbol:          symbol,
+		DisplayName:     u.DisplayName,
+		PSymbol:         field(record, cols.pSymbol),
+	}
+	if err := spot.Validate(); err != nil {
+		return Spot{}, "", false, err
+	}
+	return spot, expiry, true, nil
 }
 
 func parseOptionRow(

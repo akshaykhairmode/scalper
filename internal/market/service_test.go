@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
@@ -79,6 +80,45 @@ func TestIndicesPreservesAvailableQuotesWhenOneSymbolIsMissing(t *testing.T) {
 	}
 	if indices[1].QuoteAvailable || indices[1].LTP != 0 {
 		t.Fatalf("missing MIDCPNIFTY quote = %+v", indices[1])
+	}
+}
+
+func TestCommodityUnderlyingsExposeExpiriesAndChain(t *testing.T) {
+	cfg := config.Default()
+	cfg.Market.Commodities = []config.Commodity{{
+		Key: "CRUDEOIL", DisplayName: "CRUDE OIL", ExchangeSegment: scrip.SegmentMCXFO,
+		ScripName: "CRUDEOIL",
+	}}
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	option := scrip.Option{
+		InstrumentKey:   scrip.InstrumentKey(scrip.SegmentMCXFO, "CRUDEOIL", "2026-11-26", 600000, scrip.Call),
+		ExchangeSegment: scrip.SegmentMCXFO, PSymbol: "mcx-token", PTrdSymbol: "CRUDEOIL26NOV6000CE",
+		Underlying: "CRUDEOIL", Expiry: "2026-11-26", StrikePaise: 600000, OptionType: scrip.Call, LotSize: 100,
+	}
+	repo := &scrip.MemoryRepository{}
+	if err := repo.ReplaceScripSnapshot(context.Background(), []scrip.Option{option}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	scripts, err := scrip.NewManager(scrip.ManagerConfig{
+		Segments: []string{scrip.SegmentMCXFO}, Underlyings: []scrip.Underlying{{
+			Key: "CRUDEOIL", DisplayName: "CRUDE OIL", ScripName: "CRUDEOIL", ExchangeSegment: scrip.SegmentMCXFO,
+		}}, Repository: repo, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scripts.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(cfg, scripts, NewQuotesClient("", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expiries, err := service.Expiries("CRUDEOIL"); err != nil || len(expiries) != 1 {
+		t.Fatalf("Expiries = %+v, %v", expiries, err)
+	}
+	if !service.configuredUnderlying("CRUDEOIL") {
+		t.Fatal("commodity underlying is not configured")
 	}
 }
 
