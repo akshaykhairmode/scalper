@@ -29,7 +29,7 @@ type Server struct {
 }
 
 func NewServer(log *slog.Logger, cfg config.Config, accessToken string) *Server {
-	return NewServerWithAuthenticator(log, NewKotakAuthenticator(
+	return NewServerWithAuthenticator(log, NewKotakAuthenticatorWithLogger(log,
 		accessToken, cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Kotak.NeoFinKey,
 	))
 }

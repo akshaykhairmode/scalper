@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func writeConfig(t *testing.T, listen, dbPath, mode string) string {
+func writeConfig(t *testing.T, listen, dbPath string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -33,11 +33,9 @@ kotak:
   mobile_number: "+919999999999"
   ucc: "TESTUCC"
   neo_fin_key: "neotradeapi"
-trading:
-  mode: %q
 web:
   open_browser: false
-`, listen, dbPath, mode)
+`, listen, dbPath)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -96,16 +94,6 @@ func TestRunInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestRunLiveRequiresToken(t *testing.T) {
-	t.Setenv("KOTAK_ACCESS_TOKEN", "")
-	path := writeConfig(t, "127.0.0.1:18081", filepath.Join(t.TempDir(), "scalper.db"), "live")
-	var stdout, stderr bytes.Buffer
-	err := run([]string{"-config", path}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "KOTAK_ACCESS_TOKEN") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
 func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
 	t.Setenv("KOTAK_ACCESS_TOKEN", "")
 
@@ -118,7 +106,7 @@ func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
 		t.Fatalf("close probe: %v", err)
 	}
 
-	path := writeConfig(t, addr, filepath.Join(t.TempDir(), "scalper.db"), "paper")
+	path := writeConfig(t, addr, filepath.Join(t.TempDir(), "scalper.db"))
 	var stdout, stderr bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
@@ -158,7 +146,7 @@ func TestRunBadListen(t *testing.T) {
 	t.Setenv("KOTAK_ACCESS_TOKEN", "")
 	// A privileged port is not the point here: bind an address that cannot be
 	// listened on because the host does not resolve to a local interface.
-	path := writeConfig(t, "127.0.0.1:18082", filepath.Join(t.TempDir(), "scalper.db"), "paper")
+	path := writeConfig(t, "127.0.0.1:18082", filepath.Join(t.TempDir(), "scalper.db"))
 	blocker, err := net.Listen("tcp", "127.0.0.1:18082")
 	if err != nil {
 		t.Skipf("port unavailable: %v", err)

@@ -68,7 +68,6 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		"commit", version.Commit,
 		"build_date", version.BuildDate,
 		"go_version", runtime.Version(),
-		"mode", cfg.Trading.Mode,
 		"pid", os.Getpid(),
 	)
 	if err != nil {
@@ -95,14 +94,10 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 
 	accessToken := strings.TrimSpace(os.Getenv("KOTAK_ACCESS_TOKEN"))
 	hasToken := accessToken != ""
-	if cfg.IsLive() && !hasToken {
-		log.Error("live mode requires KOTAK_ACCESS_TOKEN", "event", "startup_failed")
-		return errors.New("KOTAK_ACCESS_TOKEN is required when trading.mode is live")
-	}
 	if hasToken {
 		log.Info("access token present", "event", "access_token_present")
 	} else {
-		log.Warn("KOTAK_ACCESS_TOKEN not set; paper mode works, live login is disabled",
+		log.Warn("KOTAK_ACCESS_TOKEN not set; Kotak login is disabled and trading remains paper",
 			"event", "access_token_missing")
 	}
 
@@ -155,8 +150,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}()
 	log.Info("listening",
 		"event", "http_listening",
-		"address", listener.Addr().String(),
-		"mode", cfg.Trading.Mode)
+		"address", listener.Addr().String())
 
 	if cfg.Web.OpenBrowser {
 		openBrowser("http://"+listener.Addr().String(), log)

@@ -292,7 +292,7 @@ func TestWriteSinkWarningError(t *testing.T) {
 }
 
 func TestRedactionPrimitives(t *testing.T) {
-	sensitive := []string{"token", "access_token", "viewToken", "secret", "password", "passwd", "mpin", "totp", "otp", "Authorization", "neo-fin-key", "neo_fin_key", "Sid", "auth", "Cookie", "csrf_token"}
+	sensitive := []string{"token", "access_token", "viewToken", "secret", "password", "passwd", "mpin", "totp", "otp", "Authorization", "neo-fin-key", "neo_fin_key", "Sid", "auth", "Cookie", "csrf_token", "mobileNumber", "mobile_number", "ucc"}
 	for _, key := range sensitive {
 		if !IsSensitiveKey(key) {
 			t.Errorf("IsSensitiveKey(%q) = false", key)

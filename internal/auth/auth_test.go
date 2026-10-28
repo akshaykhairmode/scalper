@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -82,7 +83,9 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	}))
 	defer api.Close()
 
+	var logOutput bytes.Buffer
 	client := &kotakClient{
+		log:         slog.New(slog.NewTextHandler(&logOutput, nil)),
 		accessToken: accessToken,
 		mobile:      "+911234567890",
 		ucc:         "client-1",
@@ -106,6 +109,28 @@ func TestKotakClientLoginFlow(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
+	}
+	logText := logOutput.String()
+	for _, secret := range []string{
+		accessToken, "neotradeapi", "+911234567890", "client-1", "123456",
+		"view-secret", "view-sid", "trade-secret", "trade-sid",
+	} {
+		if strings.Contains(logText, secret) {
+			t.Fatalf("API log leaked %q: %s", secret, logText)
+		}
+	}
+	for _, want := range []string{
+		"kotak_api_exchange",
+		"tradeApiLogin",
+		"tradeApiValidate",
+		"request_body=",
+		"response_body=",
+		"status=200",
+		"[REDACTED]",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("API log missing %q: %s", want, logText)
+		}
 	}
 }
 

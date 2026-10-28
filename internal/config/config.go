@@ -111,9 +111,8 @@ type Charts struct {
 	Persist          bool     `yaml:"persist"`
 }
 
-// Trading holds mode, quantity, margin, session and risk settings.
+// Trading holds quantity, margin, session and risk settings.
 type Trading struct {
-	Mode              string   `yaml:"mode"`
 	DefaultProduct    string   `yaml:"default_product"`
 	DefaultOrderType  string   `yaml:"default_order_type"`
 	ConfirmLiveOrders bool     `yaml:"confirm_live_orders"`
@@ -202,7 +201,7 @@ func Default() Config {
 		},
 		Logging: Logging{
 			Level:             "info",
-			Format:            "json",
+			Format:            "text",
 			File:              "./logs/scalper.log",
 			MaxSizeMB:         100,
 			MaxBackups:        10,
@@ -261,7 +260,6 @@ func Default() Config {
 			Persist:          true,
 		},
 		Trading: Trading{
-			Mode:              "paper",
 			DefaultProduct:    "MIS",
 			DefaultOrderType:  "MARKET",
 			ConfirmLiveOrders: true,
@@ -366,9 +364,6 @@ func (c *Config) applyEnv() {
 	}
 }
 
-// IsLive reports whether the startup mode is live trading.
-func (c Config) IsLive() bool { return c.Trading.Mode == "live" }
-
 // Location returns the configured timezone. It assumes Validate succeeded.
 func (c Config) Location() *time.Location {
 	loc, err := time.LoadLocation(c.App.Timezone)
@@ -400,10 +395,10 @@ func (c Config) Warnings() []string {
 	if r.MaxLotsPerOrder == 0 && r.MaxOpenLotsPerIndex == 0 && r.MaxOrderValueINR == 0 {
 		out = append(out, "all lot and order-value caps are disabled (0); exposure is limited only by manual entry")
 	}
-	if !c.Trading.Margin.CheckBeforeOrder && c.IsLive() {
+	if !c.Trading.Margin.CheckBeforeOrder {
 		out = append(out, "live margin pre-check is disabled; entries will not be blocked for insufficient funds")
 	}
-	if !c.Trading.Margin.FailClosed && c.IsLive() {
+	if !c.Trading.Margin.FailClosed {
 		out = append(out, "margin check is not fail-closed; a failed check may allow a live entry")
 	}
 	if c.Market.Depth.Mode == "websocket" {
@@ -428,7 +423,6 @@ func (c Config) Summary() map[string]any {
 		"log_level":  c.Logging.Level,
 		"log_format": c.Logging.Format,
 		"log_file":   c.Logging.File,
-		"mode":       c.Trading.Mode,
 		"data_mode":  c.Market.DataMode,
 		"indices":    keys,
 		"paper_cash": c.Trading.Paper.StartingCash,

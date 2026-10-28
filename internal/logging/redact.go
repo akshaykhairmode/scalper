@@ -15,14 +15,14 @@ const Redacted = "[REDACTED]"
 
 var sensitiveSubstrings = []string{
 	"token", "secret", "password", "passwd", "mpin", "totp", "cookie", "csrf",
-	"authorization", "neo-fin-key", "neo_fin_key",
+	"authorization", "neo-fin-key", "neo_fin_key", "mobile",
 }
 
 // IsSensitiveKey reports whether a log/audit key must be redacted.
 func IsSensitiveKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
 	switch k {
-	case "sid", "auth", "otp":
+	case "sid", "auth", "otp", "ucc":
 		return true
 	}
 	for _, s := range sensitiveSubstrings {

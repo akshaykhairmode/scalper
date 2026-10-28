@@ -70,8 +70,6 @@ type Server struct {
 // bootstrapConfig is rendered into the page so the frontend can start without
 // a round-trip. It contains no secrets: only display settings and the index list.
 type bootstrapConfig struct {
-	Mode              string           `json:"mode"`
-	Paper             bool             `json:"paper"`
 	Demo              bool             `json:"demo"`
 	Indices           []bootstrapIndex `json:"indices"`
 	Timeframes        []string         `json:"timeframes"`
@@ -100,8 +98,6 @@ type bootstrapIndex struct {
 
 func newBootstrap(cfg config.Config) (template.JS, error) {
 	boot := bootstrapConfig{
-		Mode:              cfg.Trading.Mode,
-		Paper:             !cfg.IsLive(),
 		Demo:              cfg.FakeData.Enabled,
 		Timeframes:        append([]string(nil), cfg.Charts.Timeframes...),
 		DefaultTimeframe:  cfg.Charts.DefaultTimeframe,
@@ -238,7 +234,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	data := pageData{
 		Title:        "Scalper",
-		Mode:         strings.ToUpper(s.cfg.Trading.Mode),
+		Mode:         "PAPER",
 		Version:      version.Version,
 		Commit:       version.Commit,
 		Indices:      indices,
@@ -302,7 +298,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Status:        status,
 		Time:          s.now().UTC().Format(time.RFC3339Nano),
 		UptimeSeconds: int64(s.now().Sub(s.started).Seconds()),
-		Mode:          s.cfg.Trading.Mode,
+		Mode:          s.currentMode(),
 		Version:       version.Info(),
 		Checks:        checks,
 	}
@@ -458,6 +454,13 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("write session status", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
+}
+
+func (s *Server) currentMode() string {
+	if s.a.SessionStatus().Authenticated {
+		return "live"
+	}
+	return "paper"
 }
 
 func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {

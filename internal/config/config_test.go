@@ -57,8 +57,8 @@ func TestLoadExample(t *testing.T) {
 	if !cfg.Logging.Redact {
 		t.Fatal("redact must be true")
 	}
-	if cfg.Trading.Mode != "paper" {
-		t.Fatalf("mode = %q", cfg.Trading.Mode)
+	if cfg.Logging.Format != "text" {
+		t.Fatalf("logging format = %q, want text", cfg.Logging.Format)
 	}
 }
 
@@ -200,7 +200,6 @@ func TestValidate(t *testing.T) {
 		{name: "duplicate timeframe", mutate: func(c *Config) { c.Charts.Timeframes = []string{"1m", "1m"} }, wantField: "charts.timeframes[1]"},
 		{name: "default timeframe missing", mutate: func(c *Config) { c.Charts.DefaultTimeframe = "2h" }, wantField: "charts.default_timeframe"},
 		{name: "bad retention", mutate: func(c *Config) { c.Charts.RetentionDays = 0 }, wantField: "charts.retention_days"},
-		{name: "bad trading mode", mutate: func(c *Config) { c.Trading.Mode = "demo" }, wantField: "trading.mode"},
 		{name: "bad product", mutate: func(c *Config) { c.Trading.DefaultProduct = "CNC" }, wantField: "trading.default_product"},
 		{name: "bad order type", mutate: func(c *Config) { c.Trading.DefaultOrderType = "LIMIT" }, wantField: "trading.default_order_type"},
 		{name: "bad market protection", mutate: func(c *Config) { c.Trading.MarketProtection = -1 }, wantField: "trading.market_protection"},
@@ -271,7 +270,6 @@ func TestWarnings(t *testing.T) {
 	c.Trading.Margin.CheckBeforeOrder = false
 	c.Trading.Margin.FailClosed = false
 	c.Market.Depth.Mode = "websocket"
-	c.Trading.Mode = "live"
 	c.Scrip.Segments = []string{"nse_fo", "bse_fo"}
 	warnings = c.Warnings()
 	joined := strings.Join(warnings, "\n")

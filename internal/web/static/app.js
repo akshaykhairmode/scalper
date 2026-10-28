@@ -63,6 +63,10 @@ function parseBootstrap() {
   }
 }
 
+function tradingMode() {
+  return !S.usingDemo && S.session?.authenticated ? "live" : "paper";
+}
+
 const S = {
   boot: {},
   demo: null,
@@ -280,6 +284,7 @@ function init() {
   updateClock();
   window.setInterval(updateClock, 1000);
   checkSession();
+  window.setInterval(refreshSession, 30000);
   loadMarket();
   window.setInterval(demoTick, 1000);
 }
@@ -316,13 +321,19 @@ function setFocusedChart(pane) {
   });
 }
 
-async function checkSession() {
+async function refreshSession() {
+  const previousMode = tradingMode();
   try {
     S.session = await getJSON("/api/session");
   } catch {
     S.session = null;
   }
   updateAuthButton();
+  if (tradingMode() !== previousMode) renderHeader();
+}
+
+async function checkSession() {
+  await refreshSession();
   const wantsLogin = location.hash === "#login";
   if (wantsLogin || !S.session?.authenticated) {
     openLogin(wantsLogin ? 1 : 1);
@@ -792,7 +803,7 @@ function renderHeader() {
   pnlChip.textContent = totalPnl ? `₹${fmtSigned(totalPnl, 0)}` : "—";
   pnlChip.className = "metric-value " + directionClass(totalPnl);
 
-  const mode = S.usingDemo ? "PAPER" : (S.boot.mode || "paper").toUpperCase();
+  const mode = tradingMode().toUpperCase();
   $("mode-badge").textContent = mode;
   $("mode-badge").className = "badge " + (mode === "LIVE" ? "live" : "paper");
   renderFeed();
@@ -1347,6 +1358,10 @@ function validateQuantity(lot) {
 }
 
 async function onTrade(action, type) {
+  if (tradingMode() === "live" && S.usingDemo) {
+    toast("Live orders are unavailable while market data is simulated.", "error", 6000);
+    return;
+  }
   const option = selectedOption(type);
   if (!option) {
     toast(`Select a ${type} strike first.`, "warn");
@@ -1367,10 +1382,10 @@ async function onTrade(action, type) {
     return;
   }
 
-  if (!S.usingDemo && S.boot.confirmLiveOrders && (S.boot.mode || "").toLowerCase() === "live") {
+  if (tradingMode() === "live" && S.boot.confirmLiveOrders) {
     const ok = await confirmAction({
       title: "Confirm live order",
-      body: `<b>${esc(S.boot.mode.toUpperCase())}</b> · ${side === "B" ? "BUY" : "SELL"} ` +
+      body: `<b>LIVE</b> · ${side === "B" ? "BUY" : "SELL"} ` +
         `${shares} sh (${S.qty.unit === "lots" ? `${S.qty.lots} lot` : "shares"}) of ` +
         `<b>${esc(option.symbol || `${S.activeIndex} ${fmtStrike(option.strike)} ${type}`)}</b><br>` +
         `Market order · ${esc(S.product)} · approx value <b>₹${fmt(required, 0)}</b>`,
@@ -1396,7 +1411,7 @@ async function onTrade(action, type) {
     order_type: "MARKET",
     product: S.product,
     intent: "ENTRY",
-    mode: S.usingDemo ? "paper" : S.boot.mode,
+    mode: tradingMode(),
     lot_size: lot,
   };
 
@@ -1428,6 +1443,10 @@ async function onTrade(action, type) {
 }
 
 async function onExit(instrumentKey) {
+  if (tradingMode() === "live" && S.usingDemo) {
+    toast("Live exits are unavailable while market data is simulated.", "error", 6000);
+    return;
+  }
   const position = S.positions.find((p) => p.instrument_key === instrumentKey);
   if (!position) return;
   const side = position.quantity > 0 ? "S" : "B";
@@ -1467,7 +1486,7 @@ async function onExit(instrumentKey) {
       order_type: "MARKET",
       product: position.product || S.product,
       intent: "EXIT",
-      mode: S.boot.mode,
+      mode: tradingMode(),
     });
     toast("Exit order sent", "ok");
     window.setTimeout(pollLive, 400);
@@ -1477,6 +1496,10 @@ async function onExit(instrumentKey) {
 }
 
 async function onSquareOffAll() {
+  if (tradingMode() === "live" && S.usingDemo) {
+    toast("Live square-off is unavailable while market data is simulated.", "error", 6000);
+    return;
+  }
   if (!S.positions.length) {
     toast("No open positions to square off.", "warn");
     return;
@@ -1498,9 +1521,9 @@ async function onSquareOffAll() {
     return;
   }
   try {
-    await postJSON("/api/orders/square-off-all", { confirm: true }).catch((error) => {
+    await postJSON("/api/orders/square-off-all", { confirm: true, mode: tradingMode() }).catch((error) => {
       if (error.status !== 404) throw error;
-      return postJSON("/api/broker/square-off-all", { confirm: true });
+      return postJSON("/api/broker/square-off-all", { confirm: true, mode: tradingMode() });
     });
     toast("Square-off orders sent", "ok");
     window.setTimeout(pollLive, 500);
@@ -1614,6 +1637,7 @@ async function submitLogin(event) {
     S.session = result.session_data || { authenticated: true, paper_mode: false };
     S.session.authenticated = true;
     updateAuthButton();
+    renderHeader();
     closeLogin();
     toast("Session active. Feeds are connecting.", "ok");
     if (!S.usingDemo && !S.expiry) loadMarket();
@@ -1636,6 +1660,7 @@ async function logout() {
   $("mpin-input").value = "";
   S.session = { authenticated: false };
   updateAuthButton();
+  renderHeader();
   openLogin(1);
   toast("Signed out.", "warn");
 }

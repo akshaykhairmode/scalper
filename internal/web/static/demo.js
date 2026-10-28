@@ -75,7 +75,6 @@ function daysToExpiry(iso) {
 export class DemoMarket {
   constructor(boot) {
     this.boot = boot;
-    this.mode = boot.mode || "paper";
     this.specs = SPECS;
     this.spots = new Map();
     this.prevSpots = new Map();

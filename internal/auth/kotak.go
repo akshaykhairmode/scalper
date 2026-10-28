@@ -11,6 +11,10 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"log/slog"
+
+	"github.com/akshaykhairmode/scalper/internal/logging"
 )
 
 const kotakLoginURL = "https://mis.kotaksecurities.com"
@@ -56,6 +60,7 @@ type httpDoer interface {
 }
 
 type kotakClient struct {
+	log         *slog.Logger
 	accessToken string
 	mobile      string
 	ucc         string
@@ -65,6 +70,13 @@ type kotakClient struct {
 }
 
 func NewKotakAuthenticator(accessToken, mobile, ucc, neoFinKey string) KotakAuthenticator {
+	return NewKotakAuthenticatorWithLogger(slog.Default(), accessToken, mobile, ucc, neoFinKey)
+}
+
+func NewKotakAuthenticatorWithLogger(log *slog.Logger, accessToken, mobile, ucc, neoFinKey string) KotakAuthenticator {
+	if log == nil {
+		log = slog.Default()
+	}
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -72,6 +84,7 @@ func NewKotakAuthenticator(accessToken, mobile, ucc, neoFinKey string) KotakAuth
 		},
 	}
 	return &kotakClient{
+		log:         log,
 		accessToken: strings.TrimSpace(accessToken),
 		mobile:      mobile,
 		ucc:         ucc,
@@ -159,21 +172,26 @@ func (c *kotakClient) post(ctx context.Context, path string, body any, step stri
 		setHeader(req)
 	}
 
+	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.logAPIExchange(req, nil, nil, started, err)
 		return loginResponse{}, fmt.Errorf("send Kotak %s request: %w", step, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return loginResponse{}, &APIError{Step: step, HTTPStatus: resp.StatusCode}
-	}
 	const maxResponseSize = 1 << 20
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
+		c.logAPIExchange(req, resp, nil, started, err)
 		return loginResponse{}, fmt.Errorf("read Kotak %s response: %w", step, err)
 	}
 	if len(raw) > maxResponseSize {
+		c.logAPIExchange(req, resp, nil, started, errors.New("response exceeds size limit"))
 		return loginResponse{}, fmt.Errorf("Kotak %s response exceeds size limit", step)
+	}
+	c.logAPIExchange(req, resp, raw, started, nil)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return loginResponse{}, &APIError{Step: step, HTTPStatus: resp.StatusCode}
 	}
 	var result loginResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
@@ -197,6 +215,59 @@ func (c *kotakClient) post(ctx context.Context, path string, body any, step stri
 		result.BaseURL = result.Data.BaseURL
 	}
 	return result, nil
+}
+
+func (c *kotakClient) logAPIExchange(req *http.Request, resp *http.Response, responseBody []byte, started time.Time, err error) {
+	var requestBody []byte
+	if getBody := req.GetBody; getBody != nil {
+		body, bodyErr := getBody()
+		if bodyErr == nil {
+			requestBody, bodyErr = io.ReadAll(body)
+			_ = body.Close()
+		}
+		if bodyErr != nil {
+			requestBody = []byte("[request body unavailable]")
+		}
+	} else {
+		requestBody = []byte("[request body unavailable]")
+	}
+	safeRequestBody := redactedJSONForLog(requestBody)
+	log := c.log
+	if log == nil {
+		log = slog.Default()
+	}
+	args := []any{
+		"event", "kotak_api_exchange",
+		"method", req.Method,
+		"url", logging.RedactURL(req.URL.String()),
+		"request_headers", logging.RedactHeaders(req.Header),
+		"request_body", safeRequestBody,
+		"duration_ms", time.Since(started).Milliseconds(),
+	}
+	if resp != nil {
+		args = append(args,
+			"status", resp.StatusCode,
+			"response_headers", logging.RedactHeaders(resp.Header),
+			"response_body", redactedJSONForLog(responseBody))
+	}
+	if err != nil {
+		args = append(args, "error", err)
+		log.Error("Kotak trade API exchange", args...)
+		return
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.Error("Kotak trade API exchange", args...)
+		return
+	}
+	log.Info("Kotak trade API exchange", args...)
+}
+
+func redactedJSONForLog(raw []byte) string {
+	redacted, err := logging.RedactJSON(raw)
+	if err != nil {
+		return "[non-JSON body omitted]"
+	}
+	return string(redacted)
 }
 
 func validateBaseURL(raw string) (string, error) {

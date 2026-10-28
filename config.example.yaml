@@ -3,8 +3,8 @@
 # Copy to config.yaml (git-ignored) and adjust. All keys are strict: a typo is a
 # startup error. Relative paths are resolved from the process working directory.
 #
-# KOTAK_ACCESS_TOKEN is read from the environment only. It is required for live
-# mode and for a real login; paper mode starts without it.
+# KOTAK_ACCESS_TOKEN is read from the environment only. It is required for a
+# real Kotak login; without it the app stays in paper mode.
 
 app:
   listen: "127.0.0.1:8080"
@@ -13,7 +13,7 @@ app:
 
 logging:
   level: "info"              # debug | info | warn | error
-  format: "json"             # json | text
+  format: "text"             # json | text
   file: "./logs/scalper.log" # empty = stderr only
   max_size_mb: 100
   max_backups: 10
@@ -86,7 +86,6 @@ charts:
   persist: true
 
 trading:
-  mode: "paper"              # paper | live
   default_product: "MIS"
   default_order_type: "MARKET"
   confirm_live_orders: true

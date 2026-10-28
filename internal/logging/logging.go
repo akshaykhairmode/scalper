@@ -301,8 +301,8 @@ func writeSinkWarning(w io.Writer, err error) error {
 	if err == nil {
 		return nil
 	}
-	line := fmt.Sprintf("{\"time\":%q,\"level\":\"WARN\",\"msg\":\"log sink failed; falling back to stderr\",\"event\":\"log_sink_failed\",\"error\":%q}\n",
-		time.Now().Format(time.RFC3339Nano), err.Error())
+	line := fmt.Sprintf("time=%s level=WARN msg=%q event=log_sink_failed error=%q\n",
+		time.Now().Format(time.RFC3339Nano), "log sink failed; falling back to stderr", err.Error())
 	_, werr := io.WriteString(w, line)
 	return werr
 }

@@ -251,11 +251,6 @@ func (c Config) validateCharts() error {
 }
 
 func (c Config) validateTrading() error {
-	switch c.Trading.Mode {
-	case "paper", "live":
-	default:
-		return fieldErr("trading.mode", "must be paper|live, got %q", c.Trading.Mode)
-	}
 	switch c.Trading.DefaultProduct {
 	case "MIS", "NRML":
 	default:
