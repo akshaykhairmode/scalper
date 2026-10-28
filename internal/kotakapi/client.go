@@ -29,6 +29,7 @@ type Client struct {
 	log  *slog.Logger
 }
 
+// NewClient creates a Kotak API client with an optional structured logger.
 func NewClient(logger ...*slog.Logger) *Client {
 	log := slog.Default()
 	if len(logger) > 0 && logger[0] != nil {
@@ -40,6 +41,7 @@ func NewClient(logger ...*slog.Logger) *Client {
 	}
 }
 
+// Order contains fields accepted by Kotak's place and modify order endpoints.
 type Order struct {
 	Tag             string  `json:"tag,omitempty"`
 	ExchangeSegment string  `json:"exchange_segment"`
@@ -61,9 +63,12 @@ type responseEnvelope struct {
 	StCode json.RawMessage `json:"stCode"`
 }
 
+// Orders fetches the authenticated session's order book.
 func (c *Client) Orders(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.get(ctx, s, "quick/user/orders")
 }
+
+// Order fetches one order by its broker order ID.
 func (c *Client) Order(ctx context.Context, s Session, id string) (json.RawMessage, error) {
 	id = strings.TrimSpace(id)
 	if id == "" || strings.ContainsAny(id, "/\\?#") {
@@ -71,25 +76,38 @@ func (c *Client) Order(ctx context.Context, s Session, id string) (json.RawMessa
 	}
 	return c.get(ctx, s, "quick/user/orders/"+url.PathEscape(id))
 }
+
+// Trades fetches the authenticated session's trade book.
 func (c *Client) Trades(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.get(ctx, s, "quick/user/trades")
 }
+
+// Positions fetches the authenticated session's positions.
 func (c *Client) Positions(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.get(ctx, s, "portfolio/v2/positions")
 }
+
+// Holdings fetches the authenticated session's holdings.
 func (c *Client) Holdings(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.get(ctx, s, "portfolio/v1/holdings")
 }
+
+// Limits fetches the authenticated session's available trading limits.
 func (c *Client) Limits(ctx context.Context, s Session) (json.RawMessage, error) {
 	return c.post(ctx, s, "quick/user/limits", map[string]any{"seg": "ALL", "exch": "ALL", "prod": "ALL"})
 }
+
+// OrderHistory fetches status history for one broker order ID.
 func (c *Client) OrderHistory(ctx context.Context, s Session, id string) (json.RawMessage, error) {
 	return c.post(ctx, s, "quick/order/history", map[string]any{"nOrdNo": strings.TrimSpace(id)})
 }
+
+// CancelOrder requests cancellation of one broker order ID.
 func (c *Client) CancelOrder(ctx context.Context, s Session, id string) (json.RawMessage, error) {
 	return c.post(ctx, s, "quick/order/cancel", map[string]any{"on": strings.TrimSpace(id), "am": "NO"})
 }
 
+// PlaceOrder submits a validated order to Kotak.
 func (c *Client) PlaceOrder(ctx context.Context, s Session, o Order) (json.RawMessage, error) {
 	if err := validateOrder(o); err != nil {
 		return nil, err
@@ -101,6 +119,7 @@ func (c *Client) PlaceOrder(ctx context.Context, s Session, o Order) (json.RawMe
 	return c.post(ctx, s, "quick/order/rule/ms/place", form)
 }
 
+// ModifyOrder updates a validated existing order.
 func (c *Client) ModifyOrder(ctx context.Context, s Session, id string, o Order) (json.RawMessage, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, errors.New("order id is required")
@@ -183,7 +202,7 @@ func (c *Client) post(ctx context.Context, s Session, path string, form map[stri
 }
 func (c *Client) request(ctx context.Context, s Session, method, path string, form map[string]any) (json.RawMessage, error) {
 	if c == nil || c.http == nil {
-		return nil, errors.New("Kotak API client is not configured")
+		return nil, errors.New("kotak API client is not configured")
 	}
 	if s.SID == "" || s.Token == "" {
 		return nil, errors.New("authenticated Kotak trading session is required")
@@ -228,22 +247,22 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Kotak API request failed: %w", err)
+		return nil, fmt.Errorf("kotak API request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read Kotak API response: %w", err)
 	}
 	if len(raw) > maxResponseBytes {
-		return nil, errors.New("Kotak API response exceeded size limit")
+		return nil, errors.New("kotak API response exceeded size limit")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		c.logResponse(req, resp, raw, "http_error")
 		return nil, kotakResponseError(resp.StatusCode, raw)
 	}
 	if !json.Valid(raw) {
-		return nil, errors.New("Kotak API returned invalid JSON")
+		return nil, errors.New("kotak API returned invalid JSON")
 	}
 	var envelope responseEnvelope
 	if json.Unmarshal(raw, &envelope) == nil && strings.EqualFold(envelope.Stat, "Not_Ok") {
@@ -291,15 +310,15 @@ func kotakAPIError(envelope responseEnvelope) error {
 		}
 	}
 	if message == "" && code != nil {
-		return fmt.Errorf("Kotak API rejected the request (code %v)", code)
+		return fmt.Errorf("kotak API rejected the request (code %v)", code)
 	}
 	if code != nil {
-		return fmt.Errorf("Kotak API rejected the request: %s (code %v)", message, code)
+		return fmt.Errorf("kotak API rejected the request: %s (code %v)", message, code)
 	}
 	if message != "" {
-		return fmt.Errorf("Kotak API rejected the request: %s", message)
+		return fmt.Errorf("kotak API rejected the request: %s", message)
 	}
-	return errors.New("Kotak API rejected the request")
+	return errors.New("kotak API rejected the request")
 }
 
 func (c *Client) logResponse(req *http.Request, resp *http.Response, body []byte, outcome string) {
@@ -333,7 +352,7 @@ func kotakResponseError(status int, raw []byte) error {
 		Emsg string `json:"emsg"`
 	}
 	if json.Unmarshal(raw, &envelope) == nil && envelope.Emsg != "" {
-		return fmt.Errorf("Kotak API request failed (HTTP %d): %s", status, envelope.Emsg)
+		return fmt.Errorf("kotak API request failed (HTTP %d): %s", status, envelope.Emsg)
 	}
-	return fmt.Errorf("Kotak API request failed (HTTP %d)", status)
+	return fmt.Errorf("kotak API request failed (HTTP %d)", status)
 }

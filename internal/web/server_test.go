@@ -17,7 +17,6 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/market"
-	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
@@ -46,7 +45,6 @@ type serverOpts struct {
 	cfg         *config.Config
 	authClient  auth.KotakAuthenticator
 	marketAPI   MarketAPI
-	paper       *paper.Service
 	noTokenFunc bool
 }
 
@@ -70,7 +68,6 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		MPIN:        o.mpin,
 		AuthClient:  o.authClient,
 		Market:      o.marketAPI,
-		Paper:       o.paper,
 		DB:          o.db,
 		LogDegraded: func() bool { return o.degraded },
 		Started:     started,
@@ -165,28 +162,6 @@ func TestCandlesRoute(t *testing.T) {
 	}
 }
 
-type fakePaperRepository struct {
-	requests []paper.OrderRequest
-}
-
-func (f *fakePaperRepository) EnsurePaperAccount(context.Context, float64) error {
-	return nil
-}
-
-func (f *fakePaperRepository) PaperSnapshot(context.Context, float64) (paper.Snapshot, error) {
-	return paper.Snapshot{}, nil
-}
-
-func (f *fakePaperRepository) ApplyPaperTrade(_ context.Context, request paper.OrderRequest, _ float64) (paper.Order, error) {
-	f.requests = append(f.requests, request)
-	return paper.Order{
-		ID: request.ClientOrderID, InstrumentKey: request.Instrument.InstrumentKey,
-		Symbol: request.Instrument.PTrdSymbol, Side: request.Side,
-		Quantity: request.Quantity, Price: request.FillPrice,
-		Status: "EXECUTED", Mode: "paper",
-	}, nil
-}
-
 type testKotakAuthenticator struct {
 	view     auth.ViewSession
 	trade    auth.TradeSession
@@ -227,7 +202,7 @@ func TestIndexPage(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"Scalper", "PAPER", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready"} {
+	for _, want := range []string{"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
@@ -388,97 +363,14 @@ func TestIndexWithoutTokenAndDegraded(t *testing.T) {
 	}
 }
 
-func TestPaperOrderUsesFreshKotakQuoteAndRejectsLiveMode(t *testing.T) {
-	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	instrument := scrip.Option{
-		InstrumentKey:   "nse_fo|NIFTY|2026-10-29|25000|CE",
-		ExchangeSegment: "nse_fo",
-		PSymbol:         "12345",
-		PTrdSymbol:      "NIFTY29OCT25000CE",
-		Underlying:      "NIFTY",
-		Expiry:          "2026-10-29",
-		StrikePaise:     2_500_000,
-		OptionType:      scrip.Call,
-		LotSize:         25,
-	}
-	repository := &fakePaperRepository{}
-	paperService, err := paper.NewService(context.Background(), repository, config.Default().Trading)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := newTestServer(t, serverOpts{
-		db:  fakeDB{},
-		now: func() time.Time { return now },
-		marketAPI: fakeMarketAPI{
-			instrument: instrument,
-			quote:      market.Quote{LTP: 100, UpdatedAt: now.Unix()},
-		},
-		paper: paperService,
-	})
-	body := `{"instrument_key":"nse_fo|NIFTY|2026-10-29|25000|CE","side":"B","buy_sell":"B","quantity":25,"qty":25,"product":"MIS","intent":"ENTRY","mode":"paper","price":0,"order_type":"MARKET","lot_size":25}`
+func TestLegacyPaperOrderEndpointUnavailable(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	req := localRequest(http.MethodPost, "/api/orders")
 	req.Header.Set("Content-Type", "application/json")
-	req.Body = io.NopCloser(strings.NewReader(body))
-	rec := do(t, server, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("paper order status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var result paper.Order
-	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Mode != "paper" || result.Status != "EXECUTED" || result.Price != 100 {
-		t.Fatalf("paper order result = %+v", result)
-	}
-	if len(repository.requests) != 1 || repository.requests[0].FillPrice != 100 {
-		t.Fatalf("paper fills = %+v", repository.requests)
-	}
-
-	liveReq := localRequest(http.MethodPost, "/api/orders")
-	liveReq.Header.Set("Content-Type", "application/json")
-	liveReq.Body = io.NopCloser(strings.NewReader(strings.Replace(body, `"mode":"paper"`, `"mode":"live"`, 1)))
-	liveRec := do(t, server, liveReq)
-	if liveRec.Code != http.StatusConflict || len(repository.requests) != 1 {
-		t.Fatalf("live order status=%d paper fills=%d body=%s", liveRec.Code, len(repository.requests), liveRec.Body.String())
-	}
-}
-
-func TestPaperOrderRejectsStaleKotakQuote(t *testing.T) {
-	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	instrument := scrip.Option{
-		InstrumentKey:   "nse_fo|NIFTY|2026-10-29|25000|CE",
-		ExchangeSegment: "nse_fo",
-		PSymbol:         "12345",
-		PTrdSymbol:      "NIFTY29OCT25000CE",
-		Underlying:      "NIFTY",
-		Expiry:          "2026-10-29",
-		StrikePaise:     2_500_000,
-		OptionType:      scrip.Call,
-		LotSize:         25,
-	}
-	repository := &fakePaperRepository{}
-	paperService, err := paper.NewService(context.Background(), repository, config.Default().Trading)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := newTestServer(t, serverOpts{
-		db:  fakeDB{},
-		now: func() time.Time { return now },
-		marketAPI: fakeMarketAPI{
-			instrument: instrument,
-			quote: market.Quote{
-				LTP: 100, UpdatedAt: now.Add(-10 * time.Second).Unix(),
-			},
-		},
-		paper: paperService,
-	})
-	requestBody := `{"instrument_key":"nse_fo|NIFTY|2026-10-29|25000|CE","side":"B","quantity":25,"product":"MIS","mode":"paper","order_type":"MARKET"}`
-	req := localRequest(http.MethodPost, "/api/orders")
-	req.Header.Set("Content-Type", "application/json")
-	req.Body = io.NopCloser(strings.NewReader(requestBody))
-	rec := do(t, server, req)
-	if rec.Code != http.StatusServiceUnavailable || len(repository.requests) != 0 {
-		t.Fatalf("stale quote status=%d paper fills=%d body=%s", rec.Code, len(repository.requests), rec.Body.String())
+	req.Body = io.NopCloser(strings.NewReader(`{"mode":"paper"}`))
+	rec := do(t, s, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("legacy paper order status = %d, want 405", rec.Code)
 	}
 }
 
@@ -500,7 +392,7 @@ func TestHealthOK(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Status != "ok" || resp.Mode != "paper" {
+	if resp.Status != "ok" || resp.Mode != "live" {
 		t.Fatalf("response = %+v", resp)
 	}
 	if resp.Checks["database"].Status != "ok" {

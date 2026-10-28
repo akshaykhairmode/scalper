@@ -30,7 +30,6 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
-	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/version"
 )
@@ -77,7 +76,6 @@ type Options struct {
 	MPIN         string
 	AuthClient   auth.KotakAuthenticator
 	Market       MarketAPI
-	Paper        *paper.Service
 	HSM          *market.HSMFeed
 	Kotak        *kotakapi.Client
 	OrderFeed    *orderfeed.Client
@@ -107,7 +105,6 @@ type Server struct {
 	// Auth is the authentication handler.
 	a           *auth.Server
 	market      MarketAPI
-	paper       *paper.Service
 	hsm         *market.HSMFeed
 	kotak       *kotakapi.Client
 	orderFeed   *orderfeed.Client
@@ -248,7 +245,6 @@ func New(opts Options) (*Server, error) {
 		bootstrap:    bootstrap,
 		a:            authServer,
 		market:       opts.Market,
-		paper:        opts.Paper,
 		hsm:          opts.HSM,
 		kotak:        opts.Kotak,
 		orderFeed:    opts.OrderFeed,

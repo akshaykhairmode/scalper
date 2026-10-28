@@ -245,7 +245,6 @@ func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry str
 		allStrikes = append(allStrikes, option.StrikePaise)
 	}
 	sort.Slice(allStrikes, func(i, j int) bool { return allStrikes[i] < allStrikes[j] })
-	selectedStrikes := allStrikes
 	if count > 0 {
 		if direction != "" && direction != "around" && direction != "above" && direction != "below" {
 			return ChainPage{}, errors.New("chain direction must be around, above, or below")
@@ -268,7 +267,7 @@ func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry str
 			end = min(start+count, len(allStrikes))
 			start = max(0, end-count)
 		}
-		selectedStrikes = allStrikes[start:end]
+		selectedStrikes := allStrikes[start:end]
 		selectedSet := make(map[int64]struct{}, len(selectedStrikes))
 		for _, strike := range selectedStrikes {
 			selectedSet[strike] = struct{}{}
@@ -286,7 +285,6 @@ func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry str
 }
 
 func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scrip.Option, hasMoreAbove, hasMoreBelow bool) (ChainPage, error) {
-
 	keyed := make([]keyedInstrument, 0, len(options))
 	for _, option := range options {
 		keyed = append(keyed, keyedInstrument{
@@ -395,7 +393,7 @@ func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe
 		return nil, fmt.Errorf("market instrument %q has no Kotak pSymbol", instrumentKey)
 	}
 	if segment == scrip.SegmentMCXFO {
-		return nil, errors.New("Kotak historical candles are not available for MCX contracts")
+		return nil, errors.New("kotak historical candles are not available for MCX contracts")
 	}
 	days := s.cfg.Charts.RetentionDays
 	if days <= 0 || days > maxDays {

@@ -132,13 +132,6 @@ func (s *Server) forwardOrderFeedEvents() {
 	}
 }
 
-func feedStatus(connected bool) string {
-	if connected {
-		return "live"
-	}
-	return "polling"
-}
-
 func (s *Server) forwardHSMEvents() {
 	for {
 		select {

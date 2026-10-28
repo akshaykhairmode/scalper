@@ -72,8 +72,9 @@ func TestIndicesPreservesAvailableQuotesWhenOneSymbolIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(indices) != 2 {
-		t.Fatalf("got %d index results, want 2", len(indices))
+	wantCount := len(cfg.Market.Indices) + len(cfg.Market.Commodities)
+	if len(indices) != wantCount {
+		t.Fatalf("got %d underlying results, want %d", len(indices), wantCount)
 	}
 	if !indices[0].QuoteAvailable || indices[0].LTP != 22708.85 || indices[0].PreviousClose != 22600 {
 		t.Fatalf("NIFTY quote = %+v", indices[0])

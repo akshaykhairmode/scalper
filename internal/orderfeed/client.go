@@ -15,12 +15,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Session contains the authenticated credentials needed to connect to the feed.
 type Session struct{ BaseURL, SID, Token string }
+
+// Event is a normalized event or connection status from the order feed.
 type Event struct {
 	Type   string          `json:"type"`
 	Data   json.RawMessage `json:"data,omitempty"`
 	Status string          `json:"status,omitempty"`
 }
+
+// Client maintains a reconnecting Kotak order and position feed.
 type Client struct {
 	log       *slog.Logger
 	mu        sync.Mutex
@@ -29,17 +34,24 @@ type Client struct {
 	connected bool
 }
 
+// New creates a feed client.
 func New(log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Client{log: log, events: make(chan Event, 256)}
 }
+
+// Events returns the channel carrying feed events and status changes.
 func (c *Client) Events() <-chan Event { return c.events }
-func (c *Client) Connected() bool      { c.mu.Lock(); defer c.mu.Unlock(); return c.connected }
+
+// Connected reports whether the feed currently has an active connection.
+func (c *Client) Connected() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.connected }
+
+// Start begins connecting and reconnecting using the authenticated session.
 func (c *Client) Start(parent context.Context, s Session) error {
 	if s.SID == "" || s.Token == "" {
-		return errors.New("Kotak order feed requires an authenticated session")
+		return errors.New("kotak order feed requires an authenticated session")
 	}
 	u, err := feedURL(s.BaseURL)
 	if err != nil {
@@ -53,6 +65,8 @@ func (c *Client) Start(parent context.Context, s Session) error {
 	go c.run(ctx, u, s)
 	return nil
 }
+
+// Stop cancels the active connection and its reconnect loop.
 func (c *Client) Stop() {
 	c.mu.Lock()
 	cancel := c.cancel
@@ -86,7 +100,7 @@ func (c *Client) run(ctx context.Context, endpoint string, s Session) {
 	}
 }
 func (c *Client) readConnection(ctx context.Context, conn *websocket.Conn, s Session) error {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(60 * time.Second)) })
 	login := fmt.Sprintf("{type:cn,Authorization:%s,Sid:%s,src:WEB}", s.Token, s.SID)

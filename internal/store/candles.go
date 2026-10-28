@@ -24,7 +24,7 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	if err != nil {
 		return nil, fmt.Errorf("store: query candles: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var candles []market.Candle
 	for rows.Next() {
@@ -64,7 +64,7 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 	if err != nil {
 		return fmt.Errorf("store: prepare candle write: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, candle := range candles {
 		if candle.Time <= 0 || !finite(candle.Open) || !finite(candle.High) ||
 			!finite(candle.Low) || !finite(candle.Close) || candle.Volume < 0 {
