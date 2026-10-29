@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
@@ -27,8 +28,10 @@ type Session struct{ BaseURL, SID, Token, ConsumerKey string }
 
 // Client calls the documented Kotak Neo order and account endpoints.
 type Client struct {
-	http *http.Client
-	log  *slog.Logger
+	http        *http.Client
+	log         *slog.Logger
+	rateMu      sync.Mutex
+	nextRequest time.Time
 }
 
 // NewClient creates a Kotak API client with an optional structured logger.
@@ -259,6 +262,9 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 			}
 			req.Header.Set("Authorization", s.ConsumerKey)
 		}
+		if err := c.waitRate(ctx); err != nil {
+			return nil, err
+		}
 		resp, err = c.http.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("kotak API request failed: %w", err)
@@ -273,7 +279,7 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 		if len(raw) > maxResponseBytes {
 			return nil, errors.New("kotak API response exceeded size limit")
 		}
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < 1 {
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < 2 {
 			c.logResponse(req, resp, raw, "rate_limited")
 			if err := sleepContext(ctx, retryAfter(resp, attempt)); err != nil {
 				return nil, err
@@ -312,6 +318,29 @@ func retryAfter(resp *http.Response, attempt int) time.Duration {
 	}
 	jitter := time.Duration(time.Now().UnixNano()%250) * time.Millisecond
 	return 750*time.Millisecond + time.Duration(attempt)*500*time.Millisecond + jitter
+}
+
+func (c *Client) waitRate(ctx context.Context) error {
+	const spacing = 120 * time.Millisecond
+	c.rateMu.Lock()
+	now := time.Now()
+	wait := c.nextRequest.Sub(now)
+	if wait < 0 {
+		wait = 0
+	}
+	c.nextRequest = now.Add(wait + spacing)
+	c.rateMu.Unlock()
+	if wait == 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

@@ -49,25 +49,27 @@ type IndexQuote struct {
 
 // OptionQuote is a normalized quote for an option contract.
 type OptionQuote struct {
-	InstrumentKey   string  `json:"instrument_key"`
-	ExchangeSegment string  `json:"exchange_segment"`
-	Underlying      string  `json:"underlying"`
-	Expiry          string  `json:"expiry"`
-	Strike          float64 `json:"strike"`
-	OptionType      string  `json:"option_type"`
-	LotSize         int64   `json:"lot_size"`
-	Symbol          string  `json:"symbol"`
-	PSymbol         string  `json:"p_symbol"`
-	PTrdSymbol      string  `json:"p_trd_symbol"`
-	LTP             float64 `json:"ltp"`
-	PreviousClose   float64 `json:"prev_close"`
-	Change          float64 `json:"change"`
-	ChangePct       float64 `json:"change_pct"`
-	Volume          int64   `json:"volume"`
-	OI              int64   `json:"oi"`
-	Bid             float64 `json:"bid"`
-	Ask             float64 `json:"ask"`
-	QuoteAvailable  bool    `json:"quote_available"`
+	InstrumentKey   string       `json:"instrument_key"`
+	ExchangeSegment string       `json:"exchange_segment"`
+	Underlying      string       `json:"underlying"`
+	Expiry          string       `json:"expiry"`
+	Strike          float64      `json:"strike"`
+	OptionType      string       `json:"option_type"`
+	LotSize         int64        `json:"lot_size"`
+	Symbol          string       `json:"symbol"`
+	PSymbol         string       `json:"p_symbol"`
+	PTrdSymbol      string       `json:"p_trd_symbol"`
+	LTP             float64      `json:"ltp"`
+	PreviousClose   float64      `json:"prev_close"`
+	Change          float64      `json:"change"`
+	ChangePct       float64      `json:"change_pct"`
+	Volume          int64        `json:"volume"`
+	OI              int64        `json:"oi"`
+	Bid             float64      `json:"bid"`
+	Ask             float64      `json:"ask"`
+	Bids            []DepthLevel `json:"bids,omitempty"`
+	Asks            []DepthLevel `json:"asks,omitempty"`
+	QuoteAvailable  bool         `json:"quote_available"`
 }
 
 // ChainRow holds the call and put quotes for one strike.
@@ -331,6 +333,8 @@ func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scr
 			converted.OI = quote.OI
 			converted.Bid = quote.Bid
 			converted.Ask = quote.Ask
+			converted.Bids = quote.Bids
+			converted.Asks = quote.Asks
 		}
 		switch option.OptionType {
 		case scrip.Call:

@@ -195,13 +195,32 @@ func decodeSFeedMarketPicture(packet []byte, header sfeedPacket, exchange string
 		}
 	}
 	var bid, ask float64
+	var bids, asks []DepthLevel
 	for i := 0; i < rowCount; i++ {
 		offset := fixedBodyEnd + i*depthRowSize
+		qty := clampUint64ToInt64(binary.LittleEndian.Uint64(packet[offset : offset+8]))
 		price := signedUint32(binary.LittleEndian.Uint32(packet[offset+8 : offset+12]))
-		if i == 0 && buyCount > 0 {
-			bid = float64(price) / float64(divider)
-		} else if i == buyCount {
-			ask = float64(price) / float64(divider)
+		orders := int64(binary.LittleEndian.Uint32(packet[offset+12 : offset+16]))
+		px := float64(price) / float64(divider)
+		level := DepthLevel{
+			Price:    px,
+			Quantity: qty,
+			Orders:   orders,
+		}
+		if i < buyCount {
+			if i == 0 {
+				bid = px
+			}
+			if px > 0 || qty > 0 {
+				bids = append(bids, level)
+			}
+		} else {
+			if i == buyCount {
+				ask = px
+			}
+			if px > 0 || qty > 0 {
+				asks = append(asks, level)
+			}
 		}
 	}
 
@@ -220,6 +239,8 @@ func decodeSFeedMarketPicture(packet []byte, header sfeedPacket, exchange string
 		OI:            openInterest,
 		Bid:           bid,
 		Ask:           ask,
+		Bids:          bids,
+		Asks:          asks,
 		Identifier:    symbols[symbolKey],
 	}, nil
 }

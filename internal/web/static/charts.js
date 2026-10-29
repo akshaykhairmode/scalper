@@ -78,6 +78,23 @@ function calculateSRLevels(candles, maxLevels = 3) {
 const axisTime = (time) => new Date(Number(time) * 1000).toLocaleTimeString("en-GB", {
   hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
 });
+const formatChartHoverTime = (time) => {
+  const ts = typeof time === "number" ? time : (time && typeof time.timestamp === "number" ? time.timestamp : null);
+  const date = ts !== null
+    ? new Date(ts * 1000)
+    : (time && time.year ? new Date(Date.UTC(time.year, time.month - 1, time.day)) : new Date(Number(time) * 1000));
+  if (isNaN(date.getTime())) return "";
+  const day = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", day: "2-digit" });
+  const month = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", month: "short" });
+  const year = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", year: "2-digit" });
+  const timeStr = date.toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${day} ${month} '${year}  ${timeStr}`;
+};
 const istDateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -107,6 +124,7 @@ export class CandleChart {
         priceFormatter: (price) => Number(price).toLocaleString("en-IN", {
           minimumFractionDigits: 2, maximumFractionDigits: 2,
         }),
+        timeFormatter: (time) => formatChartHoverTime(time),
       },
       grid: {
         vertLines: { color: this.colors.grid },
@@ -133,19 +151,17 @@ export class CandleChart {
       priceLineVisible: true,
     });
     if (showVolume) {
-      this.volumePane = this.chart.addPane();
-      this.volumePane.setStretchFactor(0.22);
-      this.volume = this.volumePane.addSeries(HistogramSeries, {
+      this.volume = this.chart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
-        lastValueVisible: true,
+        priceScaleId: "",
+        lastValueVisible: false,
         priceLineVisible: false,
       });
-      // Keep the scale widget present: Lightweight Charts 5.2 dereferences
-      // each pane's scale during ResizeObserver layout, and visible:false
-      // leaves a null widget that throws "Value is null" on resize.
       this.volume.priceScale().applyOptions({
-        borderVisible: false,
-        ticksVisible: false,
+        scaleMargins: {
+          top: 0.8,
+          bottom: 0,
+        },
       });
     }
 
@@ -167,26 +183,38 @@ export class CandleChart {
         return;
       }
       let vol = null;
+      let dayVol = null;
       if (this.volume && param.seriesData && param.seriesData.has(this.volume)) {
         const entry = param.seriesData.get(this.volume);
         vol = entry?.value;
-      } else {
-        const item = this.data.find((c) => c.time === param.time);
+      }
+      const item = this.data.find((c) => c.time === param.time);
+      if (vol === null && item) {
         vol = item?.volume;
       }
-      this.volBadge.textContent = Number.isFinite(vol) ? `Vol: ${formatVolume(vol)}` : "Vol: —";
+      if (item && Number.isFinite(item.dayVolume) && item.dayVolume > 0) {
+        dayVol = item.dayVolume;
+      }
+      if (Number.isFinite(vol)) {
+        this.volBadge.textContent = dayVol ? `Vol: ${formatVolume(vol)} (Day: ${formatVolume(dayVol)})` : `Vol: ${formatVolume(vol)}`;
+      } else {
+        this.volBadge.textContent = "Vol: —";
+      }
     });
   }
 
-  updateVolumeBadge(customVol) {
+  updateVolumeBadge(customVol, customDayVol) {
     if (!this.volBadge) return;
-    if (Number.isFinite(customVol)) {
-      this.volBadge.textContent = `Vol: ${formatVolume(customVol)}`;
-      return;
-    }
     const latest = this.data.length ? this.data[this.data.length - 1] : null;
-    const vol = latest?.volume;
-    this.volBadge.textContent = Number.isFinite(vol) ? `Vol: ${formatVolume(vol)}` : "Vol: —";
+    const vol = Number.isFinite(customVol) ? customVol : latest?.volume;
+    const dayVol = Number.isFinite(customDayVol) ? customDayVol : latest?.dayVolume;
+    if (Number.isFinite(vol)) {
+      this.volBadge.textContent = Number.isFinite(dayVol) && dayVol > 0
+        ? `Vol: ${formatVolume(vol)} (Day: ${formatVolume(dayVol)})`
+        : `Vol: ${formatVolume(vol)}`;
+    } else {
+      this.volBadge.textContent = "Vol: —";
+    }
   }
 
   toggleSR(forceState) {
@@ -265,8 +293,6 @@ export class CandleChart {
     const latest = this.data[this.data.length - 1];
     const latestDay = istDayKey(latest.time);
     const session = this.data.filter((candle) => istDayKey(candle.time) === latestDay);
-    // If the latest day has very few bars (e.g. today just started or Kotak 429 delayed today's bars),
-    // show at least 25 candles so the user can see recent history rather than a 2-bar stretched void.
     if (!session.length) {
       this.chart.timeScale().fitContent();
       return;
@@ -275,15 +301,12 @@ export class CandleChart {
     const prior = session.length > 1 ? session[session.length - 2] : null;
     const interval = prior ? Math.max(60, last.time - prior.time) : 300;
 
-    let fromTime = session[0].time - interval;
-    if (session.length < 25 && this.data.length > session.length) {
-      const windowCandles = this.data.slice(-Math.min(this.data.length, 35));
-      fromTime = windowCandles[0].time - interval;
-    }
+    const fromTime = session[0].time - interval;
+    const toTime = Math.max(last.time + interval * 3, session[0].time + interval * 10);
 
     this.chart.timeScale().setVisibleRange({
       from: fromTime,
-      to: last.time + interval * 3,
+      to: toTime,
     });
   }
 
@@ -308,7 +331,7 @@ export class CandleChart {
     } else {
       this.data.push(candle);
     }
-    this.updateVolumeBadge(candle.volume);
+    this.updateVolumeBadge(candle.volume, candle.dayVolume);
   }
 
   zoomBy(factor) {

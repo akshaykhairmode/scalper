@@ -170,6 +170,36 @@ func TestCandlesRoute(t *testing.T) {
 	}
 }
 
+func TestCandlesBatchRoute(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	url := "/api/candles/batch?spot=nse_cm%7CNifty%2050&ce=nse_fo%7CNIFTY26OCT25000CE&pe=nse_fo%7CNIFTY26OCT25000PE&tf=5m"
+	rec := do(t, s, localRequest(http.MethodGet, url))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Spot    candleFetchResult            `json:"spot"`
+		CE      candleFetchResult            `json:"ce"`
+		PE      candleFetchResult            `json:"pe"`
+		Results map[string]candleFetchResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Spot.Candles) != 1 || response.Spot.Candles[0].Close != 101 {
+		t.Fatalf("spot candles = %+v", response.Spot.Candles)
+	}
+	if len(response.CE.Candles) != 1 || response.CE.Candles[0].Close != 101 {
+		t.Fatalf("ce candles = %+v", response.CE.Candles)
+	}
+	if len(response.PE.Candles) != 1 || response.PE.Candles[0].Close != 101 {
+		t.Fatalf("pe candles = %+v", response.PE.Candles)
+	}
+	if len(response.Results) != 3 {
+		t.Fatalf("results count = %d, want 3", len(response.Results))
+	}
+}
+
 type testKotakAuthenticator struct {
 	view     auth.ViewSession
 	trade    auth.TradeSession

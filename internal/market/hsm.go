@@ -156,6 +156,9 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 			if err := client.SubscribeScrips(scripTokens); err != nil {
 				return err
 			}
+			if err := client.SubscribeDepth(scripTokens); err != nil {
+				f.log.Warn("Kotak HSM depth subscription failed", "event", "hsm_depth_subscribe_failed", "error", err)
+			}
 		}
 	}
 	return nil
@@ -187,6 +190,9 @@ func (f *HSMFeed) Unsubscribe(keys []string) error {
 		if len(scripTokens) > 0 {
 			if err := client.UnsubscribeScrips(scripTokens); err != nil {
 				return err
+			}
+			if err := client.UnsubscribeDepth(scripTokens); err != nil {
+				f.log.Warn("Kotak HSM depth unsubscription failed", "event", "hsm_depth_unsubscribe_failed", "error", err)
 			}
 		}
 	}
@@ -271,6 +277,11 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 				backoff *= 2
 			}
 			continue
+		}
+		if len(scripTokens) > 0 {
+			if err := client.SubscribeDepth(scripTokens); err != nil {
+				f.log.Warn("Kotak HSM initial depth subscription failed", "event", "hsm_depth_subscribe_failed", "error", err)
+			}
 		}
 		backoff = time.Second
 		f.emit(HSMEvent{Status: "live"})

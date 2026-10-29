@@ -423,6 +423,16 @@ func (c *HSMClient) UnsubscribeScrips(tokens []string) error {
 	return c.writeSubscription("unsubscribeScrips", "scrips", tokens, false)
 }
 
+// SubscribeDepth subscribes to market depth for option and futures instruments.
+func (c *HSMClient) SubscribeDepth(tokens []string) error {
+	return c.writeSubscription("subscribeDepth", "depth", tokens, true)
+}
+
+// UnsubscribeDepth removes market depth subscriptions.
+func (c *HSMClient) UnsubscribeDepth(tokens []string) error {
+	return c.writeSubscription("unsubscribeDepth", "depth", tokens, false)
+}
+
 // SubscribeIndices subscribes to index instruments.
 func (c *HSMClient) SubscribeIndices(tokens []string) error {
 	return c.writeSubscription("subscribeIndices", "indices", tokens, true)

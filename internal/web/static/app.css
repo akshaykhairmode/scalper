@@ -247,7 +247,8 @@ a { color: var(--blue); }
   font-weight: 750;
   letter-spacing: .04em;
 }
-.danger:hover { background: #371515; border-color: #7a3030; }
+.danger:hover:not(:disabled) { background: #371515; border-color: #7a3030; }
+.danger:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Toolbar ─────────────────────────────────────────────── */
 .toolbar {
@@ -751,28 +752,160 @@ table.book .link-button:hover { color: var(--text); border-color: #55708a; }
 .risk-flag.good { color: var(--green); background: var(--green-soft); border: 1px solid #1f5537; }
 
 /* Depth */
-.depth-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
-.depth-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.depth-side h3 {
-  margin: 0;
-  padding: 6px 10px;
+.depth-container {
+  display: grid;
+  grid-template-columns: 1fr minmax(40px, 120px) 1fr;
+  gap: 16px;
+  padding: 12px 16px;
+  height: 100%;
+  box-sizing: border-box;
+}
+.depth-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.depth-pane.center-spacer {
+  pointer-events: none;
+}
+.depth-column {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.depth-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
   background: var(--panel-2);
-  color: var(--muted);
-  font-size: 9px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
   border-bottom: 1px solid var(--line);
 }
-.depth-side table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
-.depth-side td { padding: 4px 10px; text-align: right; border-bottom: 1px solid #141c24; }
-.depth-side td:first-child { text-align: left; color: var(--muted-2); }
-.depth-side.bid td:nth-child(2) { color: var(--green); }
-.depth-side.ask td:nth-child(2) { color: var(--red); }
-.depth-bar { position: relative; width: 28%; }
-.depth-bar svg { display: block; width: 100%; height: 8px; border-radius: 3px; background: #ffffff08; }
-.depth-bar rect { fill: #ffffff24; }
-.depth-side.bid .depth-bar rect { fill: #35c46a55; }
-.depth-side.ask .depth-bar rect { fill: #ff5d5d55; }
+.depth-column-header h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .02em;
+}
+.depth-column-header .depth-ltp {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.depth-table-wrapper {
+  overflow-x: auto;
+  flex: 1;
+}
+.depth-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.depth-table th,
+.depth-table td {
+  padding: 5px 8px;
+  line-height: 1.3;
+}
+.depth-title-row th {
+  padding: 8px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+}
+.title-buyers {
+  text-align: left;
+  color: #1e60d5;
+}
+body[data-theme="dark"] .title-buyers {
+  color: #4da2ff;
+}
+.title-sellers {
+  text-align: left;
+  color: #e53935;
+}
+body[data-theme="dark"] .title-sellers {
+  color: #ff5252;
+}
+.depth-header-row th {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted-2);
+  letter-spacing: .05em;
+  border-bottom: 1px solid var(--line);
+}
+.col-orders {
+  width: 14%;
+  color: var(--muted-2);
+}
+th.col-orders:first-child,
+td.col-orders:first-child {
+  text-align: left;
+}
+th.col-orders:last-child,
+td.col-orders:last-child {
+  text-align: right;
+}
+.col-qty {
+  width: 18%;
+  color: var(--text);
+}
+th.col-qty:nth-child(2),
+td.col-qty:nth-child(2) {
+  text-align: left;
+}
+th.col-qty:nth-child(5),
+td.col-qty:nth-child(5) {
+  text-align: right;
+}
+.col-bid-px {
+  width: 18%;
+  text-align: right;
+  color: #1e60d5;
+  font-weight: 600;
+  border-right: 1px solid var(--line);
+}
+body[data-theme="dark"] .col-bid-px {
+  color: #4da2ff;
+}
+.col-ask-px {
+  width: 18%;
+  text-align: left;
+  color: #e53935;
+  font-weight: 600;
+}
+body[data-theme="dark"] .col-ask-px {
+  color: #ff5252;
+}
+.depth-table tbody tr:hover {
+  background: #ffffff05;
+}
+.depth-total-row td {
+  padding: 8px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--panel-2);
+  border-top: 1px solid var(--line);
+}
+.total-bid-qty {
+  text-align: left;
+  color: var(--text);
+}
+.total-label {
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+}
+.total-ask-qty {
+  text-align: right;
+  color: var(--text);
+}
 
 /* ── Footer ──────────────────────────────────────────────── */
 .footer {

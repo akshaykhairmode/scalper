@@ -34,6 +34,13 @@ type QuoteInstrument struct {
 	Symbol          string
 }
 
+// DepthLevel represents a single bid or ask level in market depth.
+type DepthLevel struct {
+	Price    float64 `json:"price"`
+	Quantity int64   `json:"quantity"`
+	Orders   int64   `json:"orders"`
+}
+
 // Quote contains normalized quote data returned by Kotak.
 type Quote struct {
 	ExchangeToken string
@@ -48,6 +55,8 @@ type Quote struct {
 	OI            int64
 	Bid           float64
 	Ask           float64
+	Bids          []DepthLevel
+	Asks          []DepthLevel
 }
 
 // HTTPDoer is the HTTP client contract used by QuotesClient.
@@ -62,6 +71,8 @@ type QuotesClient struct {
 	log         *slog.Logger
 	rateMu      sync.Mutex
 	nextRequest time.Time
+	histRateMu  sync.Mutex
+	nextHistReq time.Time
 }
 
 // HTTPStatusError preserves upstream status and retry advice for API handlers.
@@ -170,48 +181,86 @@ func (c *QuotesClient) Historical(
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create Kotak historical data request: %w", err)
-	}
-	req.Header.Set("Authorization", c.consumerKey)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
 
-	if err := c.waitRate(ctx); err != nil {
-		return nil, fmt.Errorf("wait to send Kotak historical request: %w", err)
-	}
-	started := time.Now()
-	resp, err := c.http.Do(req)
-	if err != nil {
-		c.logExchange(req, nil, nil, started, err)
-		return nil, fmt.Errorf("send Kotak historical data request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			c.log.Warn("close Kotak historical response body",
-				"event", "historical_response_close_failed", "error", err)
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create Kotak historical data request: %w", err)
 		}
-	}()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCandleBytes+1))
-	if err != nil {
-		c.logExchange(req, resp, nil, started, err)
-		return nil, fmt.Errorf("read Kotak historical data response: %w", err)
+		req.Header.Set("Authorization", c.consumerKey)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+
+		if err := c.waitHistoricalRate(ctx); err != nil {
+			return nil, fmt.Errorf("wait to send Kotak historical request: %w", err)
+		}
+		started := time.Now()
+		resp, err := c.http.Do(req)
+		if err != nil {
+			c.logExchange(req, nil, nil, started, err)
+			return nil, fmt.Errorf("send Kotak historical data request: %w", err)
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCandleBytes+1))
+		_ = resp.Body.Close()
+		if err != nil {
+			c.logExchange(req, resp, nil, started, err)
+			return nil, fmt.Errorf("read Kotak historical data response: %w", err)
+		}
+		if len(raw) > maxCandleBytes {
+			err := fmt.Errorf("kotak historical response exceeds %d bytes", maxCandleBytes)
+			c.logExchange(req, resp, nil, started, err)
+			return nil, err
+		}
+		c.logExchange(req, resp, nil, started, nil)
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
+			retryDelay := time.Second
+			if retryHeader := resp.Header.Get("Retry-After"); retryHeader != "" {
+				if seconds, parseErr := strconv.Atoi(retryHeader); parseErr == nil && seconds > 0 {
+					retryDelay = time.Duration(seconds) * time.Second
+				}
+			}
+			select {
+			case <-time.After(retryDelay):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return nil, &HTTPStatusError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After")}
+		}
+		candles, err := decodeHistoricalCandles(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode Kotak historical data response: %w", err)
+		}
+		return candles, nil
 	}
-	if len(raw) > maxCandleBytes {
-		err := fmt.Errorf("kotak historical response exceeds %d bytes", maxCandleBytes)
-		c.logExchange(req, resp, nil, started, err)
-		return nil, err
+	return nil, errors.New("kotak historical data request exceeded retry attempts")
+}
+
+// waitHistoricalRate spaces historical REST requests to avoid 429 rate limit triggers.
+func (c *QuotesClient) waitHistoricalRate(ctx context.Context) error {
+	const spacing = 1000 * time.Millisecond
+	c.histRateMu.Lock()
+	now := time.Now()
+	wait := c.nextHistReq.Sub(now)
+	if wait < 0 {
+		wait = 0
 	}
-	c.logExchange(req, resp, nil, started, nil)
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After")}
+	c.nextHistReq = now.Add(wait + spacing)
+	c.histRateMu.Unlock()
+	if wait == 0 {
+		return nil
 	}
-	candles, err := decodeHistoricalCandles(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode Kotak historical data response: %w", err)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return candles, nil
 }
 
 // waitRate spaces market-data REST requests to stay below Kotak's documented
@@ -501,11 +550,27 @@ func decodeQuote(row map[string]json.RawMessage) (Quote, error) {
 		if err := json.Unmarshal(raw, &depth); err != nil {
 			return Quote{}, fmt.Errorf("decode depth: %w", err)
 		}
-		if len(depth["buy"]) > 0 {
-			quote.Bid, _ = floatField(depth["buy"][0], "price")
+		for _, b := range depth["buy"] {
+			p, _ := floatField(b, "price")
+			q := intField(b, "quantity", "qty")
+			o := intField(b, "orders", "no_of_orders")
+			if p > 0 || q > 0 {
+				quote.Bids = append(quote.Bids, DepthLevel{Price: p, Quantity: q, Orders: o})
+			}
 		}
-		if len(depth["sell"]) > 0 {
-			quote.Ask, _ = floatField(depth["sell"][0], "price")
+		for _, s := range depth["sell"] {
+			p, _ := floatField(s, "price")
+			q := intField(s, "quantity", "qty")
+			o := intField(s, "orders", "no_of_orders")
+			if p > 0 || q > 0 {
+				quote.Asks = append(quote.Asks, DepthLevel{Price: p, Quantity: q, Orders: o})
+			}
+		}
+		if len(quote.Bids) > 0 {
+			quote.Bid = quote.Bids[0].Price
+		}
+		if len(quote.Asks) > 0 {
+			quote.Ask = quote.Asks[0].Price
 		}
 	}
 	if math.IsNaN(quote.LTP) || math.IsInf(quote.LTP, 0) || quote.LTP < 0 {

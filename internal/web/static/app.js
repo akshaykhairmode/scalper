@@ -168,8 +168,15 @@ function normalizeOption(raw, type) {
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice ?? raw.price);
   const prevClose = num(raw.previous_close ?? raw.prev_close ?? raw.prevClose ?? raw.close ?? ltp);
   const oi = num(raw.oi ?? raw.open_interest ?? raw.openInterest);
+  const bids = Array.isArray(raw.bids) ? raw.bids : [];
+  const asks = Array.isArray(raw.asks) ? raw.asks : [];
+  const instrumentKey = raw.instrument_key ?? raw.instrumentKey ?? raw.key ?? "";
+  if (instrumentKey && (bids.length || asks.length)) {
+    if (!S.depths) S.depths = {};
+    S.depths[instrumentKey] = { bids, asks };
+  }
   return {
-    instrumentKey: raw.instrument_key ?? raw.instrumentKey ?? raw.key ?? "",
+    instrumentKey,
     exchangeSegment: raw.exchange_segment ?? raw.exchangeSegment ?? "nse_fo",
     underlying: raw.underlying ?? S.activeIndex,
     expiry: raw.expiry ?? S.expiry,
@@ -189,6 +196,8 @@ function normalizeOption(raw, type) {
     volume: num(raw.volume),
     bid: num(raw.bid ?? raw.best_bid ?? raw.bestBid),
     ask: num(raw.ask ?? raw.best_ask ?? raw.bestAsk),
+    bids,
+    asks,
   };
 }
 
@@ -415,7 +424,13 @@ function init() {
   S.unit.PE = defaultUnit;
   S.qty.CE = defaultLots;
   S.qty.PE = defaultLots;
-  S.activeIndex = S.boot.indices?.[0]?.key || S.boot.commodities?.[0]?.key || "NIFTY";
+  const savedIndex = localStorage.getItem("scalper-last-index");
+  const availableIndices = (S.boot.indices || []).concat(S.boot.commodities || []);
+  if (savedIndex && availableIndices.some((i) => i.key === savedIndex)) {
+    S.activeIndex = savedIndex;
+  } else {
+    S.activeIndex = S.boot.indices?.[0]?.key || S.boot.commodities?.[0]?.key || "NIFTY";
+  }
 
   updateMarketPhase(false);
   buildTimeframes();
@@ -469,6 +484,27 @@ function buildCharts() {
   S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR });
   S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR });
   S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR });
+
+  let syncingRange = false;
+  const syncRange = (sourceChart) => {
+    if (syncingRange) return;
+    const range = sourceChart?.chart?.timeScale()?.getVisibleRange();
+    if (!range || range.from == null || range.to == null) return;
+    syncingRange = true;
+    for (const other of [S.charts.ce, S.charts.spot, S.charts.pe]) {
+      if (other && other !== sourceChart && other.chart) {
+        try {
+          other.chart.timeScale().setVisibleRange(range);
+        } catch (_) {}
+      }
+    }
+    syncingRange = false;
+  };
+
+  S.charts.ce.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.ce));
+  S.charts.spot.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.spot));
+  S.charts.pe.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.pe));
+
   for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
     button.classList.toggle("active", savedSR);
     button.setAttribute("aria-pressed", savedSR ? "true" : "false");
@@ -508,6 +544,7 @@ async function refreshSession() {
 function clearBooksForMode(mode) {
   S.bookMode = mode;
   S.positions = [];
+  S.positionsLoaded = false;
   S.orders = [];
   S.trades = [];
   S.limits = { available: 0, used: 0, total: 0, loaded: false, error: "" };
@@ -633,6 +670,10 @@ function normalizeExpiryList(raw) {
 }
 
 function pickExpiry(list) {
+  const savedExpiry = localStorage.getItem(`scalper-last-expiry-${S.activeIndex}`);
+  if (savedExpiry && list.some((e) => e.date === savedExpiry && !e.expired)) {
+    return savedExpiry;
+  }
   const first = list.find((e) => !e.expired) || list[0];
   return first?.date || "";
 }
@@ -662,6 +703,7 @@ async function loadBooksFromAPI(includePositions = true) {
   // Blanking it makes open positions vanish and disables the exit buttons.
   if (includePositions && positions.status === "fulfilled") {
     S.positions = toArray(positions.value).map(normalizePosition);
+    S.positionsLoaded = true;
     updateFeedSubscriptions();
   }
   if (orders.status === "fulfilled") {
@@ -672,11 +714,18 @@ async function loadBooksFromAPI(includePositions = true) {
   }
   if (limits.status === "fulfilled") {
     const value = limits.value || {};
-    const available = value.available_margin ?? value.availableMargin ?? value.available ?? value.Net ?? value.net ?? value.data?.availableMargin ?? value.data?.Net;
+    const obj = value.limits || value.data || value;
+    const available = obj.available_margin ?? obj.availableMargin ?? obj.available ?? obj.Net ?? obj.net ??
+      value.available_margin ?? value.availableMargin ?? value.available ?? value.Net ?? value.net ??
+      value.data?.availableMargin ?? value.data?.Net ?? value.limits?.availableMargin ?? value.limits?.Net;
+    const used = obj.used_margin ?? obj.usedMargin ?? obj.used ?? obj.marginUsed ?? obj.MarginUsed ??
+      value.used_margin ?? value.usedMargin ?? value.used ?? value.marginUsed ?? value.MarginUsed ?? value.data?.MarginUsed;
+    const total = obj.total_margin ?? obj.totalMargin ?? obj.total ?? obj.Net ?? obj.net ??
+      value.total_margin ?? value.totalMargin ?? value.total ?? value.Net ?? value.net ?? value.data?.Net;
     S.limits = {
       available: num(available),
-      used: num(value.used_margin ?? value.usedMargin ?? value.used ?? value.MarginUsed ?? value.data?.MarginUsed),
-      total: num(value.total_margin ?? value.totalMargin ?? value.total ?? value.Net ?? value.net ?? value.data?.Net),
+      used: num(used),
+      total: num(total),
       loaded: available != null,
       error: available == null ? "Account response did not include available margin." : "",
     };
@@ -704,12 +753,11 @@ let underlyingTimer = null;
 let booksRefreshTimer = null;
 function startLivePolling() {
   if (!liveTimer) {
-    // The server owns a shared account-book cache, so this is only a safety
-    // net; order-feed events drive the real updates.
+    // Poll account books regularly when logged in and visible.
     liveTimer = window.setInterval(() => {
-      if (document.hidden || !S.marketOpen) return;
-      refreshBooksFromAPI(false).catch((error) => console.warn("account refresh failed", error));
-    }, 30000);
+      if (document.hidden || !S.session?.authenticated) return;
+      refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
+    }, 15000);
   }
   // The Scrip Master refresh can finish after the first page quote request.
   // Poll underlying prices independently so new spot/future tokens are picked
@@ -831,7 +879,12 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "tick") {
-    updateLiveCandle(data.key, data.ltp, data.timestamp);
+    updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
+    if (data.bids || data.asks) {
+      if (!S.depths) S.depths = {};
+      S.depths[data.key] = { bids: data.bids || [], asks: data.asks || [] };
+      if (S.tab === "depth") renderTab();
+    }
     for (const spot of S.spots.values()) {
       if (spot.spotKey !== data.key) continue;
       spot.ltp = num(data.ltp, spot.ltp);
@@ -865,6 +918,8 @@ function handleSocketEvent(event) {
       opt.ask = num(data.ask, opt.ask);
       opt.volume = num(data.volume, opt.volume);
       opt.oi = num(data.oi, opt.oi);
+      if (data.bids) opt.bids = data.bids;
+      if (data.asks) opt.asks = data.asks;
       opt.quoteAvailable = opt.ltp > 0;
       opt.change = opt.ltp - opt.prevClose;
       opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
@@ -959,8 +1014,14 @@ function selectDefaultStrike() {
     return;
   }
   const atm = computeATM() ?? S.chain[Math.floor(S.chain.length / 2)].strike;
-  selectStrike(atm, "CE", false, false);
-  selectStrike(atm, "PE", false, false);
+  const savedCE = num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-CE`)) ||
+    num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-CE`));
+  const savedPE = num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-PE`)) ||
+    num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-PE`));
+  const ceStrike = (savedCE && S.chain.some((r) => r.strike === savedCE)) ? savedCE : atm;
+  const peStrike = (savedPE && S.chain.some((r) => r.strike === savedPE)) ? savedPE : atm;
+  selectStrike(ceStrike, "CE", false, false);
+  selectStrike(peStrike, "PE", false, false);
   S.selected.type = "CE";
   S.chainScrolled = false;
 }
@@ -971,6 +1032,12 @@ function selectStrike(strike, type, rerender = true, reloadCharts = true) {
   if (!option) return;
   S.selected[type] = option;
   S.selected.type = type;
+  if (S.activeIndex && S.expiry) {
+    try {
+      localStorage.setItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-${type}`, String(strike));
+      localStorage.setItem(`scalper-last-strike-${S.activeIndex}-${type}`, String(strike));
+    } catch (_) {}
+  }
   S.chainScrolled = true;
   updateFeedSubscriptions();
   if (reloadCharts) loadCharts();
@@ -993,6 +1060,8 @@ function updateOptionFromTick(option, data) {
   option.ask = num(data.ask, option.ask);
   option.volume = num(data.volume, option.volume);
   option.oi = num(data.oi, option.oi);
+  if (data.bids) option.bids = data.bids;
+  if (data.asks) option.asks = data.asks;
   option.quoteAvailable = option.ltp > 0;
   option.change = option.ltp - option.prevClose;
   option.changePct = option.prevClose ? (option.change / option.prevClose) * 100 : 0;
@@ -1021,8 +1090,11 @@ function activeSpotInstrument() {
   return `nse_cm|${S.activeIndex}`;
 }
 
-async function loadCharts() {
+async function loadCharts(forceRefresh = false) {
   const loadID = ++S.chartLoadID;
+  if (forceRefresh) {
+    S.historicalCache.clear();
+  }
   const dateParts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
   }).formatToParts(new Date());
@@ -1033,18 +1105,21 @@ async function loadCharts() {
     ["spot", activeSpotInstrument(), "Loading spot index data…"],
     ["pe", chartInstrument("PE"), "Choose a strike to show chart data."],
   ];
+
+  const batchQuery = new URLSearchParams({ tf: S.timeframe });
+  if (forceRefresh) batchQuery.set("refresh", "1");
+  let needsBatch = false;
+
   for (const [pane, key, defaultHint] of paneTargets) {
     const chart = S.charts[pane];
     if (!chart) continue;
-    chart.resetView();
     if (!key) {
       chart.setData([]);
       setChartHint(pane, defaultHint);
       continue;
     }
-    chart.setData([]);
-    const liveKey = `${key}|${S.timeframe}`;
     if (key.startsWith("mcx_fo|")) {
+      const liveKey = `${key}|${S.timeframe}`;
       const live = S.candles[liveKey] || [];
       chart.setData(live);
       setChartHint(pane, S.marketOpen
@@ -1052,20 +1127,36 @@ async function loadCharts() {
         : "Kotak does not provide historical MCX candles. Live candles appear during MCX trading hours.");
       continue;
     }
+    const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
+    let cached = S.historicalCache.get(cacheKey);
+    if (cached?.retryAt && Date.now() < cached.retryAt && !forceRefresh) {
+      continue;
+    }
+    if (!cached || forceRefresh || cached.retryAt) {
+      batchQuery.set(pane, key);
+      needsBatch = true;
+      setChartHint(pane, "Loading historical candles…");
+    }
+  }
+
+  if (needsBatch) {
     try {
-      const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
-      let candles = S.historicalCache.get(cacheKey);
-      if (candles?.retryAt) {
-        if (Date.now() < candles.retryAt) throw candles.error;
-        S.historicalCache.delete(cacheKey);
-        candles = null;
-      }
-      if (candles && typeof candles.then === "function") candles = await candles;
-      if (!candles) {
-        setChartHint(pane, "Loading historical candles…");
-        const request = getJSON(`/api/candles?instrument=${encodeURIComponent(key)}&tf=${encodeURIComponent(S.timeframe)}`)
-          .then((raw) => ({
-            candles: (Array.isArray(raw) ? raw : (raw?.candles || [])).map((c) => ({
+      const batchResp = await getJSON(`/api/candles/batch?${batchQuery.toString()}`);
+      if (loadID !== S.chartLoadID) return;
+      for (const [pane, key] of paneTargets) {
+        if (!key || key.startsWith("mcx_fo|")) continue;
+        const result = batchResp[pane];
+        const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
+        if (!result) continue;
+        if (result.error) {
+          const retryHeader = Number(result.retryAfter);
+          const retryDelay = Number.isFinite(retryHeader) && retryHeader > 0
+            ? Math.min(30_000, retryHeader * 1000)
+            : 5_000;
+          S.historicalCache.set(cacheKey, { retryAt: Date.now() + retryDelay, error: new Error(result.error) });
+        } else {
+          const parsed = {
+            candles: (result.candles || []).map((c) => ({
               time: num(c.time ?? c.ts),
               open: num(c.open),
               high: num(c.high),
@@ -1073,46 +1164,56 @@ async function loadCharts() {
               close: num(c.close),
               volume: num(c.volume),
             })),
-            warning: raw?.warning || "",
-          }));
-        const guardedRequest = request.catch((error) => {
-          const retryHeader = Number(error.retryAfter);
-          const retryDelay = Number.isFinite(retryHeader) && retryHeader > 0
-            ? Math.min(15 * 60_000, retryHeader * 1000)
-            : error.status === 429 ? 180_000 : 60_000;
-          const retryAt = Date.now() + retryDelay;
-          S.historicalCache.set(cacheKey, { retryAt, error });
-          if (chartRetryTimer) window.clearTimeout(chartRetryTimer);
-          chartRetryTimer = window.setTimeout(() => {
-            chartRetryTimer = null;
-            loadCharts();
-          }, retryDelay + 100);
-          throw error;
-        });
-        S.historicalCache.set(cacheKey, guardedRequest);
-        try {
-          candles = await guardedRequest;
-          S.historicalCache.set(cacheKey, candles);
-        } catch (error) { throw error; }
-      }
-      const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : (pane === "ce" ? chartInstrument("CE") : chartInstrument("PE"));
-      if (loadID !== S.chartLoadID || currentExpectedKey !== key) return;
-      if (S.marketOpen) {
-        if (!S.candles[liveKey]?.length) {
-          S.candles[liveKey] = candles.candles.slice(-500).map((candle) => ({ ...candle }));
+            warning: result.warning || "",
+          };
+          S.historicalCache.set(cacheKey, parsed);
         }
-        chart.setData(mergeChartCandles(candles.candles, S.candles[liveKey] || []));
-        setChartHint(pane, candles.warning || (candles.candles.length ? "" : "Waiting for live ticks…"));
-      } else {
-        chart.setData(candles.candles);
-        setChartHint(pane, candles.warning || (candles.candles.length ? "" : "No historical candles returned for this contract."));
       }
     } catch (error) {
-      const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : (pane === "ce" ? chartInstrument("CE") : chartInstrument("PE"));
-      if (loadID !== S.chartLoadID || currentExpectedKey !== key) return;
-      console.warn("historical candles unavailable", { pane, error });
+      if (loadID !== S.chartLoadID) return;
+      console.warn("candles batch request failed", error);
+      const retryHeader = Number(error.retryAfter);
+      const retryDelay = Number.isFinite(retryHeader) && retryHeader > 0
+        ? Math.min(30_000, retryHeader * 1000)
+        : 5_000;
+      if (chartRetryTimer) window.clearTimeout(chartRetryTimer);
+      chartRetryTimer = window.setTimeout(() => {
+        chartRetryTimer = null;
+        loadCharts();
+      }, retryDelay + 100);
+    }
+  }
+
+  if (loadID !== S.chartLoadID) return;
+
+  for (const [pane, key, defaultHint] of paneTargets) {
+    const chart = S.charts[pane];
+    if (!chart || !key || key.startsWith("mcx_fo|")) continue;
+    const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : (pane === "ce" ? chartInstrument("CE") : chartInstrument("PE"));
+    if (currentExpectedKey !== key) continue;
+
+    const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
+    const entry = S.historicalCache.get(cacheKey);
+    const liveKey = `${key}|${S.timeframe}`;
+
+    if (!entry) {
       chart.setData([]);
-      setChartHint(pane, `Historical data unavailable: ${error.message}`);
+      setChartHint(pane, defaultHint);
+    } else if (entry.retryAt) {
+      console.warn("historical candles unavailable", { pane, error: entry.error });
+      chart.setData([]);
+      setChartHint(pane, `Historical data unavailable: ${entry.error.message}`);
+    } else {
+      if (S.marketOpen) {
+        if (!S.candles[liveKey]?.length) {
+          S.candles[liveKey] = entry.candles.slice(-500).map((candle) => ({ ...candle }));
+        }
+        chart.setData(mergeChartCandles(entry.candles, S.candles[liveKey] || []));
+        setChartHint(pane, entry.warning || (entry.candles.length ? "" : "Waiting for live ticks…"));
+      } else {
+        chart.setData(entry.candles);
+        setChartHint(pane, entry.warning || (entry.candles.length ? "" : "No historical candles returned for this contract."));
+      }
     }
   }
   renderPaneHeaders();
@@ -1130,7 +1231,7 @@ function setChartHint(pane, message) {
   hint.hidden = !message;
 }
 
-function updateLiveCandle(key, price, timestamp) {
+function updateLiveCandle(key, price, timestamp, volume) {
   if (!S.marketOpen || S.feed !== "live" || !Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
@@ -1143,17 +1244,34 @@ function updateLiveCandle(key, price, timestamp) {
   const sessionStart = localDayStart + openSeconds;
   const bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
   const value = Number(price);
+  const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
   const cacheKey = `${key}|${S.timeframe}`;
   const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
   let candle = candles[candles.length - 1];
   if (!candle || candle.time !== bucket) {
-    candle = { time: bucket, open: value, high: value, low: value, close: value, volume: 0 };
+    candle = {
+      time: bucket,
+      open: value,
+      high: value,
+      low: value,
+      close: value,
+      volume: 0,
+      startVolume: cumVolume || 0,
+      dayVolume: cumVolume || 0,
+    };
     candles.push(candle);
     if (candles.length > 500) candles.shift();
   } else {
     candle.high = Math.max(candle.high, value);
     candle.low = Math.min(candle.low, value);
     candle.close = value;
+    if (cumVolume > 0) {
+      if (!candle.startVolume || candle.startVolume <= 0) {
+        candle.startVolume = cumVolume;
+      }
+      candle.volume = Math.max(candle.volume || 0, cumVolume - candle.startVolume);
+      candle.dayVolume = cumVolume;
+    }
   }
   for (const type of ["CE", "PE"]) {
     if (chartInstrument(type) !== key) continue;
@@ -1266,7 +1384,11 @@ function renderHeader() {
   $("margin-chip").title = S.limits?.error || (S.limits?.loaded ? "Available account margin" : "Account margin not loaded");
   const totalPnl = (S.positions || []).reduce((sum, p) => sum + num(p.pnl), 0);
   const pnlChip = $("pnl-chip");
-  pnlChip.textContent = totalPnl ? `₹${fmtSigned(totalPnl, 0)}` : "—";
+  if (S.session?.authenticated && (S.positionsLoaded || (S.positions && S.positions.length > 0))) {
+    pnlChip.textContent = `₹${fmtSigned(totalPnl, 0)}`;
+  } else {
+    pnlChip.textContent = totalPnl ? `₹${fmtSigned(totalPnl, 0)}` : "—";
+  }
   pnlChip.className = "metric-value " + directionClass(totalPnl);
 
   $("mode-badge").textContent = "LIVE";
@@ -1561,6 +1683,10 @@ function renderTab() {
     button.classList.toggle("active", button.dataset.tab === S.tab);
   }
 
+  const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
+  const sqBtn = $("square-off-button");
+  if (sqBtn) sqBtn.disabled = !hasOpen;
+
   if (S.tab === "positions") content.innerHTML = positionsHTML();
   else if (S.tab === "risk") {
     content.innerHTML = riskHTML();
@@ -1755,33 +1881,88 @@ function tradesHTML() {
   </tr>`).join("")}</tbody></table>`;
 }
 
+function renderOptionDepthPanel(type) {
+  const option = selectedOption(type);
+  if (!option) {
+    return `<div class="depth-column">
+      <div class="depth-column-header"><h3>${type} — No strike selected</h3></div>
+      <div class="empty-state">Select a ${type} strike from the chain</div>
+    </div>`;
+  }
+  const cached = S.depths?.[option.instrumentKey] || {};
+  let bids = (cached.bids && cached.bids.length) ? cached.bids : (option.bids || []);
+  let asks = (cached.asks && cached.asks.length) ? cached.asks : (option.asks || []);
+
+  if (!bids.length && option.bid > 0) {
+    bids = [{ price: option.bid, quantity: 0, orders: 0 }];
+  }
+  if (!asks.length && option.ask > 0) {
+    asks = [{ price: option.ask, quantity: 0, orders: 0 }];
+  }
+
+  const rows = [];
+  const count = Math.max(5, bids.length, asks.length);
+  let totalBidQty = 0;
+  let totalAskQty = 0;
+
+  for (let i = 0; i < count; i++) {
+    const b = bids[i] || null;
+    const a = asks[i] || null;
+    if (b && b.quantity) totalBidQty += num(b.quantity);
+    if (a && a.quantity) totalAskQty += num(a.quantity);
+    rows.push(`<tr>
+      <td class="col-orders">${b && b.orders ? b.orders : (b ? "—" : "")}</td>
+      <td class="col-qty">${b && b.quantity ? b.quantity.toLocaleString("en-IN") : (b ? "—" : "")}</td>
+      <td class="col-bid-px">${b && b.price ? fmt(b.price) : ""}</td>
+      <td class="col-ask-px">${a && a.price ? fmt(a.price) : ""}</td>
+      <td class="col-qty">${a && a.quantity ? a.quantity.toLocaleString("en-IN") : (a ? "—" : "")}</td>
+      <td class="col-orders">${a && a.orders ? a.orders : (a ? "—" : "")}</td>
+    </tr>`);
+  }
+
+  return `<div class="depth-column">
+    <div class="depth-column-header">
+      <h3>${esc(option.symbol || `${option.underlying} ${fmtStrike(option.strike)} ${type}`)}</h3>
+      <span class="depth-ltp ${directionClass(option.changePct)}">${fmt(option.ltp)} (${fmtSigned(option.changePct)}%)</span>
+    </div>
+    <div class="depth-table-wrapper">
+      <table class="depth-table">
+        <thead>
+          <tr class="depth-title-row">
+            <th colspan="3" class="title-buyers">BUYERS</th>
+            <th colspan="3" class="title-sellers">SELLERS</th>
+          </tr>
+          <tr class="depth-header-row">
+            <th class="col-orders">ORDERS</th>
+            <th class="col-qty">QTY</th>
+            <th class="col-bid-px">PRICE</th>
+            <th class="col-ask-px">PRICE</th>
+            <th class="col-qty">QTY</th>
+            <th class="col-orders">ORDERS</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.join("")}
+        </tbody>
+        <tfoot>
+          <tr class="depth-total-row">
+            <td colspan="2" class="total-bid-qty">${totalBidQty ? totalBidQty.toLocaleString("en-IN") : "—"}</td>
+            <td colspan="2" class="total-label">Total Quantity</td>
+            <td colspan="2" class="total-ask-qty">${totalAskQty ? totalAskQty.toLocaleString("en-IN") : "—"}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>`;
+}
+
 function depthHTML() {
-  const option = selectedOption(S.selected.type);
-  if (!option) return `<div class="empty-state">Select a CE or PE strike to see depth.</div>`;
-  const levels = S.depth || [];
-  const maxQty = Math.max(1, ...levels.flatMap((l) => [l.bidQty || 0, l.askQty || 0]));
-  const barWidth = (qty) => Math.max(2, Math.min(100, Math.round(((qty || 0) / maxQty) * 100)));
-  const bidRows = levels.map((level, index) => `<tr>
-    <td>${index + 1}</td>
-    <td>${fmt(level.bid)}</td>
-    <td>${fmtCompact(level.bidQty)}</td>
-    <td class="depth-bar"><svg viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="0" width="${barWidth(level.bidQty)}" height="8" rx="3"></rect></svg></td>
-  </tr>`).join("");
-  const askRows = levels.map((level, index) => `<tr>
-    <td>${index + 1}</td>
-    <td>${fmt(level.ask)}</td>
-    <td>${fmtCompact(level.askQty)}</td>
-    <td class="depth-bar"><svg viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="0" width="${barWidth(level.askQty)}" height="8" rx="3"></rect></svg></td>
-  </tr>`).join("");
-  return `<div class="depth-grid">
-    <div class="depth-side bid">
-      <h3>Bids · ${esc(option.symbol || "selected contract")}</h3>
-      <table><tbody>${bidRows || `<tr><td colspan="4">no bids</td></tr>`}</tbody></table>
-    </div>
-    <div class="depth-side ask">
-      <h3>Asks · ${esc(option.symbol || "selected contract")}</h3>
-      <table><tbody>${askRows || `<tr><td colspan="4">no asks</td></tr>`}</tbody></table>
-    </div>
+  const cePanel = renderOptionDepthPanel("CE");
+  const pePanel = renderOptionDepthPanel("PE");
+  return `<div class="depth-container">
+    <div class="depth-pane left">${cePanel}</div>
+    <div class="depth-pane center-spacer"></div>
+    <div class="depth-pane right">${pePanel}</div>
   </div>`;
 }
 
@@ -1856,14 +2037,6 @@ async function onTrade(action, type) {
   };
 
   try {
-    if (orderMode === "live") {
-      const ok = await confirmAction({ title: "Submit live order", body: `${side === "B" ? "Buy" : "Sell"} <b>${shares}</b> ${esc(option.symbol)} as a live ${esc(S.product)} order?`, okLabel: "Submit Order", danger: true });
-      if (!ok) return;
-      if (tradingMode() !== orderMode) {
-        toast("Trading mode changed; order was not sent. Review the selected account and try again.", "warn", 5000);
-        return;
-      }
-    }
     const result = await postOrder(payload);
     toast(`Live order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
     scheduleBooksRefresh(400);
@@ -1920,14 +2093,14 @@ async function onExit(instrumentKey) {
 async function onSquareOffAll() {
   const orderMode = tradingMode();
   if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before squaring off positions.", "warn"); return; }
-  const positions = S.positions.slice();
-  if (!positions.length) {
+  const openPositions = S.positions.filter((p) => Math.abs(num(p.quantity)) > 0);
+  if (!openPositions.length) {
     toast("No open positions to square off.", "warn");
     return;
   }
   const ok = await confirmAction({
     title: "Square off all",
-    body: `Close <b>${positions.length}</b> open position${positions.length === 1 ? "" : "s"} at market? ` +
+    body: `Close <b>${openPositions.length}</b> open position${openPositions.length === 1 ? "" : "s"} at market? ` +
       `<span class="warn">This cannot be undone.</span>`,
     okLabel: "Square Off All",
     danger: true,
@@ -1939,7 +2112,7 @@ async function onSquareOffAll() {
   }
 
   try {
-    for (const position of positions) {
+    for (const position of openPositions) {
       const quantity = Math.abs(num(position.quantity));
       if (!quantity || !position.instrument_key || !position.exchange_segment) continue;
       await postOrder({ mode: "live", instrument_key: position.instrument_key, exchange_segment: position.exchange_segment,
@@ -2087,6 +2260,7 @@ function completeLogin(result) {
   toast("Session active. Feeds are connecting.", "ok");
   connectWebSocket();
   if (!S.expiry) loadMarket();
+  refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
 }
 
 async function logout() {
@@ -2323,6 +2497,7 @@ function updateLotInput(type, value) {
 
 async function switchIndex(key) {
   if (!key) return;
+  try { localStorage.setItem("scalper-last-index", key); } catch (_) {}
   const requestID = ++S.chainRequestID;
   S.activeIndex = key;
   S.expiry = "";
@@ -2364,6 +2539,7 @@ async function switchIndex(key) {
 
 async function switchExpiry(date) {
   if (!date) return;
+  try { localStorage.setItem(`scalper-last-expiry-${S.activeIndex}`, date); } catch (_) {}
   const requestID = ++S.chainRequestID;
   S.expiry = date;
   S.chain = [];
@@ -2390,8 +2566,10 @@ async function switchExpiry(date) {
   loadCharts();
 }
 
-function refreshMarket() {
+async function refreshMarket() {
+  S.historicalCache.clear();
   pollLive({ refreshChain: true });
+  loadCharts(true);
   toast("Refreshed", "ok", 1200);
 }
 

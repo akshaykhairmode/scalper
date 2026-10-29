@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -136,6 +137,102 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
 }
 
+type candleFetchResult struct {
+	Candles    []market.Candle `json:"candles"`
+	Source     string          `json:"source,omitempty"`
+	Stale      bool            `json:"stale,omitempty"`
+	Warning    string          `json:"warning,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	StatusCode int             `json:"statusCode,omitempty"`
+	RetryAfter string          `json:"retryAfter,omitempty"`
+}
+
+func (s *Server) isTimeframeAllowed(timeframe string) bool {
+	for _, configured := range s.cfg.Charts.Timeframes {
+		if timeframe == configured {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) fetchInstrumentCandles(
+	ctx context.Context,
+	instrument, timeframe, sessionDate string,
+	localNow time.Time,
+	forceRefresh bool,
+) candleFetchResult {
+	if instrument == "" {
+		return candleFetchResult{}
+	}
+	var cached []market.Candle
+	if s.candleStore != nil {
+		var cacheErr error
+		cached, cacheErr = s.candleStore.ReadCandles(ctx, instrument, timeframe)
+		if cacheErr != nil {
+			s.log.Warn("read historical candles from SQLite", "event", "candle_cache_read_failed", "error", cacheErr,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
+			cached = nil
+		}
+		syncedAt, synced, syncErr := s.candleStore.CandleSyncAt(ctx, instrument, timeframe, sessionDate)
+		if syncErr != nil {
+			s.log.Warn("read historical candle sync marker", "event", "candle_sync_read_failed", "error", syncErr,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
+		}
+		if !forceRefresh && len(cached) > 0 && syncErr == nil && synced && !candleRefreshDue(
+			localNow, s.cfg.Trading.Session.Open, s.cfg.Trading.Session.Close, syncedAt) {
+			return candleFetchResult{Candles: cached, Source: "sqlite"}
+		}
+	}
+
+	fetched, err := s.market.Candles(ctx, s.marketBaseURL(), instrument, timeframe)
+	if err != nil {
+		if len(cached) > 0 {
+			s.log.Warn("historical candle refresh failed; using cached bars", "event", "candle_refresh_failed",
+				"error", err, "instrument", instrument, "timeframe", timeframe)
+			return candleFetchResult{
+				Candles: cached,
+				Source:  "sqlite",
+				Stale:   true,
+				Warning: "Kotak historical refresh failed; showing saved candles.",
+			}
+		}
+		status := http.StatusBadGateway
+		var upstream *market.HTTPStatusError
+		var retryAfter string
+		if errors.As(err, &upstream) && upstream.StatusCode >= 400 && upstream.StatusCode <= 599 {
+			status = upstream.StatusCode
+			retryAfter = upstream.RetryAfter
+		}
+		return candleFetchResult{
+			Error:      err.Error(),
+			StatusCode: status,
+			RetryAfter: retryAfter,
+		}
+	}
+
+	if s.candleStore != nil {
+		if err := s.candleStore.WriteCandles(ctx, instrument, timeframe, fetched); err != nil {
+			s.log.Warn("save historical candles to SQLite", "event", "candle_cache_write_failed", "error", err,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
+		} else if err := s.candleStore.MarkCandlesSynced(ctx, instrument, timeframe, sessionDate, localNow.Unix()); err != nil {
+			s.log.Warn("save historical candle sync marker", "event", "candle_sync_write_failed", "error", err,
+				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
+		}
+	}
+
+	if len(fetched) == 0 && len(cached) > 0 {
+		return candleFetchResult{
+			Candles: cached,
+			Source:  "sqlite",
+			Stale:   true,
+			Warning: "Kotak returned no candles; showing saved candles.",
+		}
+	}
+	candles := mergeCandles(cached, fetched)
+	return candleFetchResult{Candles: candles, Source: "kotak"}
+}
+
 func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	if s.market == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
@@ -147,14 +244,7 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "instrument and tf are required", nil)
 		return
 	}
-	allowed := false
-	for _, configured := range s.cfg.Charts.Timeframes {
-		if timeframe == configured {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if !s.isTimeframeAllowed(timeframe) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "unsupported chart timeframe", nil)
 		return
 	}
@@ -162,69 +252,96 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	location := s.cfg.Location()
 	localNow := now.In(location)
 	sessionDate := localNow.Format("2006-01-02")
-	var cached []market.Candle
-	if s.candleStore != nil {
-		var cacheErr error
-		cached, cacheErr = s.candleStore.ReadCandles(r.Context(), instrument, timeframe)
-		if cacheErr != nil {
-			s.log.Warn("read historical candles from SQLite", "event", "candle_cache_read_failed", "error", cacheErr,
-				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
-			cached = nil
-		}
-		syncedAt, synced, syncErr := s.candleStore.CandleSyncAt(r.Context(), instrument, timeframe, sessionDate)
-		if syncErr != nil {
-			s.log.Warn("read historical candle sync marker", "event", "candle_sync_read_failed", "error", syncErr,
-				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
-		}
-		if len(cached) > 0 && syncErr == nil && synced && !candleRefreshDue(
-			localNow, s.cfg.Trading.Session.Open, s.cfg.Trading.Session.Close, syncedAt) {
-			s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": cached, "source": "sqlite"})
-			return
-		}
-	}
+	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1"
 
-	fetched, err := s.market.Candles(r.Context(), s.marketBaseURL(), instrument, timeframe)
-	if err != nil {
-		if len(cached) > 0 {
-			s.log.Warn("historical candle refresh failed; using cached bars", "event", "candle_refresh_failed",
-				"error", err, "instrument", instrument, "timeframe", timeframe)
-			s.writeRouteJSON(w, r, http.StatusOK, map[string]any{
-				"candles": cached, "source": "sqlite", "stale": true,
-				"warning": "Kotak historical refresh failed; showing saved candles.",
-			})
-			return
+	res := s.fetchInstrumentCandles(r.Context(), instrument, timeframe, sessionDate, localNow, forceRefresh)
+	if res.Error != "" {
+		if res.RetryAfter != "" {
+			w.Header().Set("Retry-After", res.RetryAfter)
 		}
-		status := http.StatusBadGateway
-		var upstream *market.HTTPStatusError
-		if errors.As(err, &upstream) && upstream.StatusCode >= 400 && upstream.StatusCode <= 599 {
-			status = upstream.StatusCode
-			if upstream.RetryAfter != "" {
-				w.Header().Set("Retry-After", upstream.RetryAfter)
+		status := res.StatusCode
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		s.writeRouteError(w, r, status, res.Error, nil)
+		return
+	}
+	resp := map[string]any{"candles": res.Candles, "source": res.Source}
+	if res.Stale {
+		resp["stale"] = true
+	}
+	if res.Warning != "" {
+		resp["warning"] = res.Warning
+	}
+	s.writeRouteJSON(w, r, http.StatusOK, resp)
+}
+
+func (s *Server) handleCandlesBatch(w http.ResponseWriter, r *http.Request) {
+	if s.market == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
+		return
+	}
+	timeframe := strings.TrimSpace(r.URL.Query().Get("tf"))
+	if timeframe == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "tf is required", nil)
+		return
+	}
+	if !s.isTimeframeAllowed(timeframe) {
+		s.writeRouteError(w, r, http.StatusBadRequest, "unsupported chart timeframe", nil)
+		return
+	}
+	now := s.now()
+	location := s.cfg.Location()
+	localNow := now.In(location)
+	sessionDate := localNow.Format("2006-01-02")
+	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1"
+
+	ceKey := strings.TrimSpace(r.URL.Query().Get("ce"))
+	spotKey := strings.TrimSpace(r.URL.Query().Get("spot"))
+	peKey := strings.TrimSpace(r.URL.Query().Get("pe"))
+
+	rawInstruments := r.URL.Query().Get("instruments")
+	var extraInstruments []string
+	if rawInstruments != "" {
+		for _, inst := range strings.Split(rawInstruments, ",") {
+			inst = strings.TrimSpace(inst)
+			if inst != "" {
+				extraInstruments = append(extraInstruments, inst)
 			}
 		}
-		s.writeRouteError(w, r, status, err.Error(), err)
-		return
 	}
 
-	if s.candleStore != nil {
-		if err := s.candleStore.WriteCandles(r.Context(), instrument, timeframe, fetched); err != nil {
-			s.log.Warn("save historical candles to SQLite", "event", "candle_cache_write_failed", "error", err,
-				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
-		} else if err := s.candleStore.MarkCandlesSynced(r.Context(), instrument, timeframe, sessionDate, localNow.Unix()); err != nil {
-			s.log.Warn("save historical candle sync marker", "event", "candle_sync_write_failed", "error", err,
-				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(r.Context()))
+	response := make(map[string]any)
+	results := make(map[string]candleFetchResult)
+
+	fetchAndRecord := func(key string) candleFetchResult {
+		if key == "" {
+			return candleFetchResult{}
 		}
+		if res, ok := results[key]; ok {
+			return res
+		}
+		res := s.fetchInstrumentCandles(r.Context(), key, timeframe, sessionDate, localNow, forceRefresh)
+		results[key] = res
+		return res
 	}
 
-	if len(fetched) == 0 && len(cached) > 0 {
-		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{
-			"candles": cached, "source": "sqlite", "stale": true,
-			"warning": "Kotak returned no candles; showing saved candles.",
-		})
-		return
+	// Fetch in optimal order: spot first (instant SQLite lookup), then ce, then pe
+	if spotKey != "" {
+		response["spot"] = fetchAndRecord(spotKey)
 	}
-	candles := mergeCandles(cached, fetched)
-	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"candles": candles, "source": "kotak"})
+	if ceKey != "" {
+		response["ce"] = fetchAndRecord(ceKey)
+	}
+	if peKey != "" {
+		response["pe"] = fetchAndRecord(peKey)
+	}
+	for _, inst := range extraInstruments {
+		fetchAndRecord(inst)
+	}
+
+	response["results"] = results
+	s.writeRouteJSON(w, r, http.StatusOK, response)
 }
 
 func candleRefreshDue(now time.Time, openText, closeText string, syncedAt int64) bool {

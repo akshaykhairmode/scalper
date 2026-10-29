@@ -297,6 +297,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/broker/holdings", s.handleBrokerHoldings)
 	mux.HandleFunc("GET /api/broker/limits", s.handleBrokerLimits)
 	mux.HandleFunc("GET /api/candles", s.handleCandles)
+	mux.HandleFunc("GET /api/candles/batch", s.handleCandlesBatch)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	var h http.Handler = mux

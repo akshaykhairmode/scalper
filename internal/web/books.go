@@ -86,9 +86,7 @@ func (c *booksCache) expire(kinds ...string) {
 	defer c.mu.Unlock()
 	for _, kind := range kinds {
 		if state, ok := c.books[kind]; ok {
-			state.raw = nil
-			state.err = nil
-			state.nextTry = time.Time{}
+			*state = bookState{}
 		}
 	}
 	c.invalidate()

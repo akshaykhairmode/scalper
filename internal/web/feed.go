@@ -163,17 +163,22 @@ func (s *Server) forwardHSMEvents() {
 					"instrument", event.Quote.InstrumentKey)
 				continue
 			}
+			tickData := map[string]any{
+				"key": key, "ltp": event.Quote.LTP,
+				"prev_close": event.Quote.PreviousClose,
+				"change":     event.Quote.Change,
+				"change_pct": event.Quote.ChangePct,
+				"volume":     event.Quote.Volume, "oi": event.Quote.OI,
+				"bid": event.Quote.Bid, "ask": event.Quote.Ask,
+				"timestamp": event.Quote.Timestamp,
+			}
+			if len(event.Quote.Bids) > 0 || len(event.Quote.Asks) > 0 {
+				tickData["bids"] = event.Quote.Bids
+				tickData["asks"] = event.Quote.Asks
+			}
 			s.broadcast(map[string]any{
 				"type": "tick",
-				"data": map[string]any{
-					"key": key, "ltp": event.Quote.LTP,
-					"prev_close": event.Quote.PreviousClose,
-					"change":     event.Quote.Change,
-					"change_pct": event.Quote.ChangePct,
-					"volume":     event.Quote.Volume, "oi": event.Quote.OI,
-					"bid": event.Quote.Bid, "ask": event.Quote.Ask,
-					"timestamp": event.Quote.Timestamp,
-				},
+				"data": tickData,
 			})
 		}
 	}

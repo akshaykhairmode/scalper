@@ -151,6 +151,8 @@ func TestSFeedClientAuthenticatesSubscribesAndDecodesTicks(t *testing.T) {
 		option.Change != 123.45 || option.ChangePct != 1.25 ||
 		option.Volume != 1000 || option.OI != 5000 ||
 		option.Bid != 12345 || option.Ask != 12346 ||
+		len(option.Bids) != 1 || option.Bids[0].Price != 12345 || option.Bids[0].Quantity != 10 || option.Bids[0].Orders != 3 ||
+		len(option.Asks) != 1 || option.Asks[0].Price != 12346 || option.Asks[0].Quantity != 11 || option.Asks[0].Orders != 4 ||
 		option.Timestamp != 1_761_566_400 {
 		t.Fatalf("option quote = %+v", option)
 	}
@@ -320,3 +322,69 @@ func receiveQuote(t *testing.T, quotes <-chan *Quote) *Quote {
 type testDiscard struct{}
 
 func (testDiscard) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestSFeedClientSubscribeDepth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read auth: %v", err)
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(
+			`{"message_code":1119,"format":"native_batch","exchanges":{"nse_fo":{"value":2,"divider":100}}}`,
+		)); err != nil {
+			t.Errorf("write auth response: %v", err)
+			return
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read subscribe: %v", err)
+			return
+		}
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Errorf("decode subscribe: %v", err)
+			return
+		}
+		if request["event"] != "subscribeDepth" || request["inputtoken"] != "nse_fo|12345" {
+			t.Errorf("unexpected subscribe request: %#v", request)
+			return
+		}
+		_, raw, err = conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read unsubscribe: %v", err)
+			return
+		}
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Errorf("decode unsubscribe: %v", err)
+			return
+		}
+		if request["event"] != "unsubscribeDepth" || request["inputtoken"] != "nse_fo|12345" {
+			t.Errorf("unexpected unsubscribe request: %#v", request)
+			return
+		}
+	}))
+	defer server.Close()
+
+	endpoint := "ws://" + server.Listener.Addr().String()
+	client := NewHSMClientWithLogger(endpoint, make(chan *Quote, 10), slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx, "test-ucc", "trade-sid"); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Stop()
+	if err := client.SubscribeDepth([]string{"nse_fo|12345"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UnsubscribeDepth([]string{"nse_fo|12345"}); err != nil {
+		t.Fatal(err)
+	}
+}
