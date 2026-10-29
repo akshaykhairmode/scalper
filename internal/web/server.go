@@ -3,8 +3,10 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -14,14 +16,18 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gorilla/websocket"
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
@@ -270,7 +276,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	mux.Handle("GET /static/", s.newStaticHandler(http.StripPrefix("/static/", http.FileServerFS(static))))
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -877,4 +883,97 @@ type jsonError struct {
 
 func writeJSONError(w http.ResponseWriter, status int, msg, requestID string) error {
 	return writeJSON(w, status, jsonError{Error: msg, RequestID: requestID})
+}
+
+type staticBrAsset struct {
+	data  []byte
+	etag  string
+	ctype string
+}
+
+func (s *Server) newStaticHandler(fallback http.Handler) http.Handler {
+	cache := make(map[string]staticBrAsset)
+
+	entries, err := fs.ReadDir(staticFS, "static")
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if strings.HasSuffix(name, ".br") {
+				continue
+			}
+			ext := filepath.Ext(name)
+			switch ext {
+			case ".js", ".css", ".html", ".svg", ".json", ".txt":
+			default:
+				continue
+			}
+
+			ctype := mime.TypeByExtension(ext)
+			if ctype == "" {
+				switch ext {
+				case ".js":
+					ctype = "application/javascript; charset=utf-8"
+				case ".css":
+					ctype = "text/css; charset=utf-8"
+				default:
+					ctype = "application/octet-stream"
+				}
+			}
+
+			// 1. Try reading pre-compressed .br file from staticFS
+			brData, err := staticFS.ReadFile(path.Join("static", name+".br"))
+			if err != nil {
+				// 2. Fallback: compress in-memory at startup if raw file exists (e.g. during go run)
+				raw, readErr := staticFS.ReadFile(path.Join("static", name))
+				if readErr == nil && len(raw) > 0 {
+					var buf bytes.Buffer
+					w := brotli.NewWriterOptions(&buf, brotli.WriterOptions{
+						Quality: brotli.BestCompression,
+					})
+					if _, copyErr := w.Write(raw); copyErr == nil && w.Close() == nil {
+						brData = buf.Bytes()
+					}
+				}
+			}
+
+			if len(brData) > 0 {
+				cache[name] = staticBrAsset{
+					data:  brData,
+					etag:  fmt.Sprintf(`"%x"`, sha256.Sum256(brData)),
+					ctype: ctype,
+				}
+			}
+		}
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/static/")
+		if name == "" || strings.Contains(name, "..") {
+			http.NotFound(w, r)
+			return
+		}
+
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "br") {
+			if asset, ok := cache[name]; ok {
+				w.Header().Set("Content-Type", asset.ctype)
+				w.Header().Set("Content-Encoding", "br")
+				w.Header().Set("Vary", "Accept-Encoding")
+				w.Header().Set("ETag", asset.etag)
+
+				if match := r.Header.Get("If-None-Match"); match == asset.etag {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(asset.data)
+				return
+			}
+		}
+
+		fallback.ServeHTTP(w, r)
+	})
 }

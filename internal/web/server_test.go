@@ -14,6 +14,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/andybalholm/brotli"
+
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/market"
@@ -612,6 +614,43 @@ func TestStaticAssetsAndFavicon(t *testing.T) {
 	rec = do(t, s, localRequest(http.MethodGet, "/favicon.ico"))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("favicon status = %d", rec.Code)
+	}
+
+	// Test Brotli compressed static asset serving
+	reqBr := localRequest(http.MethodGet, "/static/app.css")
+	reqBr.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	recBr := do(t, s, reqBr)
+	if recBr.Code != http.StatusOK {
+		t.Fatalf("css br status = %d, want 200", recBr.Code)
+	}
+	if recBr.Header().Get("Content-Encoding") != "br" {
+		t.Fatalf("Content-Encoding = %q, want 'br'", recBr.Header().Get("Content-Encoding"))
+	}
+	if recBr.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatalf("Vary = %q, want 'Accept-Encoding'", recBr.Header().Get("Vary"))
+	}
+	etag := recBr.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag on br response")
+	}
+
+	// Test If-None-Match 304 response
+	req304 := localRequest(http.MethodGet, "/static/app.css")
+	req304.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req304.Header.Set("If-None-Match", etag)
+	rec304 := do(t, s, req304)
+	if rec304.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304 Not Modified", rec304.Code)
+	}
+
+	// Verify decompressed Brotli content contains css token
+	brReader := brotli.NewReader(recBr.Body)
+	decompressed, err := io.ReadAll(brReader)
+	if err != nil {
+		t.Fatalf("decompress br response: %v", err)
+	}
+	if !strings.Contains(string(decompressed), "--accent") {
+		t.Fatal("decompressed css body missing --accent")
 	}
 }
 

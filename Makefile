@@ -5,7 +5,7 @@ BIN       ?= bin/scalper
 CONFIG    ?= config.yaml
 COVER_MIN ?= 85
 
-.PHONY: all help fmt vet lint build test race cover cover-html check run clean
+.PHONY: all help fmt vet lint compress build test race cover cover-html check run clean
 
 all: fmt vet lint test build
 
@@ -13,6 +13,7 @@ help:
 	@echo "make fmt        gofmt + goimports if available"
 	@echo "make vet        go vet ./..."
 	@echo "make lint       golangci-lint run (if installed)"
+	@echo "make compress   pre-compress static assets with Brotli"
 	@echo "make build      build $(BIN)"
 	@echo "make test       go test ./..."
 	@echo "make race       go test -race ./..."
@@ -31,7 +32,10 @@ vet:
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; else echo "golangci-lint not installed; skipping"; fi
 
-build:
+compress:
+	$(GO) run ./scripts/compress_assets.go
+
+build: compress
 	@mkdir -p "$(dir $(BIN))"
 	$(GO) build -trimpath -o $(BIN) ./cmd/scalper
 

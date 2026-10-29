@@ -491,23 +491,31 @@ function buildCharts() {
 
   let syncingRange = false;
   const syncRange = (sourceChart) => {
-    if (syncingRange) return;
-    const range = sourceChart?.chart?.timeScale()?.getVisibleRange();
-    if (!range || range.from == null || range.to == null) return;
+    if (syncingRange || !sourceChart || !sourceChart.chart) return;
+    const dist = sourceChart.chart.getOffsetRightDistance();
+    const space = sourceChart.chart.getBarSpace();
     syncingRange = true;
     for (const other of [S.charts.ce, S.charts.spot, S.charts.pe]) {
       if (other && other !== sourceChart && other.chart) {
         try {
-          other.chart.timeScale().setVisibleRange(range);
+          if (space && Math.abs(other.chart.getBarSpace() - space) > 0.05) {
+            other.chart.setBarSpace(space);
+          }
+          if (Number.isFinite(dist) && Math.abs(other.chart.getOffsetRightDistance() - dist) > 1) {
+            other.chart.setOffsetRightDistance(dist);
+          }
         } catch (_) {}
       }
     }
     syncingRange = false;
   };
 
-  S.charts.ce.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.ce));
-  S.charts.spot.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.spot));
-  S.charts.pe.chart.timeScale().subscribeVisibleTimeRangeChange(() => syncRange(S.charts.pe));
+  for (const c of [S.charts.ce, S.charts.spot, S.charts.pe]) {
+    if (c && c.chart) {
+      c.chart.subscribeAction("onScroll", () => syncRange(c));
+      c.chart.subscribeAction("onZoom", () => syncRange(c));
+    }
+  }
 
   for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
     button.classList.toggle("active", savedSR);
@@ -2558,6 +2566,10 @@ function bindEvents() {
         } catch {
           // ignore
         }
+        return;
+      }
+      if (action === "trendline") {
+        chart.createTrendline();
         return;
       }
       if (action === "in") chart.zoomIn();

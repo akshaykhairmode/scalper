@@ -11,3 +11,4 @@ data
 logs
 config.yaml
 *.db
+*.br

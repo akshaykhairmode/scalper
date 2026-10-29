@@ -1,5 +1,3 @@
-import { CandlestickSeries, HistogramSeries, LineStyle, createChart } from "./lightweight-charts.standalone.production.js";
-
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -76,99 +74,158 @@ function calculateSRLevels(candles, maxLevels = 3) {
   };
 }
 
-const axisTime = (time) => new Date(Number(time) * 1000).toLocaleTimeString("en-GB", {
-  hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
-});
-const formatChartHoverTime = (time) => {
-  const ts = typeof time === "number" ? time : (time && typeof time.timestamp === "number" ? time.timestamp : null);
-  const date = ts !== null
-    ? new Date(ts * 1000)
-    : (time && time.year ? new Date(Date.UTC(time.year, time.month - 1, time.day)) : new Date(Number(time) * 1000));
-  if (isNaN(date.getTime())) return "";
-  const day = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", day: "2-digit" });
-  const month = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", month: "short" });
-  const year = date.toLocaleDateString("en-GB", { timeZone: "Asia/Kolkata", year: "2-digit" });
-  const timeStr = date.toLocaleTimeString("en-GB", {
-    timeZone: "Asia/Kolkata",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  return `${day} ${month} '${year}  ${timeStr}`;
-};
-const istDateFormatter = new Intl.DateTimeFormat("en-US", {
-  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
-});
-const istDayKey = (time) => {
-  const parts = Object.fromEntries(istDateFormatter.formatToParts(new Date(time * 1000)).map((part) => [part.type, part.value]));
-  return `${parts.year}-${parts.month}-${parts.day}`;
-};
+function buildStyles(colors) {
+  return {
+    grid: {
+      show: true,
+      horizontal: { show: true, size: 1, color: colors.grid, style: "dashed", dashedValue: [2, 2] },
+      vertical: { show: true, size: 1, color: colors.grid, style: "dashed", dashedValue: [2, 2] },
+    },
+    candle: {
+      type: "candle_solid",
+      bar: {
+        upColor: colors.up,
+        downColor: colors.down,
+        noChangeColor: colors.text,
+        upBorderColor: colors.up,
+        downBorderColor: colors.down,
+        noChangeBorderColor: colors.text,
+        upWickColor: colors.up,
+        downWickColor: colors.down,
+        noChangeWickColor: colors.text,
+      },
+      priceMark: {
+        show: true,
+        high: { show: true, color: colors.text, textSize: 10 },
+        low: { show: true, color: colors.text, textSize: 10 },
+        last: {
+          show: true,
+          upColor: colors.up,
+          downColor: colors.down,
+          noChangeColor: colors.text,
+          line: { show: true, style: "dashed", dashedValue: [4, 4], size: 1, color: colors.crosshair },
+          text: { show: true, color: "#ffffff", backgroundColor: colors.up, size: 11 },
+        },
+      },
+      tooltip: {
+        showRule: "follow_cross",
+        showType: "standard",
+        text: { size: 11, color: colors.text },
+      },
+    },
+    indicator: {
+      bars: [
+        {
+          style: "fill",
+          upColor: `${colors.up}80`,
+          downColor: `${colors.down}80`,
+          noChangeColor: `${colors.text}80`,
+        },
+      ],
+    },
+    xAxis: {
+      axisLine: { show: true, size: 1, color: colors.border },
+      tickLine: { show: true, size: 1, color: colors.border },
+      tickText: { show: true, color: colors.text, size: 11 },
+    },
+    yAxis: {
+      axisLine: { show: true, size: 1, color: colors.border },
+      tickLine: { show: true, size: 1, color: colors.border },
+      tickText: { show: true, color: colors.text, size: 11 },
+    },
+    separator: { size: 1, color: colors.border },
+    crosshair: {
+      show: true,
+      horizontal: {
+        show: true,
+        line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: colors.crosshair },
+        text: { show: true, color: "#ffffff", backgroundColor: colors.crosshair, size: 11 },
+      },
+      vertical: {
+        show: true,
+        line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: colors.crosshair },
+        text: { show: true, color: "#ffffff", backgroundColor: colors.crosshair, size: 11 },
+      },
+    },
+    overlay: {
+      line: { color: colors.crosshair, size: 1.5 },
+      point: { color: colors.up, radius: 4 },
+    },
+  };
+}
 
 export class CandleChart {
   constructor(container, { showVolume = true, showSR = false } = {}) {
     this.container = container;
     this.data = [];
+    this.showVolume = showVolume;
     this.showSR = showSR;
-    this.srPriceLines = [];
+    this.srOverlayIds = [];
     this.colors = chartColors(container);
-    this.chart = createChart(container, {
-      autoSize: true,
-      width: container.clientWidth || 320,
-      height: container.clientHeight || 240,
-      layout: {
-        background: { type: "solid", color: this.colors.bg },
-        textColor: this.colors.text,
-        attributionLogo: true,
-      },
-      localization: {
-        locale: "en-IN",
-        priceFormatter: (price) => Number(price).toLocaleString("en-IN", {
-          minimumFractionDigits: 2, maximumFractionDigits: 2,
-        }),
-        timeFormatter: (time) => formatChartHoverTime(time),
-      },
-      grid: {
-        vertLines: { color: this.colors.grid },
-        horzLines: { color: this.colors.grid },
-      },
-      rightPriceScale: { borderColor: this.colors.border, minimumWidth: 58 },
-      timeScale: {
-        borderColor: this.colors.border,
-        timeVisible: true,
-        secondsVisible: false,
-        rightOffset: 4,
-        tickMarkFormatter: (time) => axisTime(time),
-      },
-      crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: false, price: true }, axisDoubleClickReset: { time: false, price: true } },
+    this.loaderCallback = null;
+    this.subscriberCallback = null;
 
+    const kc = window.klinecharts;
+    if (!kc) {
+      console.error("klinecharts library not available on window.klinecharts");
+      return;
+    }
+
+    this.chart = kc.init(container, {
+      styles: buildStyles(this.colors),
     });
-    this.candles = this.chart.addSeries(CandlestickSeries, {
-      upColor: this.colors.up,
-      downColor: this.colors.down,
-      borderVisible: false,
-      wickUpColor: this.colors.up,
-      wickDownColor: this.colors.down,
-      priceLineVisible: true,
+
+    if (!this.chart) return;
+
+    this.chart.setTimezone("Asia/Kolkata");
+    this.chart.setSymbol({ ticker: container.id || "CHART", pricePrecision: 2, volumePrecision: 0 });
+    this.chart.setPeriod({ span: 1, type: "minute" });
+
+    this.chart.setDataLoader({
+      getBars: ({ callback }) => {
+        this.loaderCallback = callback;
+        callback(this.formatCandles(this.data), { forward: false, backward: false });
+      },
+      subscribeBar: ({ callback }) => {
+        this.subscriberCallback = callback;
+      },
     });
+
     if (showVolume) {
-      this.volume = this.chart.addSeries(HistogramSeries, {
-        priceFormat: { type: "volume" },
-        priceScaleId: "",
-        lastValueVisible: false,
-        priceLineVisible: false,
-      });
-      this.volume.priceScale().applyOptions({
-        scaleMargins: {
-          top: 0.8,
-          bottom: 0,
-        },
-      });
+      try {
+        this.chart.createIndicator("VOL", true, { id: "candle_pane" });
+      } catch (e) {
+        console.warn("createIndicator VOL:", e);
+      }
     }
 
     this.createVolumeBadge();
-    this.emptyData = [];
+    this.bindEvents();
+  }
+
+  formatCandle(c) {
+    if (!c || !Number.isFinite(c.time)) return null;
+    const ts = c.time > 1e11 ? c.time : c.time * 1000;
+    return {
+      timestamp: ts,
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number.isFinite(c.volume) ? Number(c.volume) : 0,
+      turnover: Number.isFinite(c.turnover) ? Number(c.turnover) : 0,
+      dayVolume: c.dayVolume,
+    };
+  }
+
+  formatCandles(candles) {
+    if (!Array.isArray(candles)) return [];
+    const result = [];
+    for (const c of candles) {
+      const item = this.formatCandle(c);
+      if (item) result.push(item);
+    }
+    return result;
   }
 
   createVolumeBadge() {
@@ -177,30 +234,16 @@ export class CandleChart {
     this.volBadge.setAttribute("aria-hidden", "true");
     this.volBadge.textContent = "Vol: —";
     this.container.parentElement?.appendChild(this.volBadge);
+  }
 
-    // Update badge on crosshair hover, reset on mouse leave
-    this.chart.subscribeCrosshairMove((param) => {
-      if (!param || !param.time) {
-        this.updateVolumeBadge();
-        return;
-      }
-      let vol = null;
-      let dayVol = null;
-      if (this.volume && param.seriesData && param.seriesData.has(this.volume)) {
-        const entry = param.seriesData.get(this.volume);
-        vol = entry?.value;
-      }
-      const item = this.data.find((c) => c.time === param.time);
-      if (vol === null && item) {
-        vol = item?.volume;
-      }
-      if (item && Number.isFinite(item.dayVolume) && item.dayVolume > 0) {
-        dayVol = item.dayVolume;
-      }
-      if (Number.isFinite(vol)) {
-        this.volBadge.textContent = dayVol ? `Vol: ${formatVolume(vol)} (Day: ${formatVolume(dayVol)})` : `Vol: ${formatVolume(vol)}`;
+  bindEvents() {
+    if (!this.chart) return;
+    this.chart.subscribeAction("onCrosshairChange", (data) => {
+      const bar = data?.kLineData;
+      if (bar) {
+        this.updateVolumeBadge(bar.volume, bar.dayVolume);
       } else {
-        this.volBadge.textContent = "Vol: —";
+        this.updateVolumeBadge();
       }
     });
   }
@@ -226,47 +269,64 @@ export class CandleChart {
   }
 
   clearSRLines() {
-    for (const line of this.srPriceLines) {
+    if (!this.chart) return;
+    for (const id of this.srOverlayIds) {
       try {
-        this.candles.removePriceLine(line);
-      } catch {
-        // ignore
-      }
+        this.chart.removeOverlay(id);
+      } catch (_) {}
     }
-    this.srPriceLines = [];
+    this.srOverlayIds = [];
   }
 
   refreshSRLines() {
     this.clearSRLines();
-    if (!this.showSR || !this.data.length) return;
+    if (!this.showSR || !this.data.length || !this.chart) return;
 
     const { supports, resistances } = calculateSRLevels(this.data);
-    resistances.forEach((price, idx) => {
-      const line = this.candles.createPriceLine({
-        price,
-        color: this.colors.resistance,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: `R${idx + 1}`,
-      });
-      this.srPriceLines.push(line);
-    });
+    for (let i = 0; i < resistances.length; i++) {
+      const price = resistances[i];
+      try {
+        const id = this.chart.createOverlay({
+          name: "horizontalStraightLine",
+          points: [{ value: price }],
+          lock: true,
+          styles: {
+            line: { color: this.colors.resistance, style: "dashed", size: 1 },
+            text: { color: this.colors.resistance, size: 10 },
+          },
+        });
+        if (id) this.srOverlayIds.push(id);
+      } catch (_) {}
+    }
 
-    supports.forEach((price, idx) => {
-      const line = this.candles.createPriceLine({
-        price,
-        color: this.colors.support,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: `S${idx + 1}`,
-      });
-      this.srPriceLines.push(line);
-    });
+    for (let i = 0; i < supports.length; i++) {
+      const price = supports[i];
+      try {
+        const id = this.chart.createOverlay({
+          name: "horizontalStraightLine",
+          points: [{ value: price }],
+          lock: true,
+          styles: {
+            line: { color: this.colors.support, style: "dashed", size: 1 },
+            text: { color: this.colors.support, size: 10 },
+          },
+        });
+        if (id) this.srOverlayIds.push(id);
+      } catch (_) {}
+    }
   }
 
-  setData(data, { fitSession = true } = {}) {
+  createTrendline() {
+    if (!this.chart) return null;
+    try {
+      return this.chart.createOverlay("segment");
+    } catch (e) {
+      console.warn("createTrendline:", e);
+      return null;
+    }
+  }
+
+  setData(data) {
     const byTime = new Map();
     if (Array.isArray(data)) {
       for (const candle of data) {
@@ -277,104 +337,62 @@ export class CandleChart {
       }
     }
     this.data = [...byTime.values()].sort((a, b) => a.time - b.time);
-    this.candles.setData(this.data);
-    if (this.volume) {
-      this.volume.setData(this.data.map((c) => ({
-        time: c.time,
-        value: Number.isFinite(c.volume) ? c.volume : 0,
-        color: c.close >= c.open ? `${this.colors.up}55` : `${this.colors.down}55`,
-      })));
+    const formatted = this.formatCandles(this.data);
+
+    if (this.loaderCallback) {
+      this.loaderCallback(formatted, { forward: false, backward: false });
     }
+    try {
+      this.chart?.resetData();
+    } catch (_) {}
+
     this.updateVolumeBadge();
     this.refreshSRLines();
-    if (fitSession && this.data.length) this.fitLatestSession();
-  }
-
-  fitLatestSession() {
-    if (!this.data.length) return;
-    const latest = this.data[this.data.length - 1];
-    const latestDay = istDayKey(latest.time);
-    const session = this.data.filter((candle) => istDayKey(candle.time) === latestDay);
-    if (!session.length) {
-      this.chart.timeScale().fitContent();
-      return;
-    }
-    const last = session[session.length - 1];
-    const prior = session.length > 1 ? session[session.length - 2] : null;
-    const interval = prior ? Math.max(60, last.time - prior.time) : 300;
-
-    const fromTime = session[0].time - interval;
-    const toTime = Math.max(last.time + interval * 3, session[0].time + interval * 10);
-
-    this.chart.timeScale().setVisibleRange({
-      from: fromTime,
-      to: toTime,
-    });
   }
 
   update(candle) {
-    if (!candle || !Number.isFinite(candle.time)) return;
-    this.candles.update({
-      time: candle.time, open: candle.open, high: candle.high,
-      low: candle.low, close: candle.close,
-    });
-    if (this.volume) {
-      this.volume.update({
-        time: candle.time,
-        value: Number.isFinite(candle.volume) ? candle.volume : 0,
-        color: candle.close >= candle.open ? `${this.colors.up}55` : `${this.colors.down}55`,
-      });
-    }
-
-    // Keep internal data in sync
+    if (!candle || !Number.isFinite(candle.time) || !this.chart) return;
     const lastIdx = this.data.length - 1;
     if (lastIdx >= 0 && this.data[lastIdx].time === candle.time) {
       this.data[lastIdx] = { ...this.data[lastIdx], ...candle };
     } else {
       this.data.push(candle);
     }
+    const formatted = this.formatCandle(candle);
+    if (formatted && this.subscriberCallback) {
+      this.subscriberCallback(formatted);
+    }
     this.updateVolumeBadge(candle.volume, candle.dayVolume);
   }
 
-  zoomBy(factor) {
-    const scale = this.chart.timeScale();
-    const range = scale.getVisibleLogicalRange();
-    if (!range) {
-      this.fitLatestSession();
-      return;
-    }
-    const center = (range.from + range.to) / 2;
-    const halfSpan = Math.max(2, (range.to - range.from) * factor / 2);
-    scale.setVisibleLogicalRange({ from: center - halfSpan, to: center + halfSpan });
+  zoomIn() {
+    if (this.chart) this.chart.zoomAtCoordinate(1.25);
   }
 
-  zoomIn() { this.zoomBy(0.72); }
-  zoomOut() { this.zoomBy(1.38); }
-  resetView() { this.fitLatestSession(); }
+  zoomOut() {
+    if (this.chart) this.chart.zoomAtCoordinate(0.8);
+  }
+
+  resetView() {
+    if (this.chart) this.chart.scrollToRealTime();
+  }
 
   applyTheme() {
     this.colors = chartColors(this.container);
-    const visibleRange = this.chart.timeScale().getVisibleLogicalRange();
-    this.chart.applyOptions({
-      layout: { background: { type: "solid", color: this.colors.bg }, textColor: this.colors.text },
-      grid: { vertLines: { color: this.colors.grid }, horzLines: { color: this.colors.grid } },
-      rightPriceScale: { borderColor: this.colors.border },
-      timeScale: { borderColor: this.colors.border },
-      crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: false, price: true }, axisDoubleClickReset: { time: false, price: true } },
-    });
-    this.candles.applyOptions({
-      upColor: this.colors.up, wickUpColor: this.colors.up,
-      downColor: this.colors.down, wickDownColor: this.colors.down,
-    });
-    this.setData(this.data, { fitSession: false });
-    if (visibleRange) this.chart.timeScale().setVisibleLogicalRange(visibleRange);
+    if (this.chart) {
+      this.chart.setStyles(buildStyles(this.colors));
+    }
+    this.refreshSRLines();
   }
 
-  schedule() { this.chart.resize(this.container.clientWidth, this.container.clientHeight); }
+  schedule() {
+    if (this.chart) this.chart.resize();
+  }
+
   destroy() {
     this.volBadge?.remove();
-    this.chart.remove();
+    if (this.chart && window.klinecharts) {
+      window.klinecharts.dispose(this.chart);
+    }
   }
 }

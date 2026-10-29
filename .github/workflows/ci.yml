@@ -37,6 +37,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Compress static assets
+        run: go run ./scripts/compress_assets.go
+
       - name: Build
         run: go build ./...
 
@@ -79,6 +82,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Compress static assets
+        run: go run ./scripts/compress_assets.go
 
       - name: Cross-compile
         env:
