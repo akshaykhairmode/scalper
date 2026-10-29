@@ -140,8 +140,9 @@ export class CandleChart {
         tickMarkFormatter: (time) => axisTime(time),
       },
       crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
-      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: true }, axisDoubleClickReset: true },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: false, price: true }, axisDoubleClickReset: { time: false, price: true } },
+
     });
     this.candles = this.chart.addSeries(CandlestickSeries, {
       upColor: this.colors.up,
@@ -360,6 +361,8 @@ export class CandleChart {
       rightPriceScale: { borderColor: this.colors.border },
       timeScale: { borderColor: this.colors.border },
       crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: false, price: true }, axisDoubleClickReset: { time: false, price: true } },
     });
     this.candles.applyOptions({
       upColor: this.colors.up, wickUpColor: this.colors.up,

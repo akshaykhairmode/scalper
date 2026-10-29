@@ -56,11 +56,14 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
-func TestRunMissingConfigFlag(t *testing.T) {
+func TestRunDefaultConfigNotFound(t *testing.T) {
+	// When no -config flag is given, it defaults to config.yaml in the CWD.
+	// Since no config.yaml exists in the test's working directory, it should
+	// return an error mentioning config.yaml.
 	var stdout, stderr bytes.Buffer
 	err := run(nil, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "-config is required") {
-		t.Fatalf("err = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "config.yaml") {
+		t.Fatalf("expected config.yaml not-found error, got: %v", err)
 	}
 }
 

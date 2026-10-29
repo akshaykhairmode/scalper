@@ -976,6 +976,27 @@ body[data-theme="dark"] .col-ask-px {
   box-shadow: 0 24px 70px #000c;
   padding: 18px;
 }
+/* Server down modal */
+.server-down-modal { text-align: center; }
+#server-down-modal { z-index: 200; } /* above everything */
+.server-down-body { padding: 8px 0 4px; }
+.server-down-body p { color: var(--muted); font-size: 12px; margin: 0 0 8px; line-height: 1.55; }
+.server-down-hint { font-size: 11px !important; color: var(--muted-2) !important; }
+.server-down-status { font-size: 11px !important; color: var(--muted-2) !important; margin-top: 8px !important; }
+.server-down-spinner { display: flex; justify-content: center; gap: 6px; margin: 16px 0 8px; }
+.spinner-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: spinner-pulse 1.2s ease-in-out infinite;
+}
+.spinner-dot:nth-child(2) { animation-delay: .2s; }
+.spinner-dot:nth-child(3) { animation-delay: .4s; }
+@keyframes spinner-pulse {
+  0%, 80%, 100% { opacity: .2; transform: scale(.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
 .strike-modal {
   display: flex;
   flex-direction: column;

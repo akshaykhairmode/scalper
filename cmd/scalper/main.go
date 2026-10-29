@@ -41,7 +41,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) (err error) {
 	fs := flag.NewFlagSet("scalper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	configPath := fs.String("config", "", "path to config.yaml (required)")
+	configPath := fs.String("config", "config.yaml", "path to config.yaml (defaults to config.yaml in the current directory)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -51,9 +51,6 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 			return fmt.Errorf("write version: %w", err)
 		}
 		return nil
-	}
-	if *configPath == "" {
-		return errors.New("-config is required")
 	}
 
 	cfg, err := config.Load(*configPath)

@@ -97,6 +97,7 @@ const S = {
   polling: false,
   ws: null,
   wsTimer: null,
+  wsFailCount: 0,
   feedSubscriptions: [],
   charts: {},
   candles: {},
@@ -105,6 +106,7 @@ const S = {
   marketOpen: null,
   focusedChart: null,
 };
+window.S = S;
 
 let marketRetryTimer = null;
 let chartRetryTimer = null;
@@ -849,6 +851,8 @@ function connectWebSocket() {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     S.ws = ws;
     ws.addEventListener("open", () => {
+      S.wsFailCount = 0;
+      hideServerDownModal();
       updateFeedSubscriptions();
     });
     ws.addEventListener("message", (event) => {
@@ -864,6 +868,8 @@ function connectWebSocket() {
       S.feed = "degraded";
       renderFeed();
       if (S.session?.authenticated && !S.wsTimer) {
+        S.wsFailCount = (S.wsFailCount || 0) + 1;
+        if (S.wsFailCount >= 2) showServerDownModal(S.wsFailCount);
         S.wsTimer = window.setTimeout(() => {
           S.wsTimer = null;
           connectWebSocket();
@@ -878,6 +884,18 @@ function connectWebSocket() {
     console.warn("ws connect failed", error);
     S.feed = "degraded";
   }
+}
+
+function showServerDownModal(attempt) {
+  const modal = $("server-down-modal");
+  const status = $("server-down-status");
+  if (modal) modal.hidden = false;
+  if (status) status.textContent = `Reconnecting… (attempt ${attempt})`;
+}
+
+function hideServerDownModal() {
+  const modal = $("server-down-modal");
+  if (modal) modal.hidden = true;
 }
 
 function handleSocketEvent(event) {

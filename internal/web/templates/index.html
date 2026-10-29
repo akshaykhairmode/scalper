@@ -274,6 +274,23 @@
     </div>
   </div>
 
+  <!-- Server down modal -->
+  <div class="modal-backdrop" id="server-down-modal" hidden>
+    <div class="modal server-down-modal" role="alertdialog" aria-modal="true" aria-labelledby="server-down-title">
+      <div class="modal-head">
+        <h2 id="server-down-title">⚠ Server Disconnected</h2>
+      </div>
+      <div class="server-down-body">
+        <p>The Scalper server is not reachable. This usually means the process was stopped.</p>
+        <p class="server-down-hint">Restart the server and this page will reconnect automatically.</p>
+        <div class="server-down-spinner" aria-label="Reconnecting…">
+          <span class="spinner-dot"></span><span class="spinner-dot"></span><span class="spinner-dot"></span>
+        </div>
+        <p class="server-down-status" id="server-down-status">Reconnecting…</p>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirmation modal -->
   <div class="modal-backdrop" id="confirm-modal" hidden>
     <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
