@@ -282,6 +282,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
+	mux.HandleFunc("GET /api/version/check", s.handleVersionCheck)
 	mux.HandleFunc("GET /api/indices", s.handleIndices)
 	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
 	mux.HandleFunc("GET /api/chain", s.handleChain)
@@ -766,7 +767,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "+
 				"font-src 'self'; "+
-				"connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+				"connect-src 'self' ws: wss: https://api.github.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

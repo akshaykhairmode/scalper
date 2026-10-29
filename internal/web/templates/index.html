@@ -218,6 +218,23 @@
         <button type="button" class="icon-button" id="login-close" aria-label="Close login">×</button>
       </div>
 
+      <div class="modal-update-banner" id="login-update-banner" hidden>
+        <div class="update-banner-icon">🚀</div>
+        <div class="update-banner-body">
+          <div class="update-banner-title">
+            <span>New version available:</span>
+            <strong id="update-banner-version"></strong>
+          </div>
+          <div class="update-banner-copy" id="update-banner-copy">
+            A newer version of Scalper is available.
+            <a id="update-banner-link" href="https://github.com/akshaykhairmode/scalper/releases/latest" target="_blank" rel="noreferrer">View release</a>
+          </div>
+          <div class="update-banner-cmd">
+            <code>curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | sh</code>
+          </div>
+        </div>
+      </div>
+
       <form id="login-form" novalidate>
         <p class="modal-copy">
           Enter your authenticator code{{if not .MPINConfigured}} and MPIN{{end}} to open the trading session.

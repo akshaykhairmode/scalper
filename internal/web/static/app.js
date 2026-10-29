@@ -444,6 +444,7 @@ function init() {
   checkSession();
   window.setInterval(refreshSession, 30000);
   loadMarket();
+  checkVersionUpdate();
 }
 
 function initTheme() {
@@ -2201,10 +2202,104 @@ function closeConfirm(value) {
   }
 }
 
-/* ── Login modal ──────────────────────────────────────── */
+/* ── Login modal & version update ──────────────────────── */
 
 let totpAccepted = false;
 let loginBusy = false;
+let versionCheckDone = false;
+
+async function checkVersionUpdate() {
+  if (versionCheckDone && S.latestRelease) {
+    if (S.latestRelease.has_update) {
+      showUpdateBanner(S.latestRelease);
+    }
+    return;
+  }
+  versionCheckDone = true;
+  try {
+    let data = null;
+    try {
+      data = await getJSON("/api/version/check");
+    } catch {
+      const res = await fetch("https://api.github.com/repos/akshaykhairmode/scalper/releases/latest", {
+        headers: { Accept: "application/vnd.github.v3+json" },
+      });
+      if (res.ok) {
+        const gh = await res.json();
+        const latest = gh.tag_name || "";
+        const current = S.boot?.version || "dev";
+        data = {
+          current_version: current,
+          latest_version: latest,
+          has_update: isNewerVersion(latest, current),
+          release_url: gh.html_url || "https://github.com/akshaykhairmode/scalper/releases/latest",
+          release_name: gh.name || latest,
+          published_at: gh.published_at || "",
+        };
+      }
+    }
+
+    if (data && data.has_update && data.latest_version) {
+      S.latestRelease = data;
+      showUpdateBanner(data);
+      updateFooterVersion(data);
+    }
+  } catch (err) {
+    console.debug("version check skipped:", err);
+  }
+}
+
+function showUpdateBanner(data) {
+  const banner = $("login-update-banner");
+  if (!banner) return;
+  const ver = $("update-banner-version");
+  if (ver) ver.textContent = data.latest_version;
+  const link = $("update-banner-link");
+  if (link && data.release_url) link.href = data.release_url;
+  const copy = $("update-banner-copy");
+  if (copy) {
+    if (data.current_version && data.current_version !== "dev") {
+      copy.innerHTML = `A new release <strong>${esc(data.latest_version)}</strong> is available (running <strong>${esc(data.current_version)}</strong>). <a href="${esc(data.release_url)}" target="_blank" rel="noreferrer">View release</a>`;
+    } else {
+      copy.innerHTML = `A new release <strong>${esc(data.latest_version)}</strong> is available on GitHub. <a href="${esc(data.release_url)}" target="_blank" rel="noreferrer">View release</a>`;
+    }
+  }
+  banner.hidden = false;
+}
+
+function updateFooterVersion(data) {
+  const footerVer = $("footer-version");
+  if (!footerVer) return;
+  const existing = footerVer.querySelector(".version-update-tag");
+  if (existing) return;
+  const tag = document.createElement("a");
+  tag.className = "version-update-tag";
+  tag.href = data.release_url;
+  tag.target = "_blank";
+  tag.rel = "noreferrer";
+  tag.title = `New release ${data.latest_version} available! Click to view.`;
+  tag.textContent = `update ${data.latest_version}`;
+  footerVer.appendChild(tag);
+}
+
+function isNewerVersion(latest, current) {
+  if (!latest) return false;
+  if (!current || current === "dev" || current === "unknown") return true;
+  const parse = (v) => {
+    const clean = String(v).trim().replace(/^v/i, "").split(/[-+]/)[0];
+    const parts = clean.split(".").map((n) => parseInt(n, 10));
+    return parts.some((n) => isNaN(n)) ? null : parts;
+  };
+  const l = parse(latest);
+  const c = parse(current);
+  if (!l || !c) return latest !== current;
+  for (let i = 0; i < Math.max(l.length, c.length); i++) {
+    const lPart = l[i] ?? 0;
+    const cPart = c[i] ?? 0;
+    if (lPart !== cPart) return lPart > cPart;
+  }
+  return false;
+}
 
 function openLogin() {
   totpAccepted = false;
@@ -2217,6 +2312,10 @@ function openLogin() {
   }
   loginError("");
   $("login-submit").textContent = "Continue";
+  checkVersionUpdate();
+  if (S.latestRelease?.has_update) {
+    showUpdateBanner(S.latestRelease);
+  }
   $("login-modal").hidden = false;
   window.setTimeout(() => $("totp-input").focus(), 30);
 }
