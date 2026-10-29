@@ -1169,14 +1169,14 @@ async function loadCharts(forceRefresh = false) {
     const chart = S.charts[pane];
     if (!chart) continue;
     if (!key) {
-      chart.setData([]);
+      chart.setData([], { symbol: "" });
       setChartHint(pane, defaultHint);
       continue;
     }
     if (key.startsWith("mcx_fo|")) {
       const liveKey = `${key}|${S.timeframe}`;
       const live = S.candles[liveKey] || [];
-      chart.setData(live);
+      chart.setData(live, { symbol: key });
       setChartHint(pane, S.marketOpen
         ? (live.length ? "" : "Waiting for live ticks…")
         : "Kotak does not provide historical MCX candles. Live candles appear during MCX trading hours.");
@@ -1252,21 +1252,21 @@ async function loadCharts(forceRefresh = false) {
     const liveKey = `${key}|${S.timeframe}`;
 
     if (!entry) {
-      chart.setData([]);
+      chart.setData([], { symbol: key });
       setChartHint(pane, defaultHint);
     } else if (entry.retryAt) {
       console.warn("historical candles unavailable", { pane, error: entry.error });
-      chart.setData([]);
+      chart.setData([], { symbol: key });
       setChartHint(pane, `Historical data unavailable: ${entry.error.message}`);
     } else {
       if (S.marketOpen) {
         if (!S.candles[liveKey]?.length) {
           S.candles[liveKey] = entry.candles.slice(-500).map((candle) => ({ ...candle }));
         }
-        chart.setData(mergeChartCandles(entry.candles, S.candles[liveKey] || []));
+        chart.setData(mergeChartCandles(entry.candles, S.candles[liveKey] || []), { symbol: key });
         setChartHint(pane, entry.warning || (entry.candles.length ? "" : "Waiting for live ticks…"));
       } else {
-        chart.setData(entry.candles);
+        chart.setData(entry.candles, { symbol: key });
         setChartHint(pane, entry.warning || (entry.candles.length ? "" : "No historical candles returned for this contract."));
       }
     }

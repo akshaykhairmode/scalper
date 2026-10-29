@@ -326,7 +326,23 @@ export class CandleChart {
     }
   }
 
-  setData(data) {
+  resetPriceScale() {
+    if (!this.chart) return;
+    try {
+      if (typeof this.chart._resetYAxisAutoCalcTickFlag === "function") {
+        this.chart._resetYAxisAutoCalcTickFlag();
+      }
+      this.chart.layout?.({ measureWidth: true, update: true, buildYAxisTick: true });
+    } catch (_) {}
+  }
+
+  setData(data, { symbol = "", resetScale = true } = {}) {
+    if (symbol && symbol !== this.currentSymbol) {
+      this.currentSymbol = symbol;
+      try {
+        this.chart?.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
+      } catch (_) {}
+    }
     const byTime = new Map();
     if (Array.isArray(data)) {
       for (const candle of data) {
@@ -345,6 +361,13 @@ export class CandleChart {
     try {
       this.chart?.resetData();
     } catch (_) {}
+
+    if (resetScale) {
+      this.resetPriceScale();
+      try {
+        this.chart?.scrollToRealTime();
+      } catch (_) {}
+    }
 
     this.updateVolumeBadge();
     this.refreshSRLines();
@@ -374,7 +397,10 @@ export class CandleChart {
   }
 
   resetView() {
-    if (this.chart) this.chart.scrollToRealTime();
+    if (this.chart) {
+      this.resetPriceScale();
+      this.chart.scrollToRealTime();
+    }
   }
 
   applyTheme() {
