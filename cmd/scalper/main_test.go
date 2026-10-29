@@ -105,6 +105,7 @@ func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
 	if err := probe.Close(); err != nil {
 		t.Fatalf("close probe: %v", err)
 	}
+	t.Setenv("SCALPER_LISTEN", addr)
 
 	path := writeConfig(t, addr, filepath.Join(t.TempDir(), "scalper.db"))
 	var stdout, stderr bytes.Buffer

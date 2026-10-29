@@ -713,22 +713,7 @@ async function loadBooksFromAPI(includePositions = true) {
     S.trades = toArray(trades.value).map(normalizeTrade);
   }
   if (limits.status === "fulfilled") {
-    const value = limits.value || {};
-    const obj = value.limits || value.data || value;
-    const available = obj.available_margin ?? obj.availableMargin ?? obj.available ?? obj.Net ?? obj.net ??
-      value.available_margin ?? value.availableMargin ?? value.available ?? value.Net ?? value.net ??
-      value.data?.availableMargin ?? value.data?.Net ?? value.limits?.availableMargin ?? value.limits?.Net;
-    const used = obj.used_margin ?? obj.usedMargin ?? obj.used ?? obj.marginUsed ?? obj.MarginUsed ??
-      value.used_margin ?? value.usedMargin ?? value.used ?? value.marginUsed ?? value.MarginUsed ?? value.data?.MarginUsed;
-    const total = obj.total_margin ?? obj.totalMargin ?? obj.total ?? obj.Net ?? obj.net ??
-      value.total_margin ?? value.totalMargin ?? value.total ?? value.Net ?? value.net ?? value.data?.Net;
-    S.limits = {
-      available: num(available),
-      used: num(used),
-      total: num(total),
-      loaded: available != null,
-      error: available == null ? "Account response did not include available margin." : "",
-    };
+    applyLimitsData(limits.value);
   } else {
     // Keep the last known limits; zeroing them disables every trade button.
     S.limits = { ...(S.limits || {}), error: limits.reason?.message || "Account limits are unavailable." };
@@ -737,6 +722,48 @@ async function loadBooksFromAPI(includePositions = true) {
   renderHeader();
   renderTab();
   renderOrderPad();
+}
+
+function applyLimitsData(value) {
+  const obj = value?.limits || value?.data || value || {};
+  const available = obj.available_margin ?? obj.availableMargin ?? obj.available ?? obj.Net ?? obj.net ??
+    value?.available_margin ?? value?.availableMargin ?? value?.available ?? value?.Net ?? value?.net ??
+    value?.data?.availableMargin ?? value?.data?.Net ?? value?.limits?.availableMargin ?? value?.limits?.Net;
+  const used = obj.used_margin ?? obj.usedMargin ?? obj.used ?? obj.marginUsed ?? obj.MarginUsed ??
+    value?.used_margin ?? value?.usedMargin ?? value?.used ?? value?.marginUsed ?? value?.MarginUsed ?? value?.data?.MarginUsed;
+  const total = obj.total_margin ?? obj.totalMargin ?? obj.total ?? obj.Net ?? obj.net ??
+    value?.total_margin ?? value?.totalMargin ?? value?.total ?? value?.Net ?? value?.net ?? value?.data?.Net;
+  S.limits = {
+    available: num(available),
+    used: num(used),
+    total: num(total),
+    loaded: available != null,
+    error: available == null ? "Account response did not include available margin." : "",
+  };
+}
+
+async function refreshMargin() {
+  if (!S.session?.authenticated) {
+    openLogin();
+    return;
+  }
+  const metric = $("margin-metric");
+  if (metric) metric.classList.add("refreshing");
+  try {
+    const res = await getJSON("/api/broker/limits?fresh=1");
+    applyLimitsData(res);
+    renderHeader();
+    renderOrderPad();
+    if (S.limits?.loaded) {
+      toast(`Margin updated: ₹${fmt(num(S.limits.available), 0)}`, "info", 2000);
+    } else {
+      toast("Margin refreshed.", "info", 2000);
+    }
+  } catch (err) {
+    toast(`Failed to update margin: ${err?.message || "network error"}`, "error", 4000);
+  } finally {
+    if (metric) metric.classList.remove("refreshing");
+  }
 }
 
 function toArray(value) {
@@ -1317,10 +1344,7 @@ function renderPaneHeaders() {
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
   renderOptionStrikeSelect("PE", pe);
 
-  $("leg-call-name").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
-  $("leg-call-size").textContent = ce ? `${ce.lotSize} shares / lot · LTP ${fmt(ce.ltp)}` : "Choose a strike";
-  $("leg-put-name").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
-  $("leg-put-size").textContent = pe ? `${pe.lotSize} shares / lot · LTP ${fmt(pe.ltp)}` : "Choose a strike";
+  renderOrderPad();
 }
 
 function renderOptionStrikeSelect(type, selected) {
@@ -1545,7 +1569,8 @@ function scrollATMIntoView() {
 function renderOrderPad() {
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
-  const available = num(S.limits?.available);
+  const hasLimits = S.limits?.loaded;
+  const available = hasLimits ? num(S.limits?.available) : null;
   for (const [type, option] of [["CE", ce], ["PE", pe]]) {
     const lot = lotSize(type);
     const isShares = S.unit[type] === "SHARES";
@@ -1565,10 +1590,34 @@ function renderOrderPad() {
         ? "Quantity shown in Shares. Click to switch to Lots."
         : "Quantity shown in Lots. Click to switch to Shares.";
     }
+
+    const marginEl = $(`leg-${prefix}-margin`);
+    if (marginEl) {
+      const ltp = option ? num(option.ltp) : 0;
+      if (!option || ltp <= 0 || !shares) {
+        marginEl.textContent = "—";
+        marginEl.className = "leg-margin-val";
+        marginEl.title = option ? "Waiting for live price…" : "Choose a strike";
+      } else {
+        const reqBuyMargin = ltp * shares;
+        marginEl.textContent = `₹${fmt(reqBuyMargin, 2)}`;
+        if (hasLimits && available !== null && Number.isFinite(available)) {
+          const hasEnough = available >= reqBuyMargin;
+          marginEl.className = `leg-margin-val ${hasEnough ? "up" : "down"}`;
+          marginEl.title = hasEnough
+            ? `Required: ₹${fmt(reqBuyMargin, 2)} · Available: ₹${fmt(available, 0)} (Sufficient)`
+            : `Required: ₹${fmt(reqBuyMargin, 2)} · Available: ₹${fmt(available, 0)} (Insufficient margin)`;
+        } else {
+          marginEl.className = "leg-margin-val";
+          marginEl.title = `Required: ₹${fmt(reqBuyMargin, 2)} (Sign in to verify margin)`;
+        }
+      }
+    }
+
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
       const required = requiredMargin(option, shares, button.dataset.action === "buy" ? "B" : "S");
       button.disabled = !option || !option.quoteAvailable || option.ltp <= 0 ||
-        !shares || !Number.isFinite(required) || required > available;
+        !shares || !Number.isFinite(required) || (available !== null && required > available);
     });
   }
 }
@@ -2315,6 +2364,17 @@ function bindEvents() {
   $("theme-toggle").addEventListener("click", () => {
     setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
   });
+
+  const marginMetric = $("margin-metric");
+  if (marginMetric) {
+    marginMetric.addEventListener("click", refreshMargin);
+    marginMetric.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        refreshMargin();
+      }
+    });
+  }
 
   $("spot-strip").addEventListener("click", (event) => {
     const chip = event.target.closest(".spot-chip");

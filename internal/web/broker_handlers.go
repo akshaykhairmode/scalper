@@ -170,6 +170,9 @@ func (s *Server) handleBrokerHoldings(w http.ResponseWriter, r *http.Request) {
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Holdings(r.Context(), x) })
 }
 func (s *Server) handleBrokerLimits(w http.ResponseWriter, r *http.Request) {
+	if s.books != nil && (r.URL.Query().Get("fresh") == "true" || r.URL.Query().Get("fresh") == "1") {
+		s.books.expire(bookLimits)
+	}
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
 		return s.getBook(r.Context(), bookLimits, x)
 	})

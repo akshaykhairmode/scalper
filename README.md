@@ -2,6 +2,10 @@
 
 A low-latency, manual options trading terminal and option chain interface designed for Indian derivatives (NIFTY, BANKNIFTY, MIDCPNIFTY, SENSEX) integrated with the Kotak Neo API.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | sh
+```
+
 ---
 
 ## Features
@@ -16,9 +20,28 @@ A low-latency, manual options trading terminal and option chain interface design
 
 ## Installation
 
-### Download from GitHub Releases (Recommended)
+### Quick Install (macOS / Linux)
 
-Pre-built binaries for macOS (Apple Silicon / Intel) and Linux (x86_64 / arm64) are available on the [Releases](https://github.com/akshaykhairmode/scalper/releases) page.
+Run the one-line installer in your terminal. It automatically detects your operating system and CPU architecture, downloads the latest release binary, verifies checksums, and installs `scalper` to your PATH:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | sh
+```
+
+> **Options**: You can customize the installation directory or pin a specific version:
+> ```bash
+> # Custom installation directory
+> curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | BINDIR=~/.local/bin sh
+>
+> # Specific version
+> curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | VERSION=v1.0.0 sh
+> ```
+
+---
+
+### Manual Download from GitHub Releases
+
+Pre-built binaries for macOS (Apple Silicon / Intel), Linux (x86_64 / arm64), and Windows are available on the [Releases](https://github.com/akshaykhairmode/scalper/releases) page.
 
 1. Download the archive for your operating system and architecture from the [latest release](https://github.com/akshaykhairmode/scalper/releases/latest).
 2. Extract the archive:

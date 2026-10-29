@@ -24,7 +24,10 @@
     </div>
 
     <div class="topbar-right">
-      <span class="metric"><span class="metric-label">MARGIN</span><span class="metric-value" id="margin-chip">—</span></span>
+      <div class="metric metric-clickable" id="margin-metric" role="button" tabindex="0" title="Click to refresh margin" aria-label="Account margin. Click to refresh.">
+        <span class="metric-label">MARGIN</span>
+        <span class="metric-value" id="margin-chip">—</span>
+      </div>
       <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value" id="pnl-chip">—</span></span>
       <span class="feed-badge connecting" id="feed-badge"><i></i><span id="feed-label">connecting</span></span>
       <span class="feed-badge connecting" id="order-feed-badge" title="Kotak order and position updates"><i></i><span id="order-feed-label">order feed</span></span>
@@ -89,8 +92,8 @@
         </div>
         <section class="leg-orderpad call" aria-label="Call order pad">
           <div class="leg-order-info">
-            <span class="leg-name" id="leg-call-name">CALL</span>
-            <span class="leg-size" id="leg-call-size">Select a strike</span>
+            <span class="leg-margin-label">REQ MARGIN</span>
+            <span class="leg-margin-val" id="leg-call-margin">—</span>
           </div>
           <div class="leg-order-actions">
             <div class="lot-control">
@@ -153,8 +156,8 @@
         </div>
         <section class="leg-orderpad put" aria-label="Put order pad">
           <div class="leg-order-info">
-            <span class="leg-name" id="leg-put-name">PUT</span>
-            <span class="leg-size" id="leg-put-size">Select a strike</span>
+            <span class="leg-margin-label">REQ MARGIN</span>
+            <span class="leg-margin-val" id="leg-put-margin">—</span>
           </div>
           <div class="leg-order-actions">
             <div class="lot-control">

@@ -174,6 +174,24 @@ a { color: var(--blue); }
 
 .topbar-right { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
 .metric { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+.metric.metric-clickable {
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: -2px 0;
+  transition: opacity 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.metric.metric-clickable:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+.metric.metric-clickable:active {
+  transform: scale(0.96);
+}
+.metric.metric-clickable.refreshing {
+  opacity: 0.5;
+  pointer-events: none;
+}
 .metric-label { color: var(--muted-2); font-size: 9px; letter-spacing: .12em; font-weight: 700; }
 .metric-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 650; }
 
@@ -553,7 +571,11 @@ a { color: var(--blue); }
   border-top: 1px solid var(--line-soft);
   background: var(--surface-toolbar);
 }
-.leg-order-info { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.leg-order-info { display: flex; flex-direction: column; min-width: 80px; gap: 2px; }
+.leg-margin-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; color: var(--muted-2); text-transform: uppercase; }
+.leg-margin-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.2; }
+.leg-margin-val.up { color: var(--green); }
+.leg-margin-val.down { color: var(--red); }
 .leg-orderpad.call .leg-name { color: var(--call); }
 .leg-orderpad.put .leg-name { color: var(--put); }
 .leg-name { font-size: 10px; font-weight: 800; letter-spacing: .08em; }
