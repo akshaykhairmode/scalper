@@ -606,6 +606,18 @@ function pickExpiry(list) {
 
 async function refreshBooksFromAPI(includePositions = true) {
   if (!S.session?.authenticated) return;
+  if (booksInFlight) return booksInFlight;
+  booksInFlight = loadBooksFromAPI(includePositions);
+  try {
+    await booksInFlight;
+  } finally {
+    booksInFlight = null;
+  }
+}
+
+let booksInFlight = null;
+
+async function loadBooksFromAPI(includePositions = true) {
   const [positions, orders, trades, limits] = await Promise.allSettled([
     includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
     getJSON("/api/broker/orders"),
@@ -613,22 +625,17 @@ async function refreshBooksFromAPI(includePositions = true) {
     getJSON("/api/broker/limits"),
   ]);
   if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
+  // Keep the last known book on a transient failure (e.g. Kotak rate limiting).
+  // Blanking it makes open positions vanish and disables the exit buttons.
   if (includePositions && positions.status === "fulfilled") {
     S.positions = toArray(positions.value).map(normalizePosition);
-    updateFeedSubscriptions();
-  } else if (includePositions && positions.status === "rejected") {
-    S.positions = [];
     updateFeedSubscriptions();
   }
   if (orders.status === "fulfilled") {
     S.orders = toArray(orders.value).map(normalizeOrder);
-  } else {
-    S.orders = [];
   }
   if (trades.status === "fulfilled") {
     S.trades = toArray(trades.value).map(normalizeTrade);
-  } else {
-    S.trades = [];
   }
   if (limits.status === "fulfilled") {
     const value = limits.value || {};
@@ -641,11 +648,13 @@ async function refreshBooksFromAPI(includePositions = true) {
       error: available == null ? "Account response did not include available margin." : "",
     };
   } else {
-    S.limits = { available: 0, used: 0, total: 0, loaded: false, error: limits.reason?.message || "Account limits are unavailable." };
+    // Keep the last known limits; zeroing them disables every trade button.
+    S.limits = { ...(S.limits || {}), error: limits.reason?.message || "Account limits are unavailable." };
   }
   S.risk = [];
   renderHeader();
   renderTab();
+  renderOrderPad();
 }
 
 function toArray(value) {
@@ -659,17 +668,22 @@ function toArray(value) {
 
 let liveTimer = null;
 let underlyingTimer = null;
+let booksRefreshTimer = null;
 function startLivePolling() {
   if (!liveTimer) {
+    // The server owns a shared account-book cache, so this is only a safety
+    // net; order-feed events drive the real updates.
     liveTimer = window.setInterval(() => {
+      if (document.hidden || !S.marketOpen) return;
       refreshBooksFromAPI(false).catch((error) => console.warn("account refresh failed", error));
-    }, 15000);
+    }, 30000);
   }
   // The Scrip Master refresh can finish after the first page quote request.
   // Poll underlying prices independently so new spot/future tokens are picked
   // up and subscribed without requiring a manual Refresh click.
   if (!underlyingTimer) {
     underlyingTimer = window.setInterval(async () => {
+      if (document.hidden || !S.marketOpen) return;
       try {
         applyIndexQuotes(await getJSON("/api/indices"));
         updateFeedSubscriptions();
@@ -677,8 +691,18 @@ function startLivePolling() {
       } catch (error) {
         console.warn("underlying quote refresh failed", error);
       }
-    }, 10000);
+    }, 30000);
   }
+}
+
+// Coalesce order-feed bursts into one cache read instead of one refresh per
+// event. Kotak emits several order/position events per fill.
+function scheduleBooksRefresh(delay = 1000) {
+  if (booksRefreshTimer) window.clearTimeout(booksRefreshTimer);
+  booksRefreshTimer = window.setTimeout(() => {
+    booksRefreshTimer = null;
+    refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
+  }, delay);
 }
 
 async function pollLive({ refreshChain = false } = {}) {
@@ -770,7 +794,7 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "broker_order" || event.type === "broker_position") {
-    window.setTimeout(() => refreshBooksFromAPI(true), 250);
+    scheduleBooksRefresh(1000);
     return;
   }
   if (event.type === "tick") {
@@ -849,6 +873,7 @@ function handleSocketEvent(event) {
     S.positions = toArray(data).map(normalizePosition);
     updateFeedSubscriptions();
     renderTab();
+    renderOrderPad();
     return;
   }
   if (event.type === "margin") {
@@ -1355,9 +1380,26 @@ function resolvedShares(lot, type = S.selected.type) {
 function requiredMargin(option, shares, side) {
   if (!option) return 0;
   if (side === "B") return option.ltp * shares;
+  // Selling against an existing long is a close, not a fresh short: it needs
+  // no margin. Only the excess over the held quantity opens a short position.
+  const closing = Math.min(shares, heldQuantity(option.instrumentKey));
+  const opening = Math.max(0, shares - closing);
+  if (opening === 0) return 0;
   const spot = S.spots.get(option.underlying)?.ltp || 0;
   if (spot <= 0) return Infinity;
-  return spot * shares * (num(S.boot.shortMarginPct, 15) / 100) + option.ltp * shares;
+  return spot * opening * (num(S.boot.shortMarginPct, 15) / 100) + option.ltp * opening;
+}
+
+function heldQuantity(instrumentKey) {
+  const key = String(instrumentKey || "");
+  if (!key) return 0;
+  let quantity = 0;
+  for (const position of S.positions || []) {
+    if (String(position.instrument_key) === key && num(position.quantity) > 0) {
+      quantity += num(position.quantity);
+    }
+  }
+  return quantity;
 }
 
 /* ── Payoff math ───────────────────────────────────────── */
@@ -1737,7 +1779,7 @@ async function onTrade(action, type) {
     }
     const result = await postOrder(payload);
     toast(`Live order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
-    window.setTimeout(() => refreshBooksFromAPI(true), 400);
+    scheduleBooksRefresh(400);
   } catch (err) {
     toast(`Order rejected: ${err.message}`, "error", 6000);
   }
@@ -1782,7 +1824,7 @@ async function onExit(instrumentKey) {
       mode: orderMode,
     });
     toast("Live exit order submitted.", "ok");
-    window.setTimeout(() => refreshBooksFromAPI(true), 400);
+    scheduleBooksRefresh(400);
   } catch (err) {
     toast(`Exit failed: ${err.message}`, "error", 6000);
   }
@@ -1818,7 +1860,7 @@ async function onSquareOffAll() {
         order_type: "MARKET", price: 0 });
     }
     toast("Live square-off orders submitted.", "ok");
-    window.setTimeout(() => refreshBooksFromAPI(true), 500);
+    scheduleBooksRefresh(500);
   } catch (err) {
     toast(`Square off failed: ${err.message}`, "error", 6000);
   }

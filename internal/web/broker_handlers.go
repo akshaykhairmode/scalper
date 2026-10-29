@@ -34,7 +34,9 @@ func (s *Server) brokerRead(w http.ResponseWriter, r *http.Request, call func(ko
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
 }
 func (s *Server) handleBrokerOrders(w http.ResponseWriter, r *http.Request) {
-	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Orders(r.Context(), x) })
+	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
+		return s.getBook(r.Context(), bookOrders, x)
+	})
 }
 func (s *Server) handleBrokerOrder(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -45,20 +47,21 @@ func (s *Server) handleBrokerOrder(w http.ResponseWriter, r *http.Request) {
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Order(r.Context(), x, id) })
 }
 func (s *Server) handleBrokerTrades(w http.ResponseWriter, r *http.Request) {
-	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Trades(r.Context(), x) })
+	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
+		return s.getBook(r.Context(), bookTrades, x)
+	})
 }
 func (s *Server) handleBrokerPositions(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.brokerSession(w, r)
 	if !ok {
 		return
 	}
-	raw, err := s.kotak.Positions(r.Context(), session)
+	raw, err := s.getBook(r.Context(), bookPositions, session)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
 	}
-	result := s.enrichBrokerPositions(r.Context(), raw)
-	s.writeRouteJSON(w, r, http.StatusOK, result)
+	s.writeRouteJSON(w, r, http.StatusOK, raw)
 }
 
 func (s *Server) enrichBrokerPositions(ctx context.Context, raw json.RawMessage) json.RawMessage {
@@ -72,6 +75,28 @@ func (s *Server) enrichBrokerPositions(ctx context.Context, raw json.RawMessage)
 	var rows []json.RawMessage
 	if json.Unmarshal(envelope["data"], &rows) != nil {
 		return raw
+	}
+	options := make(map[string]struct{}, len(rows))
+	keys := make([]string, 0, len(rows))
+	for _, encoded := range rows {
+		var row map[string]json.RawMessage
+		if json.Unmarshal(encoded, &row) != nil {
+			continue
+		}
+		option, found := s.market.FindOption(jsonString(row["exSeg"]), jsonString(row["trdSym"]))
+		if !found {
+			continue
+		}
+		if _, seen := options[option.InstrumentKey]; !seen {
+			options[option.InstrumentKey] = struct{}{}
+			keys = append(keys, option.InstrumentKey)
+		}
+	}
+	// One batched quote request for the whole position book beats one call per
+	// position, which used to multiply report polling into the rate limit.
+	quotes, quoteErr := s.market.Quotes(ctx, s.marketBaseURL(), keys)
+	if quoteErr != nil {
+		quotes = nil
 	}
 	for i, encoded := range rows {
 		var row map[string]json.RawMessage
@@ -91,7 +116,7 @@ func (s *Server) enrichBrokerPositions(ctx context.Context, raw json.RawMessage)
 		row["strike"], _ = json.Marshal(float64(option.StrikePaise) / 100)
 		row["option_type"], _ = json.Marshal(string(option.OptionType))
 		row["lot_size"], _ = json.Marshal(option.LotSize)
-		if quote, quoteErr := s.market.Quote(ctx, s.marketBaseURL(), option.InstrumentKey); quoteErr == nil && quote.LTP > 0 {
+		if quote, ok := quotes[option.InstrumentKey]; ok && quote.LTP > 0 {
 			row["ltp"], _ = json.Marshal(quote.LTP)
 		}
 		rows[i], _ = json.Marshal(row)
@@ -120,7 +145,9 @@ func (s *Server) handleBrokerHoldings(w http.ResponseWriter, r *http.Request) {
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Holdings(r.Context(), x) })
 }
 func (s *Server) handleBrokerLimits(w http.ResponseWriter, r *http.Request) {
-	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Limits(r.Context(), x) })
+	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
+		return s.getBook(r.Context(), bookLimits, x)
+	})
 }
 func (s *Server) handleBrokerOrderHistory(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -162,6 +189,7 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
 		return
 	}
+	s.books.expire(bookPositions, bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusCreated, raw)
 }
 func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +207,7 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
 		return
 	}
+	s.books.expire(bookOrders)
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
 }
 func (s *Server) handleBrokerCancelOrder(w http.ResponseWriter, r *http.Request) {
@@ -207,5 +236,6 @@ func (s *Server) handleBrokerCancelOrder(w http.ResponseWriter, r *http.Request)
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
 	}
+	s.books.expire(bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
 }

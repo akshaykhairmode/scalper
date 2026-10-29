@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/errs"
+	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 )
 
 const (
@@ -38,7 +39,7 @@ type Client struct {
 // fails closed: the listing endpoint requires it.
 func NewClient(consumerKey string) *Client {
 	return &Client{
-		HTTP:        &http.Client{Timeout: defaultHTTPLimit},
+		HTTP:        kotakhttp.NewClient(defaultHTTPLimit),
 		ConsumerKey: strings.TrimSpace(consumerKey),
 	}
 }

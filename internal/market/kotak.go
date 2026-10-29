@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 )
 
@@ -80,7 +81,7 @@ func NewQuotesClient(consumerKey string, log *slog.Logger) *QuotesClient {
 	}
 	return &QuotesClient{
 		consumerKey: strings.TrimSpace(consumerKey),
-		http:        &http.Client{Timeout: 15 * time.Second},
+		http:        kotakhttp.NewClient(15 * time.Second),
 		log:         log,
 	}
 }

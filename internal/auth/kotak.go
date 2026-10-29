@@ -14,6 +14,7 @@ import (
 
 	"log/slog"
 
+	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 )
 
@@ -87,11 +88,9 @@ func NewKotakAuthenticatorWithLogger(log *slog.Logger, consumerKey, mobile, ucc,
 	if log == nil {
 		log = slog.Default()
 	}
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := kotakhttp.NewClient(15 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	return &kotakClient{
 		log:         log,

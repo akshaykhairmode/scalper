@@ -24,9 +24,9 @@ func NewExpiryResolver() *ExpiryResolver {
 // Supported formats: "2026-10-27", "2026-10-27 00:00:00 +0530", etc.
 func (er *ExpiryResolver) ResolveExpiry(expiry string) (time.Time, error) {
 	er.mu.RLock()
-	defer er.mu.RUnlock()
-
-	if t, ok := er.expiracies[expiry]; ok {
+	t, ok := er.expiracies[expiry]
+	er.mu.RUnlock()
+	if ok {
 		return t, nil
 	}
 

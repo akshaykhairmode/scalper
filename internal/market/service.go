@@ -347,25 +347,55 @@ func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scr
 	return ChainPage{Rows: result, HasMoreAbove: hasMoreAbove, HasMoreBelow: hasMoreBelow}, nil
 }
 
+// Quotes fetches the latest quotes for many option instruments in as few
+// Kotak batch calls as the configured batch size allows. The returned map is
+// keyed by instrument key and omits instruments with no live quote.
+func (s *Service) Quotes(ctx context.Context, baseURL string, instrumentKeys []string) (map[string]Quote, error) {
+	byKey := make(map[string]Quote, len(instrumentKeys))
+	if len(instrumentKeys) == 0 {
+		return byKey, nil
+	}
+	instruments := make([]QuoteInstrument, 0, len(instrumentKeys))
+	keys := make([]string, 0, len(instrumentKeys))
+	for _, key := range instrumentKeys {
+		option, ok := s.scrips.Option(key)
+		if !ok {
+			continue
+		}
+		instruments = append(instruments, QuoteInstrument{
+			ExchangeSegment: option.ExchangeSegment,
+			Symbol:          option.PSymbol,
+		})
+		keys = append(keys, key)
+	}
+	if len(instruments) == 0 {
+		return byKey, nil
+	}
+	quotes, err := s.fetch(ctx, baseURL, instruments)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		option, ok := s.scrips.Option(key)
+		if !ok {
+			continue
+		}
+		if quote, found := quotes[quoteKey(option.ExchangeSegment, option.PSymbol)]; found && quote.LTP > 0 {
+			byKey[key] = quote
+		}
+	}
+	return byKey, nil
+}
+
 // Quote fetches the latest quote for one Scrip Master instrument.
 func (s *Service) Quote(ctx context.Context, baseURL, instrumentKey string) (Quote, error) {
-	option, ok := s.scrips.Option(instrumentKey)
-	if !ok {
-		return Quote{}, fmt.Errorf("unknown option instrument %q", instrumentKey)
-	}
-	quotes, err := s.fetch(ctx, baseURL, []QuoteInstrument{{
-		ExchangeSegment: option.ExchangeSegment,
-		Symbol:          option.PSymbol,
-	}})
+	quotes, err := s.Quotes(ctx, baseURL, []string{instrumentKey})
 	if err != nil {
 		return Quote{}, err
 	}
-	quote, ok := quotes[quoteKey(option.ExchangeSegment, option.PSymbol)]
+	quote, ok := quotes[instrumentKey]
 	if !ok {
-		return Quote{}, fmt.Errorf("kotak returned no live quote for %s", option.PTrdSymbol)
-	}
-	if quote.LTP <= 0 {
-		return Quote{}, fmt.Errorf("kotak live quote for %s has no positive LTP", option.PTrdSymbol)
+		return Quote{}, fmt.Errorf("kotak returned no live quote for %s", instrumentKey)
 	}
 	return quote, nil
 }

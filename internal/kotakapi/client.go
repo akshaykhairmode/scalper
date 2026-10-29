@@ -11,9 +11,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 )
 
@@ -35,8 +37,10 @@ func NewClient(logger ...*slog.Logger) *Client {
 	if len(logger) > 0 && logger[0] != nil {
 		log = logger[0]
 	}
+	client := kotakhttp.NewClient(15 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
-		http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		http: client,
 		log:  log,
 	}
 }
@@ -194,6 +198,8 @@ func validity(v string) string {
 func formatPrice(v float64) string { return fmt.Sprintf("%.2f", v) }
 
 func (c *Client) get(ctx context.Context, s Session, path string) (json.RawMessage, error) {
+	// Every Kotak request is throttled by the shared kotakhttp limiter, so no
+	// per-client read spacing is needed here.
 	return c.request(ctx, s, http.MethodGet, path, nil)
 }
 
@@ -220,42 +226,59 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 		return nil, err
 	}
 	target := base.ResolveReference(rel)
-	var body io.Reader
+	var bodyBytes []byte
 	if form != nil {
 		payload, err := json.Marshal(form)
 		if err != nil {
 			return nil, fmt.Errorf("encode Kotak API request: %w", err)
 		}
-		body = bytes.NewBufferString(url.Values{"jData": {string(payload)}}.Encode())
+		bodyBytes = []byte(url.Values{"jData": {string(payload)}}.Encode())
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Sid", s.SID)
-	req.Header.Set("Auth", s.Token)
-	// Kotak's trading APIs require these headers for report endpoints too,
-	// including GET requests. The official SDK uses this key for API routing.
-	req.Header.Set("neo-fin-key", "neotradeapi")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if path == "quick/order/rule/ms/place" || path == "quick/order/cancel" || path == "quick/order/vr/modify" {
-		if s.ConsumerKey == "" {
-			return nil, errors.New("KOTAK_CONSUMER_KEY is required for order writes")
+	var req *http.Request
+	var resp *http.Response
+	var raw []byte
+	for attempt := 0; ; attempt++ {
+		var body io.Reader
+		if bodyBytes != nil {
+			body = bytes.NewReader(bodyBytes)
 		}
-		req.Header.Set("Authorization", s.ConsumerKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("kotak API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read Kotak API response: %w", err)
-	}
-	if len(raw) > maxResponseBytes {
-		return nil, errors.New("kotak API response exceeded size limit")
+		req, err = http.NewRequestWithContext(ctx, method, target.String(), body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Sid", s.SID)
+		req.Header.Set("Auth", s.Token)
+		// Kotak's trading APIs require these headers for report endpoints too,
+		// including GET requests. The official SDK uses this key for API routing.
+		req.Header.Set("neo-fin-key", "neotradeapi")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if path == "quick/order/rule/ms/place" || path == "quick/order/cancel" || path == "quick/order/vr/modify" {
+			if s.ConsumerKey == "" {
+				return nil, errors.New("KOTAK_CONSUMER_KEY is required for order writes")
+			}
+			req.Header.Set("Authorization", s.ConsumerKey)
+		}
+		resp, err = c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("kotak API request failed: %w", err)
+		}
+		raw, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read Kotak API response: %w", err)
+		}
+		if len(raw) > maxResponseBytes {
+			return nil, errors.New("kotak API response exceeded size limit")
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < 1 {
+			c.logResponse(req, resp, raw, "rate_limited")
+			if err := sleepContext(ctx, retryAfter(resp, attempt)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		break
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		c.logResponse(req, resp, raw, "http_error")
@@ -274,6 +297,30 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 		return nil, kotakAPIError(envelope)
 	}
 	return json.RawMessage(raw), nil
+}
+
+// retryAfter returns how long to wait before retrying a rate-limited request.
+// One retry only: retrying inside the same second multiplies the burst that
+// triggered the 429 in the first place.
+func retryAfter(resp *http.Response, attempt int) time.Duration {
+	if resp != nil {
+		if seconds, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && seconds > 0 && seconds <= 5 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	jitter := time.Duration(time.Now().UnixNano()%250) * time.Millisecond
+	return 750*time.Millisecond + time.Duration(attempt)*500*time.Millisecond + jitter
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func isEmptyReport(path string, envelope responseEnvelope) bool {

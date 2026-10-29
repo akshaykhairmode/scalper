@@ -22,16 +22,39 @@ func (s *Server) marketBaseURL() string {
 	return market.DefaultBaseURL
 }
 
+// indicesTTL collapses the 10s polls of every open tab into at most one
+// upstream quote batch every few seconds.
+const indicesTTL = 3 * time.Second
+
 func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 	if s.market == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
 		return
 	}
+	// Serialise cold-cache calls so simultaneous tabs share one upstream call.
+	s.indicesMu.Lock()
+	if s.indicesRaw != nil && time.Since(s.indicesAt) < indicesTTL {
+		payload := s.indicesRaw
+		s.indicesMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write(payload); err != nil {
+			s.log.Warn("write cached indices", "event", "http_write_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+		}
+		return
+	}
 	result, err := s.market.Indices(r.Context(), s.marketBaseURL())
 	if err != nil {
+		s.indicesMu.Unlock()
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
 	}
+	payload, encodeErr := json.Marshal(map[string]any{"indices": result})
+	if encodeErr == nil {
+		s.indicesRaw = payload
+		s.indicesAt = time.Now()
+	}
+	s.indicesMu.Unlock()
 	for _, index := range result {
 		if !index.QuoteAvailable {
 			s.log.Warn("Kotak did not return a quote for a configured underlying",

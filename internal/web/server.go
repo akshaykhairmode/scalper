@@ -59,6 +59,7 @@ type MarketAPI interface {
 	Expiries(string) ([]scrip.ExpiryInfo, error)
 	Chain(context.Context, string, string, string) ([]market.ChainRow, error)
 	Quote(context.Context, string, string) (market.Quote, error)
+	Quotes(context.Context, string, []string) (map[string]market.Quote, error)
 	Candles(context.Context, string, string, string) ([]market.Candle, error)
 	Option(string) (scrip.Option, bool)
 	FindOption(string, string) (scrip.Option, bool)
@@ -109,12 +110,17 @@ type Server struct {
 	kotak       *kotakapi.Client
 	orderFeed   *orderfeed.Client
 	consumerKey string
+	books       *booksCache
 
 	feedMu      sync.RWMutex
 	feedWriteMu sync.Mutex
 	feedClients map[*websocket.Conn]struct{}
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
+
+	indicesMu  sync.Mutex
+	indicesRaw json.RawMessage
+	indicesAt  time.Time
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -249,6 +255,7 @@ func New(opts Options) (*Server, error) {
 		kotak:        opts.Kotak,
 		orderFeed:    opts.OrderFeed,
 		consumerKey:  strings.TrimSpace(opts.ConsumerKey),
+		books:        newBooksCache(),
 		feedClients:  make(map[*websocket.Conn]struct{}),
 		feedCtx:      feedCtx,
 		feedCancel:   feedCancel,
@@ -304,6 +311,10 @@ func New(opts Options) (*Server, error) {
 	}
 	if s.orderFeed != nil {
 		go s.forwardOrderFeedEvents()
+	}
+	if s.kotak != nil {
+		go s.runAccountBooks(feedCtx)
+		go s.logKotakRate(feedCtx)
 	}
 	return s, nil
 }

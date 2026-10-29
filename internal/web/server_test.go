@@ -133,6 +133,14 @@ func (f fakeMarketAPI) Quote(context.Context, string, string) (market.Quote, err
 	return f.quote, nil
 }
 
+func (f fakeMarketAPI) Quotes(_ context.Context, _ string, keys []string) (map[string]market.Quote, error) {
+	quotes := make(map[string]market.Quote, len(keys))
+	for _, key := range keys {
+		quotes[key] = f.quote
+	}
+	return quotes, nil
+}
+
 func (fakeMarketAPI) Candles(context.Context, string, string, string) ([]market.Candle, error) {
 	return []market.Candle{{Time: 1793092500, Open: 100, High: 102, Low: 99, Close: 101, Volume: 42}}, nil
 }

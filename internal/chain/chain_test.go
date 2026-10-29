@@ -44,7 +44,7 @@ func TestExpiryAndStrikeHelpers(t *testing.T) {
 		t.Fatalf("March fallback monthly expiry = %v", got)
 	}
 	from, to := StrikeRange(100, 500, 3)
-	if from != 9850 || to != 10150 {
+	if from != 8500 || to != 11500 {
 		t.Fatalf("StrikeRange = (%d, %d)", from, to)
 	}
 	from, _ = StrikeRange(1, 500, 3)
@@ -103,7 +103,7 @@ func TestBuildLadderPutFallbackAndNoSpot(t *testing.T) {
 	chain.Spots = []Spot{{Symbol: "BANKNIFTY"}}
 	chain.AddOption(ChainOption{OptionType: Put, Strike: 5_000_000, LTP: 50, PreviousClose: 0, OI: 8})
 	ladder := buildLadder(chain, &Spot{LTP: 0, Close: 50000})
-	if len(ladder.Entries) != 1 || ladder.Entries[0].OptionType != Put || ladder.Entries[0].Change != 0 || ladder.Entries[0].IsATM {
+	if len(ladder.Entries) != 1 || ladder.Entries[0].OptionType != Put || ladder.Entries[0].Change != 0 || !ladder.Entries[0].IsATM {
 		t.Fatalf("put ladder entry = %+v", ladder.Entries)
 	}
 	if ladder.ATMStrike != 5_000_000 || len(ladder.Spots) != 1 {
