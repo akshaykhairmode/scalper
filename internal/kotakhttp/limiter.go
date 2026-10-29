@@ -38,6 +38,9 @@ func newBucket(capacity, perSecond float64) *bucket {
 
 func (b *bucket) take(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		b.mu.Lock()
 		now := time.Now()
 		if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {

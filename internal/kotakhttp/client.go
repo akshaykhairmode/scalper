@@ -1,3 +1,4 @@
+// Package kotakhttp provides IPv4-only HTTP clients and rate limiting for Kotak APIs.
 package kotakhttp
 
 import (
