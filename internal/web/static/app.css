@@ -579,9 +579,13 @@ a { color: var(--blue); }
 }
 .leg-order-info { display: flex; flex-direction: column; min-width: 80px; gap: 2px; }
 .leg-margin-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; color: var(--muted-2); text-transform: uppercase; }
-.leg-margin-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.2; }
+.leg-margin-val { display: flex; align-items: baseline; gap: 5px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.2; }
 .leg-margin-val.up { color: var(--green); }
 .leg-margin-val.down { color: var(--red); }
+.margin-buy, .margin-sell { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.margin-buy.up, .margin-sell.up { color: var(--green); }
+.margin-buy.down, .margin-sell.down { color: var(--red); }
+.margin-sep { color: var(--muted-2); font-size: 10px; font-weight: 400; }
 .leg-orderpad.call .leg-name { color: var(--call); }
 .leg-orderpad.put .leg-name { color: var(--put); }
 .leg-name { font-size: 10px; font-weight: 800; letter-spacing: .08em; }
@@ -666,16 +670,14 @@ a { color: var(--blue); }
 /* ── Bottom panel ────────────────────────────────────────── */
 .bottom-panel { display: flex; flex-direction: column; }
 .bottom-title { display: none; margin: 0; font-size: 11px; }
-.bottom-toggle { flex: 0 0 auto; }
+.bottom-toggle { flex: 0 0 auto; margin-left: auto; }
 .bottom-panel.bottom-collapsed .bottom-title { display: block; }
 .bottom-panel.bottom-collapsed .tabs,
 .bottom-panel.bottom-collapsed .tab-content { display: none; }
 .bottom-panel.bottom-collapsed .bottom-actions { display: none; }
-.bottom-panel.bottom-collapsed .bottom-toggle { margin-left: auto; }
 .bottom-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 0 12px;
   border-bottom: 1px solid var(--line-soft);

@@ -1593,33 +1593,40 @@ function renderOrderPad() {
         : "Quantity shown in Lots. Click to switch to Shares.";
     }
 
-    const marginEl = $(`leg-${prefix}-margin`);
-    if (marginEl) {
-      const ltp = option ? num(option.ltp) : 0;
-      if (!option || ltp <= 0 || !shares) {
-        marginEl.textContent = "—";
-        marginEl.className = "leg-margin-val";
-        marginEl.title = option ? "Waiting for live price…" : "Choose a strike";
-      } else {
-        const reqBuyMargin = ltp * shares;
-        marginEl.textContent = `₹${fmt(reqBuyMargin, 2)}`;
-        if (hasLimits && available !== null && Number.isFinite(available)) {
-          const hasEnough = available >= reqBuyMargin;
-          marginEl.className = `leg-margin-val ${hasEnough ? "up" : "down"}`;
-          marginEl.title = hasEnough
-            ? `Required: ₹${fmt(reqBuyMargin, 2)} · Available: ₹${fmt(available, 0)} (Sufficient)`
-            : `Required: ₹${fmt(reqBuyMargin, 2)} · Available: ₹${fmt(available, 0)} (Insufficient margin)`;
+    const buyEl = $(`leg-${prefix}-margin-buy`);
+    const sellEl = $(`leg-${prefix}-margin-sell`);
+    const ltp = option ? num(option.ltp) : 0;
+    if (!option || ltp <= 0 || !shares) {
+      if (buyEl) { buyEl.textContent = "—"; buyEl.className = "margin-buy"; buyEl.title = "Buy margin"; }
+      if (sellEl) { sellEl.textContent = "—"; sellEl.className = "margin-sell"; sellEl.title = "Sell margin"; }
+    } else {
+      const reqBuy = ltp * shares;
+      const reqSell = requiredMargin(option, shares, "S");
+      const sellFinite = Number.isFinite(reqSell);
+      if (buyEl) {
+        buyEl.textContent = `B ₹${fmt(reqBuy, 0)}`;
+        if (hasLimits && available !== null) {
+          buyEl.className = `margin-buy ${available >= reqBuy ? "up" : "down"}`;
+          buyEl.title = `Buy: ₹${fmt(reqBuy, 2)} · Available: ₹${fmt(available, 0)} (${available >= reqBuy ? "Sufficient" : "Insufficient"})`;
         } else {
-          marginEl.className = "leg-margin-val";
-          marginEl.title = `Required: ₹${fmt(reqBuyMargin, 2)} (Sign in to verify margin)`;
+          buyEl.className = "margin-buy";
+          buyEl.title = `Buy margin: ₹${fmt(reqBuy, 2)}`;
+        }
+      }
+      if (sellEl) {
+        sellEl.textContent = sellFinite ? `S ₹${fmt(reqSell, 0)}` : "S —";
+        if (sellFinite && hasLimits && available !== null) {
+          sellEl.className = `margin-sell ${available >= reqSell ? "up" : "down"}`;
+          sellEl.title = `Sell: ₹${fmt(reqSell, 2)} · Available: ₹${fmt(available, 0)} (${available >= reqSell ? "Sufficient" : "Insufficient"})`;
+        } else {
+          sellEl.className = "margin-sell";
+          sellEl.title = sellFinite ? `Sell margin: ₹${fmt(reqSell, 2)}` : "Sell margin unavailable (no spot price)";
         }
       }
     }
 
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
-      const required = requiredMargin(option, shares, button.dataset.action === "buy" ? "B" : "S");
-      button.disabled = !option || !option.quoteAvailable || option.ltp <= 0 ||
-        !shares || !Number.isFinite(required) || (available !== null && required > available);
+      button.disabled = false;
     });
   }
 }
