@@ -466,6 +466,7 @@ function setTheme(theme, persist = true) {
   toggle.title = `Switch to ${nextTheme} theme`;
   document.querySelector('meta[name="color-scheme"]').content = theme;
   for (const chart of Object.values(S.charts)) chart.applyTheme();
+  if (S.tab === "risk") renderTab();
   if (!persist) return;
   try {
     localStorage.setItem("scalper-theme", theme);
@@ -1862,7 +1863,8 @@ function drawPayoff(canvas, points, spot) {
   const xOf = (x) => pad + ((x - minX) / Math.max(1, maxX - minX)) * (width - pad * 2);
   const yOf = (y) => pad + ((maxY - y) / Math.max(1, maxY - minY)) * (height - pad * 2);
 
-  ctx.strokeStyle = "#1a232c";
+  const isLight = document.body.dataset.theme === "light";
+  ctx.strokeStyle = isLight ? "#cbd5e1" : "#1a232c";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pad, yOf(0));
@@ -1876,26 +1878,26 @@ function drawPayoff(canvas, points, spot) {
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = "#f0b429";
+  ctx.strokeStyle = isLight ? "#b45309" : "#f0b429";
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
   ctx.lineTo(xOf(points[points.length - 1].spot), yOf(0));
   ctx.lineTo(xOf(points[0].spot), yOf(0));
   ctx.closePath();
-  ctx.fillStyle = "#f0b42912";
+  ctx.fillStyle = isLight ? "rgba(180, 83, 9, 0.1)" : "#f0b42912";
   ctx.fill();
 
   if (spot) {
     const x = xOf(spot);
-    ctx.strokeStyle = "#58a6ff";
+    ctx.strokeStyle = isLight ? "#0284c7" : "#58a6ff";
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
     ctx.moveTo(x, 2);
     ctx.lineTo(x, height - 2);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = "#58a6ff";
+    ctx.fillStyle = isLight ? "#0284c7" : "#58a6ff";
     ctx.font = "8px ui-monospace, Menlo, monospace";
     ctx.fillText("spot", Math.min(width - 24, x + 3), 9);
   }

@@ -7,6 +7,7 @@ const chartColors = (element) => {
     bg: color("--chart-bg", "#07090c"),
     grid: color("--chart-grid", "#141c24"),
     text: color("--chart-text", "#8292a2"),
+    crosshair: color("--chart-crosshair", "#8293a3"),
     up: color("--green", "#35c46a"),
     down: color("--red", "#ff5d5d"),
     border: color("--line", "#24303a"),
@@ -138,7 +139,7 @@ export class CandleChart {
         rightOffset: 4,
         tickMarkFormatter: (time) => axisTime(time),
       },
-      crosshair: { vertLine: { color: this.colors.text }, horzLine: { color: this.colors.text } },
+      crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
       handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
       handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: true }, axisDoubleClickReset: true },
     });
@@ -358,6 +359,7 @@ export class CandleChart {
       grid: { vertLines: { color: this.colors.grid }, horzLines: { color: this.colors.grid } },
       rightPriceScale: { borderColor: this.colors.border },
       timeScale: { borderColor: this.colors.border },
+      crosshair: { vertLine: { color: this.colors.crosshair }, horzLine: { color: this.colors.crosshair } },
     });
     this.candles.applyOptions({
       upColor: this.colors.up, wickUpColor: this.colors.up,
