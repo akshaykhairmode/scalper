@@ -2319,7 +2319,7 @@ function updateFooterVersion(data) {
 
 function isNewerVersion(latest, current) {
   if (!latest) return false;
-  if (!current || current === "dev" || current === "unknown") return true;
+  if (!current || current === "dev" || current === "unknown") return false;
   const parse = (v) => {
     const clean = String(v).trim().replace(/^v/i, "").split(/[-+]/)[0];
     const parts = clean.split(".").map((n) => parseInt(n, 10));
@@ -2327,7 +2327,7 @@ function isNewerVersion(latest, current) {
   };
   const l = parse(latest);
   const c = parse(current);
-  if (!l || !c) return latest !== current;
+  if (!l || !c) return false;
   for (let i = 0; i < Math.max(l.length, c.length); i++) {
     const lPart = l[i] ?? 0;
     const cPart = c[i] ?? 0;

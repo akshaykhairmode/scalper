@@ -46,9 +46,12 @@ func TestIsNewerSemver(t *testing.T) {
 		{"v2.0.0", "v1.9.9", true},
 		{"v1.0.0", "v1.0.0", false},
 		{"v1.0.0", "v1.1.0", false},
-		{"v1.0.0", "dev", true},
+		{"v1.0.0", "v1.0", false},
+		{"v1.0", "v1.0.0", false},
+		{"v1.0.0", "dev", false},
+		{"v1.0.0", "unknown", false},
 		{"", "v1.0.0", false},
-		{"v1.0.0", "", true},
+		{"v1.0.0", "", false},
 	}
 	for _, tc := range cases {
 		got := isNewerSemver(tc.latest, tc.current)

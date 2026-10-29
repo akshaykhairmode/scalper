@@ -134,17 +134,23 @@ func isNewerSemver(latest, current string) bool {
 		return false
 	}
 	if current == "" || current == "dev" || current == "unknown" {
-		return true
+		return false
 	}
 	l := parseSemver(latest)
 	c := parseSemver(current)
 	if len(l) == 0 || len(c) == 0 {
-		return latest != current
+		return false
+	}
+	for len(l) < 3 {
+		l = append(l, 0)
+	}
+	for len(c) < 3 {
+		c = append(c, 0)
 	}
 	for i := 0; i < len(l) && i < len(c); i++ {
 		if l[i] != c[i] {
 			return l[i] > c[i]
 		}
 	}
-	return len(l) > len(c)
+	return false
 }
