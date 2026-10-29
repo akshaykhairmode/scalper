@@ -95,7 +95,11 @@ func (c *HSMClient) Connect(ctx context.Context, user, auth string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, response, err := dialer.DialContext(ctx, c.url, http.Header{})
 	if response != nil && response.Body != nil {
-		defer func() { _ = response.Body.Close() }()
+		defer func() {
+			if cerr := response.Body.Close(); cerr != nil && c.logger != nil {
+				c.logger.Debug("failed to close SFeed handshake response body", "error", cerr)
+			}
+		}()
 	}
 	if err != nil {
 		if response != nil {
@@ -105,7 +109,10 @@ func (c *HSMClient) Connect(ctx context.Context, user, auth string) error {
 		return fmt.Errorf("dial Kotak SFeed: %w", err)
 	}
 	conn.SetReadLimit(1 << 20)
-	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("set SFeed initial read deadline: %w", err)
+	}
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	})
@@ -559,7 +566,9 @@ func (c *HSMClient) setDisconnected(err error) {
 	c.connected = false
 	c.mu.Unlock()
 	if conn != nil {
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && c.logger != nil {
+			c.logger.Debug("failed to close SFeed connection", "error", cerr)
+		}
 	}
 	if err == nil {
 		return
@@ -594,7 +603,9 @@ func (c *HSMClient) closeConnection() {
 	c.connected = false
 	c.mu.Unlock()
 	if conn != nil {
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && c.logger != nil {
+			c.logger.Debug("failed to close SFeed connection", "error", cerr)
+		}
 	}
 }
 

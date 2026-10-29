@@ -264,7 +264,9 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 			return nil, fmt.Errorf("kotak API request failed: %w", err)
 		}
 		raw, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-		_ = resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil && c.log != nil {
+			c.log.Debug("failed to close Kotak API response body", "error", closeErr)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read Kotak API response: %w", err)
 		}

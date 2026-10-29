@@ -48,13 +48,17 @@ func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (pape
 		if err := rows.Scan(
 			&position.InstrumentKey, &position.Symbol, &position.Quantity,
 			&position.AveragePrice, new(int64)); err != nil {
-			_ = rows.Close()
+			if cerr := rows.Close(); cerr != nil && s.log != nil {
+				s.log.Debug("failed to close position rows on scan error", "error", cerr)
+			}
 			return paper.Snapshot{}, fmt.Errorf("store: scan paper position: %w", err)
 		}
 		snapshot.Positions = append(snapshot.Positions, position)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
+		if cerr := rows.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close position rows on iterate error", "error", cerr)
+		}
 		return paper.Snapshot{}, fmt.Errorf("store: iterate paper positions: %w", err)
 	}
 	if err := rows.Close(); err != nil {
@@ -83,7 +87,9 @@ func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (pape
 			&order.ID, &order.InstrumentKey, &order.Symbol, &order.Side,
 			&order.Quantity, &price, &order.Status, &reason,
 			&order.Timestamp, &order.Product, &order.Mode); err != nil {
-			_ = orderRows.Close()
+			if cerr := orderRows.Close(); cerr != nil && s.log != nil {
+				s.log.Debug("failed to close order rows on scan error", "error", cerr)
+			}
 			return paper.Snapshot{}, fmt.Errorf("store: scan paper order: %w", err)
 		}
 		if price.Valid {
@@ -95,7 +101,9 @@ func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (pape
 		snapshot.Orders = append(snapshot.Orders, order)
 	}
 	if err := orderRows.Err(); err != nil {
-		_ = orderRows.Close()
+		if cerr := orderRows.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close order rows on iterate error", "error", cerr)
+		}
 		return paper.Snapshot{}, fmt.Errorf("store: iterate paper orders: %w", err)
 	}
 	if err := orderRows.Close(); err != nil {
@@ -113,13 +121,17 @@ func (s *Store) PaperSnapshot(ctx context.Context, shortMarginPct float64) (pape
 		if err := tradeRows.Scan(
 			&trade.ID, &trade.InstrumentKey, &trade.Symbol, &trade.Side,
 			&trade.Quantity, &trade.Price, &trade.ExecutedAt); err != nil {
-			_ = tradeRows.Close()
+			if cerr := tradeRows.Close(); cerr != nil && s.log != nil {
+				s.log.Debug("failed to close trade rows on scan error", "error", cerr)
+			}
 			return paper.Snapshot{}, fmt.Errorf("store: scan paper trade: %w", err)
 		}
 		snapshot.Trades = append(snapshot.Trades, trade)
 	}
 	if err := tradeRows.Err(); err != nil {
-		_ = tradeRows.Close()
+		if cerr := tradeRows.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close trade rows on iterate error", "error", cerr)
+		}
 		return paper.Snapshot{}, fmt.Errorf("store: iterate paper trades: %w", err)
 	}
 	if err := tradeRows.Close(); err != nil {

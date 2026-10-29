@@ -86,7 +86,10 @@ func (bs *BrokerServer) processOrder(order *Order) {
 		"quantity", order.Quantity)
 
 	// Check if market hours
-	isMarket, _ := bs.broker.IsMarketHours()
+	isMarket, err := bs.broker.IsMarketHours()
+	if err != nil {
+		bs.log.Warn("failed to check market hours", "event", "broker_market_hours_error", "error", err)
+	}
 	if !isMarket {
 		order.Status = "REJECTED"
 		order.Reason = "Market is not open"

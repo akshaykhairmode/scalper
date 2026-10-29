@@ -108,20 +108,45 @@ func (s *Server) enrichBrokerPositions(ctx context.Context, raw json.RawMessage)
 		if !found {
 			continue
 		}
-		row["instrument_key"], _ = json.Marshal(option.InstrumentKey)
-		row["exchange_segment"], _ = json.Marshal(option.ExchangeSegment)
-		row["symbol"], _ = json.Marshal(option.PTrdSymbol)
-		row["underlying"], _ = json.Marshal(option.Underlying)
-		row["expiry"], _ = json.Marshal(option.Expiry)
-		row["strike"], _ = json.Marshal(float64(option.StrikePaise) / 100)
-		row["option_type"], _ = json.Marshal(string(option.OptionType))
-		row["lot_size"], _ = json.Marshal(option.LotSize)
-		if quote, ok := quotes[option.InstrumentKey]; ok && quote.LTP > 0 {
-			row["ltp"], _ = json.Marshal(quote.LTP)
+		var mErr error
+		if row["instrument_key"], mErr = json.Marshal(option.InstrumentKey); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal instrument_key", "error", mErr)
 		}
-		rows[i], _ = json.Marshal(row)
+		if row["exchange_segment"], mErr = json.Marshal(option.ExchangeSegment); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal exchange_segment", "error", mErr)
+		}
+		if row["symbol"], mErr = json.Marshal(option.PTrdSymbol); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal symbol", "error", mErr)
+		}
+		if row["underlying"], mErr = json.Marshal(option.Underlying); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal underlying", "error", mErr)
+		}
+		if row["expiry"], mErr = json.Marshal(option.Expiry); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal expiry", "error", mErr)
+		}
+		if row["strike"], mErr = json.Marshal(float64(option.StrikePaise) / 100); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal strike", "error", mErr)
+		}
+		if row["option_type"], mErr = json.Marshal(string(option.OptionType)); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal option_type", "error", mErr)
+		}
+		if row["lot_size"], mErr = json.Marshal(option.LotSize); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal lot_size", "error", mErr)
+		}
+		if quote, ok := quotes[option.InstrumentKey]; ok && quote.LTP > 0 {
+			if row["ltp"], mErr = json.Marshal(quote.LTP); mErr != nil && s.log != nil {
+				s.log.Debug("failed to marshal ltp", "error", mErr)
+			}
+		}
+		if rows[i], mErr = json.Marshal(row); mErr != nil && s.log != nil {
+			s.log.Debug("failed to marshal position row", "error", mErr)
+		}
 	}
-	envelope["data"], _ = json.Marshal(rows)
+	if dataBytes, mErr := json.Marshal(rows); mErr == nil {
+		envelope["data"] = dataBytes
+	} else if s.log != nil {
+		s.log.Debug("failed to marshal envelope data", "error", mErr)
+	}
 	result, err := json.Marshal(envelope)
 	if err != nil {
 		return raw

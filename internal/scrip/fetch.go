@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -75,12 +76,16 @@ func (c *Client) ListFiles(ctx context.Context, baseURL string) (FileList, error
 		return FileList{}, fmt.Errorf("scrip: file-paths request: %w", err)
 	}
 	defer func() {
-		// The body is drained below; a close error is not actionable but is
-		// included when the request also failed.
-		_ = resp.Body.Close()
+		// The body is drained below; a close error is not actionable.
+		if cerr := resp.Body.Close(); cerr != nil {
+			slog.Debug("failed to close scrip response body", "error", cerr)
+		}
 	}()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			slog.Debug("failed to read error response body", "error", readErr)
+		}
 		return FileList{}, &errs.BrokerError{
 			Op:         "scrip file-paths",
 			StatusCode: resp.StatusCode,
@@ -130,10 +135,15 @@ func (c *Client) Download(ctx context.Context, fileURL string) ([]byte, error) {
 		return nil, fmt.Errorf("scrip: download %s: %w", fileURL, err)
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			slog.Debug("failed to close scrip CSV download response body", "error", cerr)
+		}
 	}()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			slog.Debug("failed to read scrip CSV download error body", "error", readErr)
+		}
 		return nil, &errs.BrokerError{
 			Op:         "scrip download",
 			StatusCode: resp.StatusCode,

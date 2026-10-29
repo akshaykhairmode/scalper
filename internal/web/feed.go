@@ -55,7 +55,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			"status": status,
 		},
 	}); err != nil {
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close client connection on feed status error", "error", cerr)
+		}
 		return
 	}
 	orderStatus := "disconnected"
@@ -66,7 +68,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := conn.WriteJSON(map[string]any{"type": "order_feed_status", "data": map[string]string{"status": orderStatus}}); err != nil {
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close client connection on order feed status error", "error", cerr)
+		}
 		return
 	}
 
@@ -77,7 +81,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.feedMu.Lock()
 		delete(s.feedClients, conn)
 		s.feedMu.Unlock()
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close feed client connection", "error", cerr)
+		}
 	}()
 
 	for {
@@ -221,12 +227,16 @@ func (s *Server) broadcast(value any) {
 	}
 	s.feedMu.RUnlock()
 	for _, client := range clients {
-		_ = client.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := client.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil && s.log != nil {
+			s.log.Debug("failed to set write deadline for broadcast client", "error", err)
+		}
 		if err := client.WriteJSON(value); err != nil {
 			s.feedMu.Lock()
 			delete(s.feedClients, client)
 			s.feedMu.Unlock()
-			_ = client.Close()
+			if cerr := client.Close(); cerr != nil && s.log != nil {
+				s.log.Debug("failed to close client after write error", "error", cerr)
+			}
 		}
 	}
 }

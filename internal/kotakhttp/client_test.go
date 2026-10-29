@@ -59,11 +59,12 @@ func TestLimitedTransport(t *testing.T) {
 	trans := &limitedTransport{
 		base: dummyTransport(func(req *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
-			if req.URL.Path == "/429" {
+			switch req.URL.Path {
+			case "/429":
 				rec.WriteHeader(http.StatusTooManyRequests)
-			} else if req.URL.Path == "/err" {
+			case "/err":
 				return nil, errors.New("network failure")
-			} else {
+			default:
 				rec.WriteHeader(http.StatusOK)
 			}
 			return rec.Result(), nil
@@ -77,17 +78,24 @@ func TestLimitedTransport(t *testing.T) {
 	if err1 != nil || resp1.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected req1: %v, %v", resp1, err1)
 	}
+	_ = resp1.Body.Close()
 
 	// 429 request
 	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.kotak.com/429", nil)
 	resp2, _ := trans.RoundTrip(req2)
-	if resp2.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("unexpected req2: %v", resp2)
+	if resp2 != nil {
+		if resp2.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("unexpected req2: %v", resp2)
+		}
+		_ = resp2.Body.Close()
 	}
 
 	// Error request
 	req3, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.kotak.com/err", nil)
-	_, err3 := trans.RoundTrip(req3)
+	resp3, err3 := trans.RoundTrip(req3)
+	if resp3 != nil {
+		_ = resp3.Body.Close()
+	}
 	if err3 == nil {
 		t.Fatal("expected error for req3")
 	}
@@ -101,7 +109,11 @@ func TestLimitedTransport(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	reqCanceled, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.kotak.com/orders", nil)
-	if _, err := trans.RoundTrip(reqCanceled); err == nil {
+	respCanceled, err := trans.RoundTrip(reqCanceled)
+	if respCanceled != nil {
+		_ = respCanceled.Body.Close()
+	}
+	if err == nil {
 		t.Error("expected context canceled error")
 	}
 }

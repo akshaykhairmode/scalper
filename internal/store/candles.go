@@ -24,7 +24,11 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	if err != nil {
 		return nil, fmt.Errorf("store: query candles: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close candle query rows", "error", cerr)
+		}
+	}()
 
 	var candles []market.Candle
 	for rows.Next() {
@@ -53,7 +57,11 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 	if err != nil {
 		return fmt.Errorf("store: begin candle write: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) && s.log != nil {
+			s.log.Debug("failed to rollback candle write tx", "error", rerr)
+		}
+	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO candles (instrument_key, timeframe, ts, open, high, low, close, volume, ticks)
@@ -64,7 +72,11 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 	if err != nil {
 		return fmt.Errorf("store: prepare candle write: %w", err)
 	}
-	defer func() { _ = stmt.Close() }()
+	defer func() {
+		if cerr := stmt.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close candle statement", "error", cerr)
+		}
+	}()
 	for _, candle := range candles {
 		if candle.Time <= 0 || !finite(candle.Open) || !finite(candle.High) ||
 			!finite(candle.Low) || !finite(candle.Close) || candle.Volume < 0 {

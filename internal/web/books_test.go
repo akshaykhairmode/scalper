@@ -29,7 +29,7 @@ func TestBooksCache(t *testing.T) {
 	testErr := errors.New("kotak error")
 	cache.store(bookOrders, nil, testErr)
 	state, ok = cache.lookup(bookOrders)
-	if !ok || state.err != testErr || state.nextTry.IsZero() {
+	if !ok || !errors.Is(state.err, testErr) || state.nextTry.IsZero() {
 		t.Fatalf("expected stored error, got %v", state)
 	}
 

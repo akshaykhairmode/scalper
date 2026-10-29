@@ -332,7 +332,9 @@ func (s *Server) Close() {
 	}
 	s.feedMu.Lock()
 	for client := range s.feedClients {
-		_ = client.Close()
+		if cerr := client.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close client connection during shutdown", "error", cerr)
+		}
 		delete(s.feedClients, client)
 	}
 	s.feedMu.Unlock()

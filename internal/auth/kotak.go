@@ -326,7 +326,9 @@ func (c *kotakClient) logAPIExchange(req *http.Request, resp *http.Response, res
 		body, bodyErr := getBody()
 		if bodyErr == nil {
 			requestBody, bodyErr = io.ReadAll(body)
-			_ = body.Close()
+			if closeErr := body.Close(); closeErr != nil && c.log != nil {
+				c.log.Debug("failed to close request body", "error", closeErr)
+			}
 		}
 		if bodyErr != nil {
 			requestBody = []byte("[request body unavailable]")

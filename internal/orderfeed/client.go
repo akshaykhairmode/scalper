@@ -100,8 +100,14 @@ func (c *Client) run(ctx context.Context, endpoint string, s Session) {
 	}
 }
 func (c *Client) readConnection(ctx context.Context, conn *websocket.Conn, s Session) error {
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	defer func() {
+		if cerr := conn.Close(); cerr != nil && c.log != nil {
+			c.log.Debug("failed to close order feed connection", "error", cerr)
+		}
+	}()
+	if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		return err
+	}
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(60 * time.Second)) })
 	login := fmt.Sprintf("{type:cn,Authorization:%s,Sid:%s,src:WEB}", s.Token, s.SID)
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(login)); err != nil {
@@ -134,7 +140,9 @@ func (c *Client) readConnection(ctx context.Context, conn *websocket.Conn, s Ses
 	for {
 		select {
 		case <-ctx.Done():
-			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+			if err := conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second)); err != nil && c.log != nil {
+				c.log.Debug("failed to send close message", "error", err)
+			}
 			return ctx.Err()
 		case err := <-done:
 			return err
