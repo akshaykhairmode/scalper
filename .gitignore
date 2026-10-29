@@ -10,3 +10,4 @@ GO_STANDARDS.md
 data
 logs
 config.yaml
+*.db

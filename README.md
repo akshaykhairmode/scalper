@@ -8,42 +8,46 @@ A low-latency, manual options trading terminal and option chain interface design
 
 - **Real-Time Option Chain Ladder**: Fast, interactive ladder with strike sorting, ATM identification, LTP, change percentage, and open interest.
 - **Direct Kotak Neo Integration**: Live market quotes, SFeed WebSocket streaming, live order execution, trade book, position book, and limits.
-- **Charts**: Interactive multi-timeframe candlestick charts powered by Lightweight Charts.
+- **Charts**: Interactive 3-column multi-timeframe candlestick charts (Call, Underlying Spot, Put) powered by Lightweight Charts with auto Support/Resistance and volume badges.
 - **Risk & Rate Limiting Guardrails**: Automated rate-limiter bucket matching Kotak API limits, max position bounds, auto square-off confirmation, and session management.
-- **Paper Trading & Live Modes**: Support for paper trading simulations and verified live order execution.
+- **Order Pad Flexibility**: Quick toggling between Lot and Share quantities.
 
 ---
 
-## Prerequisites
+## Installation
 
-- **Go**: Version 1.22+ (tested with Go 1.22 / 1.23 / 1.24+).
-- **Kotak Neo API Account**: Valid Kotak Neo trading credentials and API Consumer Key.
+### Download from GitHub Releases (Recommended)
+
+Pre-built binaries for macOS (Apple Silicon / Intel) and Linux (x86_64 / arm64) are available on the [Releases](https://github.com/akshaykhairmode/scalper/releases) page.
+
+1. Download the archive for your operating system and architecture from the [latest release](https://github.com/akshaykhairmode/scalper/releases/latest).
+2. Extract the archive:
+
+```bash
+# macOS (Apple Silicon) example:
+tar -xzf scalper_*_darwin_arm64.tar.gz
+
+# Linux (x86_64) example:
+tar -xzf scalper_*_linux_amd64.tar.gz
+```
+
+3. Make the binary executable (if needed) and move it to your path:
+
+```bash
+chmod +x scalper
+sudo mv scalper /usr/local/bin/ # or keep it in your project directory
+```
 
 ---
 
-## Installation & Build
+### Alternative: Building from Source (Developers)
 
-### 1. Clone the repository
+If you are developing or prefer to build locally from source:
 
 ```bash
 git clone https://github.com/akshaykhairmode/scalper.git
 cd scalper
-```
-
-### 2. Build from source
-
-Using `make`:
-
-```bash
-make build
-```
-
-This compiles the binary to `bin/scalper`.
-
-Or directly using the Go toolchain:
-
-```bash
-go build -trimpath -o bin/scalper ./cmd/scalper
+make build # compiles to bin/scalper
 ```
 
 ---
@@ -97,16 +101,11 @@ export KOTAK_MPIN="your-6-digit-mpin" # Optional
 
 ## Running Scalper
 
-Start the server:
+Start the server using your configuration file:
 
 ```bash
-./bin/scalper -config config.yaml
-```
-
-Or run directly via `make`:
-
-```bash
-make run
+scalper -config config.yaml
+# or if running from local build: ./bin/scalper -config config.yaml
 ```
 
 Once running, navigate to:

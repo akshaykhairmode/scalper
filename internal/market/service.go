@@ -409,6 +409,11 @@ func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe
 	var segment, symbol string
 	if option, found := s.scrips.Option(instrumentKey); found {
 		segment, symbol = option.ExchangeSegment, option.PSymbol
+	} else if idx, found := s.resolveConfiguredIndex(instrumentKey); found {
+		// Kotak Neo requires the exact index symbol string (e.g. "Nifty 50", "Nifty Bank",
+		// "NIFTY MID SELECT", "SENSEX") rather than the numeric pSymbol token (e.g. "26000").
+		segment = idx.IndexSegment
+		symbol = IndexQuoteSymbol(idx)
 	} else {
 		spot, found := s.scrips.Spot(instrumentKey)
 		if !found {
@@ -435,6 +440,24 @@ func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe
 	fromDate := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 	toDate := now.Format("2006-01-02")
 	return s.client.Historical(ctx, baseURL, segment+"|"+symbol, interval, fromDate, toDate)
+}
+
+func (s *Service) resolveConfiguredIndex(instrumentKey string) (config.Index, bool) {
+	for _, index := range s.cfg.Market.Indices {
+		name := strings.TrimSpace(index.ScripName)
+		if name == "" {
+			name = index.Key
+		}
+		if instrumentKey == index.Key ||
+			instrumentKey == index.IndexSegment+"|"+name ||
+			instrumentKey == index.IndexSegment+"|"+index.Key ||
+			instrumentKey == scrip.SpotKey(index.IndexSegment, name) ||
+			instrumentKey == scrip.SpotKey(index.IndexSegment, index.Key) ||
+			strings.EqualFold(instrumentKey, index.IndexSegment+"|"+index.IndexSymbol) {
+			return index, true
+		}
+	}
+	return config.Index{}, false
 }
 
 func (s *Service) configuredSpot(instrumentKey string) (scrip.Spot, bool) {

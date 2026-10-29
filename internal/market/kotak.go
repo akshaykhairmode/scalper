@@ -339,12 +339,17 @@ func decodeHistoricalCandles(raw []byte) ([]Candle, error) {
 		return nil, errors.New("historical response has no candles array")
 	}
 	candles := make([]Candle, 0, len(rows))
-	for i, row := range rows {
+	for _, row := range rows {
 		candle, err := decodeHistoricalCandle(row)
 		if err != nil {
-			return nil, fmt.Errorf("candle %d: %w", i, err)
+			// Do not discard hundreds of valid candles if a single upstream bar has bad values
+			// (e.g. index glitch where high < open or rounding anomaly). Clamp if fixable or skip.
+			continue
 		}
 		candles = append(candles, candle)
+	}
+	if len(candles) == 0 && len(rows) > 0 {
+		return nil, errors.New("all historical candles were malformed")
 	}
 	return candles, nil
 }
@@ -387,9 +392,20 @@ func decodeHistoricalCandle(row []json.RawMessage) (Candle, error) {
 		}
 		candle.OpenInterest = int64(oi)
 	}
-	if candle.Low > candle.High || candle.Open < candle.Low || candle.Open > candle.High ||
-		candle.Close < candle.Low || candle.Close > candle.High {
-		return Candle{}, errors.New("OHLC values are inconsistent")
+	if candle.Low > candle.High {
+		candle.Low, candle.High = candle.High, candle.Low
+	}
+	if candle.Open < candle.Low {
+		candle.Low = candle.Open
+	}
+	if candle.Open > candle.High {
+		candle.High = candle.Open
+	}
+	if candle.Close < candle.Low {
+		candle.Low = candle.Close
+	}
+	if candle.Close > candle.High {
+		candle.High = candle.Close
 	}
 	return candle, nil
 }

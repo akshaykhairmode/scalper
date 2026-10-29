@@ -80,6 +80,7 @@ const S = {
   selected: { type: "CE", CE: null, PE: null },
   strikeSearchTarget: "CE",
   qty: { CE: 1, PE: 1 },
+  unit: { CE: "LOTS", PE: "LOTS" },
   product: "MIS",
   positions: [],
   orders: [],
@@ -323,15 +324,36 @@ function normalizePosition(raw) {
   const sold = num(raw.flSellQty ?? raw.fl_sell_qty);
   const carriedBought = num(raw.cfBuyQty ?? raw.cf_buy_qty);
   const carriedSold = num(raw.cfSellQty ?? raw.cf_sell_qty);
-  const quantity = num(raw.quantity ?? raw.net_qty ?? raw.netQty ?? raw.qty ?? raw.netqty, bought + carriedBought - sold - carriedSold);
+  const totalBought = bought + carriedBought;
+  const totalSold = sold + carriedSold;
+  const quantity = num(raw.quantity ?? raw.net_qty ?? raw.netQty ?? raw.qty ?? raw.netqty, totalBought - totalSold);
+
+  const buyAmt = num(raw.buyAmt ?? raw.buy_amt) + num(raw.cfBuyAmt ?? raw.cf_buy_amt);
+  const sellAmt = num(raw.sellAmt ?? raw.sell_amt) + num(raw.cfSellAmt ?? raw.cf_sell_amt);
+
   let average = num(raw.average_price ?? raw.averagePrice ?? raw.avg_price ?? raw.avgPrice ?? raw.avgPrc ?? raw.avg);
-  if (!average && quantity > 0 && bought + carriedBought > 0) {
-    average = (num(raw.buyAmt ?? raw.buy_amt) + num(raw.cfBuyAmt ?? raw.cf_buy_amt)) / (bought + carriedBought);
-  } else if (!average && quantity < 0 && sold + carriedSold > 0) {
-    average = (num(raw.sellAmt ?? raw.sell_amt) + num(raw.cfSellAmt ?? raw.cf_sell_amt)) / (sold + carriedSold);
+  if (!average && quantity > 0 && totalBought > 0) {
+    average = buyAmt / totalBought;
+  } else if (!average && quantity < 0 && totalSold > 0) {
+    average = sellAmt / totalSold;
   }
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice, 0);
+
+  // Closed position P&L = sellAmt - buyAmt. Open position P&L = (LTP - Avg) * Qty + closed P&L.
+  const closedQty = Math.min(totalBought, totalSold);
+  let realisedPnL = 0;
+  if (closedQty > 0) {
+    const buyAvg = totalBought > 0 ? buyAmt / totalBought : 0;
+    const sellAvg = totalSold > 0 ? sellAmt / totalSold : 0;
+    realisedPnL = (sellAvg - buyAvg) * closedQty;
+  } else if (quantity === 0 && (buyAmt > 0 || sellAmt > 0)) {
+    realisedPnL = sellAmt - buyAmt;
+  }
+
+  const unrealisedPnL = quantity !== 0 && ltp > 0 ? (ltp - average) * quantity : 0;
   const reportedPnL = raw.pnl ?? raw.unrealised_pnl ?? raw.unrealizedPnl ?? raw.today_pnl ?? raw.todayPnl ?? raw.rPnl ?? raw.unRlzPnL;
+  const positionPnL = reportedPnL != null ? num(reportedPnL) : (unrealisedPnL + realisedPnL);
+
   return {
     instrument_key: raw.instrument_key ?? raw.instrumentKey ?? raw.tok ?? "",
     exchange_segment: raw.exchange_segment ?? raw.exchangeSegment ?? raw.exSeg ?? "nse_fo",
@@ -344,7 +366,9 @@ function normalizePosition(raw) {
     quantity,
     average_price: average,
     ltp,
-    pnl: reportedPnL == null ? (ltp > 0 ? (ltp - average) * quantity : 0) : num(reportedPnL),
+    pnl: positionPnL,
+    realised_pnl: realisedPnL,
+    unrealised_pnl: unrealisedPnL,
     product: raw.product ?? raw.prod ?? "MIS",
   };
 }
@@ -386,6 +410,9 @@ function init() {
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
+  const defaultUnit = (S.boot.defaultUnit === "shares") ? "SHARES" : "LOTS";
+  S.unit.CE = defaultUnit;
+  S.unit.PE = defaultUnit;
   S.qty.CE = defaultLots;
   S.qty.PE = defaultLots;
   S.activeIndex = S.boot.indices?.[0]?.key || S.boot.commodities?.[0]?.key || "NIFTY";
@@ -438,8 +465,14 @@ function buildTimeframes() {
 }
 
 function buildCharts() {
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true });
+  const savedSR = localStorage.getItem("scalper-show-sr") === "true";
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR });
+  for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
+    button.classList.toggle("active", savedSR);
+    button.setAttribute("aria-pressed", savedSR ? "true" : "false");
+  }
 }
 
 function setFocusedChart(pane) {
@@ -815,7 +848,8 @@ function handleSocketEvent(event) {
     for (const position of S.positions) {
       if (position.instrument_key !== data.key) continue;
       position.ltp = num(data.ltp, position.ltp);
-      position.pnl = (position.ltp - position.average_price) * position.quantity;
+      position.unrealised_pnl = position.quantity !== 0 ? (position.ltp - position.average_price) * position.quantity : 0;
+      position.pnl = position.unrealised_pnl + (position.realised_pnl || 0);
       updatedPosition = true;
     }
     if (updatedPosition) {
@@ -979,6 +1013,14 @@ function activeCommodity() {
   return (S.boot.commodities || []).find((item) => item.key === S.activeIndex) || null;
 }
 
+function activeSpotInstrument() {
+  const spot = S.spots.get(S.activeIndex);
+  if (spot?.spotKey) return spot.spotKey;
+  const idx = [...(S.boot.indices || []), ...(S.boot.commodities || [])].find((item) => item.key === S.activeIndex);
+  if (idx?.indexSegment) return `${idx.indexSegment}|${idx.key}`;
+  return `nse_cm|${S.activeIndex}`;
+}
+
 async function loadCharts() {
   const loadID = ++S.chartLoadID;
   const dateParts = new Intl.DateTimeFormat("en-GB", {
@@ -986,13 +1028,18 @@ async function loadCharts() {
   }).formatToParts(new Date());
   const dateValues = Object.fromEntries(dateParts.map((part) => [part.type, part.value]));
   const sessionDate = `${dateValues.year}-${dateValues.month}-${dateValues.day}`;
-  for (const [pane, type] of [["ce", "CE"], ["pe", "PE"]]) {
-    const key = chartInstrument(type);
+  const paneTargets = [
+    ["ce", chartInstrument("CE"), "Choose a strike to show chart data."],
+    ["spot", activeSpotInstrument(), "Loading spot index data…"],
+    ["pe", chartInstrument("PE"), "Choose a strike to show chart data."],
+  ];
+  for (const [pane, key, defaultHint] of paneTargets) {
     const chart = S.charts[pane];
+    if (!chart) continue;
     chart.resetView();
     if (!key) {
       chart.setData([]);
-      setChartHint(pane, "Choose a strike to show chart data.");
+      setChartHint(pane, defaultHint);
       continue;
     }
     chart.setData([]);
@@ -1048,7 +1095,8 @@ async function loadCharts() {
           S.historicalCache.set(cacheKey, candles);
         } catch (error) { throw error; }
       }
-      if (loadID !== S.chartLoadID || chartInstrument(type) !== key) return;
+      const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : (pane === "ce" ? chartInstrument("CE") : chartInstrument("PE"));
+      if (loadID !== S.chartLoadID || currentExpectedKey !== key) return;
       if (S.marketOpen) {
         if (!S.candles[liveKey]?.length) {
           S.candles[liveKey] = candles.candles.slice(-500).map((candle) => ({ ...candle }));
@@ -1060,7 +1108,8 @@ async function loadCharts() {
         setChartHint(pane, candles.warning || (candles.candles.length ? "" : "No historical candles returned for this contract."));
       }
     } catch (error) {
-      if (loadID !== S.chartLoadID || chartInstrument(type) !== key) return;
+      const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : (pane === "ce" ? chartInstrument("CE") : chartInstrument("PE"));
+      if (loadID !== S.chartLoadID || currentExpectedKey !== key) return;
       console.warn("historical candles unavailable", { pane, error });
       chart.setData([]);
       setChartHint(pane, `Historical data unavailable: ${error.message}`);
@@ -1109,8 +1158,12 @@ function updateLiveCandle(key, price, timestamp) {
   for (const type of ["CE", "PE"]) {
     if (chartInstrument(type) !== key) continue;
     const pane = type === "CE" ? "ce" : "pe";
-    S.charts[pane].update(candle);
+    S.charts[pane]?.update(candle);
     setChartHint(pane, "");
+  }
+  if (activeSpotInstrument() === key && S.charts.spot) {
+    S.charts.spot.update(candle);
+    setChartHint("spot", "");
   }
 }
 
@@ -1118,6 +1171,7 @@ function renderPaneHeaders() {
   const expiryLabel = expiryText(S.expiry);
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
+  const spot = S.spots.get(S.activeIndex);
 
   $("ce-title").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
   $("ce-sub").textContent = ce ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
@@ -1125,6 +1179,18 @@ function renderPaneHeaders() {
   $("ce-change").textContent = ce ? `${fmtSigned(ce.change)} (${fmtSigned(ce.changePct)}%)` : "—";
   $("ce-change").className = "pane-change " + directionClass(ce?.changePct);
   renderOptionStrikeSelect("CE", ce);
+
+  const spotTitle = $("spot-title");
+  if (spotTitle) spotTitle.textContent = spot?.displayName || S.activeIndex || "UNDERLYING";
+  const spotSub = $("spot-sub");
+  if (spotSub) spotSub.textContent = `Spot · ${S.timeframe}`;
+  const spotLtp = $("spot-ltp");
+  if (spotLtp) spotLtp.textContent = spot?.ltp ? fmt(spot.ltp) : "—";
+  const spotChange = $("spot-change");
+  if (spotChange) {
+    spotChange.textContent = spot?.ltp ? `${fmtSigned(spot.change)} (${fmtSigned(spot.changePct)}%)` : "—";
+    spotChange.className = "pane-change " + directionClass(spot?.changePct);
+  }
 
   $("pe-title").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
   $("pe-sub").textContent = pe ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
@@ -1360,11 +1426,23 @@ function renderOrderPad() {
   const available = num(S.limits?.available);
   for (const [type, option] of [["CE", ce], ["PE", pe]]) {
     const lot = lotSize(type);
-    const shares = Math.max(0, Math.round(num(S.qty[type])) * lot);
+    const isShares = S.unit[type] === "SHARES";
+    const shares = resolvedShares(lot, type);
     const prefix = type === "CE" ? "call" : "put";
     const input = $(`${prefix}-lots`);
-    input.value = String(S.qty[type]);
-    input.disabled = !option;
+    if (input) {
+      input.value = String(S.qty[type]);
+      input.disabled = !option;
+      input.step = isShares ? String(Math.max(1, lot)) : "1";
+      input.min = isShares ? String(Math.max(1, lot)) : "1";
+    }
+    const toggleBtn = document.querySelector(`.unit-toggle[data-unit-toggle="${type}"]`);
+    if (toggleBtn) {
+      toggleBtn.textContent = isShares ? "SHARES" : "LOTS";
+      toggleBtn.title = isShares
+        ? "Quantity shown in Shares. Click to switch to Lots."
+        : "Quantity shown in Lots. Click to switch to Shares.";
+    }
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
       const required = requiredMargin(option, shares, button.dataset.action === "buy" ? "B" : "S");
       button.disabled = !option || !option.quoteAvailable || option.ltp <= 0 ||
@@ -1374,7 +1452,11 @@ function renderOrderPad() {
 }
 
 function resolvedShares(lot, type = S.selected.type) {
-  return Math.max(0, Math.round(num(S.qty[type])) * lot);
+  const qty = Math.max(1, Math.round(num(S.qty[type], 1)));
+  if (S.unit[type] === "SHARES") {
+    return qty;
+  }
+  return qty * lot;
 }
 
 function requiredMargin(option, shares, side) {
@@ -1518,7 +1600,7 @@ function positionsHTML() {
         <td class="${directionClass(p.pnl)}">${fmtSigned(p.pnl, 0)}</td>
         <td>${risk.maxProfit === Infinity ? "∞" : `₹${fmt(risk.maxProfit, 0)}`}</td>
         <td>${risk.maxLoss === -Infinity ? "∞" : `₹${fmt(risk.maxLoss, 0)}`}</td>
-        <td><button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button></td>
+        <td>${p.quantity !== 0 ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
       </tr>`;
     }
   }
@@ -1711,8 +1793,13 @@ function renderFooter() {
 /* ── Trading actions ──────────────────────────────────── */
 
 function validateQuantity(type) {
-  if (!Number.isInteger(num(S.qty[type])) || num(S.qty[type]) <= 0) {
-    return `Enter a positive ${type} lot quantity.`;
+  const qty = num(S.qty[type]);
+  if (!Number.isInteger(qty) || qty <= 0) {
+    return `Enter a positive ${type} quantity.`;
+  }
+  const lot = lotSize(type);
+  if (S.unit[type] === "SHARES" && lot > 1 && qty % lot !== 0) {
+    return `Quantity in shares must be a multiple of lot size (${lot}).`;
   }
   return "";
 }
@@ -2102,6 +2189,17 @@ function bindEvents() {
       }
       const chart = S.charts[button.dataset.chart];
       if (!chart) return;
+      if (action === "sr") {
+        const nextState = chart.toggleSR();
+        button.classList.toggle("active", nextState);
+        button.setAttribute("aria-pressed", nextState ? "true" : "false");
+        try {
+          localStorage.setItem("scalper-show-sr", String(nextState));
+        } catch {
+          // ignore
+        }
+        return;
+      }
       if (action === "in") chart.zoomIn();
       else if (action === "out") chart.zoomOut();
       else chart.resetView();
@@ -2128,6 +2226,9 @@ function bindEvents() {
 
   for (const button of $$("[data-qty-step]")) {
     button.addEventListener("click", () => stepQuantity(button.dataset.qtyStep, num(button.dataset.step)));
+  }
+  for (const button of $$(".unit-toggle")) {
+    button.addEventListener("click", () => toggleQuantityUnit(button.dataset.unitToggle));
   }
   for (const input of $$("[data-lots]")) {
     input.addEventListener("change", () => updateLotInput(input.dataset.lots, input.value));
@@ -2193,13 +2294,30 @@ function bindEvents() {
   });
 }
 
+function toggleQuantityUnit(type) {
+  const lot = Math.max(1, lotSize(type) || 1);
+  if (S.unit[type] === "LOTS") {
+    S.unit[type] = "SHARES";
+    S.qty[type] = Math.max(lot, Math.round(num(S.qty[type], 1)) * lot);
+  } else {
+    S.unit[type] = "LOTS";
+    S.qty[type] = Math.max(1, Math.round(num(S.qty[type], lot) / lot));
+  }
+  renderOrderPad();
+}
+
 function stepQuantity(type, direction) {
-  S.qty[type] = Math.max(1, Math.round(num(S.qty[type], 1)) + direction);
+  const lot = Math.max(1, lotSize(type) || 1);
+  const step = S.unit[type] === "SHARES" ? lot : 1;
+  const current = num(S.qty[type], step);
+  S.qty[type] = Math.max(step, Math.round(current + direction * step));
   renderOrderPad();
 }
 
 function updateLotInput(type, value) {
-  S.qty[type] = Math.max(1, Math.round(num(value, 1)));
+  const lot = Math.max(1, lotSize(type) || 1);
+  const minVal = S.unit[type] === "SHARES" ? lot : 1;
+  S.qty[type] = Math.max(minVal, Math.round(num(value, minVal)));
   renderOrderPad();
 }
 

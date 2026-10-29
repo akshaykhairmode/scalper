@@ -79,6 +79,7 @@
         <div class="chart-frame">
           <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart"></div>
           <div class="chart-tools" aria-label="CALL chart zoom controls">
+            <button type="button" data-chart="ce" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="ce" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="ce" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
@@ -93,15 +94,39 @@
           </div>
           <div class="leg-order-actions">
             <div class="lot-control">
-              <span>LOTS</span>
-              <button type="button" data-qty-step="CE" data-step="-1" aria-label="Decrease call lots">−</button>
-              <input id="call-lots" data-lots="CE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Call lots">
-              <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call lots">+</button>
+              <button type="button" class="unit-toggle" data-unit-toggle="CE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
+              <button type="button" data-qty-step="CE" data-step="-1" aria-label="Decrease call quantity">−</button>
+              <input id="call-lots" data-lots="CE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Call quantity">
+              <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call quantity">+</button>
             </div>
             <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
             <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
           </div>
         </section>
+      </article>
+
+      <article class="pane" data-pane="spot">
+        <div class="pane-head">
+          <div class="pane-id">
+            <div class="pane-title-row"><span class="pane-title" id="spot-title">UNDERLYING</span></div>
+            <span class="pane-sub" id="spot-sub">spot index</span>
+          </div>
+          <div class="pane-quote">
+            <span class="pane-ltp" id="spot-ltp">—</span>
+            <span class="pane-change" id="spot-change">—</span>
+          </div>
+        </div>
+        <div class="chart-frame">
+          <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
+          <div class="chart-tools" aria-label="Underlying chart zoom controls">
+            <button type="button" data-chart="spot" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
+            <button type="button" data-chart="spot" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
+            <button type="button" data-chart="spot" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
+            <button type="button" data-chart="spot" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
+            <button type="button" data-chart="spot" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
+          </div>
+          <div class="chart-hint" id="hint-spot">Collecting live candles…</div>
+        </div>
       </article>
 
       <article class="pane" data-pane="pe">
@@ -118,6 +143,7 @@
         <div class="chart-frame">
           <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart"></div>
           <div class="chart-tools" aria-label="PUT chart zoom controls">
+            <button type="button" data-chart="pe" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="pe" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="pe" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
@@ -132,10 +158,10 @@
           </div>
           <div class="leg-order-actions">
             <div class="lot-control">
-              <span>LOTS</span>
-              <button type="button" data-qty-step="PE" data-step="-1" aria-label="Decrease put lots">−</button>
-              <input id="put-lots" data-lots="PE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Put lots">
-              <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put lots">+</button>
+              <button type="button" class="unit-toggle" data-unit-toggle="PE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
+              <button type="button" data-qty-step="PE" data-step="-1" aria-label="Decrease put quantity">−</button>
+              <input id="put-lots" data-lots="PE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Put quantity">
+              <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put quantity">+</button>
             </div>
             <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
             <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>

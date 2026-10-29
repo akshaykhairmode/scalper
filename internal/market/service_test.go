@@ -205,7 +205,7 @@ func TestCandlesResolvesCanonicalInstrumentsToKotakSymbols(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := []string{<-requests, <-requests}
-	if !strings.Contains(strings.Join(got, ","), "nse_cm|1333|5min") ||
+	if !strings.Contains(strings.Join(got, ","), "nse_cm|Nifty 50|5min") ||
 		!strings.Contains(strings.Join(got, ","), "nse_fo|12345|60min") {
 		t.Fatalf("historical instrument requests = %v", got)
 	}

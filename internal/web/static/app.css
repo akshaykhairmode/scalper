@@ -354,7 +354,7 @@ a { color: var(--blue); }
 /* ── Charts ──────────────────────────────────────────────── */
 .charts-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   min-width: 0;
   min-height: 0;
@@ -425,19 +425,34 @@ a { color: var(--blue); }
 }
 .chart-frame:hover .chart-tools, .chart-tools:focus-within { opacity: 1; }
 .chart-tools button {
-  width: 21px;
+  min-width: 21px;
   height: 19px;
-  padding: 0;
+  padding: 0 3px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: color-mix(in srgb, var(--bg) 90%, transparent);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
 }
 .chart-tools button:hover { color: var(--text); border-color: #3b4d5f; background: var(--panel-2); }
 .chart-tools button.active { color: var(--accent); border-color: #4a3a10; background: #1d1808; }
+.chart-vol-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 62px;
+  z-index: 2;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.2;
+  pointer-events: none;
+  user-select: none;
+}
 .chart-hint {
   position: absolute;
   inset: 0;
@@ -562,8 +577,28 @@ a { color: var(--blue); }
   color: var(--muted);
 }
 .lot-control button:hover { color: var(--text); background: var(--panel-3); }
+.lot-control .unit-toggle {
+  width: auto;
+  min-width: 44px;
+  height: 22px;
+  padding: 0 5px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .12s ease;
+}
+.lot-control .unit-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: #fff;
+}
 .lot-control input {
-  width: 34px;
+  width: 44px;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -952,9 +987,14 @@ body[data-theme="light"] .risk-flag.good { border-color: #9dc8ad; }
 body[data-theme="light"] .footer .dot-sep { color: #aab8c5; }
 body[data-theme="light"] .footer-uptime { color: #758391; }
 
-@media (max-width: 1180px) {
+@media (max-width: 1280px) {
   .tag { display: none; }
   .metric:nth-child(1) { display: none; }
+}
+
+@media (max-width: 1100px) {
+  .charts-row { grid-template-columns: 1fr; }
+  .pane { min-height: 240px; }
 }
 
 @media (max-width: 900px) {

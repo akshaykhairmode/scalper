@@ -164,7 +164,7 @@ func TestDecodeHistoricalCandlesRejectsAPIErrorsAndMalformedRows(t *testing.T) {
 		`{"status":"ERROR","fault":{"message":"Invalid interval value"}}`,
 		`{"status":"success","data":{}}`,
 		`{"status":"success","data":{"candles":[["bad timestamp",1,2,0,1,1,null]]}}`,
-		`{"status":"success","data":{"candles":[["2026-10-28T09:15:00+0530",1,0,2,1,1,null]]}}`,
+		`{"status":"success","data":{"candles":[["2026-10-28T09:15:00+0530","invalid_number",0,2,1,1,null]]}}`,
 	}
 	for _, response := range cases {
 		if _, err := decodeHistoricalCandles([]byte(response)); err == nil {
