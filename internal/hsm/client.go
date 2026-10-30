@@ -53,11 +53,6 @@ type HSMClient struct {
 	wg             sync.WaitGroup
 }
 
-// NewHSMClient creates an SFeed client with the default logger.
-func NewHSMClient(endpoint string, quoteCh chan<- *Quote) *HSMClient {
-	return NewHSMClientWithLogger(endpoint, quoteCh, slog.Default())
-}
-
 // NewHSMClientWithLogger creates an SFeed client with an explicit logger.
 func NewHSMClientWithLogger(endpoint string, quoteCh chan<- *Quote, logger *slog.Logger) *HSMClient {
 	if logger == nil {
@@ -110,7 +105,9 @@ func (c *HSMClient) Connect(ctx context.Context, user, auth string) error {
 	}
 	conn.SetReadLimit(1 << 20)
 	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
-		_ = conn.Close()
+		if cerr := conn.Close(); cerr != nil && c.logger != nil {
+			c.logger.Debug("failed to close connection after read deadline error", "error", cerr)
+		}
 		return fmt.Errorf("set SFeed initial read deadline: %w", err)
 	}
 	conn.SetPongHandler(func(string) error {
@@ -624,11 +621,6 @@ func (c *HSMClient) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.connected
-}
-
-// WaitForConnection returns a channel closed after successful authentication.
-func (c *HSMClient) WaitForConnection() <-chan struct{} {
-	return c.connectedCh
 }
 
 // Done returns a channel that receives the terminal connection error.

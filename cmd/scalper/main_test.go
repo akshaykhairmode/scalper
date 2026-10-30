@@ -97,7 +97,7 @@ func TestRunInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestRunPaperModeStartsAndShutsDown(t *testing.T) {
+func TestRunOfflineModeStartsAndShutsDown(t *testing.T) {
 	t.Setenv("KOTAK_CONSUMER_KEY", "")
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")

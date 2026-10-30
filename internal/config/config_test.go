@@ -214,9 +214,6 @@ func TestValidate(t *testing.T) {
 			c.Trading.Quantity.AllowShares = false
 			c.Trading.Quantity.DefaultUnit = "shares"
 		}, wantField: "trading.quantity.default_unit"},
-		{name: "bad cash", mutate: func(c *Config) { c.Trading.Paper.StartingCash = 0 }, wantField: "trading.paper.starting_cash"},
-		{name: "bad slippage", mutate: func(c *Config) { c.Trading.Paper.SlippageTicks = -1 }, wantField: "trading.paper.slippage_ticks"},
-		{name: "bad short margin", mutate: func(c *Config) { c.Trading.Paper.ShortMarginPct = 101 }, wantField: "trading.paper.short_margin_pct"},
 		{name: "bad margin refresh", mutate: func(c *Config) { c.Trading.Margin.RefreshMS = 999 }, wantField: "trading.margin.refresh_ms"},
 		{name: "bad preview debounce", mutate: func(c *Config) { c.Trading.Margin.PreviewDebounceMS = 99 }, wantField: "trading.margin.preview_debounce_ms"},
 		{name: "bad session open", mutate: func(c *Config) { c.Trading.Session.Open = "9:15" }, wantField: "trading.session.open"},

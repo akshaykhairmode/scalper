@@ -45,8 +45,8 @@ func TestOpenAndSchema(t *testing.T) {
 		t.Fatalf("path is not absolute: %s", s.Path())
 	}
 	want := []string{
-		"audit_log", "candles", "instruments", "meta", "orders", "paper_account",
-		"paper_positions", "schema_migrations", "scrip_sync", "spot_instruments", "trades",
+		"audit_log", "candles", "instruments", "meta", "orders",
+		"schema_migrations", "scrip_sync", "spot_instruments", "trades",
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)

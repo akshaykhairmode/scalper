@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/errs"
 	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 )
@@ -362,7 +363,9 @@ func isEmptyReport(path string, envelope responseEnvelope) bool {
 	if json.Unmarshal(envelope.StCode, &code) != nil {
 		var text string
 		if json.Unmarshal(envelope.StCode, &text) == nil {
-			_, _ = fmt.Sscan(text, &code)
+			if parsed, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+				code = parsed
+			}
 		}
 	}
 	message := strings.ToLower(strings.TrimSpace(envelope.ErrMsg + " " + envelope.Emsg + " " + envelope.Desc))
@@ -381,22 +384,25 @@ func kotakAPIError(envelope responseEnvelope) error {
 			message += " (" + desc + ")"
 		}
 	}
-	var code any
+	var codeStr string
 	if len(envelope.StCode) > 0 {
-		if json.Unmarshal(envelope.StCode, &code) != nil {
-			code = string(envelope.StCode)
+		var code any
+		if json.Unmarshal(envelope.StCode, &code) == nil {
+			codeStr = fmt.Sprint(code)
+		} else {
+			codeStr = string(envelope.StCode)
 		}
 	}
-	if message == "" && code != nil {
-		return fmt.Errorf("kotak API rejected the request (code %v)", code)
+	if message == "" {
+		message = "kotak API rejected the request"
 	}
-	if code != nil {
-		return fmt.Errorf("kotak API rejected the request: %s (code %v)", message, code)
+	return &errs.BrokerError{
+		Op:         "kotak API",
+		StatusCode: http.StatusOK,
+		Code:       codeStr,
+		Message:    message,
+		Retryable:  false,
 	}
-	if message != "" {
-		return fmt.Errorf("kotak API rejected the request: %s", message)
-	}
-	return errors.New("kotak API rejected the request")
 }
 
 func (c *Client) logResponse(req *http.Request, resp *http.Response, body []byte, outcome string) {
@@ -429,8 +435,18 @@ func kotakResponseError(status int, raw []byte) error {
 	var envelope struct {
 		Emsg string `json:"emsg"`
 	}
+	msg := ""
 	if json.Unmarshal(raw, &envelope) == nil && envelope.Emsg != "" {
-		return fmt.Errorf("kotak API request failed (HTTP %d): %s", status, envelope.Emsg)
+		msg = envelope.Emsg
+	} else {
+		msg = fmt.Sprintf("HTTP %d", status)
 	}
-	return fmt.Errorf("kotak API request failed (HTTP %d)", status)
+	retryable := status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+	return &errs.BrokerError{
+		Op:         "kotak API",
+		StatusCode: status,
+		Message:    msg,
+		Retryable:  retryable,
+		Raw:        raw,
+	}
 }

@@ -186,11 +186,17 @@ func (a *Server) CurrentSession() *Session {
 	return current
 }
 
+// Close shuts down the session manager background cleanup loop.
+func (a *Server) Close() {
+	if a != nil && a.sm != nil {
+		a.sm.Close()
+	}
+}
+
 // SessionStatus returns the current authentication status without exposing
 // broker tokens, SIDs, or the dynamic API URL.
 func (a *Server) SessionStatus() *struct {
 	Authenticated bool   `json:"authenticated"`
-	PaperMode     bool   `json:"paper_mode"`
 	LoginMethod   string `json:"login_method"`
 	ExpiresIn     int    `json:"expires_in"`
 } {
@@ -209,10 +215,9 @@ func (a *Server) SessionStatus() *struct {
 
 	status := &struct {
 		Authenticated bool   `json:"authenticated"`
-		PaperMode     bool   `json:"paper_mode"`
 		LoginMethod   string `json:"login_method"`
 		ExpiresIn     int    `json:"expires_in"`
-	}{Authenticated: found, PaperMode: false}
+	}{Authenticated: found}
 	if found {
 		status.LoginMethod = string(foundSession.LoginMethod)
 		status.ExpiresIn = int(time.Until(foundSession.TokenExpiry).Minutes())

@@ -321,15 +321,6 @@ func (c Config) validateTrading() error {
 	if !c.Trading.Quantity.AllowShares && c.Trading.Quantity.DefaultUnit == "shares" {
 		return fieldErr("trading.quantity.default_unit", "cannot be shares when allow_shares is false")
 	}
-	if c.Trading.Paper.StartingCash <= 0 {
-		return fieldErr("trading.paper.starting_cash", "must be > 0")
-	}
-	if c.Trading.Paper.SlippageTicks < 0 {
-		return fieldErr("trading.paper.slippage_ticks", "must be >= 0")
-	}
-	if c.Trading.Paper.ShortMarginPct < 0 || c.Trading.Paper.ShortMarginPct > 100 {
-		return fieldErr("trading.paper.short_margin_pct", "must be between 0 and 100")
-	}
 	if c.Trading.Margin.RefreshMS < 1000 {
 		return fieldErr("trading.margin.refresh_ms", "must be >= 1000")
 	}

@@ -46,7 +46,7 @@ CREATE TABLE orders (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   client_order_id TEXT UNIQUE NOT NULL,
   broker_order_id TEXT,
-  mode            TEXT NOT NULL CHECK (mode IN ('paper','live')),
+  mode            TEXT NOT NULL DEFAULT 'live',
   intent          TEXT NOT NULL CHECK (intent IN ('ENTRY','EXIT')),
   underlying      TEXT,
   instrument_key  TEXT,
@@ -70,7 +70,7 @@ CREATE TABLE trades (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id        INTEGER REFERENCES orders(id),
   broker_trade_id TEXT,
-  mode            TEXT NOT NULL,
+  mode            TEXT NOT NULL DEFAULT 'live',
   instrument_key  TEXT,
   symbol          TEXT NOT NULL,
   side            TEXT NOT NULL,
@@ -81,14 +81,6 @@ CREATE TABLE trades (
 
 CREATE INDEX idx_trades_executed ON trades(executed_at);
 
-CREATE TABLE paper_positions (
-  instrument_key TEXT PRIMARY KEY,
-  symbol         TEXT NOT NULL,
-  net_qty        INTEGER NOT NULL,
-  avg_price      REAL NOT NULL,
-  updated_at     INTEGER NOT NULL
-);
-
 CREATE TABLE audit_log (
   id     INTEGER PRIMARY KEY AUTOINCREMENT,
   ts     INTEGER NOT NULL,
@@ -97,14 +89,6 @@ CREATE TABLE audit_log (
 );
 
 CREATE INDEX idx_audit_ts ON audit_log(ts);
-
-CREATE TABLE paper_account (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),
-  starting_cash REAL NOT NULL,
-  cash          REAL NOT NULL,
-  realised_pnl  REAL NOT NULL,
-  updated_at    INTEGER NOT NULL
-);
 
 CREATE TABLE scrip_sync (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

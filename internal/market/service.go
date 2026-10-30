@@ -281,7 +281,7 @@ func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry str
 			}
 		}
 		options = filtered
-		return s.chainQuotes(ctx, baseURL, options, start > 0, end < len(allStrikes))
+		return s.chainQuotes(ctx, baseURL, options, end < len(allStrikes), start > 0)
 	}
 	return s.chainQuotes(ctx, baseURL, options, false, false)
 }

@@ -73,10 +73,10 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", abs, err)
 	}
-	// A single connection serialises writes and avoids SQLITE_BUSY for a
-	// single-user terminal; WAL keeps reads non-blocking.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// WAL mode enables concurrent readers while busy_timeout handles serialized writes.
+	// Allow up to 4 open connections so readers are not serialized behind each other.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(0)
 
 	if err := db.PingContext(ctx); err != nil {

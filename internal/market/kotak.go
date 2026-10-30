@@ -202,7 +202,9 @@ func (c *QuotesClient) Historical(
 			return nil, fmt.Errorf("send Kotak historical data request: %w", err)
 		}
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCandleBytes+1))
-		_ = resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil && c.log != nil {
+			c.log.Debug("failed to close Kotak historical response body", "error", cerr)
+		}
 		if err != nil {
 			c.logExchange(req, resp, nil, started, err)
 			return nil, fmt.Errorf("read Kotak historical data response: %w", err)

@@ -108,6 +108,18 @@ jobs:
         with:
           version: latest
 
+      - name: Install deadcode
+        run: go install golang.org/x/tools/cmd/deadcode@latest
+
+      - name: Check deadcode
+        run: |
+          output=$(deadcode ./cmd/scalper)
+          if [ -n "$output" ]; then
+            echo "deadcode found:"
+            echo "$output"
+            exit 1
+          fi
+
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest

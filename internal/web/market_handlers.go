@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/errs"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
 )
@@ -180,7 +181,10 @@ func (s *Server) fetchInstrumentCandles(
 			if timeframe != "1m" {
 				if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
 					cached = synth
-					_ = s.candleStore.WriteCandles(ctx, instrument, timeframe, synth)
+					if writeErr := s.candleStore.WriteCandles(ctx, instrument, timeframe, synth); writeErr != nil {
+						s.log.Warn("failed to write repaired candles to store", "event", "candle_cache_repair_failed",
+							"instrument", instrument, "timeframe", timeframe, "error", writeErr)
+					}
 				}
 			}
 		}
@@ -408,6 +412,9 @@ func (s *Server) writeRouteJSON(w http.ResponseWriter, r *http.Request, status i
 }
 
 func (s *Server) writeRouteError(w http.ResponseWriter, r *http.Request, status int, message string, err error) {
+	if errors.Is(err, errs.ErrRateLimited) {
+		status = http.StatusTooManyRequests
+	}
 	if err != nil {
 		s.log.Error("market API request failed", "event", "market_api_failed",
 			"path", r.URL.Path, "error", err, "request_id", logging.RequestID(r.Context()))

@@ -29,6 +29,11 @@ var feedUpgrader = websocket.Upgrader{
 	},
 }
 
+type feedClient struct {
+	conn *websocket.Conn
+	send chan []byte
+}
+
 type feedCommand struct {
 	Type string   `json:"type"`
 	Keys []string `json:"keys"`
@@ -74,15 +79,39 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	client := &feedClient{
+		conn: conn,
+		send: make(chan []byte, 256),
+	}
+
 	s.feedMu.Lock()
-	s.feedClients[conn] = struct{}{}
+	s.feedClients[client] = struct{}{}
 	s.feedMu.Unlock()
 	defer func() {
 		s.feedMu.Lock()
-		delete(s.feedClients, conn)
+		delete(s.feedClients, client)
 		s.feedMu.Unlock()
 		if cerr := conn.Close(); cerr != nil && s.log != nil {
 			s.log.Debug("failed to close feed client connection", "error", cerr)
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-s.feedCtx.Done():
+				return
+			case msg, ok := <-client.send:
+				if !ok {
+					return
+				}
+				if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil && s.log != nil {
+					s.log.Debug("failed to set write deadline", "error", err)
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					return
+				}
+			}
 		}
 	}()
 
@@ -223,24 +252,27 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 }
 
 func (s *Server) broadcast(value any) {
-	s.feedWriteMu.Lock()
-	defer s.feedWriteMu.Unlock()
+	data, err := json.Marshal(value)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("failed to marshal broadcast message", "error", err)
+		}
+		return
+	}
+
 	s.feedMu.RLock()
-	clients := make([]*websocket.Conn, 0, len(s.feedClients))
+	clients := make([]*feedClient, 0, len(s.feedClients))
 	for client := range s.feedClients {
 		clients = append(clients, client)
 	}
 	s.feedMu.RUnlock()
+
 	for _, client := range clients {
-		if err := client.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil && s.log != nil {
-			s.log.Debug("failed to set write deadline for broadcast client", "error", err)
-		}
-		if err := client.WriteJSON(value); err != nil {
-			s.feedMu.Lock()
-			delete(s.feedClients, client)
-			s.feedMu.Unlock()
-			if cerr := client.Close(); cerr != nil && s.log != nil {
-				s.log.Debug("failed to close client after write error", "error", cerr)
+		select {
+		case client.send <- data:
+		default:
+			if s.log != nil {
+				s.log.Debug("dropped broadcast message for slow websocket client")
 			}
 		}
 	}

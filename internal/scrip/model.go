@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -341,36 +340,4 @@ func (s Spot) Validate() error {
 		return fmt.Errorf("%w: spot %s has no pSymbol", ErrSchema, s.InstrumentKey)
 	}
 	return nil
-}
-
-// MemoryRepository is a small Repository used by tests and by cache-only mode.
-type MemoryRepository struct {
-	mu      sync.RWMutex
-	options []Option
-	spots   []Spot
-	syncs   []SyncRecord
-}
-
-// ReplaceScripSnapshot implements Repository.
-func (m *MemoryRepository) ReplaceScripSnapshot(_ context.Context, options []Option, spots []Spot, syncs []SyncRecord) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.options = append([]Option(nil), options...)
-	m.spots = append([]Spot(nil), spots...)
-	m.syncs = append([]SyncRecord(nil), syncs...)
-	return nil
-}
-
-// LoadScripSnapshot implements Repository.
-func (m *MemoryRepository) LoadScripSnapshot(context.Context) ([]Option, []Spot, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return append([]Option(nil), m.options...), append([]Spot(nil), m.spots...), nil
-}
-
-// Syncs returns the last recorded sync audit rows.
-func (m *MemoryRepository) Syncs() []SyncRecord {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return append([]SyncRecord(nil), m.syncs...)
 }

@@ -96,10 +96,7 @@ func TestCommodityUnderlyingsExposeExpiriesAndChain(t *testing.T) {
 		ExchangeSegment: scrip.SegmentMCXFO, PSymbol: "mcx-token", PTrdSymbol: "CRUDEOIL26NOV6000CE",
 		Underlying: "CRUDEOIL", Expiry: "2026-11-26", StrikePaise: 600000, OptionType: scrip.Call, LotSize: 100,
 	}
-	repo := &scrip.MemoryRepository{}
-	if err := repo.ReplaceScripSnapshot(context.Background(), []scrip.Option{option}, nil, nil); err != nil {
-		t.Fatal(err)
-	}
+	repo := &testScripRepository{options: []scrip.Option{option}}
 	scripts, err := scrip.NewManager(scrip.ManagerConfig{
 		Segments: []string{scrip.SegmentMCXFO}, Underlyings: []scrip.Underlying{{
 			Key: "CRUDEOIL", DisplayName: "CRUDE OIL", ScripName: "CRUDEOIL", ExchangeSegment: scrip.SegmentMCXFO,

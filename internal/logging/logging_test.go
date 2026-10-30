@@ -335,16 +335,7 @@ func TestRedactionPrimitives(t *testing.T) {
 	}
 }
 
-func TestRedactArgsAndJSON(t *testing.T) {
-	args := RedactArgs([]any{"token", "SECRET", "count", 2, slog.String("mpin", "1234"), "tail"})
-	raw, err := json.Marshal(args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "SECRET") || strings.Contains(string(raw), "1234") {
-		t.Fatalf("args leaked: %s", raw)
-	}
-
+func TestRedactJSON(t *testing.T) {
 	out, err := RedactJSON([]byte(`{"auth":"x","safe":{"token":"y","n":1}}`))
 	if err != nil {
 		t.Fatal(err)

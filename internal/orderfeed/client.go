@@ -79,7 +79,12 @@ func (c *Client) Stop() {
 func (c *Client) run(ctx context.Context, endpoint string, s Session) {
 	delay := time.Second
 	for ctx.Err() == nil {
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, endpoint, nil)
+		conn, resp, err := websocket.DefaultDialer.DialContext(ctx, endpoint, nil)
+		if resp != nil && resp.Body != nil {
+			if cerr := resp.Body.Close(); cerr != nil && c.log != nil {
+				c.log.Debug("failed to close order feed handshake response body", "error", cerr)
+			}
+		}
 		if err == nil {
 			err = c.readConnection(ctx, conn, s)
 		}

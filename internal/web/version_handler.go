@@ -71,7 +71,9 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
-			_ = resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				s.log.DebugContext(r.Context(), "failed to close github response body", "error", cerr)
+			}
 		}
 		if writeErr := writeJSON(w, http.StatusOK, res); writeErr != nil {
 			s.log.WarnContext(r.Context(), "version check write failed", "error", writeErr)
@@ -79,7 +81,9 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			s.log.DebugContext(r.Context(), "failed to close github response body", "error", cerr)
+		}
 	}()
 
 	var gh releaseInfo

@@ -358,8 +358,7 @@ func TestKotakLoginHandlersKeepTokensServerSide(t *testing.T) {
 		}
 	}
 	statusRec := do(t, s, localRequest(http.MethodGet, "/api/session"))
-	if !strings.Contains(statusRec.Body.String(), `"authenticated":true`) ||
-		!strings.Contains(statusRec.Body.String(), `"paper_mode":false`) {
+	if !strings.Contains(statusRec.Body.String(), `"authenticated":true`) {
 		t.Fatalf("session status = %s", statusRec.Body.String())
 	}
 	healthRec := do(t, s, localRequest(http.MethodGet, "/api/health"))
@@ -400,17 +399,6 @@ func TestIndexWithoutTokenAndDegraded(t *testing.T) {
 
 	if !strings.Contains(body, "degraded") {
 		t.Fatal("log sink should be reported as degraded")
-	}
-}
-
-func TestLegacyPaperOrderEndpointUnavailable(t *testing.T) {
-	s := newTestServer(t, serverOpts{db: fakeDB{}})
-	req := localRequest(http.MethodPost, "/api/orders")
-	req.Header.Set("Content-Type", "application/json")
-	req.Body = io.NopCloser(strings.NewReader(`{"mode":"paper"}`))
-	rec := do(t, s, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("legacy paper order status = %d, want 405", rec.Code)
 	}
 }
 

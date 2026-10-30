@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
-	"github.com/gorilla/websocket"
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
@@ -120,8 +119,7 @@ type Server struct {
 	books       *booksCache
 
 	feedMu      sync.RWMutex
-	feedWriteMu sync.Mutex
-	feedClients map[*websocket.Conn]struct{}
+	feedClients map[*feedClient]struct{}
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
 
@@ -142,8 +140,6 @@ type bootstrapConfig struct {
 	DefaultUnit       string               `json:"defaultUnit"`
 	AllowShares       bool                 `json:"allowShares"`
 	ConfirmLiveOrders bool                 `json:"confirmLiveOrders"`
-	StartingCash      float64              `json:"startingCash"`
-	ShortMarginPct    float64              `json:"shortMarginPct"`
 	PayoffRangePct    int                  `json:"payoffRangePct"`
 	PayoffPoints      int                  `json:"payoffPoints"`
 	Version           string               `json:"version"`
@@ -182,8 +178,6 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 		DefaultUnit:       cfg.Trading.Quantity.DefaultUnit,
 		AllowShares:       cfg.Trading.Quantity.AllowShares,
 		ConfirmLiveOrders: cfg.Trading.ConfirmLiveOrders,
-		StartingCash:      cfg.Trading.Paper.StartingCash,
-		ShortMarginPct:    cfg.Trading.Paper.ShortMarginPct,
 		PayoffRangePct:    cfg.Trading.RiskView.PayoffRangePct,
 		PayoffPoints:      cfg.Trading.RiskView.PayoffPoints,
 		Version:           version.Version,
@@ -263,7 +257,7 @@ func New(opts Options) (*Server, error) {
 		orderFeed:    opts.OrderFeed,
 		consumerKey:  strings.TrimSpace(opts.ConsumerKey),
 		books:        newBooksCache(),
-		feedClients:  make(map[*websocket.Conn]struct{}),
+		feedClients:  make(map[*feedClient]struct{}),
 		feedCtx:      feedCtx,
 		feedCancel:   feedCancel,
 	}
@@ -339,9 +333,12 @@ func (s *Server) Close() {
 	if s.feedCancel != nil {
 		s.feedCancel()
 	}
+	if s.a != nil {
+		s.a.Close()
+	}
 	s.feedMu.Lock()
 	for client := range s.feedClients {
-		if cerr := client.Close(); cerr != nil && s.log != nil {
+		if cerr := client.conn.Close(); cerr != nil && s.log != nil {
 			s.log.Debug("failed to close client connection during shutdown", "error", cerr)
 		}
 		delete(s.feedClients, client)
@@ -970,7 +967,9 @@ func (s *Server) newStaticHandler(fallback http.Handler) http.Handler {
 				}
 
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(asset.data)
+				if _, err := w.Write(asset.data); err != nil {
+					slog.Debug("failed to write compressed asset", "asset", name, "error", err)
+				}
 				return
 			}
 		}

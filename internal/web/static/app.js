@@ -3891,7 +3891,7 @@ async function submitLogin(event) {
 }
 
 function completeLogin(result) {
-  S.session = result.session_data || { authenticated: true, paper_mode: false };
+  S.session = result.session_data || { authenticated: true };
   S.session.authenticated = true;
   updateAuthButton();
   renderHeader();

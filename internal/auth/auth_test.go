@@ -238,7 +238,7 @@ func TestKotakClientRejectsBadResponses(t *testing.T) {
 }
 
 func TestKotakClientRequiresConsumerKey(t *testing.T) {
-	client := NewKotakAuthenticator("", "mobile", "ucc", "neotradeapi")
+	client := NewKotakAuthenticatorWithLogger(nil, "", "mobile", "ucc", "neotradeapi")
 	_, err := client.LoginTOTP(context.Background(), "123456")
 	if !errors.Is(err, ErrMissingConsumerKey) {
 		t.Fatalf("error = %v, want ErrMissingConsumerKey", err)
@@ -260,40 +260,62 @@ func TestValidateBaseURL(t *testing.T) {
 	}
 }
 
-func TestSessionManagerNewSession(t *testing.T) {
+func TestSessionManagerNewBrokerSession(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
-	token := "test-token-" + fmt.Sprintf("%08d", time.Now().Unix()%100000000)
-	session := sm.NewSession(token, LoginMethodTOTP, false)
-	if session == nil || session.AccessToken != token || session.LoginMethod != LoginMethodTOTP {
-		t.Fatalf("NewSession = %+v", session)
+	defer sm.Close()
+	session, err := sm.NewBrokerSession(TradeSession{
+		Token: "tok", SID: "sid", BaseURL: "https://cis.kotaksecurities.com",
+	}, LoginMethodMPIN)
+	if err != nil {
+		t.Fatalf("NewBrokerSession: %v", err)
 	}
-	if session.PaperMode {
-		t.Fatal("live session marked as paper")
+	if session == nil || session.BrokerToken != "tok" || session.LoginMethod != LoginMethodMPIN {
+		t.Fatalf("session = %+v", session)
 	}
 }
 
-func TestSessionManagerGetAndRevoke(t *testing.T) {
+func TestSessionManagerRevokeAll(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
-	session := sm.NewSession("test-session", LoginMethodMPIN, true)
-	if got := sm.GetSession("test-session"); got != session {
-		t.Fatal("GetSession did not return created session")
+	defer sm.Close()
+	_, err := sm.NewBrokerSession(TradeSession{Token: "tok", SID: "sid"}, LoginMethodMPIN)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !sm.IsSessionValid("test-session") {
-		t.Fatal("session should be valid")
+	sm.mu.Lock()
+	count := len(sm.sessions)
+	sm.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected 1 session, got %d", count)
 	}
-	sm.RevokeSession("test-session")
-	if sm.IsSessionValid("test-session") {
-		t.Fatal("session should be invalid after revocation")
+	sm.RevokeAll()
+	sm.mu.Lock()
+	count = len(sm.sessions)
+	sm.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected 0 sessions after RevokeAll, got %d", count)
 	}
 }
 
 func TestSessionManagerCleanupExpired(t *testing.T) {
 	sm := NewSessionManager(24 * time.Hour)
-	sm.NewSession("expired", LoginMethodMPIN, false).TokenExpiry = time.Now().Add(-time.Minute)
-	sm.NewSession("active", LoginMethodMPIN, false)
+	defer sm.Close()
+	sess1, err := sm.NewBrokerSession(TradeSession{Token: "exp", SID: "sid1"}, LoginMethodMPIN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess1.TokenExpiry = time.Now().Add(-time.Minute)
+	sess2, err := sm.NewBrokerSession(TradeSession{Token: "act", SID: "sid2"}, LoginMethodMPIN)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sm.CleanupExpired()
-	if sm.IsSessionValid("expired") || !sm.IsSessionValid("active") {
-		t.Fatal("CleanupExpired did not remove only the expired session")
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if _, ok := sm.sessions[sess1.AccessToken]; ok {
+		t.Fatal("CleanupExpired did not remove expired session")
+	}
+	if _, ok := sm.sessions[sess2.AccessToken]; !ok {
+		t.Fatal("CleanupExpired removed active session")
 	}
 }
 
@@ -303,6 +325,7 @@ func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
 		trade: TradeSession{Token: "trade-secret", SID: "trade-sid", BaseURL: "https://cis.kotaksecurities.com"},
 	}
 	server := NewServerWithAuthenticator(slog.Default(), client)
+	defer server.Close()
 	if err := server.BeginLogin(context.Background(), "flow-1", "123456"); err != nil {
 		t.Fatalf("BeginLogin: %v", err)
 	}
@@ -317,7 +340,7 @@ func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
 		t.Fatalf("broker session not retained: %+v", session)
 	}
 	status := server.SessionStatus()
-	if !status.Authenticated || status.PaperMode || status.LoginMethod != string(LoginMethodMPIN) {
+	if !status.Authenticated || status.LoginMethod != string(LoginMethodMPIN) {
 		t.Fatalf("SessionStatus = %+v", status)
 	}
 	data, err := json.Marshal(ToSessionData(session))
@@ -334,6 +357,7 @@ func TestServerLoginFlowKeepsBrokerCredentialsServerSide(t *testing.T) {
 func TestServerLoginFlowValidatesAndExpiresPendingLogin(t *testing.T) {
 	client := &fakeKotak{view: ViewSession{Token: "view", SID: "sid"}}
 	server := NewServerWithAuthenticator(slog.Default(), client)
+	defer server.Close()
 	if err := server.BeginLogin(context.Background(), "flow", "12345x"); err == nil {
 		t.Fatal("accepted malformed TOTP")
 	}
@@ -361,8 +385,9 @@ func TestServerLoginFlowValidatesAndExpiresPendingLogin(t *testing.T) {
 
 func TestServerSessionStatusWithoutLogin(t *testing.T) {
 	server := NewServerWithAuthenticator(slog.Default(), &fakeKotak{})
+	defer server.Close()
 	status := server.SessionStatus()
-	if status.Authenticated || status.PaperMode {
+	if status.Authenticated {
 		t.Fatalf("unauthenticated status = %+v", status)
 	}
 }

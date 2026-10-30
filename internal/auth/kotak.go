@@ -78,11 +78,6 @@ type kotakClient struct {
 	http        httpDoer
 }
 
-// NewKotakAuthenticator creates a Kotak authenticator with the default logger.
-func NewKotakAuthenticator(consumerKey, mobile, ucc, neoFinKey string) KotakAuthenticator {
-	return NewKotakAuthenticatorWithLogger(slog.Default(), consumerKey, mobile, ucc, neoFinKey)
-}
-
 // NewKotakAuthenticatorWithLogger creates a Kotak authenticator with a logger.
 func NewKotakAuthenticatorWithLogger(log *slog.Logger, consumerKey, mobile, ucc, neoFinKey string) KotakAuthenticator {
 	if log == nil {

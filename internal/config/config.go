@@ -127,7 +127,6 @@ type Trading struct {
 	ConfirmLiveOrders bool     `yaml:"confirm_live_orders"`
 	MarketProtection  int      `yaml:"market_protection"`
 	Quantity          Quantity `yaml:"quantity"`
-	Paper             Paper    `yaml:"paper"`
 	Margin            Margin   `yaml:"margin"`
 	Session           Session  `yaml:"session"`
 	Risk              Risk     `yaml:"risk"`
@@ -139,13 +138,6 @@ type Quantity struct {
 	DefaultLots int    `yaml:"default_lots"`
 	DefaultUnit string `yaml:"default_unit"`
 	AllowShares bool   `yaml:"allow_shares"`
-}
-
-// Paper holds paper-trading account settings.
-type Paper struct {
-	StartingCash   float64 `yaml:"starting_cash"`
-	SlippageTicks  int     `yaml:"slippage_ticks"`
-	ShortMarginPct float64 `yaml:"short_margin_pct"`
 }
 
 // Margin holds pre-trade margin settings.
@@ -276,11 +268,6 @@ func Default() Config {
 				DefaultLots: 1,
 				DefaultUnit: "lots",
 				AllowShares: true,
-			},
-			Paper: Paper{
-				StartingCash:   1_000_000,
-				SlippageTicks:  1,
-				ShortMarginPct: 15,
 			},
 			Margin: Margin{
 				CheckBeforeOrder:  true,

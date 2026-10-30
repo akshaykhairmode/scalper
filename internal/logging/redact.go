@@ -94,25 +94,6 @@ func RedactMap(m map[string]any) map[string]any {
 	return out
 }
 
-// RedactArgs redacts slog-style key/value arguments. Odd trailing arguments
-// and non-string attrs are preserved.
-func RedactArgs(args []any) []any {
-	out := make([]any, len(args))
-	copy(out, args)
-	for i := 0; i < len(out); i++ {
-		switch x := out[i].(type) {
-		case string:
-			if i+1 < len(out) {
-				out[i+1] = RedactValue(x, out[i+1])
-				i++
-			}
-		case slog.Attr:
-			out[i] = redactAttr(x)
-		}
-	}
-	return out
-}
-
 // RedactJSON parses, redacts and re-encodes a JSON document.
 func RedactJSON(raw []byte) ([]byte, error) {
 	var v any
