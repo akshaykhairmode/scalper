@@ -11,6 +11,7 @@ const chartColors = (element) => {
     border: color("--line", "#24303a"),
     resistance: color("--chart-res", "#f05a5a"),
     support: color("--chart-sup", "#29b360"),
+    accent: color("--accent", "#f0b429"),
   };
 };
 
@@ -161,6 +162,9 @@ export class CandleChart {
     this.showVolume = showVolume;
     this.showSR = showSR;
     this.srOverlayIds = [];
+    this.drawingTrendlineId = null;
+    this.drawingTrendlineBtn = null;
+    this.drawingEscHandler = null;
     this.colors = chartColors(container);
     this.loaderCallback = null;
     this.subscriberCallback = null;
@@ -316,14 +320,101 @@ export class CandleChart {
     }
   }
 
-  createTrendline() {
+  toggleTrendline(button, { onStart, onComplete, onCancel } = {}) {
     if (!this.chart) return null;
-    try {
-      return this.chart.createOverlay("segment");
-    } catch (e) {
-      console.warn("createTrendline:", e);
+    if (this.drawingTrendlineId) {
+      this.cancelTrendline();
+      if (onCancel) onCancel();
       return null;
     }
+
+    const frame = this.container.closest(".chart-frame") || this.container;
+    const lineColor = this.colors.accent || "#f0b429";
+
+    if (button) {
+      button.classList.add("active");
+      button.setAttribute("aria-pressed", "true");
+    }
+    if (frame) frame.classList.add("drawing-mode");
+
+    const escHandler = (e) => {
+      if (e.key === "Escape" && this.drawingTrendlineId) {
+        this.cancelTrendline();
+        if (onCancel) onCancel();
+      }
+    };
+    window.addEventListener("keydown", escHandler);
+
+    try {
+      const id = this.chart.createOverlay({
+        name: "segment",
+        styles: {
+          line: {
+            color: lineColor,
+            size: 2,
+            style: "solid",
+          },
+          point: {
+            color: lineColor,
+            borderColor: "#ffffff",
+            borderSize: 1.5,
+            radius: 5,
+            activeColor: "#ffffff",
+            activeBorderColor: lineColor,
+            activeBorderSize: 2,
+            activeRadius: 6,
+          },
+        },
+        onDrawEnd: () => {
+          this.drawingTrendlineId = null;
+          this.drawingTrendlineBtn = null;
+          if (this.drawingEscHandler) {
+            window.removeEventListener("keydown", this.drawingEscHandler);
+            this.drawingEscHandler = null;
+          }
+          if (button) {
+            button.classList.remove("active");
+            button.setAttribute("aria-pressed", "false");
+          }
+          if (frame) frame.classList.remove("drawing-mode");
+          if (onComplete) onComplete();
+        },
+      });
+
+      this.drawingTrendlineId = id;
+      this.drawingTrendlineBtn = button;
+      this.drawingEscHandler = escHandler;
+      if (onStart) onStart();
+      return id;
+    } catch (e) {
+      console.warn("createTrendline:", e);
+      this.cancelTrendline();
+      return null;
+    }
+  }
+
+  cancelTrendline() {
+    if (this.drawingEscHandler) {
+      window.removeEventListener("keydown", this.drawingEscHandler);
+      this.drawingEscHandler = null;
+    }
+    if (this.drawingTrendlineId) {
+      try {
+        this.chart?.removeOverlay(this.drawingTrendlineId);
+      } catch (_) {}
+      this.drawingTrendlineId = null;
+    }
+    if (this.drawingTrendlineBtn) {
+      this.drawingTrendlineBtn.classList.remove("active");
+      this.drawingTrendlineBtn.setAttribute("aria-pressed", "false");
+      this.drawingTrendlineBtn = null;
+    }
+    const frame = this.container?.closest(".chart-frame") || this.container;
+    if (frame) frame.classList.remove("drawing-mode");
+  }
+
+  createTrendline(button, callbacks) {
+    return this.toggleTrendline(button, callbacks);
   }
 
   resetPriceScale() {

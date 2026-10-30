@@ -2722,7 +2722,16 @@ function bindEvents() {
         return;
       }
       if (action === "trendline") {
-        chart.createTrendline();
+        for (const [otherPane, otherChart] of Object.entries(S.charts)) {
+          if (otherChart && otherChart !== chart) {
+            otherChart.cancelTrendline?.();
+          }
+        }
+        chart.toggleTrendline(button, {
+          onStart: () => toast("Click chart to set trendline start point (Esc to cancel)", "ok", 4000),
+          onComplete: () => toast("Trendline placed (drag ends to adjust, right-click to delete)", "ok", 3500),
+          onCancel: () => toast("Trendline cancelled", "warn", 2000),
+        });
         return;
       }
       if (action === "in") chart.zoomIn();

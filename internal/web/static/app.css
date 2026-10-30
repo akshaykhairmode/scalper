@@ -441,6 +441,7 @@ a { color: var(--blue); }
 
 .chart-frame { position: relative; flex: 1; min-height: 0; }
 .chart-frame .chart-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.chart-frame.drawing-mode, .chart-frame.drawing-mode .chart-canvas, .chart-frame.drawing-mode canvas { cursor: crosshair !important; }
 .chart-tools {
   position: absolute;
   top: 6px;
