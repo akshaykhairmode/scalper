@@ -1248,7 +1248,7 @@ export class CandleChart {
     const avg = Number(pos.average_price || pos.averagePrice || 0);
     if (!qty || !Number.isFinite(avg) || avg <= 0) return;
 
-    const pnl = Number(pos.unrealised_pnl ?? pos.pnl ?? 0);
+    const pnl = Number(pos.unrealised_pnl != null ? pos.unrealised_pnl : (pos.pnl || 0));
 
     try {
       const id = this.chart.createOverlay({

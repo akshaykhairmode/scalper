@@ -992,6 +992,36 @@ body[data-theme="light"] .cqo-qty-info {
   color: var(--accent);
   border: 1px solid rgba(240, 180, 41, 0.3);
 }
+.status-badge.in-position {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.status-badge.target-hit {
+  background: rgba(41, 179, 96, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(41, 179, 96, 0.3);
+}
+.status-badge.exited {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--muted);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+.btn-exit-bracket {
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 3px;
+  border: 1px solid rgba(240, 90, 90, 0.6);
+  color: #ffffff;
+  background: rgba(240, 90, 90, 0.8);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-exit-bracket:hover {
+  background: var(--red);
+  border-color: var(--red);
+}
 
 .tab-content { flex: 1; overflow: auto; min-height: 0; }
 .empty-state {

@@ -333,6 +333,118 @@ function normalizeExpiry(value) {
   };
 }
 
+function matchesSameContract(a, b) {
+  if (!a || !b) return false;
+  const symA = a.symbol || a.trdSym || a.trading_symbol || "";
+  const symB = b.symbol || b.trdSym || b.trading_symbol || "";
+  if (symA && symB && symA === symB) return true;
+  const keyA = a.instrument_key || a.instrumentKey || "";
+  const keyB = b.instrument_key || b.instrumentKey || "";
+  if (keyA && keyB && keyA === keyB) return true;
+  return false;
+}
+
+function computeOpenAverageFromTrades(pos, fallbackAvg) {
+  const netQty = num(pos?.quantity);
+  if (!netQty || !Array.isArray(S.trades) || !S.trades.length) return fallbackAvg;
+  const contractTrades = S.trades.filter((t) => matchesSameContract(t, pos));
+  if (!contractTrades.length) return fallbackAvg;
+
+  const sorted = [...contractTrades].sort((a, b) => (num(a.timestamp) || 0) - (num(b.timestamp) || 0));
+
+  if (netQty > 0) {
+    let buyQueue = [];
+    for (const t of sorted) {
+      const side = String(t.side || "").toUpperCase();
+      const qty = num(t.quantity);
+      const price = num(t.price);
+      if (qty <= 0 || price <= 0) continue;
+
+      if (side === "B" || side === "BUY") {
+        buyQueue.push({ qty, price });
+      } else if (side === "S" || side === "SELL") {
+        let remainingSell = qty;
+        while (remainingSell > 0 && buyQueue.length > 0) {
+          if (buyQueue[0].qty <= remainingSell) {
+            remainingSell -= buyQueue[0].qty;
+            buyQueue.shift();
+          } else {
+            buyQueue[0].qty -= remainingSell;
+            remainingSell = 0;
+          }
+        }
+      }
+    }
+    const totalOpenQty = buyQueue.reduce((s, b) => s + b.qty, 0);
+    const totalCost = buyQueue.reduce((s, b) => s + b.qty * b.price, 0);
+    if (totalOpenQty > 0 && totalCost > 0) {
+      return Math.round((totalCost / totalOpenQty) * 100) / 100;
+    }
+  } else if (netQty < 0) {
+    let sellQueue = [];
+    for (const t of sorted) {
+      const side = String(t.side || "").toUpperCase();
+      const qty = num(t.quantity);
+      const price = num(t.price);
+      if (qty <= 0 || price <= 0) continue;
+
+      if (side === "S" || side === "SELL") {
+        sellQueue.push({ qty, price });
+      } else if (side === "B" || side === "BUY") {
+        let remainingBuy = qty;
+        while (remainingBuy > 0 && sellQueue.length > 0) {
+          if (sellQueue[0].qty <= remainingBuy) {
+            remainingBuy -= sellQueue[0].qty;
+            sellQueue.shift();
+          } else {
+            sellQueue[0].qty -= remainingBuy;
+            remainingBuy = 0;
+          }
+        }
+      }
+    }
+    const totalOpenQty = sellQueue.reduce((s, b) => s + b.qty, 0);
+    const totalCost = sellQueue.reduce((s, b) => s + b.qty * b.price, 0);
+    if (totalOpenQty > 0 && totalCost > 0) {
+      return Math.round((totalCost / totalOpenQty) * 100) / 100;
+    }
+  }
+  return fallbackAvg;
+}
+
+function computeRealisedPnLFromTrades(pos, fallbackPnL = 0) {
+  if (!Array.isArray(S.trades) || !S.trades.length) return fallbackPnL;
+  const contractTrades = S.trades.filter((t) => matchesSameContract(t, pos));
+  if (!contractTrades.length) return fallbackPnL;
+
+  const sorted = [...contractTrades].sort((a, b) => (num(a.timestamp) || 0) - (num(b.timestamp) || 0));
+  let buyQueue = [];
+  let realised = 0;
+
+  for (const t of sorted) {
+    const side = String(t.side || "").toUpperCase();
+    const qty = num(t.quantity);
+    const price = num(t.price);
+    if (qty <= 0 || price <= 0) continue;
+
+    if (side === "B" || side === "BUY") {
+      buyQueue.push({ qty, price });
+    } else if (side === "S" || side === "SELL") {
+      let remainingSell = qty;
+      while (remainingSell > 0 && buyQueue.length > 0) {
+        const matchQty = Math.min(buyQueue[0].qty, remainingSell);
+        realised += matchQty * (price - buyQueue[0].price);
+        remainingSell -= matchQty;
+        buyQueue[0].qty -= matchQty;
+        if (buyQueue[0].qty <= 0) {
+          buyQueue.shift();
+        }
+      }
+    }
+  }
+  return Math.round(realised * 100) / 100;
+}
+
 function normalizePosition(raw) {
   const bought = num(raw.flBuyQty ?? raw.fl_buy_qty);
   const sold = num(raw.flSellQty ?? raw.fl_sell_qty);
@@ -353,10 +465,12 @@ function normalizePosition(raw) {
   }
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice, 0);
 
-  // Closed position P&L = sellAmt - buyAmt. Open position P&L = (LTP - Avg) * Qty + closed P&L.
+  // Realised P&L from closed trades
   const closedQty = Math.min(totalBought, totalSold);
   let realisedPnL = 0;
-  if (closedQty > 0) {
+  if (raw.rPnl != null || raw.realised_pnl != null || raw.realizedPnl != null) {
+    realisedPnL = num(raw.rPnl ?? raw.realised_pnl ?? raw.realizedPnl);
+  } else if (closedQty > 0) {
     const buyAvg = totalBought > 0 ? buyAmt / totalBought : 0;
     const sellAvg = totalSold > 0 ? sellAmt / totalSold : 0;
     realisedPnL = (sellAvg - buyAvg) * closedQty;
@@ -364,9 +478,17 @@ function normalizePosition(raw) {
     realisedPnL = sellAmt - buyAmt;
   }
 
-  const unrealisedPnL = quantity !== 0 && ltp > 0 ? (ltp - average) * quantity : 0;
-  const reportedPnL = raw.pnl ?? raw.unrealised_pnl ?? raw.unrealizedPnl ?? raw.today_pnl ?? raw.todayPnl ?? raw.rPnl ?? raw.unRlzPnL;
-  const positionPnL = reportedPnL != null ? num(reportedPnL) : (unrealisedPnL + realisedPnL);
+  // Live open position Unrealised P&L: strictly (LTP - Avg) * quantity
+  let unrealisedPnL = 0;
+  if (quantity !== 0) {
+    if (raw.unRlzPnL != null || raw.unrealised_pnl != null || raw.unrealizedPnl != null) {
+      unrealisedPnL = num(raw.unRlzPnL ?? raw.unrealised_pnl ?? raw.unrealizedPnl);
+    } else if (ltp > 0 && average > 0) {
+      unrealisedPnL = (ltp - average) * quantity;
+    }
+  }
+
+  const positionPnL = unrealisedPnL + realisedPnL;
 
   return {
     instrument_key: raw.instrument_key ?? raw.instrumentKey ?? raw.tok ?? "",
@@ -900,18 +1022,38 @@ async function loadBooksFromAPI(includePositions = true) {
     getJSON("/api/broker/limits"),
   ]);
   if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
-  // Keep the last known book on a transient failure (e.g. Kotak rate limiting).
-  // Blanking it makes open positions vanish and disables the exit buttons.
-  if (includePositions && positions.status === "fulfilled") {
-    S.positions = toArray(positions.value).map(normalizePosition).sort(comparePositions);
-    S.positionsLoaded = true;
-    updateFeedSubscriptions();
-  }
   if (orders.status === "fulfilled") {
     S.orders = toArray(orders.value).map(normalizeOrder);
   }
   if (trades.status === "fulfilled") {
     S.trades = toArray(trades.value).map(normalizeTrade);
+  }
+  // Keep the last known book on a transient failure (e.g. Kotak rate limiting).
+  // Blanking it makes open positions vanish and disables the exit buttons.
+  if (includePositions && positions.status === "fulfilled") {
+    S.positions = toArray(positions.value).map(normalizePosition);
+    for (const pos of S.positions) {
+      if (Math.abs(num(pos.quantity)) > 0) {
+        const fifoAvg = computeOpenAverageFromTrades(pos, pos.average_price);
+        if (fifoAvg > 0) {
+          pos.average_price = fifoAvg;
+        }
+        const fifoRealised = computeRealisedPnLFromTrades(pos, pos.realised_pnl);
+        pos.realised_pnl = fifoRealised;
+        if (pos.ltp > 0) {
+          pos.unrealised_pnl = (pos.ltp - pos.average_price) * pos.quantity;
+        }
+        pos.pnl = pos.unrealised_pnl + (pos.realised_pnl || 0);
+      } else {
+        const fifoRealised = computeRealisedPnLFromTrades(pos, pos.realised_pnl);
+        pos.realised_pnl = fifoRealised;
+        pos.pnl = fifoRealised;
+        pos.unrealised_pnl = 0;
+      }
+    }
+    S.positions.sort(comparePositions);
+    S.positionsLoaded = true;
+    updateFeedSubscriptions();
   }
   if (limits.status === "fulfilled") {
     applyLimitsData(limits.value);
@@ -1155,9 +1297,18 @@ function handleSocketEvent(event) {
       position.pnl = position.unrealised_pnl + (position.realised_pnl || 0);
       updatedPosition = true;
     }
+    if (S.autoTargets && S.autoTargets.length) {
+      for (const tgt of S.autoTargets) {
+        if (tgt.instrumentKey === data.key) {
+          tgt.ltp = num(data.ltp, tgt.ltp);
+          updatedPosition = true;
+        }
+      }
+    }
     if (updatedPosition) {
       renderHeader();
-      if (S.tab === "positions") renderTab();
+      if (S.tab === "positions" || S.tab === "brackets") renderTab();
+      updateChartTrades();
     }
     const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
     if (row) {
@@ -1344,7 +1495,24 @@ function updateChartTrades() {
   const ce = selectedOption("CE");
   if (S.charts.ce) {
     const ceTrades = ce ? trades.filter((t) => matchesContract(t, ce)) : [];
-    const cePos = ce ? positions.find((p) => matchesContract(p, ce) && Math.abs(num(p.quantity)) > 0) : null;
+    let cePos = ce ? positions.find((p) => matchesContract(p, ce) && Math.abs(num(p.quantity)) > 0) : null;
+    const activeCEBracket = ce ? (S.autoTargets || []).find((b) => b.status === "IN_POSITION" && matchesContract(b, ce)) : null;
+    if (activeCEBracket) {
+      const ltp = getInstrumentLTP(activeCEBracket);
+      const isolatedPnL = (ltp - activeCEBracket.entryPrice) * activeCEBracket.shares * (activeCEBracket.action === "buy" ? 1 : -1);
+      cePos = {
+        symbol: activeCEBracket.symbol,
+        quantity: activeCEBracket.shares * (activeCEBracket.action === "buy" ? 1 : -1),
+        average_price: activeCEBracket.entryPrice,
+        unrealised_pnl: isolatedPnL,
+        pnl: isolatedPnL,
+      };
+      if (activeCEBracket.targetPrice > 0) {
+        S.charts.ce.showTargetPreview?.(activeCEBracket.targetPrice, "TARGET");
+      }
+    } else if (!S.quickOrder || S.quickOrder.pane !== "ce") {
+      S.charts.ce.clearTargetPreview?.();
+    }
     const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o)) : [];
     S.charts.ce.setTrades(ceTrades, { isSpot: false });
     S.charts.ce.setPosition(cePos);
@@ -1355,7 +1523,24 @@ function updateChartTrades() {
   const pe = selectedOption("PE");
   if (S.charts.pe) {
     const peTrades = pe ? trades.filter((t) => matchesContract(t, pe)) : [];
-    const pePos = pe ? positions.find((p) => matchesContract(p, pe) && Math.abs(num(p.quantity)) > 0) : null;
+    let pePos = pe ? positions.find((p) => matchesContract(p, pe) && Math.abs(num(p.quantity)) > 0) : null;
+    const activePEBracket = pe ? (S.autoTargets || []).find((b) => b.status === "IN_POSITION" && matchesContract(b, pe)) : null;
+    if (activePEBracket) {
+      const ltp = getInstrumentLTP(activePEBracket);
+      const isolatedPnL = (ltp - activePEBracket.entryPrice) * activePEBracket.shares * (activePEBracket.action === "buy" ? 1 : -1);
+      pePos = {
+        symbol: activePEBracket.symbol,
+        quantity: activePEBracket.shares * (activePEBracket.action === "buy" ? 1 : -1),
+        average_price: activePEBracket.entryPrice,
+        unrealised_pnl: isolatedPnL,
+        pnl: isolatedPnL,
+      };
+      if (activePEBracket.targetPrice > 0) {
+        S.charts.pe.showTargetPreview?.(activePEBracket.targetPrice, "TARGET");
+      }
+    } else if (!S.quickOrder || S.quickOrder.pane !== "pe") {
+      S.charts.pe.clearTargetPreview?.();
+    }
     const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o)) : [];
     S.charts.pe.setTrades(peTrades, { isSpot: false });
     S.charts.pe.setPosition(pePos);
@@ -2052,11 +2237,19 @@ function renderTab() {
     badge.hidden = openCount === 0;
   }
 
+  const activeBracketsCount = (S.autoTargets || []).filter((b) => b.status === "PENDING_ENTRY" || b.status === "IN_POSITION").length;
+  const bracketBadge = $("brackets-badge");
+  if (bracketBadge) {
+    bracketBadge.textContent = String(activeBracketsCount);
+    bracketBadge.hidden = activeBracketsCount === 0;
+  }
+
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
   const sqBtn = $("square-off-button");
   if (sqBtn) sqBtn.disabled = !hasOpen;
 
   if (S.tab === "positions") content.innerHTML = positionsHTML();
+  else if (S.tab === "brackets") content.innerHTML = bracketsHTML();
   else if (S.tab === "open") content.innerHTML = openOrdersHTML();
   else if (S.tab === "risk") {
     content.innerHTML = riskHTML();
@@ -2096,12 +2289,16 @@ function positionsHTML() {
     for (const p of list) {
       const risk = legRisk(p);
       const isOpen = Math.abs(num(p.quantity)) > 0;
+      const openPnL = p.unrealised_pnl != null ? p.unrealised_pnl : p.pnl;
       html += `<tr class="${isOpen ? "" : "closed"}">
         <td class="sym">${esc(p.symbol || `${p.underlying} ${fmtStrike(p.strike)} ${p.option_type}`)}</td>
         <td>${p.quantity > 0 ? "+" : ""}${p.quantity}</td>
         <td>${fmt(p.average_price)}</td>
         <td>${fmt(p.ltp)}</td>
-        <td class="${directionClass(p.pnl)}">${fmtSigned(p.pnl, 0)}</td>
+        <td class="${directionClass(isOpen ? openPnL : p.pnl)}">
+          <span class="font-bold">${fmtSigned(isOpen ? openPnL : p.pnl, 0)}</span>
+          ${isOpen && p.realised_pnl ? `<span class="muted" style="display:block;font-size:9.5px;" title="Realised earlier today">Day: ${fmtSigned(p.pnl, 0)}</span>` : ""}
+        </td>
         <td>${risk.maxProfit === Infinity ? "∞" : `₹${fmt(risk.maxProfit, 0)}`}</td>
         <td>${risk.maxLoss === -Infinity ? "∞" : `₹${fmt(risk.maxLoss, 0)}`}</td>
         <td>${isOpen ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
@@ -2603,16 +2800,22 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         symbol: option.symbol,
         instrumentKey: option.instrumentKey,
         exchangeSegment: option.exchangeSegment,
+        underlying: S.activeIndex,
+        strike: option.strike,
         type,
         action,
         entryPrice: price,
         targetPrice: autoTargetPrice,
         shares: qty,
         filledQty: 0,
+        exitOrderId: "",
+        exitPrice: 0,
+        ltp: price,
         status: "PENDING_ENTRY",
         createdAt: Date.now(),
       });
       toast(`🎯 Auto-Target armed: Exit at ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts) once filled.`, "info", 4500);
+      renderTab();
     }
 
     scheduleBooksRefresh(400);
@@ -2649,68 +2852,327 @@ function registerAutoTarget(target) {
   saveAutoTargets();
 }
 
+function getInstrumentLTP(b) {
+  if (b.ltp && Number.isFinite(b.ltp) && b.ltp > 0) return b.ltp;
+  const pos = (S.positions || []).find((p) => matchesSameContract(p, b));
+  if (pos && num(pos.ltp) > 0) return num(pos.ltp);
+  const row = (S.chain || []).find((r) => r.call?.instrumentKey === b.instrumentKey || r.put?.instrumentKey === b.instrumentKey);
+  if (row) {
+    if (row.call?.instrumentKey === b.instrumentKey && num(row.call.ltp) > 0) return num(row.call.ltp);
+    if (row.put?.instrumentKey === b.instrumentKey && num(row.put.ltp) > 0) return num(row.put.ltp);
+  }
+  const sel = selectedOption(b.type);
+  if (sel && sel.instrumentKey === b.instrumentKey && num(sel.ltp) > 0) return num(sel.ltp);
+  return b.entryPrice || 0;
+}
+
+function bracketsHTML() {
+  const brackets = S.autoTargets || [];
+  if (!brackets.length) {
+    return `<div class="empty-state">No custom bracket orders yet. Click on the chart with Auto-Target enabled to place an isolated bracket scalp trade.</div>`;
+  }
+
+  const activeBrackets = brackets.filter((b) => b.status === "PENDING_ENTRY" || b.status === "IN_POSITION");
+  const hasFinished = brackets.some((b) => b.status !== "PENDING_ENTRY" && b.status !== "IN_POSITION");
+
+  let html = `<div class="open-orders-bar">
+    <span class="open-orders-title">${activeBrackets.length} Active Bracket${activeBrackets.length === 1 ? "" : "s"} (${brackets.length} Total Today)</span>
+    <div style="display:flex;gap:8px;align-items:center;">
+      ${hasFinished ? `<button type="button" class="ghost small" id="btn-clear-brackets" title="Remove completed and cancelled brackets from the list">Clear Finished</button>` : ""}
+    </div>
+  </div>
+  <table class="book"><thead><tr>
+    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target</th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
+  </tr></thead><tbody>`;
+
+  for (const b of [...brackets].reverse()) {
+    const ltp = getInstrumentLTP(b);
+    let pnl = 0;
+    let pnlClass = "";
+    let pnlText = "—";
+
+    if (b.status === "IN_POSITION") {
+      pnl = (ltp - b.entryPrice) * b.shares * (b.action === "buy" ? 1 : -1);
+      pnlClass = directionClass(pnl);
+      pnlText = fmtSigned(pnl, 0);
+    } else if (b.status === "TARGET_HIT" || b.status === "EXITED_MANUAL" || b.status === "COMPLETED") {
+      const exitP = b.exitPrice || b.targetPrice;
+      pnl = (exitP - b.entryPrice) * b.shares * (b.action === "buy" ? 1 : -1);
+      pnlClass = directionClass(pnl);
+      pnlText = fmtSigned(pnl, 0) + (b.status === "TARGET_HIT" ? " 🎯" : "");
+    }
+
+    let badgeClass = "pending";
+    let badgeLabel = "PENDING ENTRY";
+    if (b.status === "IN_POSITION") {
+      badgeClass = "in-position";
+      badgeLabel = "IN POSITION";
+    } else if (b.status === "TARGET_HIT") {
+      badgeClass = "target-hit";
+      badgeLabel = "TARGET HIT";
+    } else if (b.status === "EXITED_MANUAL") {
+      badgeClass = "exited";
+      badgeLabel = "MANUAL EXIT";
+    } else if (b.status === "CANCELLED") {
+      badgeClass = "muted";
+      badgeLabel = "CANCELLED";
+    } else if (b.status === "COMPLETED") {
+      badgeClass = "target-hit";
+      badgeLabel = "COMPLETED";
+    }
+
+    let actionBtn = "—";
+    if (b.status === "IN_POSITION") {
+      actionBtn = `<button type="button" class="btn-exit-bracket danger small" data-exit-bracket="${esc(b.id)}" title="Cancel resting target and exit immediately at market">EXIT (MKT)</button>`;
+    } else if (b.status === "PENDING_ENTRY") {
+      actionBtn = `<button type="button" class="btn-cancel-order danger small ghost" data-cancel-bracket="${esc(b.id)}" title="Cancel pending entry limit order">Cancel</button>`;
+    }
+
+    const sideLabel = b.action === "buy" ? "BUY" : "SELL";
+    const sideClass = b.action === "buy" ? "up" : "down";
+    const targetDiff = (b.targetPrice - b.entryPrice) * (b.action === "buy" ? 1 : -1);
+
+    html += `<tr>
+      <td class="sym font-bold">${esc(b.symbol || `${b.underlying || S.activeIndex} ${b.strike} ${b.type}`)}</td>
+      <td class="${sideClass} font-bold">${sideLabel}</td>
+      <td>${b.shares}</td>
+      <td class="font-bold">₹${fmt(b.entryPrice)}</td>
+      <td class="up font-bold">₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span></td>
+      <td class="font-bold">₹${fmt(ltp)}</td>
+      <td class="${pnlClass} font-bold">${pnlText}</td>
+      <td><span class="status-badge ${badgeClass}">${badgeLabel}</span></td>
+      <td>${actionBtn}</td>
+    </tr>`;
+  }
+
+  return html + `</tbody></table>`;
+}
+
+async function onExitBracket(bracketId) {
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before managing orders.", "warn");
+    return;
+  }
+  const bracket = (S.autoTargets || []).find((t) => t.id === bracketId);
+  if (!bracket) {
+    toast("Bracket order not found.", "error");
+    return;
+  }
+  if (bracket.status !== "IN_POSITION") {
+    toast(`Bracket is not in active position (status: ${bracket.status}).`, "warn");
+    return;
+  }
+
+  const exitSide = bracket.action === "buy" ? "S" : "B";
+  const ok = await confirmAction({
+    title: "Exit Bracket Position",
+    body: `Exit <b>${bracket.shares}</b> shares of <b>${esc(bracket.symbol)}</b> at Market now?<br><span class="muted">Any resting target limit order on Kotak Neo will be automatically cancelled.</span>`,
+    okLabel: "Exit at Market",
+    danger: true,
+  });
+  if (!ok) return;
+
+  // 1. Cancel resting target limit order if it exists
+  if (bracket.exitOrderId && bracket.exitOrderId !== "—") {
+    try {
+      toast(`Cancelling resting target order ${bracket.exitOrderId}…`, "info", 2000);
+      await cancelBrokerOrder(bracket.exitOrderId);
+    } catch (e) {
+      console.warn("Target cancel failed (may already be filled/cancelled):", e);
+    }
+  }
+
+  // 2. Place immediate market exit order
+  try {
+    toast(`Exiting ${bracket.shares} shares @ Market…`, "info", 2000);
+    const lot = lotSize(bracket.type);
+    await postOrder({
+      instrument_key: bracket.instrumentKey,
+      exchange_segment: bracket.exchangeSegment,
+      symbol: bracket.symbol,
+      underlying: bracket.underlying || S.activeIndex,
+      strike: bracket.strike,
+      option_type: bracket.type,
+      side: exitSide,
+      buy_sell: exitSide,
+      quantity: bracket.shares,
+      qty: bracket.shares,
+      price: 0,
+      order_type: "MARKET",
+      product: S.product || "NRML",
+      intent: "EXIT",
+      mode: tradingMode(),
+      lot_size: lot,
+    });
+    lastUiOrderTime = Date.now();
+    playTradeSound(exitSide === "S" ? "sell" : "buy");
+    bracket.status = "EXITED_MANUAL";
+    bracket.exitPrice = getInstrumentLTP(bracket);
+    saveAutoTargets();
+    toast(`Bracket exited at market.`, "ok", 4000);
+    scheduleBooksRefresh(400);
+    renderTab();
+    updateChartTrades();
+  } catch (err) {
+    playTradeSound("reject");
+    toast(`Market exit failed: ${err.message}`, "error", 6000);
+  }
+}
+
+async function onCancelBracket(bracketId) {
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before managing orders.", "warn");
+    return;
+  }
+  const bracket = (S.autoTargets || []).find((t) => t.id === bracketId);
+  if (!bracket) {
+    toast("Bracket order not found.", "error");
+    return;
+  }
+  if (bracket.status !== "PENDING_ENTRY") {
+    toast(`Bracket entry is already ${bracket.status.toLowerCase()}.`, "warn");
+    return;
+  }
+
+  // Cancel entry limit order if present
+  if (bracket.orderId && bracket.orderId !== "—") {
+    try {
+      toast(`Cancelling entry limit order ${bracket.orderId}…`, "info", 2000);
+      await cancelBrokerOrder(bracket.orderId);
+      playTradeSound("reject");
+    } catch (e) {
+      console.warn("Entry cancel failed:", e);
+    }
+  }
+
+  bracket.status = "CANCELLED";
+  saveAutoTargets();
+  toast("Bracket entry order cancelled.", "ok", 3000);
+  scheduleBooksRefresh(300);
+  renderTab();
+  updateChartTrades();
+}
+
+function onClearFinishedBrackets() {
+  if (!S.autoTargets) return;
+  S.autoTargets = S.autoTargets.filter((b) => b.status === "PENDING_ENTRY" || b.status === "IN_POSITION");
+  saveAutoTargets();
+  renderTab();
+}
+
 function checkAutoTargets(eventOrder) {
   if (!S.autoTargets || !S.autoTargets.length) return;
-  const pendingTargets = S.autoTargets.filter((t) => t.status === "PENDING_ENTRY");
-  if (!pendingTargets.length) return;
-
   const orders = S.orders || [];
 
-  for (const target of pendingTargets) {
-    let matchedOrder = null;
+  for (const target of S.autoTargets) {
+    if (target.status === "PENDING_ENTRY") {
+      let matchedOrder = null;
 
-    if (eventOrder) {
-      const evId = String(eventOrder.nOrdNo ?? eventOrder.order_id ?? eventOrder.id ?? "");
-      if (target.orderId && evId && target.orderId === evId) {
-        matchedOrder = normalizeOrder(eventOrder);
+      if (eventOrder) {
+        const evId = String(eventOrder.nOrdNo ?? eventOrder.order_id ?? eventOrder.id ?? "");
+        if (target.orderId && evId && target.orderId === evId) {
+          matchedOrder = normalizeOrder(eventOrder);
+        }
       }
-    }
 
-    if (!matchedOrder && target.orderId) {
-      matchedOrder = orders.find((o) => String(o.id) === target.orderId);
-    }
+      if (!matchedOrder && target.orderId) {
+        matchedOrder = orders.find((o) => String(o.id) === target.orderId);
+      }
 
-    if (!matchedOrder) {
-      const targetSide = target.action === "buy" ? "B" : "S";
-      matchedOrder = orders.find((o) => {
-        if (o.symbol !== target.symbol) return false;
-        if (o.side !== targetSide) return false;
-        if (Math.abs(num(o.price) - target.entryPrice) > 0.06) return false;
-        return true;
-      });
-      if (matchedOrder && matchedOrder.id && matchedOrder.id !== "—") {
-        target.orderId = String(matchedOrder.id);
+      if (!matchedOrder) {
+        const targetSide = target.action === "buy" ? "B" : "S";
+        matchedOrder = orders.find((o) => {
+          if (o.symbol !== target.symbol) return false;
+          if (o.side !== targetSide) return false;
+          if (Math.abs(num(o.price) - target.entryPrice) > 0.06) return false;
+          return true;
+        });
+        if (matchedOrder && matchedOrder.id && matchedOrder.id !== "—") {
+          target.orderId = String(matchedOrder.id);
+          saveAutoTargets();
+        }
+      }
+
+      if (!matchedOrder) continue;
+
+      const status = String(matchedOrder.status || "").toUpperCase();
+      const isCancelled = ["CAN", "CANCELLED", "REJ", "REJECTED"].includes(status);
+      const isFilledStatus = ["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(status);
+      const filledQty = num(matchedOrder.filled_quantity);
+
+      if (isCancelled && filledQty === 0) {
+        target.status = "CANCELLED";
         saveAutoTargets();
+        toast(`Auto-Target cancelled: entry order ${matchedOrder.id} was ${status.toLowerCase()}.`, "warn", 4000);
+        renderTab();
+        continue;
       }
-    }
 
-    if (!matchedOrder) continue;
+      const currentFilled = Math.max(filledQty, isFilledStatus ? target.shares : 0);
+      const previousFilled = target.filledQty || 0;
 
-    const status = String(matchedOrder.status || "").toUpperCase();
-    const isCancelled = ["CAN", "CANCELLED", "REJ", "REJECTED"].includes(status);
-    const isFilledStatus = ["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(status);
-    const filledQty = num(matchedOrder.filled_quantity);
+      if (currentFilled > previousFilled) {
+        const qtyToExit = currentFilled - previousFilled;
+        target.filledQty = currentFilled;
 
-    if (isCancelled && filledQty === 0) {
-      target.status = "CANCELLED";
-      saveAutoTargets();
-      toast(`Auto-Target cancelled: entry order ${matchedOrder.id} was ${status.toLowerCase()}.`, "warn", 4000);
-      continue;
-    }
+        // Try to capture actual filled entry price from matching trades
+        const matchingTrade = (S.trades || []).find((t) => matchesSameContract(t, target) && (t.id === matchedOrder.id || Math.abs((num(t.timestamp) || 0) - (target.createdAt || 0)) < 300000));
+        if (matchingTrade && num(matchingTrade.price) > 0) {
+          target.entryPrice = num(matchingTrade.price);
+        } else if (num(matchedOrder.price) > 0) {
+          target.entryPrice = num(matchedOrder.price);
+        }
 
-    const currentFilled = Math.max(filledQty, isFilledStatus ? target.shares : 0);
-    const previousFilled = target.filledQty || 0;
+        target.status = "IN_POSITION";
+        saveAutoTargets();
+        renderTab();
+        updateChartTrades();
 
-    if (currentFilled > previousFilled) {
-      const qtyToExit = currentFilled - previousFilled;
-      target.filledQty = currentFilled;
-
-      if (currentFilled >= target.shares || isFilledStatus) {
-        target.status = "COMPLETED";
+        placeAutoTargetExit(target, qtyToExit);
       }
-      saveAutoTargets();
+    } else if (target.status === "IN_POSITION") {
+      // Check if exit limit order has filled
+      let matchedExit = null;
+      if (eventOrder && target.exitOrderId) {
+        const evId = String(eventOrder.nOrdNo ?? eventOrder.order_id ?? eventOrder.id ?? "");
+        if (target.exitOrderId === evId) {
+          matchedExit = normalizeOrder(eventOrder);
+        }
+      }
+      if (!matchedExit && target.exitOrderId) {
+        matchedExit = orders.find((o) => String(o.id) === target.exitOrderId);
+      }
 
-      placeAutoTargetExit(target, qtyToExit);
+      if (matchedExit) {
+        const exitStatus = String(matchedExit.status || "").toUpperCase();
+        const isExitFilled = ["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(exitStatus) || (num(matchedExit.filled_quantity) >= target.shares);
+        if (isExitFilled) {
+          target.status = "TARGET_HIT";
+          target.exitPrice = num(matchedExit.price) || target.targetPrice;
+          saveAutoTargets();
+          playTradeSound("target");
+          const pnl = (target.exitPrice - target.entryPrice) * target.shares * (target.action === "buy" ? 1 : -1);
+          toast(`🎯 Bracket Target Hit! Sold ${target.shares} @ ₹${fmt(target.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+          renderTab();
+          updateChartTrades();
+          continue;
+        }
+
+        const isExitCancelled = ["CAN", "CANCELLED", "REJ", "REJECTED"].includes(exitStatus);
+        if (isExitCancelled && num(matchedExit.filled_quantity) === 0) {
+          // If exit order cancelled on broker, check if user closed position manually
+          const pos = S.positions.find((p) => matchesSameContract(p, target));
+          if (!pos || num(pos.quantity) === 0) {
+            target.status = "EXITED_MANUAL";
+            target.exitPrice = target.ltp || target.targetPrice;
+            saveAutoTargets();
+            renderTab();
+            updateChartTrades();
+          }
+        }
+      }
     }
   }
 }
@@ -2722,7 +3184,7 @@ async function placeAutoTargetExit(target, qtyToExit) {
     instrument_key: target.instrumentKey,
     exchange_segment: target.exchangeSegment,
     symbol: target.symbol,
-    underlying: S.activeIndex,
+    underlying: target.underlying || S.activeIndex,
     strike: target.strike,
     option_type: target.type,
     side: exitSide,
@@ -2738,16 +3200,24 @@ async function placeAutoTargetExit(target, qtyToExit) {
   };
 
   try {
-    toast(`🎯 Auto-Target: placing ${exitSide === "S" ? "Sell" : "Buy"} Limit for ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}…`, "info", 3000);
+    toast(`🎯 Bracket In Position! Placing ${exitSide === "S" ? "Sell" : "Buy"} Limit for ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}…`, "info", 3000);
     const result = await postOrder(payload);
     lastUiOrderTime = Date.now();
     playTradeSound("target");
-    toast(`🎯 Auto-Target exit limit placed! ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}.`, "ok", 6000);
+    const exitId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
+    if (exitId) {
+      target.exitOrderId = exitId;
+    }
+    target.status = "IN_POSITION";
+    saveAutoTargets();
+    toast(`🎯 Target Limit placed! Resting @ ₹${fmt(target.targetPrice)}.`, "ok", 6000);
     scheduleBooksRefresh(400);
+    renderTab();
+    updateChartTrades();
     return result;
   } catch (err) {
     playTradeSound("reject");
-    toast(`Auto-Target exit failed: ${err.message}`, "error", 8000);
+    toast(`Auto-Target exit placement failed: ${err.message}`, "error", 8000);
   }
 }
 
@@ -2923,12 +3393,12 @@ function openChartQuickOrder(pane, price, x, y) {
     lotsCount = Math.max(1, Math.round(lotsCount / lot));
   }
 
-  let defaultPts = 10;
+  let defaultPts = 2.0;
   try {
     const saved = localStorage.getItem("scalper-target-pts");
-    if (saved) defaultPts = num(saved, 10);
+    if (saved) defaultPts = num(saved, 2.0);
   } catch (_) {}
-  if (defaultPts <= 0) defaultPts = 10;
+  if (defaultPts <= 0) defaultPts = 2.0;
 
   let targetEnabled = true;
   try {
@@ -3098,6 +3568,10 @@ async function submitQuickOrder(action) {
 
   closeChartQuickOrder();
   await onLimitTrade(action, type, price, shares, autoTarget);
+  if (autoTarget > 0) {
+    S.tab = "brackets";
+    renderTab();
+  }
 }
 
 async function onExit(instrumentKey) {
@@ -3621,6 +4095,12 @@ function bindEvents() {
   $("tab-content").addEventListener("click", (event) => {
     const exit = event.target.closest("[data-exit]");
     if (exit) { onExit(exit.dataset.exit); return; }
+    const exitBracket = event.target.closest("[data-exit-bracket]");
+    if (exitBracket) { onExitBracket(exitBracket.dataset.exitBracket); return; }
+    const cancelBracket = event.target.closest("[data-cancel-bracket]");
+    if (cancelBracket) { onCancelBracket(cancelBracket.dataset.cancelBracket); return; }
+    const clearBrackets = event.target.closest("#btn-clear-brackets");
+    if (clearBrackets) { onClearFinishedBrackets(); return; }
     const cancelBtn = event.target.closest(".btn-cancel-order");
     if (cancelBtn) { onCancelOrder(cancelBtn.dataset.orderId); return; }
     const cancelAllBtn = event.target.closest("#btn-cancel-all-open");
