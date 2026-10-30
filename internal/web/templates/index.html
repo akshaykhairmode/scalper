@@ -348,6 +348,42 @@
     </section>
   </div>
 
+  <!-- Chart quick limit order widget -->
+  <div id="chart-quick-order" class="chart-quick-order" role="dialog" aria-label="Limit order" hidden>
+    <div class="cqo-header">
+      <span class="cqo-badge">LIMIT</span>
+      <span class="cqo-title" id="cqo-title">NIFTY 23000 CE</span>
+      <button type="button" class="cqo-close" id="cqo-close" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
+    <div class="cqo-row">
+      <span class="cqo-label">Price</span>
+      <div class="cqo-stepper">
+        <button type="button" id="cqo-price-dec" title="Decrease price by 0.05" aria-label="Decrease price">−</button>
+        <input type="number" step="0.05" class="cqo-price-input" id="cqo-price" aria-label="Limit price">
+        <button type="button" id="cqo-price-inc" title="Increase price by 0.05" aria-label="Increase price">+</button>
+      </div>
+    </div>
+    <div class="cqo-row">
+      <span class="cqo-label">Quantity</span>
+      <div class="cqo-stepper">
+        <button type="button" id="cqo-qty-dec" title="Decrease quantity by 1 lot" aria-label="Decrease quantity">−</button>
+        <span class="cqo-qty-info" id="cqo-qty-val">50</span>
+        <button type="button" id="cqo-qty-inc" title="Increase quantity by 1 lot" aria-label="Increase quantity">+</button>
+      </div>
+      <span class="cqo-lots-info" id="cqo-lots-info">1 Lot</span>
+    </div>
+    <div class="cqo-actions">
+      <button type="button" class="cqo-btn buy" id="cqo-buy-btn">
+        <span>▲ BUY LIMIT</span>
+        <span class="cqo-subprice" id="cqo-buy-price">@ ₹0.00</span>
+      </button>
+      <button type="button" class="cqo-btn sell" id="cqo-sell-btn">
+        <span>▼ SELL LIMIT</span>
+        <span class="cqo-subprice" id="cqo-sell-price">@ ₹0.00</span>
+      </button>
+    </div>
+  </div>
+
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
   <script id="bootstrap" type="application/json">{{.Bootstrap}}</script>

@@ -500,6 +500,69 @@ function registerCustomOverlays() {
       return figures;
     },
   });
+
+  kc.registerOverlay({
+    name: "orderPreviewLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const price = Number(data.price || overlay.points?.[0]?.value || 0);
+      const width = bounding?.width || 800;
+      const accent = "#f0b429";
+
+      const figures = [];
+
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: 0, y },
+            { x: width, y },
+          ],
+        },
+        styles: {
+          style: "dashed",
+          dashedValue: [5, 3],
+          size: 1.5,
+          color: accent,
+        },
+        ignoreEvent: true,
+      });
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: width - 8,
+          y,
+          text: `LIMIT: ₹${price.toFixed(2)}`,
+          align: "right",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#000000",
+          backgroundColor: accent,
+          size: 10,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 6,
+          paddingRight: 6,
+          paddingTop: 2,
+          paddingBottom: 2,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
 }
 
 export class CandleChart {
@@ -512,6 +575,7 @@ export class CandleChart {
     this.srOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
+    this.orderPreviewOverlayId = null;
     this.tradesData = [];
     this.positionData = null;
     this.isSpotChart = false;
@@ -782,6 +846,40 @@ export class CandleChart {
     } catch (_) {}
   }
 
+  getPriceFromPixel(pixelY, pixelX = 50) {
+    if (!this.chart) return null;
+    try {
+      const res = this.chart.convertFromPixel({ x: pixelX, y: pixelY });
+      if (res && Number.isFinite(res.value) && res.value > 0) {
+        return Math.round(res.value * 20) / 20;
+      }
+    } catch (e) {
+      console.warn("getPriceFromPixel:", e);
+    }
+    return null;
+  }
+
+  showOrderPreview(price) {
+    this.clearOrderPreview();
+    if (!this.chart || !Number.isFinite(price) || price <= 0) return;
+    try {
+      this.orderPreviewOverlayId = this.chart.createOverlay({
+        name: "orderPreviewLine",
+        points: [{ value: price }],
+        lock: true,
+        extendData: { price },
+      });
+    } catch (_) {}
+  }
+
+  clearOrderPreview() {
+    if (!this.chart || !this.orderPreviewOverlayId) return;
+    try {
+      this.chart.removeOverlay(this.orderPreviewOverlayId);
+    } catch (_) {}
+    this.orderPreviewOverlayId = null;
+  }
+
   setData(data, { symbol = "", resetScale = true } = {}) {
     if (symbol && symbol !== this.currentSymbol) {
       this.currentSymbol = symbol;
@@ -1015,6 +1113,7 @@ export class CandleChart {
   }
 
   destroy() {
+    this.clearOrderPreview();
     this.clearTradeOverlays();
     this.clearPositionOverlay();
     this.clearSRLines();

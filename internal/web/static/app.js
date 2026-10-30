@@ -103,6 +103,7 @@ const S = {
   candles: {},
   historicalCache: new Map(),
   chartLoadID: 0,
+  quickOrder: null,
   marketOpen: null,
   focusedChart: null,
   soundEnabled: true,
@@ -2404,6 +2405,278 @@ async function onTrade(action, type) {
   }
 }
 
+async function onLimitTrade(action, type, targetPrice, shares) {
+  const orderMode = tradingMode();
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before placing an order.", "warn");
+    return;
+  }
+  const option = selectedOption(type);
+  if (!option) {
+    toast(`Select a ${type} strike first.`, "warn");
+    return;
+  }
+  const price = Math.round(num(targetPrice) * 20) / 20;
+  if (!Number.isFinite(price) || price <= 0) {
+    toast("Invalid limit price.", "error");
+    return;
+  }
+  const lot = lotSize(type);
+  const qty = num(shares);
+  if (!Number.isInteger(qty) || qty <= 0) {
+    toast(`Invalid ${type} quantity.`, "error");
+    return;
+  }
+  if (lot > 1 && qty % lot !== 0) {
+    toast(`Quantity must be a multiple of lot size (${lot}).`, "error");
+    return;
+  }
+
+  const side = action === "buy" ? "B" : "S";
+  const required = requiredMargin(option, qty, side);
+  const available = num(S.limits?.available);
+  if (orderMode !== "live" && required > available) {
+    toast(`Insufficient margin: required ₹${fmt(required, 0)}, available ₹${fmt(available, 0)}.`, "error", 5000);
+    return;
+  }
+
+  const payload = {
+    instrument_key: option.instrumentKey,
+    exchange_segment: option.exchangeSegment,
+    symbol: option.symbol,
+    underlying: S.activeIndex,
+    expiry: S.expiry,
+    strike: option.strike,
+    option_type: option.type,
+    side,
+    buy_sell: side,
+    quantity: qty,
+    qty,
+    price,
+    order_type: "LIMIT",
+    product: S.product,
+    intent: "ENTRY",
+    mode: orderMode,
+    lot_size: lot,
+  };
+
+  try {
+    const result = await postOrder(payload);
+    lastUiOrderTime = Date.now();
+    playTradeSound(action);
+    toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
+    scheduleBooksRefresh(400);
+    return result;
+  } catch (err) {
+    playTradeSound("reject");
+    toast(`Order rejected: ${err.message}`, "error", 6000);
+  }
+}
+
+/* ── Chart Quick Limit Order ───────────────────────────── */
+
+function initChartQuickOrder() {
+  $("cqo-close")?.addEventListener("click", closeChartQuickOrder);
+
+  $("cqo-price-dec")?.addEventListener("click", () => {
+    if (S.quickOrder) updateQuickOrderPrice(S.quickOrder.price - 0.05);
+  });
+  $("cqo-price-inc")?.addEventListener("click", () => {
+    if (S.quickOrder) updateQuickOrderPrice(S.quickOrder.price + 0.05);
+  });
+
+  $("cqo-price")?.addEventListener("input", (e) => {
+    const val = num(e.target.value);
+    if (Number.isFinite(val) && val > 0 && S.quickOrder) {
+      S.quickOrder.price = val;
+      $("cqo-buy-price").textContent = `@ ₹${val.toFixed(2)}`;
+      $("cqo-sell-price").textContent = `@ ₹${val.toFixed(2)}`;
+      S.charts[S.quickOrder.pane]?.showOrderPreview(val);
+    }
+  });
+  $("cqo-price")?.addEventListener("change", (e) => {
+    const val = num(e.target.value);
+    if (Number.isFinite(val) && val > 0) {
+      updateQuickOrderPrice(val);
+    }
+  });
+
+  $("cqo-qty-dec")?.addEventListener("click", () => updateQuickOrderLots(-1));
+  $("cqo-qty-inc")?.addEventListener("click", () => updateQuickOrderLots(1));
+
+  $("cqo-buy-btn")?.addEventListener("click", () => submitQuickOrder("buy"));
+  $("cqo-sell-btn")?.addEventListener("click", () => submitQuickOrder("sell"));
+
+  const widget = $("chart-quick-order");
+  if (widget) {
+    widget.addEventListener("pointerdown", (e) => e.stopPropagation());
+    widget.addEventListener("click", (e) => e.stopPropagation());
+  }
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!S.quickOrder) return;
+    const w = $("chart-quick-order");
+    if (w && (w === event.target || w.contains(event.target))) {
+      return;
+    }
+    const isChartCanvas = event.target.closest(".chart-canvas");
+    if (!isChartCanvas) {
+      closeChartQuickOrder();
+    }
+  });
+}
+
+function bindChartClickEvents() {
+  for (const pane of ["ce", "pe", "spot"]) {
+    const container = $("chart-" + pane);
+    if (!container) continue;
+    let downX = 0;
+    let downY = 0;
+    let downTime = 0;
+
+    container.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      downX = event.clientX;
+      downY = event.clientY;
+      downTime = Date.now();
+    });
+
+    container.addEventListener("pointerup", (event) => {
+      if (!downTime) return;
+      const dx = Math.abs(event.clientX - downX);
+      const dy = Math.abs(event.clientY - downY);
+      const dt = Date.now() - downTime;
+      downTime = 0;
+      if (dx > 6 || dy > 6 || dt > 500) return;
+
+      const chart = S.charts[pane];
+      if (!chart || chart.drawingTrendlineId) return;
+
+      if (pane === "spot") {
+        toast("Click on the CALL (left) or PUT (right) chart to place a Limit order at that strike premium.", "info", 4000);
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const price = chart.getPriceFromPixel(y, x);
+      if (!price || price <= 0) return;
+
+      openChartQuickOrder(pane, price, x, y);
+    });
+  }
+}
+
+function openChartQuickOrder(pane, price, x, y) {
+  const chart = S.charts[pane];
+  if (!chart) return;
+  const type = pane === "ce" ? "CE" : "PE";
+  const option = selectedOption(type);
+  if (!option) {
+    toast(`Select a ${type} strike from the option chain first.`, "warn", 3500);
+    return;
+  }
+
+  for (const [p, c] of Object.entries(S.charts)) {
+    if (p !== pane) c?.clearOrderPreview?.();
+  }
+
+  const lot = lotSize(type);
+  let lotsCount = Math.max(1, Math.round(num(S.qty[type], 1)));
+  if (S.unit[type] === "SHARES" && lot > 1) {
+    lotsCount = Math.max(1, Math.round(lotsCount / lot));
+  }
+
+  S.quickOrder = {
+    pane,
+    type,
+    option,
+    price,
+    lotsCount,
+    lot,
+  };
+
+  const widget = $("chart-quick-order");
+  if (!widget) return;
+
+  $("cqo-title").textContent = `${S.activeIndex} ${fmtStrike(option.strike)} ${type}`;
+  $("cqo-price").value = price.toFixed(2);
+  $("cqo-buy-price").textContent = `@ ₹${price.toFixed(2)}`;
+  $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
+  renderQuickOrderQty();
+
+  const frame = chart.container.closest(".chart-frame") || chart.container;
+  frame.appendChild(widget);
+
+  const frameRect = frame.getBoundingClientRect();
+  const widgetWidth = 250;
+  const widgetHeight = 125;
+
+  let left = x - widgetWidth / 2;
+  left = Math.max(10, Math.min(left, frameRect.width - widgetWidth - 10));
+
+  let top = y - widgetHeight - 12;
+  if (top < 10) {
+    top = y + 14;
+  }
+  top = Math.max(10, Math.min(top, frameRect.height - widgetHeight - 10));
+
+  widget.style.left = `${Math.round(left)}px`;
+  widget.style.top = `${Math.round(top)}px`;
+  widget.hidden = false;
+
+  chart.showOrderPreview(price);
+}
+
+function renderQuickOrderQty() {
+  if (!S.quickOrder) return;
+  const { lotsCount, lot } = S.quickOrder;
+  const shares = lotsCount * lot;
+  $("cqo-qty-val").textContent = String(shares);
+  $("cqo-lots-info").textContent = `${lotsCount} ${lotsCount === 1 ? "Lot" : "Lots"}`;
+}
+
+function updateQuickOrderPrice(newPrice) {
+  if (!S.quickOrder) return;
+  const price = Math.max(0.05, Math.round(num(newPrice) * 20) / 20);
+  S.quickOrder.price = price;
+  $("cqo-price").value = price.toFixed(2);
+  $("cqo-buy-price").textContent = `@ ₹${price.toFixed(2)}`;
+  $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
+  S.charts[S.quickOrder.pane]?.showOrderPreview(price);
+}
+
+function updateQuickOrderLots(delta) {
+  if (!S.quickOrder) return;
+  const newLots = Math.max(1, S.quickOrder.lotsCount + delta);
+  S.quickOrder.lotsCount = newLots;
+  S.qty[S.quickOrder.type] = S.unit[S.quickOrder.type] === "SHARES" ? newLots * S.quickOrder.lot : newLots;
+  renderQuickOrderQty();
+  renderOrderPad();
+}
+
+function closeChartQuickOrder() {
+  if (S.quickOrder) {
+    S.charts[S.quickOrder.pane]?.clearOrderPreview();
+    S.quickOrder = null;
+  }
+  const widget = $("chart-quick-order");
+  if (widget) widget.hidden = true;
+}
+
+async function submitQuickOrder(action) {
+  if (!S.quickOrder) return;
+  const { type, lotsCount, lot } = S.quickOrder;
+  const inputPrice = num($("cqo-price")?.value);
+  const price = Number.isFinite(inputPrice) && inputPrice > 0 ? inputPrice : S.quickOrder.price;
+  const shares = lotsCount * lot;
+
+  closeChartQuickOrder();
+  await onLimitTrade(action, type, price, shares);
+}
+
 async function onExit(instrumentKey) {
   const orderMode = tradingMode();
   if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before exiting a position.", "warn"); return; }
@@ -2949,6 +3222,10 @@ function bindEvents() {
       return;
     }
     if (event.key !== "Escape") return;
+    if (S.quickOrder) {
+      closeChartQuickOrder();
+      return;
+    }
     if (!$("confirm-modal").hidden) {
       closeConfirm(false);
       return;
@@ -2959,6 +3236,9 @@ function bindEvents() {
     }
     if (S.focusedChart) setFocusedChart(null);
   });
+
+  initChartQuickOrder();
+  bindChartClickEvents();
 }
 
 function toggleQuantityUnit(type) {
