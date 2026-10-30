@@ -105,6 +105,7 @@ const S = {
   chartLoadID: 0,
   marketOpen: null,
   focusedChart: null,
+  soundEnabled: true,
 };
 window.S = S;
 
@@ -418,6 +419,7 @@ function init() {
   S.mode = "live";
   S.bookMode = S.mode;
   initTheme();
+  initSound();
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
@@ -474,6 +476,143 @@ function setTheme(theme, persist = true) {
     localStorage.setItem("scalper-theme", theme);
   } catch (error) {
     console.warn("Unable to save theme preference", error);
+  }
+}
+
+/* ── Trade sound notifications ─────────────────────────── */
+
+let audioCtx = null;
+let lastUiOrderTime = 0;
+
+function getAudioContext() {
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      audioCtx = new AudioContextClass();
+    }
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+function initAudioOnFirstGesture() {
+  const unlock = () => {
+    const ctx = getAudioContext();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    window.removeEventListener("pointerdown", unlock);
+    window.removeEventListener("keydown", unlock);
+  };
+  window.addEventListener("pointerdown", unlock, { once: true });
+  window.addEventListener("keydown", unlock, { once: true });
+}
+
+function playTone(ctx, freq, startTime, duration, maxGain = 0.15, type = "sine") {
+  try {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, startTime);
+
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.exponentialRampToValueAtTime(maxGain, startTime + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.02);
+  } catch (_) {}
+}
+
+function playTradeSound(side) {
+  if (!S.soundEnabled) return;
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") {
+    ctx.resume().catch(() => {});
+  }
+
+  const now = ctx.currentTime;
+  const action = String(side || "").toLowerCase();
+
+  if (action === "buy" || action === "b") {
+    // Upbeat ascending chime: D5 (587.33 Hz) -> A5 (880.00 Hz)
+    playTone(ctx, 587.33, now, 0.08, 0.16, "sine");
+    playTone(ctx, 880.0, now + 0.07, 0.18, 0.18, "sine");
+  } else if (action === "sell" || action === "s") {
+    // Crisp descending chime: A5 (880.00 Hz) -> C5 (523.25 Hz)
+    playTone(ctx, 880.0, now, 0.08, 0.16, "sine");
+    playTone(ctx, 523.25, now + 0.07, 0.18, 0.18, "sine");
+  } else if (action === "reject" || action === "error") {
+    // Low warning pulse: 220 Hz -> 175 Hz
+    playTone(ctx, 220.0, now, 0.08, 0.14, "triangle");
+    playTone(ctx, 175.0, now + 0.09, 0.12, 0.14, "triangle");
+  }
+}
+
+function updateSoundButton() {
+  const btn = $("sound-toggle");
+  if (!btn) return;
+  const icon = $("sound-icon");
+  const label = $("sound-label");
+  if (S.soundEnabled) {
+    if (icon) icon.textContent = "🔊";
+    if (label) label.textContent = "Sound";
+    btn.title = "Sound notifications enabled (Click to mute)";
+    btn.setAttribute("aria-pressed", "true");
+    btn.classList.remove("muted");
+  } else {
+    if (icon) icon.textContent = "🔇";
+    if (label) label.textContent = "Muted";
+    btn.title = "Sound notifications muted (Click to enable)";
+    btn.setAttribute("aria-pressed", "false");
+    btn.classList.add("muted");
+  }
+}
+
+function toggleSound() {
+  S.soundEnabled = !S.soundEnabled;
+  try {
+    localStorage.setItem("scalper-sound-enabled", S.soundEnabled ? "true" : "false");
+  } catch (_) {}
+  updateSoundButton();
+  if (S.soundEnabled) {
+    playTradeSound("buy");
+    toast("Sound notifications enabled", "ok", 1500);
+  } else {
+    toast("Sound notifications muted", "warn", 1500);
+  }
+}
+
+function initSound() {
+  let enabled = true;
+  try {
+    const saved = localStorage.getItem("scalper-sound-enabled");
+    if (saved === "false") enabled = false;
+  } catch (_) {}
+  S.soundEnabled = enabled;
+  updateSoundButton();
+  initAudioOnFirstGesture();
+}
+
+function handleBrokerOrderSound(raw) {
+  if (!S.soundEnabled || Date.now() - lastUiOrderTime < 1500) return;
+  const status = String(raw?.status ?? raw?.ordSt ?? "").toUpperCase();
+  if (["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(status)) {
+    const side = String(raw?.side ?? raw?.buy_sell ?? raw?.buySell ?? raw?.trnsTp ?? "").toUpperCase();
+    if (side === "B" || side === "BUY") {
+      playTradeSound("buy");
+    } else if (side === "S" || side === "SELL") {
+      playTradeSound("sell");
+    }
+  } else if (["REJ", "REJECTED", "CANCELLED", "CAN"].includes(status)) {
+    playTradeSound("reject");
   }
 }
 
@@ -931,6 +1070,9 @@ function handleSocketEvent(event) {
   }
   if (event.type === "broker_order" || event.type === "broker_position") {
     scheduleBooksRefresh(1000);
+    if (event.type === "broker_order" && data) {
+      handleBrokerOrderSound(data);
+    }
     return;
   }
   if (event.type === "tick") {
@@ -2123,9 +2265,12 @@ async function onTrade(action, type) {
 
   try {
     const result = await postOrder(payload);
+    lastUiOrderTime = Date.now();
+    playTradeSound(action);
     toast(`Live order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
     scheduleBooksRefresh(400);
   } catch (err) {
+    playTradeSound("reject");
     toast(`Order rejected: ${err.message}`, "error", 6000);
   }
 }
@@ -2168,9 +2313,12 @@ async function onExit(instrumentKey) {
       intent: "EXIT",
       mode: orderMode,
     });
+    lastUiOrderTime = Date.now();
+    playTradeSound(side === "B" ? "buy" : "sell");
     toast("Live exit order submitted.", "ok");
     scheduleBooksRefresh(400);
   } catch (err) {
+    playTradeSound("reject");
     toast(`Exit failed: ${err.message}`, "error", 6000);
   }
 }
@@ -2204,9 +2352,12 @@ async function onSquareOffAll() {
         symbol: position.symbol, side: position.quantity > 0 ? "S" : "B", quantity, product: position.product || S.product,
         order_type: "MARKET", price: 0 });
     }
+    lastUiOrderTime = Date.now();
+    playTradeSound("sell");
     toast("Live square-off orders submitted.", "ok");
     scheduleBooksRefresh(500);
   } catch (err) {
+    playTradeSound("reject");
     toast(`Square off failed: ${err.message}`, "error", 6000);
   }
 }
@@ -2532,6 +2683,8 @@ function bindEvents() {
     loadCharts();
   });
   $("refresh-button").addEventListener("click", refreshMarket);
+  const soundToggle = $("sound-toggle");
+  if (soundToggle) soundToggle.addEventListener("click", toggleSound);
   $("fullscreen-button").addEventListener("click", toggleFullscreen);
   $("strike-search-button").addEventListener("click", openStrikeModal);
   $("strike-target-select").addEventListener("change", (event) => {

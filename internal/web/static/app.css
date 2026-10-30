@@ -248,6 +248,9 @@ a { color: var(--blue); }
 }
 .ghost:hover { border-color: #3b4d5f; color: var(--text); background: var(--panel-2); }
 .ghost.small { padding: 4px 9px; font-size: 10px; }
+.sound-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.sound-toggle.muted { opacity: 0.6; }
+.sound-toggle.muted:hover { opacity: 0.9; }
 
 .primary {
   background: var(--accent);
