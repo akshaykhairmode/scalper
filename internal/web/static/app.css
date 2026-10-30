@@ -753,6 +753,9 @@ table.book tr.group-row td {
   text-transform: uppercase;
   padding: 4px 10px;
 }
+table.book tr.closed td { opacity: 0.6; }
+table.book tr.closed:hover td { opacity: 0.95; }
+table.book tr.group-row.closed td { opacity: 0.65; }
 table.book .sym { font-family: var(--sans); font-weight: 650; }
 table.book .link-button {
   border: 1px solid var(--line);

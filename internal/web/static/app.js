@@ -385,6 +385,40 @@ function normalizePosition(raw) {
   };
 }
 
+function comparePositions(a, b) {
+  // 1. Open positions first (quantity != 0), closed positions last (quantity == 0)
+  const aOpen = Math.abs(num(a.quantity)) > 0 ? 0 : 1;
+  const bOpen = Math.abs(num(b.quantity)) > 0 ? 0 : 1;
+  if (aOpen !== bOpen) return aOpen - bOpen;
+
+  // 2. Underlying: active index first, then alphabetical
+  const active = S.activeIndex || "NIFTY";
+  const aUnder = a.underlying || "";
+  const bUnder = b.underlying || "";
+  const aIsActive = (aUnder === active) ? 0 : 1;
+  const bIsActive = (bUnder === active) ? 0 : 1;
+  if (aIsActive !== bIsActive) return aIsActive - bIsActive;
+  const underCmp = aUnder.localeCompare(bUnder);
+  if (underCmp !== 0) return underCmp;
+
+  // 3. Expiry date: earlier expiry first
+  const expCmp = String(a.expiry || "").localeCompare(String(b.expiry || ""));
+  if (expCmp !== 0) return expCmp;
+
+  // 4. Strike: ascending
+  const strikeDiff = num(a.strike) - num(b.strike);
+  if (strikeDiff !== 0) return strikeDiff;
+
+  // 5. Option type: CE before PE
+  const typeCmp = String(a.option_type || "").localeCompare(String(b.option_type || ""));
+  if (typeCmp !== 0) return typeCmp;
+
+  // 6. Tie-breaker: symbol, then instrument_key
+  const symCmp = String(a.symbol || "").localeCompare(String(b.symbol || ""));
+  if (symCmp !== 0) return symCmp;
+  return String(a.instrument_key || "").localeCompare(String(b.instrument_key || ""));
+}
+
 function normalizeOrder(raw) {
   return {
     id: raw.id ?? raw.client_order_id ?? raw.order_id ?? raw.broker_order_id ?? raw.nOrdNo ?? "—",
@@ -853,7 +887,7 @@ async function loadBooksFromAPI(includePositions = true) {
   // Keep the last known book on a transient failure (e.g. Kotak rate limiting).
   // Blanking it makes open positions vanish and disables the exit buttons.
   if (includePositions && positions.status === "fulfilled") {
-    S.positions = toArray(positions.value).map(normalizePosition);
+    S.positions = toArray(positions.value).map(normalizePosition).sort(comparePositions);
     S.positionsLoaded = true;
     updateFeedSubscriptions();
   }
@@ -1156,7 +1190,7 @@ function handleSocketEvent(event) {
   }
   if (event.type === "position") {
     if (S.bookMode !== "live") return;
-    S.positions = toArray(data).map(normalizePosition);
+    S.positions = toArray(data).map(normalizePosition).sort(comparePositions);
     updateFeedSubscriptions();
     renderTab();
     renderOrderPad();
@@ -1924,8 +1958,9 @@ function renderTab() {
 
 function positionsHTML() {
   if (!S.positions.length) return `<div class="empty-state">No open positions. Sign in with Kotak to view your account or place an order.</div>`;
+  const sorted = [...S.positions].sort(comparePositions);
   const groups = new Map();
-  for (const p of S.positions) {
+  for (const p of sorted) {
     const key = `${p.underlying || S.activeIndex}|${p.expiry || S.expiry}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
@@ -1935,16 +1970,23 @@ function positionsHTML() {
     <th>Max P</th><th>Max L</th><th></th>
   </tr></thead><tbody>`;
   for (const [key, list] of groups) {
-    const payoff = computePayoff(list.map((p) => ({
+    const hasOpenInGroup = list.some((p) => Math.abs(num(p.quantity)) > 0);
+    const payoff = hasOpenInGroup ? computePayoff(list.map((p) => ({
       type: p.option_type,
       strike: p.strike,
       qty: num(p.quantity),
       avg: num(p.average_price),
-    })));
-    html += `<tr class="group-row"><td colspan="8">${esc(key.replace("|", " · "))} — group Max P ${payoff.maxProfit === Infinity ? "∞" : `₹${fmt(payoff.maxProfit, 0)}`} · Max L ${payoff.maxLoss === -Infinity ? "∞" : `₹${fmt(payoff.maxLoss, 0)}`}</td></tr>`;
+    }))) : null;
+
+    const groupMeta = payoff
+      ? ` — group Max P ${payoff.maxProfit === Infinity ? "∞" : `₹${fmt(payoff.maxProfit, 0)}`} · Max L ${payoff.maxLoss === -Infinity ? "∞" : `₹${fmt(payoff.maxLoss, 0)}`}`
+      : " — closed";
+
+    html += `<tr class="group-row${hasOpenInGroup ? "" : " closed"}"><td colspan="8">${esc(key.replace("|", " · "))}${groupMeta}</td></tr>`;
     for (const p of list) {
       const risk = legRisk(p);
-      html += `<tr>
+      const isOpen = Math.abs(num(p.quantity)) > 0;
+      html += `<tr class="${isOpen ? "" : "closed"}">
         <td class="sym">${esc(p.symbol || `${p.underlying} ${fmtStrike(p.strike)} ${p.option_type}`)}</td>
         <td>${p.quantity > 0 ? "+" : ""}${p.quantity}</td>
         <td>${fmt(p.average_price)}</td>
@@ -1952,7 +1994,7 @@ function positionsHTML() {
         <td class="${directionClass(p.pnl)}">${fmtSigned(p.pnl, 0)}</td>
         <td>${risk.maxProfit === Infinity ? "∞" : `₹${fmt(risk.maxProfit, 0)}`}</td>
         <td>${risk.maxLoss === -Infinity ? "∞" : `₹${fmt(risk.maxLoss, 0)}`}</td>
-        <td>${p.quantity !== 0 ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
+        <td>${isOpen ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
       </tr>`;
     }
   }
