@@ -174,6 +174,16 @@ func (s *Server) fetchInstrumentCandles(
 				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
 			cached = nil
 		}
+		if len(cached) > 0 && isMalformedCandleRun(cached) {
+			s.log.Warn("cached candles contain malformed run; repairing from 1m store",
+				"event", "malformed_cached_candles", "instrument", instrument, "timeframe", timeframe)
+			if timeframe != "1m" {
+				if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
+					cached = synth
+					_ = s.candleStore.WriteCandles(ctx, instrument, timeframe, synth)
+				}
+			}
+		}
 		syncedAt, synced, syncErr := s.candleStore.CandleSyncAt(ctx, instrument, timeframe, sessionDate)
 		if syncErr != nil {
 			s.log.Warn("read historical candle sync marker", "event", "candle_sync_read_failed", "error", syncErr,
@@ -186,6 +196,19 @@ func (s *Server) fetchInstrumentCandles(
 	}
 
 	fetched, err := s.market.Candles(ctx, s.marketBaseURL(), instrument, timeframe)
+	if err == nil && isMalformedCandleRun(fetched) {
+		s.log.Warn("upstream historical candles malformed (clamped day-high/close); rejecting fetched bars",
+			"event", "malformed_upstream_candles", "instrument", instrument, "timeframe", timeframe)
+		if s.candleStore != nil && timeframe != "1m" {
+			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
+				fetched = synth
+			} else {
+				fetched = nil
+			}
+		} else {
+			fetched = nil
+		}
+	}
 	if err != nil {
 		if len(cached) > 0 {
 			s.log.Warn("historical candle refresh failed; using cached bars", "event", "candle_refresh_failed",
@@ -211,7 +234,7 @@ func (s *Server) fetchInstrumentCandles(
 		}
 	}
 
-	if s.candleStore != nil {
+	if len(fetched) > 0 && s.candleStore != nil && !isMalformedCandleRun(fetched) {
 		if err := s.candleStore.WriteCandles(ctx, instrument, timeframe, fetched); err != nil {
 			s.log.Warn("save historical candles to SQLite", "event", "candle_cache_write_failed", "error", err,
 				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
@@ -411,4 +434,26 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, target any) error {
 		return err
 	}
 	return nil
+}
+
+// isMalformedCandleRun detects upstream provider anomalies where multiple consecutive bars
+// are clamped to static day-high and day-close values (e.g. barcode pattern).
+func isMalformedCandleRun(candles []market.Candle) bool {
+	if len(candles) < 5 {
+		return false
+	}
+	consecutive := 1
+	for i := 1; i < len(candles); i++ {
+		prev := candles[i-1]
+		curr := candles[i]
+		if curr.High == prev.High && curr.Close == prev.Close && math.Abs(curr.High-curr.Open) > 2.0 {
+			consecutive++
+			if consecutive >= 5 {
+				return true
+			}
+		} else {
+			consecutive = 1
+		}
+	}
+	return false
 }

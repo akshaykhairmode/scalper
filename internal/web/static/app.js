@@ -788,11 +788,12 @@ function buildTimeframes() {
 
 function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
+  const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
   const savedTrades = localStorage.getItem("scalper-show-trades") !== "false";
   S.showTrades = savedTrades;
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
 
   let syncingRange = false;
   const syncRange = (sourceChart) => {
@@ -825,6 +826,11 @@ function buildCharts() {
   for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
     button.classList.toggle("active", savedSR);
     button.setAttribute("aria-pressed", savedSR ? "true" : "false");
+  }
+
+  for (const button of $$(".chart-tools button[data-chart-action='auto-tl']")) {
+    button.classList.toggle("active", savedAutoTL);
+    button.setAttribute("aria-pressed", savedAutoTL ? "true" : "false");
   }
 
   for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
@@ -4022,6 +4028,18 @@ function bindEvents() {
         } catch {
           // ignore
         }
+        return;
+      }
+      if (action === "auto-tl") {
+        const nextState = chart.toggleAutoTrendlines();
+        button.classList.toggle("active", nextState);
+        button.setAttribute("aria-pressed", nextState ? "true" : "false");
+        try {
+          localStorage.setItem("scalper-show-auto-tl", String(nextState));
+        } catch {
+          // ignore
+        }
+        toast(nextState ? "Auto trendlines enabled" : "Auto trendlines hidden", "ok", 1500);
         return;
       }
       if (action === "trendline") {

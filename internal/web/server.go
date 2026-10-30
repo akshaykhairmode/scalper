@@ -57,6 +57,7 @@ type CandleStore interface {
 	WriteCandles(ctx context.Context, instrumentKey, timeframe string, candles []market.Candle) error
 	CandleSyncAt(ctx context.Context, instrumentKey, timeframe, sessionDate string) (int64, bool, error)
 	MarkCandlesSynced(ctx context.Context, instrumentKey, timeframe, sessionDate string, syncedAt int64) error
+	AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targetTf string) ([]market.Candle, error)
 }
 
 // MarketAPI is the market data subset used by the web server.

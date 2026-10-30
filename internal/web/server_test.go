@@ -757,3 +757,27 @@ func TestIndexUsesUTCWhenTimezoneInvalid(t *testing.T) {
 		t.Fatalf("body missing formatted time: %s", rec.Body.String())
 	}
 }
+
+func TestIsMalformedCandleRun(t *testing.T) {
+	clean := []market.Candle{
+		{Time: 1, Open: 100, High: 105, Low: 99, Close: 102},
+		{Time: 2, Open: 102, High: 106, Low: 101, Close: 105},
+		{Time: 3, Open: 105, High: 107, Low: 103, Close: 104},
+		{Time: 4, Open: 104, High: 108, Low: 102, Close: 107},
+		{Time: 5, Open: 107, High: 109, Low: 106, Close: 108},
+	}
+	if isMalformedCandleRun(clean) {
+		t.Error("clean candles flagged as malformed")
+	}
+
+	malformed := []market.Candle{
+		{Time: 1, Open: 22680, High: 22960, Low: 22650, Close: 22930},
+		{Time: 2, Open: 22710, High: 22960, Low: 22670, Close: 22930},
+		{Time: 3, Open: 22720, High: 22960, Low: 22700, Close: 22930},
+		{Time: 4, Open: 22730, High: 22960, Low: 22710, Close: 22930},
+		{Time: 5, Open: 22740, High: 22960, Low: 22720, Close: 22930},
+	}
+	if !isMalformedCandleRun(malformed) {
+		t.Error("malformed run was not detected")
+	}
+}

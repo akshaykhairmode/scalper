@@ -75,6 +75,175 @@ function calculateSRLevels(candles, maxLevels = 3) {
   };
 }
 
+export function calculateAutoTrendlines(candles, maxLookback = 120) {
+  if (!Array.isArray(candles) || candles.length < 15) {
+    return { resistance: null, support: null };
+  }
+  const slice = candles.length > maxLookback ? candles.slice(-maxLookback) : candles;
+  const n = slice.length;
+  const lastIndex = n - 1;
+  const currentPrice = slice[lastIndex].close;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return { resistance: null, support: null };
+  }
+
+  const windowSize = 2;
+  const highs = [];
+  const lows = [];
+
+  for (let i = windowSize; i < n - windowSize; i++) {
+    const c = slice[i];
+    let isHigh = true;
+    let isLow = true;
+    for (let j = i - windowSize; j <= i + windowSize; j++) {
+      if (j === i) continue;
+      if (slice[j].high > c.high) isHigh = false;
+      if (slice[j].low < c.low) isLow = false;
+    }
+    if (isHigh) highs.push({ index: i, price: c.high, time: c.time });
+    if (isLow) lows.push({ index: i, price: c.low, time: c.time });
+  }
+
+  const touchTol = Math.max(0.0006, Math.min(0.006, 1.2 / currentPrice));
+  const breachTol = touchTol * 1.6;
+
+  // Resistance: Connect prominent swing highs
+  let bestResistance = null;
+  let bestResScore = -Infinity;
+
+  for (let a = 0; a < highs.length; a++) {
+    for (let b = a + 1; b < highs.length; b++) {
+      const p1 = highs[a];
+      const p2 = highs[b];
+      const span = p2.index - p1.index;
+      if (span < 5) continue;
+
+      const slope = (p2.price - p1.price) / span;
+      const lastLinePrice = p1.price + slope * (lastIndex - p1.index);
+
+      // Resistance must remain at or above current prices
+      if (lastLinePrice < currentPrice * (1 - breachTol * 2)) continue;
+      // Not excessively far above current price (keep relevant)
+      if (lastLinePrice > currentPrice * 1.25) continue;
+
+      let breaches = 0;
+      let wickBreaches = 0;
+      let extraTouches = 0;
+      let lastTouchIdx = -999;
+
+      for (let k = p1.index; k <= lastIndex; k++) {
+        if (k === p1.index || k === p2.index) continue;
+        const linePx = p1.price + slope * (k - p1.index);
+        const bar = slice[k];
+
+        if (bar.close > linePx * (1 + breachTol)) {
+          breaches++;
+          break;
+        }
+        if (bar.high > linePx * (1 + breachTol * 2)) {
+          wickBreaches++;
+          break;
+        }
+        if (Math.abs(bar.high - linePx) / linePx <= touchTol && bar.close <= linePx * (1 + touchTol * 0.5)) {
+          if (k - lastTouchIdx >= 3) {
+            extraTouches++;
+            lastTouchIdx = k;
+          }
+        }
+      }
+
+      if (breaches > 0 || wickBreaches > 0) continue;
+
+      const totalTouches = 2 + extraTouches;
+      const recency = p2.index / lastIndex;
+      const distPct = Math.abs(lastLinePrice - currentPrice) / currentPrice;
+      const score = (totalTouches * 20) + (span * 0.3) + (recency * 20) - (distPct * 60);
+
+      if (score > bestResScore) {
+        bestResScore = score;
+        bestResistance = {
+          p1: { time: p1.time, price: p1.price },
+          p2: { time: p2.time, price: p2.price },
+          span,
+          touches: totalTouches,
+          score: Number(score.toFixed(1)),
+          slope: Number(slope.toFixed(4)),
+          projectedPrice: Number(lastLinePrice.toFixed(2)),
+        };
+      }
+    }
+  }
+
+  // Support: Connect prominent swing lows
+  let bestSupport = null;
+  let bestSupScore = -Infinity;
+
+  for (let a = 0; a < lows.length; a++) {
+    for (let b = a + 1; b < lows.length; b++) {
+      const p1 = lows[a];
+      const p2 = lows[b];
+      const span = p2.index - p1.index;
+      if (span < 5) continue;
+
+      const slope = (p2.price - p1.price) / span;
+      const lastLinePrice = p1.price + slope * (lastIndex - p1.index);
+
+      // Support must remain at or below current prices
+      if (lastLinePrice > currentPrice * (1 + breachTol * 2)) continue;
+      // Not excessively far below current price
+      if (lastLinePrice < currentPrice * 0.75) continue;
+
+      let breaches = 0;
+      let wickBreaches = 0;
+      let extraTouches = 0;
+      let lastTouchIdx = -999;
+
+      for (let k = p1.index; k <= lastIndex; k++) {
+        if (k === p1.index || k === p2.index) continue;
+        const linePx = p1.price + slope * (k - p1.index);
+        const bar = slice[k];
+
+        if (bar.close < linePx * (1 - breachTol)) {
+          breaches++;
+          break;
+        }
+        if (bar.low < linePx * (1 - breachTol * 2)) {
+          wickBreaches++;
+          break;
+        }
+        if (Math.abs(bar.low - linePx) / linePx <= touchTol && bar.close >= linePx * (1 - touchTol * 0.5)) {
+          if (k - lastTouchIdx >= 3) {
+            extraTouches++;
+            lastTouchIdx = k;
+          }
+        }
+      }
+
+      if (breaches > 0 || wickBreaches > 0) continue;
+
+      const totalTouches = 2 + extraTouches;
+      const recency = p2.index / lastIndex;
+      const distPct = Math.abs(currentPrice - lastLinePrice) / currentPrice;
+      const score = (totalTouches * 20) + (span * 0.3) + (recency * 20) - (distPct * 60);
+
+      if (score > bestSupScore) {
+        bestSupScore = score;
+        bestSupport = {
+          p1: { time: p1.time, price: p1.price },
+          p2: { time: p2.time, price: p2.price },
+          span,
+          touches: totalTouches,
+          score: Number(score.toFixed(1)),
+          slope: Number(slope.toFixed(4)),
+          projectedPrice: Number(lastLinePrice.toFixed(2)),
+        };
+      }
+    }
+  }
+
+  return { resistance: bestResistance, support: bestSupport };
+}
+
 function buildStyles(colors) {
   return {
     grid: {
@@ -698,13 +867,15 @@ function registerCustomOverlays() {
 }
 
 export class CandleChart {
-  constructor(container, { showVolume = true, showSR = false, showTrades = true } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
     this.showSR = showSR;
     this.showTrades = showTrades;
+    this.showAutoTrendlines = showAutoTrendlines;
     this.srOverlayIds = [];
+    this.autoTrendlineOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
     this.orderPreviewOverlayId = null;
@@ -871,6 +1042,89 @@ export class CandleChart {
         });
         if (id) this.srOverlayIds.push(id);
       } catch (_) {}
+    }
+  }
+
+  toggleAutoTrendlines(forceState) {
+    this.showAutoTrendlines = typeof forceState === "boolean" ? forceState : !this.showAutoTrendlines;
+    this.refreshAutoTrendlines();
+    return this.showAutoTrendlines;
+  }
+
+  clearAutoTrendlines() {
+    if (!this.chart) return;
+    for (const id of this.autoTrendlineOverlayIds) {
+      try {
+        this.chart.removeOverlay(id);
+      } catch (_) {}
+    }
+    this.autoTrendlineOverlayIds = [];
+  }
+
+  refreshAutoTrendlines() {
+    this.clearAutoTrendlines();
+    if (!this.showAutoTrendlines || !this.data.length || !this.chart) return;
+
+    const { resistance, support } = calculateAutoTrendlines(this.data);
+
+    if (resistance) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "rayLine",
+          points: [
+            { timestamp: resistance.p1.time > 1e11 ? resistance.p1.time : resistance.p1.time * 1000, value: resistance.p1.price },
+            { timestamp: resistance.p2.time > 1e11 ? resistance.p2.time : resistance.p2.time * 1000, value: resistance.p2.price },
+          ],
+          lock: true,
+          styles: {
+            line: {
+              color: this.colors.resistance,
+              style: "dashed",
+              dashedValue: [6, 3],
+              size: 1.5,
+            },
+            point: {
+              color: this.colors.resistance,
+              borderColor: "#ffffff",
+              borderSize: 1,
+              radius: 3,
+            },
+          },
+        });
+        if (id) this.autoTrendlineOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createAutoTrendline resistance:", e);
+      }
+    }
+
+    if (support) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "rayLine",
+          points: [
+            { timestamp: support.p1.time > 1e11 ? support.p1.time : support.p1.time * 1000, value: support.p1.price },
+            { timestamp: support.p2.time > 1e11 ? support.p2.time : support.p2.time * 1000, value: support.p2.price },
+          ],
+          lock: true,
+          styles: {
+            line: {
+              color: this.colors.support,
+              style: "dashed",
+              dashedValue: [6, 3],
+              size: 1.5,
+            },
+            point: {
+              color: this.colors.support,
+              borderColor: "#ffffff",
+              borderSize: 1,
+              radius: 3,
+            },
+          },
+        });
+        if (id) this.autoTrendlineOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createAutoTrendline support:", e);
+      }
     }
   }
 
@@ -1071,6 +1325,7 @@ export class CandleChart {
 
     this.updateVolumeBadge();
     this.refreshSRLines();
+    this.refreshAutoTrendlines();
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
@@ -1272,6 +1527,9 @@ export class CandleChart {
       this.data[lastIdx] = { ...this.data[lastIdx], ...candle };
     } else {
       this.data.push(candle);
+      if (this.showAutoTrendlines) {
+        this.refreshAutoTrendlines();
+      }
     }
     const formatted = this.formatCandle(candle);
     if (formatted && this.subscriberCallback) {
@@ -1301,6 +1559,7 @@ export class CandleChart {
       this.chart.setStyles(buildStyles(this.colors));
     }
     this.refreshSRLines();
+    this.refreshAutoTrendlines();
   }
 
   schedule() {
@@ -1314,6 +1573,7 @@ export class CandleChart {
     this.clearTradeOverlays();
     this.clearPositionOverlay();
     this.clearSRLines();
+    this.clearAutoTrendlines();
     this.volBadge?.remove();
     if (this.chart && window.klinecharts) {
       window.klinecharts.dispose(this.chart);

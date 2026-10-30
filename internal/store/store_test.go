@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/errs"
+	"github.com/akshaykhairmode/scalper/internal/market"
 )
 
 func openTest(t *testing.T) *Store {
@@ -202,5 +203,58 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("failed migration was recorded")
+	}
+}
+
+func TestCandlesWriteReadAndAggregate(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	// 5 1-minute bars spanning 09:15 to 09:19 (300 seconds)
+	baseTime := int64(1793245500)
+	raw1m := []market.Candle{
+		{Time: baseTime, Open: 100, High: 105, Low: 99, Close: 102, Volume: 10},
+		{Time: baseTime + 60, Open: 102, High: 108, Low: 101, Close: 107, Volume: 20},
+		{Time: baseTime + 120, Open: 107, High: 107, Low: 95, Close: 98, Volume: 30},
+		{Time: baseTime + 180, Open: 98, High: 103, Low: 97, Close: 101, Volume: 40},
+		{Time: baseTime + 240, Open: 101, High: 104, Low: 100, Close: 103, Volume: 50},
+	}
+
+	if err := s.WriteCandles(ctx, "test_inst", "1m", raw1m); err != nil {
+		t.Fatalf("WriteCandles: %v", err)
+	}
+
+	got1m, err := s.ReadCandles(ctx, "test_inst", "1m")
+	if err != nil || len(got1m) != 5 {
+		t.Fatalf("ReadCandles: len=%d err=%v", len(got1m), err)
+	}
+
+	// Aggregate into 5m
+	agg5m, err := s.AggregateCandlesFrom1m(ctx, "test_inst", "5m")
+	if err != nil {
+		t.Fatalf("AggregateCandlesFrom1m: %v", err)
+	}
+	if len(agg5m) != 1 {
+		t.Fatalf("expected 1 aggregated 5m candle, got %d", len(agg5m))
+	}
+
+	c := agg5m[0]
+	if c.Time != baseTime {
+		t.Errorf("Time = %d, want %d", c.Time, baseTime)
+	}
+	if c.Open != 100 {
+		t.Errorf("Open = %v, want 100", c.Open)
+	}
+	if c.High != 108 {
+		t.Errorf("High = %v, want 108", c.High)
+	}
+	if c.Low != 95 {
+		t.Errorf("Low = %v, want 95", c.Low)
+	}
+	if c.Close != 103 {
+		t.Errorf("Close = %v, want 103", c.Close)
+	}
+	if c.Volume != 150 {
+		t.Errorf("Volume = %d, want 150", c.Volume)
 	}
 }

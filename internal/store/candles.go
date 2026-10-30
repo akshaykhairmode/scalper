@@ -128,4 +128,75 @@ func candleSyncKey(instrumentKey, timeframe, sessionDate string) string {
 	return fmt.Sprintf("candle_sync:%x", hash[:])
 }
 
+// AggregateCandlesFrom1m reads stored 1-minute bars for an instrument and aggregates
+// them into target timeframe bars (3m, 5m, 15m, 1h).
+func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targetTf string) ([]market.Candle, error) {
+	intervalSeconds := timeframeSeconds(targetTf)
+	if intervalSeconds <= 60 {
+		return nil, fmt.Errorf("store: cannot aggregate to timeframe %q", targetTf)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH min_c AS (
+			SELECT 
+				ts,
+				(ts / ?) * ? AS b_ts,
+				open, high, low, close, COALESCE(volume, 0) AS volume,
+				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts ASC) AS rn_first,
+				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts DESC) AS rn_last
+			FROM candles
+			WHERE instrument_key = ? AND timeframe = '1m'
+		)
+		SELECT
+			b_ts,
+			MAX(CASE WHEN rn_first = 1 THEN open END),
+			MAX(high),
+			MIN(low),
+			MAX(CASE WHEN rn_last = 1 THEN close END),
+			SUM(volume)
+		FROM min_c
+		GROUP BY b_ts
+		ORDER BY b_ts ASC`,
+		intervalSeconds, intervalSeconds,
+		intervalSeconds, intervalSeconds,
+		intervalSeconds, intervalSeconds,
+		instrumentKey)
+	if err != nil {
+		return nil, fmt.Errorf("store: aggregate candles: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && s.log != nil {
+			s.log.Debug("failed to close aggregate candle rows", "error", cerr)
+		}
+	}()
+
+	var candles []market.Candle
+	for rows.Next() {
+		var c market.Candle
+		if err := rows.Scan(&c.Time, &c.Open, &c.High, &c.Low, &c.Close, &c.Volume); err != nil {
+			return nil, fmt.Errorf("store: scan aggregate candle: %w", err)
+		}
+		candles = append(candles, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate aggregate candles: %w", err)
+	}
+	return candles, nil
+}
+
+func timeframeSeconds(tf string) int64 {
+	switch tf {
+	case "3m":
+		return 180
+	case "5m":
+		return 300
+	case "15m":
+		return 900
+	case "1h":
+		return 3600
+	default:
+		return 0
+	}
+}
+
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
