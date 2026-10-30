@@ -155,13 +155,366 @@ function buildStyles(colors) {
   };
 }
 
+export function parseTimestamp(ts) {
+  if (!ts) return 0;
+  if (typeof ts === "number") return ts < 1e11 ? ts * 1000 : ts;
+  const numVal = Number(ts);
+  if (Number.isFinite(numVal) && numVal > 0) return numVal < 1e11 ? numVal * 1000 : numVal;
+  const str = String(ts).trim();
+  const m = str.match(/^(\d{1,2})[-\/]([A-Za-z]{3}|\d{1,2})[-\/](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    const day = parseInt(m[1], 10);
+    const mon = isNaN(m[2]) ? (months[m[2].toLowerCase()] ?? 0) : parseInt(m[2], 10) - 1;
+    const year = parseInt(m[3], 10);
+    const hour = parseInt(m[4] || 0, 10);
+    const min = parseInt(m[5] || 0, 10);
+    const sec = parseInt(m[6] || 0, 10);
+    return new Date(year, mon, day, hour, min, sec).getTime();
+  }
+  const d = new Date(str);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+export function pairTrades(trades) {
+  if (!Array.isArray(trades) || trades.length < 2) return [];
+  const sorted = [...trades].sort((a, b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp));
+  const pairs = [];
+  const openLots = [];
+
+  for (const t of sorted) {
+    const isBuy = t.side === "B" || t.side === "BUY";
+    let curQty = Math.abs(Number(t.quantity || 0));
+    if (curQty <= 0) continue;
+
+    while (curQty > 0 && openLots.length > 0) {
+      const opp = openLots[0];
+      const oppIsBuy = opp.trade.side === "B" || opp.trade.side === "BUY";
+      if (oppIsBuy === isBuy) break;
+
+      const matchQty = Math.min(curQty, opp.remainingQty);
+      const entry = opp.trade;
+      const exit = t;
+      const entryPx = Number(entry.price || 0);
+      const exitPx = Number(exit.price || 0);
+      const pnl = oppIsBuy ? (exitPx - entryPx) * matchQty : (entryPx - exitPx) * matchQty;
+      const pnlPct = entryPx > 0 ? (oppIsBuy ? ((exitPx - entryPx) / entryPx) * 100 : ((entryPx - exitPx) / entryPx) * 100) : 0;
+
+      pairs.push({
+        entry,
+        exit,
+        qty: matchQty,
+        pnl,
+        pnlPct,
+      });
+
+      curQty -= matchQty;
+      opp.remainingQty -= matchQty;
+      if (opp.remainingQty <= 0) openLots.shift();
+    }
+
+    if (curQty > 0) {
+      openLots.push({ trade: t, remainingQty: curQty });
+    }
+  }
+  return pairs;
+}
+
+function findClosestCandle(candles, timestampMs) {
+  if (!Array.isArray(candles) || !candles.length) return null;
+  const tsSec = timestampMs > 1e11 ? Math.floor(timestampMs / 1000) : timestampMs;
+  let best = candles[0];
+  let minDiff = Math.abs(candles[0].time - tsSec);
+  for (let i = 1; i < candles.length; i++) {
+    const diff = Math.abs(candles[i].time - tsSec);
+    if (diff < minDiff) {
+      minDiff = diff;
+      best = candles[i];
+    } else if (diff > minDiff && candles[i].time > tsSec) {
+      break;
+    }
+  }
+  return best;
+}
+
+let overlaysRegistered = false;
+function registerCustomOverlays() {
+  const kc = window.klinecharts;
+  if (!kc || overlaysRegistered) return;
+  overlaysRegistered = true;
+
+  kc.registerOverlay({
+    name: "tradeMarker",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.x) || !Number.isFinite(coord.y)) return [];
+
+      const data = overlay.extendData || {};
+      const isBuy = data.side === "B" || data.side === "BUY" || data.isBull;
+      const isSpot = Boolean(data.isSpot);
+
+      const color = isBuy ? "#29b360" : "#f05a5a";
+      const figures = [];
+
+      if (isSpot) {
+        const arrowUp = isBuy;
+        const tipY = arrowUp ? coord.y + 4 : coord.y - 4;
+        const baseY = arrowUp ? coord.y + 12 : coord.y - 12;
+        const textY = arrowUp ? coord.y + 14 : coord.y - 14;
+        const baseline = arrowUp ? "top" : "bottom";
+
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: coord.x, y: tipY },
+              { x: coord.x - 5, y: baseY },
+              { x: coord.x + 5, y: baseY },
+            ],
+          },
+          styles: { style: "fill", color },
+          ignoreEvent: true,
+        });
+
+        const label = data.text || (arrowUp ? "▲ BUY" : "▼ SELL");
+        figures.push({
+          type: "text",
+          attrs: {
+            x: coord.x,
+            y: textY,
+            text: label,
+            align: "center",
+            baseline,
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: color,
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 5,
+            paddingRight: 5,
+            paddingTop: 1.5,
+            paddingBottom: 1.5,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      } else {
+        const tipY = isBuy ? coord.y + 3 : coord.y - 3;
+        const baseY = isBuy ? coord.y + 11 : coord.y - 11;
+        const textY = isBuy ? coord.y + 13 : coord.y - 13;
+        const baseline = isBuy ? "top" : "bottom";
+
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: coord.x, y: tipY },
+              { x: coord.x - 4.5, y: baseY },
+              { x: coord.x + 4.5, y: baseY },
+            ],
+          },
+          styles: { style: "fill", color },
+          ignoreEvent: true,
+        });
+
+        const sideStr = isBuy ? "BUY" : "SELL";
+        const qtyStr = data.qty ? `${data.qty} @ ` : "";
+        const priceStr = Number.isFinite(data.price) ? Number(data.price).toFixed(2) : "";
+        const label = `${sideStr} ${qtyStr}${priceStr}`.trim();
+
+        figures.push({
+          type: "text",
+          attrs: {
+            x: coord.x,
+            y: textY,
+            text: label,
+            align: "center",
+            baseline,
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: color,
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 5,
+            paddingRight: 5,
+            paddingTop: 1.5,
+            paddingBottom: 1.5,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      }
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "positionLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const pnl = Number(data.pnl || 0);
+      const isProfit = pnl >= 0;
+      const lineColor = isProfit ? "#29b360" : "#f05a5a";
+      const width = bounding?.width || 800;
+
+      const figures = [];
+
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: 0, y },
+            { x: width, y },
+          ],
+        },
+        styles: {
+          style: "dashed",
+          dashedValue: [5, 4],
+          size: 1.5,
+          color: lineColor,
+        },
+        ignoreEvent: true,
+      });
+
+      const qty = Number(data.qty || 0);
+      const qtySign = qty > 0 ? "+" : "";
+      const pnlSign = pnl >= 0 ? "+₹" : "-₹";
+      const pnlVal = Math.abs(Math.round(pnl)).toLocaleString("en-IN");
+      const avgPrice = Number(data.avgPrice || 0).toFixed(2);
+      const tagText = `POS: ${qtySign}${qty} @ ${avgPrice} (${pnlSign}${pnlVal})`;
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: width - 8,
+          y,
+          text: tagText,
+          align: "right",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: lineColor,
+          size: 10,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 6,
+          paddingRight: 6,
+          paddingTop: 2,
+          paddingBottom: 2,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "tradeConnector",
+    totalStep: 2,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || coordinates.length < 2) return [];
+      const c1 = coordinates[0];
+      const c2 = coordinates[1];
+      if (!c1 || !c2 || !Number.isFinite(c1.x) || !Number.isFinite(c1.y) ||
+          !Number.isFinite(c2.x) || !Number.isFinite(c2.y)) return [];
+
+      const data = overlay.extendData || {};
+      const pnl = Number(data.pnl || 0);
+      const isProfit = pnl >= 0;
+      const color = isProfit ? "#29b36099" : "#f05a5a99";
+      const midX = (c1.x + c2.x) / 2;
+      const midY = (c1.y + c2.y) / 2;
+
+      const figures = [];
+
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: c1.x, y: c1.y },
+            { x: c2.x, y: c2.y },
+          ],
+        },
+        styles: {
+          style: "dashed",
+          dashedValue: [3, 3],
+          size: 1.2,
+          color,
+        },
+        ignoreEvent: true,
+      });
+
+      const pnlSign = pnl >= 0 ? "+₹" : "-₹";
+      const pnlVal = Math.abs(Math.round(pnl)).toLocaleString("en-IN");
+      const pctVal = Number.isFinite(data.pnlPct) ? ` (${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%)` : "";
+      const pillText = `${pnlSign}${pnlVal}${pctVal}`;
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: midX,
+          y: midY,
+          text: pillText,
+          align: "center",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: isProfit ? "#1e824c" : "#b03a2e",
+          size: 9.5,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1.5,
+          paddingBottom: 1.5,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
+}
+
 export class CandleChart {
-  constructor(container, { showVolume = true, showSR = false } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
     this.showSR = showSR;
+    this.showTrades = showTrades;
     this.srOverlayIds = [];
+    this.tradeOverlayIds = [];
+    this.positionOverlayId = null;
+    this.tradesData = [];
+    this.positionData = null;
+    this.isSpotChart = false;
     this.drawingTrendlineId = null;
     this.drawingTrendlineBtn = null;
     this.drawingEscHandler = null;
@@ -174,6 +527,8 @@ export class CandleChart {
       console.error("klinecharts library not available on window.klinecharts");
       return;
     }
+
+    registerCustomOverlays();
 
     this.chart = kc.init(container, {
       styles: buildStyles(this.colors),
@@ -462,6 +817,159 @@ export class CandleChart {
 
     this.updateVolumeBadge();
     this.refreshSRLines();
+    this.refreshTradeOverlays();
+    this.refreshPositionOverlay();
+  }
+
+  setTrades(trades, { isSpot = false } = {}) {
+    this.tradesData = Array.isArray(trades) ? trades : [];
+    this.isSpotChart = Boolean(isSpot);
+    this.refreshTradeOverlays();
+  }
+
+  setPosition(position) {
+    this.positionData = position || null;
+    this.refreshPositionOverlay();
+  }
+
+  toggleTrades(forceState) {
+    this.showTrades = typeof forceState === "boolean" ? forceState : !this.showTrades;
+    this.refreshTradeOverlays();
+    this.refreshPositionOverlay();
+    return this.showTrades;
+  }
+
+  clearTradeOverlays() {
+    if (!this.chart) return;
+    for (const id of this.tradeOverlayIds) {
+      try {
+        this.chart.removeOverlay(id);
+      } catch (_) {}
+    }
+    this.tradeOverlayIds = [];
+  }
+
+  clearPositionOverlay() {
+    if (!this.chart) return;
+    if (this.positionOverlayId) {
+      try {
+        this.chart.removeOverlay(this.positionOverlayId);
+      } catch (_) {}
+      this.positionOverlayId = null;
+    }
+  }
+
+  refreshTradeOverlays() {
+    this.clearTradeOverlays();
+    if (!this.showTrades || !this.tradesData.length || !this.chart || !this.data.length) return;
+
+    if (this.isSpotChart) {
+      for (const trade of this.tradesData) {
+        const ts = parseTimestamp(trade.timestamp);
+        if (!ts) continue;
+        const candle = findClosestCandle(this.data, ts);
+        if (!candle) continue;
+
+        const isBuy = trade.isBull ?? (trade.side === "B" || trade.side === "BUY");
+        const priceVal = isBuy ? candle.low : candle.high;
+        const sideText = trade.side === "B" ? "BUY" : "EXIT";
+        const optText = trade.strike ? `${trade.strike} ${trade.option_type || ""}`.trim() : (trade.option_type || "");
+        const actionText = `${sideText} ${optText}`.trim();
+
+        try {
+          const id = this.chart.createOverlay({
+            name: "tradeMarker",
+            points: [{ timestamp: candle.time > 1e11 ? candle.time : candle.time * 1000, value: priceVal }],
+            lock: true,
+            extendData: {
+              side: trade.side,
+              isBull: isBuy,
+              isSpot: true,
+              text: actionText,
+              qty: trade.quantity,
+              price: trade.price,
+            },
+          });
+          if (id) this.tradeOverlayIds.push(id);
+        } catch (_) {}
+      }
+    } else {
+      // Option chart:
+      // 1. Individual trade markers (Buy / Sell)
+      for (const trade of this.tradesData) {
+        const ts = parseTimestamp(trade.timestamp);
+        const price = Number(trade.price);
+        if (!ts || !Number.isFinite(price) || price <= 0) continue;
+
+        try {
+          const id = this.chart.createOverlay({
+            name: "tradeMarker",
+            points: [{ timestamp: ts, value: price }],
+            lock: true,
+            extendData: {
+              side: trade.side,
+              qty: trade.quantity,
+              price,
+              isSpot: false,
+            },
+          });
+          if (id) this.tradeOverlayIds.push(id);
+        } catch (_) {}
+      }
+
+      // 2. Connect paired trades (Entry -> Exit) with dashed connector & P&L pill
+      const pairs = pairTrades(this.tradesData);
+      for (const pair of pairs) {
+        const t1 = parseTimestamp(pair.entry.timestamp);
+        const p1 = Number(pair.entry.price);
+        const t2 = parseTimestamp(pair.exit.timestamp);
+        const p2 = Number(pair.exit.price);
+        if (!t1 || !t2 || !Number.isFinite(p1) || !Number.isFinite(p2)) continue;
+
+        try {
+          const id = this.chart.createOverlay({
+            name: "tradeConnector",
+            points: [
+              { timestamp: t1, value: p1 },
+              { timestamp: t2, value: p2 },
+            ],
+            lock: true,
+            extendData: {
+              pnl: pair.pnl,
+              pnlPct: pair.pnlPct,
+              qty: pair.qty,
+            },
+          });
+          if (id) this.tradeOverlayIds.push(id);
+        } catch (_) {}
+      }
+    }
+  }
+
+  refreshPositionOverlay() {
+    this.clearPositionOverlay();
+    if (!this.showTrades || !this.positionData || !this.chart || !this.data.length) return;
+
+    const pos = this.positionData;
+    const qty = Number(pos.quantity || 0);
+    const avg = Number(pos.average_price || pos.averagePrice || 0);
+    if (!qty || !Number.isFinite(avg) || avg <= 0) return;
+
+    const pnl = Number(pos.unrealised_pnl ?? pos.pnl ?? 0);
+
+    try {
+      const id = this.chart.createOverlay({
+        name: "positionLine",
+        points: [{ value: avg }],
+        lock: true,
+        extendData: {
+          qty,
+          avgPrice: avg,
+          pnl,
+        },
+      });
+      if (id) this.positionOverlayId = id;
+    } catch (_) {}
   }
 
   update(candle) {
@@ -507,6 +1015,9 @@ export class CandleChart {
   }
 
   destroy() {
+    this.clearTradeOverlays();
+    this.clearPositionOverlay();
+    this.clearSRLines();
     this.volBadge?.remove();
     if (this.chart && window.klinecharts) {
       window.klinecharts.dispose(this.chart);

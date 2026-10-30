@@ -658,9 +658,11 @@ function buildTimeframes() {
 
 function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR });
+  const savedTrades = localStorage.getItem("scalper-show-trades") !== "false";
+  S.showTrades = savedTrades;
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades });
 
   let syncingRange = false;
   const syncRange = (sourceChart) => {
@@ -693,6 +695,11 @@ function buildCharts() {
   for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
     button.classList.toggle("active", savedSR);
     button.setAttribute("aria-pressed", savedSR ? "true" : "false");
+  }
+
+  for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
+    button.classList.toggle("active", savedTrades);
+    button.setAttribute("aria-pressed", savedTrades ? "true" : "false");
   }
 }
 
@@ -737,6 +744,7 @@ function clearBooksForMode(mode) {
   updateFeedSubscriptions();
   renderHeader();
   renderTab();
+  updateChartTrades();
 }
 
 async function checkSession() {
@@ -907,6 +915,7 @@ async function loadBooksFromAPI(includePositions = true) {
   renderHeader();
   renderTab();
   renderOrderPad();
+  updateChartTrades();
 }
 
 function applyLimitsData(value) {
@@ -1278,6 +1287,7 @@ function selectStrike(strike, type, rerender = true, reloadCharts = true) {
     renderOrderPad();
     if (S.tab === "depth") renderTab();
   }
+  updateChartTrades();
 }
 
 function selectedOption(type) {
@@ -1304,6 +1314,82 @@ function lotSize(type = S.selected.type) {
 }
 
 /* ── Charts ────────────────────────────────────────────── */
+
+function matchesContract(item, option) {
+  if (!item || !option) return false;
+  const sym = item.symbol || item.trdSym || item.pTrdSymbol || "";
+  const optSym = option.symbol || option.pTrdSymbol || "";
+  if (sym && optSym && sym === optSym) return true;
+  if (item.instrument_key && option.instrumentKey && item.instrument_key === option.instrumentKey) return true;
+  if (item.instrumentKey && option.instrumentKey && item.instrumentKey === option.instrumentKey) return true;
+  if (sym && option.instrumentKey && sym === option.instrumentKey) return true;
+  return false;
+}
+
+function updateChartTrades() {
+  const trades = Array.isArray(S.trades) ? S.trades : [];
+  const positions = Array.isArray(S.positions) ? S.positions : [];
+
+  // 1. CE Chart
+  const ce = selectedOption("CE");
+  if (S.charts.ce) {
+    const ceTrades = ce ? trades.filter((t) => matchesContract(t, ce)) : [];
+    const cePos = ce ? positions.find((p) => matchesContract(p, ce) && Math.abs(num(p.quantity)) > 0) : null;
+    S.charts.ce.setTrades(ceTrades, { isSpot: false });
+    S.charts.ce.setPosition(cePos);
+  }
+
+  // 2. PE Chart
+  const pe = selectedOption("PE");
+  if (S.charts.pe) {
+    const peTrades = pe ? trades.filter((t) => matchesContract(t, pe)) : [];
+    const pePos = pe ? positions.find((p) => matchesContract(p, pe) && Math.abs(num(p.quantity)) > 0) : null;
+    S.charts.pe.setTrades(peTrades, { isSpot: false });
+    S.charts.pe.setPosition(pePos);
+  }
+
+  // 3. Spot Chart
+  if (S.charts.spot) {
+    const activeIdx = S.activeIndex || "NIFTY";
+    const spotTrades = trades.filter((t) => {
+      const sym = t.symbol || "";
+      return sym.startsWith(activeIdx) || t.underlying === activeIdx;
+    }).map((t) => {
+      const sym = t.symbol || "";
+      const isCE = sym.endsWith("CE") || t.option_type === "CE";
+      const isPE = sym.endsWith("PE") || t.option_type === "PE";
+      const strikeMatch = sym.match(/(\d{4,5})(?:CE|PE)$/i);
+      const strike = strikeMatch ? strikeMatch[1] : (t.strike ? String(t.strike) : "");
+      const optType = isCE ? "CE" : (isPE ? "PE" : "");
+      const isBull = (t.side === "B" && isCE) || (t.side === "S" && isPE);
+      return {
+        ...t,
+        option_type: optType,
+        strike,
+        isBull,
+      };
+    });
+    S.charts.spot.setTrades(spotTrades, { isSpot: true });
+    S.charts.spot.setPosition(null);
+  }
+}
+
+function toggleAllChartTrades() {
+  S.showTrades = !S.showTrades;
+  try {
+    localStorage.setItem("scalper-show-trades", String(S.showTrades));
+  } catch (_) {}
+  for (const chart of Object.values(S.charts)) {
+    chart?.toggleTrades(S.showTrades);
+  }
+  for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
+    button.classList.toggle("active", S.showTrades);
+    button.setAttribute("aria-pressed", S.showTrades ? "true" : "false");
+  }
+  updateChartTrades();
+  toast(S.showTrades ? "Execution markers enabled" : "Execution markers hidden", "ok", 2000);
+  return S.showTrades;
+}
 
 function chartInstrument(type) {
   return selectedOption(type)?.instrumentKey || "";
@@ -1448,6 +1534,7 @@ async function loadCharts(forceRefresh = false) {
     }
   }
   renderPaneHeaders();
+  updateChartTrades();
 }
 
 function mergeChartCandles(historical, live) {
@@ -2752,6 +2839,10 @@ function bindEvents() {
       }
       const chart = S.charts[button.dataset.chart];
       if (!chart) return;
+      if (action === "trades") {
+        toggleAllChartTrades();
+        return;
+      }
       if (action === "sr") {
         const nextState = chart.toggleSR();
         button.classList.toggle("active", nextState);
