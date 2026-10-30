@@ -789,11 +789,25 @@ function buildTimeframes() {
 function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
   const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
+  const savedPatterns = localStorage.getItem("scalper-show-patterns") === "true";
   const savedTrades = localStorage.getItem("scalper-show-trades") !== "false";
   S.showTrades = savedTrades;
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
+
+  $$('button[data-chart-action="sr"]').forEach((b) => {
+    b.classList.toggle("active", savedSR);
+    b.setAttribute("aria-pressed", savedSR ? "true" : "false");
+  });
+  $$('button[data-chart-action="auto-tl"]').forEach((b) => {
+    b.classList.toggle("active", savedAutoTL);
+    b.setAttribute("aria-pressed", savedAutoTL ? "true" : "false");
+  });
+  $$('button[data-chart-action="patterns"]').forEach((b) => {
+    b.classList.toggle("active", savedPatterns);
+    b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
+  });
 
   let syncingRange = false;
   const syncRange = (sourceChart) => {
@@ -4042,6 +4056,18 @@ function bindEvents() {
         toast(nextState ? "Auto trendlines enabled" : "Auto trendlines hidden", "ok", 1500);
         return;
       }
+      if (action === "patterns") {
+        const nextState = chart.togglePatterns();
+        button.classList.toggle("active", nextState);
+        button.setAttribute("aria-pressed", nextState ? "true" : "false");
+        try {
+          localStorage.setItem("scalper-show-patterns", String(nextState));
+        } catch {
+          // ignore
+        }
+        toast(nextState ? "Patterns enabled (Micro, Geometric, Harmonics & Setups)" : "Patterns hidden", "ok", 1500);
+        return;
+      }
       if (action === "trendline") {
         for (const [otherPane, otherChart] of Object.entries(S.charts)) {
           if (otherChart && otherChart !== chart) {
@@ -4136,6 +4162,77 @@ function bindEvents() {
   $("confirm-ok").addEventListener("click", () => closeConfirm(true));
   $("confirm-modal").addEventListener("click", (event) => {
     if (event.target === $("confirm-modal")) closeConfirm(false);
+  });
+
+  // Pattern popover & filters
+  const patternPopover = $("pattern-popover");
+  const ptnCandleCheck = $("ptn-filter-candlestick");
+  const ptnGeoCheck = $("ptn-filter-geometric");
+  const ptnHarmCheck = $("ptn-filter-harmonic");
+  const ptnLiqCheck = $("ptn-filter-liquidity");
+  const ptnCloseBtn = $("pattern-popover-close");
+
+  let savedConfig = { candlestick: true, geometric: true, harmonic: true, liquidity: true };
+  try {
+    const raw = localStorage.getItem("scalper-pattern-config");
+    if (raw) savedConfig = { ...savedConfig, ...JSON.parse(raw) };
+  } catch {}
+
+  const applyPatternConfigToAll = (config) => {
+    for (const c of Object.values(S.charts)) {
+      if (c && typeof c.setPatternConfig === "function") {
+        c.setPatternConfig(config);
+      }
+    }
+    try {
+      localStorage.setItem("scalper-pattern-config", JSON.stringify(config));
+    } catch {}
+  };
+
+  applyPatternConfigToAll(savedConfig);
+
+  if (ptnCandleCheck) ptnCandleCheck.checked = savedConfig.candlestick !== false;
+  if (ptnGeoCheck) ptnGeoCheck.checked = savedConfig.geometric !== false;
+  if (ptnHarmCheck) ptnHarmCheck.checked = savedConfig.harmonic !== false;
+  if (ptnLiqCheck) ptnLiqCheck.checked = savedConfig.liquidity !== false;
+
+  const onFilterChange = () => {
+    savedConfig = {
+      candlestick: Boolean(ptnCandleCheck?.checked),
+      geometric: Boolean(ptnGeoCheck?.checked),
+      harmonic: Boolean(ptnHarmCheck?.checked),
+      liquidity: Boolean(ptnLiqCheck?.checked),
+    };
+    applyPatternConfigToAll(savedConfig);
+  };
+
+  ptnCandleCheck?.addEventListener("change", onFilterChange);
+  ptnGeoCheck?.addEventListener("change", onFilterChange);
+  ptnHarmCheck?.addEventListener("change", onFilterChange);
+  ptnLiqCheck?.addEventListener("change", onFilterChange);
+
+  ptnCloseBtn?.addEventListener("click", () => {
+    if (patternPopover) patternPopover.style.display = "none";
+  });
+
+  document.addEventListener("click", (e) => {
+    if (patternPopover && patternPopover.style.display !== "none") {
+      if (!patternPopover.contains(e.target) && !e.target.closest('[data-chart-action="patterns"]')) {
+        patternPopover.style.display = "none";
+      }
+    }
+  });
+
+  $$('button[data-chart-action="patterns"]').forEach((btn) => {
+    btn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (!patternPopover) return;
+      const rect = btn.getBoundingClientRect();
+      patternPopover.style.display = "block";
+      patternPopover.style.position = "fixed";
+      patternPopover.style.top = `${Math.min(window.innerHeight - 200, rect.bottom + 4)}px`;
+      patternPopover.style.left = `${Math.max(10, Math.min(window.innerWidth - 260, rect.left - 100))}px`;
+    });
   });
   document.addEventListener("keydown", (event) => {
     const target = event.target;

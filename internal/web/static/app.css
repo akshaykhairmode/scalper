@@ -1608,3 +1608,67 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   .square-off-button { padding: 4px 6px; font-size: 8px; }
   .product-control { display: none; }
 }
+
+/* Pattern Recognition Popover */
+.pattern-popover {
+  position: fixed;
+  z-index: 1000;
+  width: 260px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-family: var(--sans);
+  color: var(--text);
+  padding: 10px 12px;
+}
+.pattern-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.pattern-popover-close {
+  background: none;
+  border: none;
+  color: var(--muted-2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.pattern-popover-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.pattern-popover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pattern-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.pattern-popover-item input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+body[data-theme="light"] .pattern-popover {
+  background: #ffffff;
+  border-color: var(--line);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15);
+}
+

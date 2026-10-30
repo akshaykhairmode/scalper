@@ -1,3 +1,5 @@
+import * as Patterns from "./patterns.js";
+
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -902,6 +904,508 @@ function registerCustomOverlays() {
       return figures;
     },
   });
+
+  kc.registerOverlay({
+    name: "candlestickPatternMarker",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.x) || !Number.isFinite(coord.y)) return [];
+
+      const data = overlay.extendData || {};
+      const bias = data.bias || "neutral";
+      const isBull = bias === "bullish";
+      const isBear = bias === "bearish";
+
+      const bgColor = isBull ? "#166534" : (isBear ? "#991b1b" : "#92400e");
+      const arrowColor = isBull ? "#22c55e" : (isBear ? "#ef4444" : "#f59e0b");
+      const figures = [];
+
+      if (isBull) {
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: coord.x, y: coord.y + 4 },
+              { x: coord.x - 4, y: coord.y + 11 },
+              { x: coord.x + 4, y: coord.y + 11 },
+            ],
+          },
+          styles: { style: "fill", color: arrowColor },
+          ignoreEvent: true,
+        });
+      } else if (isBear) {
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: coord.x, y: coord.y - 4 },
+              { x: coord.x - 4, y: coord.y - 11 },
+              { x: coord.x + 4, y: coord.y - 11 },
+            ],
+          },
+          styles: { style: "fill", color: arrowColor },
+          ignoreEvent: true,
+        });
+      }
+
+      const textY = isBull ? coord.y + 13 : coord.y - 13;
+      const baseline = isBull ? "top" : "bottom";
+      const label = data.label || data.name || "PATT";
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: coord.x,
+          y: textY,
+          text: label,
+          align: "center",
+          baseline,
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: bgColor,
+          size: 9,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1.5,
+          paddingBottom: 1.5,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "geometricPatternOverlay",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || coordinates.length < 2) return [];
+      const data = overlay.extendData || {};
+      const bias = data.bias || "neutral";
+      const isBull = bias === "bullish";
+      const isBear = bias === "bearish";
+      const accentColor = isBull ? "#22c55e" : (isBear ? "#ef4444" : "#38bdf8");
+      const figures = [];
+
+      if (data.resistance && data.support && coordinates.length >= 4) {
+        const r1 = coordinates[0];
+        const r2 = coordinates[1];
+        const s1 = coordinates[2];
+        const s2 = coordinates[3];
+
+        if (r1 && r2 && s1 && s2) {
+          figures.push({
+            type: "polygon",
+            attrs: {
+              coordinates: [
+                { x: r1.x, y: r1.y },
+                { x: r2.x, y: r2.y },
+                { x: s2.x, y: s2.y },
+                { x: s1.x, y: s1.y },
+              ],
+            },
+            styles: {
+              style: "fill",
+              color: isBull ? "rgba(34, 197, 94, 0.08)" : (isBear ? "rgba(239, 68, 68, 0.08)" : "rgba(56, 189, 248, 0.08)"),
+            },
+            ignoreEvent: true,
+          });
+
+          figures.push({
+            type: "line",
+            attrs: { coordinates: [{ x: r1.x, y: r1.y }, { x: r2.x, y: r2.y }] },
+            styles: { style: "dashed", dashedValue: [6, 3], size: 1.6, color: "#f05a5a" },
+            ignoreEvent: true,
+          });
+
+          figures.push({
+            type: "line",
+            attrs: { coordinates: [{ x: s1.x, y: s1.y }, { x: s2.x, y: s2.y }] },
+            styles: { style: "dashed", dashedValue: [6, 3], size: 1.6, color: "#29b360" },
+            ignoreEvent: true,
+          });
+
+          const maxX = Math.max(r2.x, s2.x);
+          const midY = (r2.y + s2.y) / 2;
+          figures.push({
+            type: "text",
+            attrs: {
+              x: maxX + 6,
+              y: midY,
+              text: data.label || data.name,
+              align: "left",
+              baseline: "middle",
+            },
+            styles: {
+              color: "#ffffff",
+              backgroundColor: isBull ? "#166534" : (isBear ? "#991b1b" : "#0284c7"),
+              size: 9.5,
+              weight: "bold",
+              family: "system-ui, -apple-system, sans-serif",
+              paddingLeft: 5,
+              paddingRight: 5,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 3,
+            },
+            ignoreEvent: true,
+          });
+
+          return figures;
+        }
+      }
+
+      const lineCoords = coordinates.filter(c => c && Number.isFinite(c.x) && Number.isFinite(c.y));
+      if (lineCoords.length >= 2) {
+        figures.push({
+          type: "line",
+          attrs: { coordinates: lineCoords.map(c => ({ x: c.x, y: c.y })) },
+          styles: { style: "solid", size: 1.6, color: accentColor },
+          ignoreEvent: true,
+        });
+
+        for (let i = 0; i < lineCoords.length; i++) {
+          const pt = lineCoords[i];
+          const ptData = data.points?.[i] || {};
+          figures.push({
+            type: "circle",
+            attrs: { x: pt.x, y: pt.y, r: 3 },
+            styles: { style: "fill", color: accentColor, borderColor: "#ffffff", borderSize: 1 },
+            ignoreEvent: true,
+          });
+
+          if (ptData.label) {
+            figures.push({
+              type: "text",
+              attrs: {
+                x: pt.x,
+                y: pt.y - 7,
+                text: ptData.label,
+                align: "center",
+                baseline: "bottom",
+              },
+              styles: {
+                color: "#e2e8f0",
+                backgroundColor: "rgba(15, 23, 42, 0.8)",
+                size: 8.5,
+                weight: "bold",
+                family: "system-ui, -apple-system, sans-serif",
+                paddingLeft: 3,
+                paddingRight: 3,
+                paddingTop: 1,
+                paddingBottom: 1,
+                borderRadius: 2,
+              },
+              ignoreEvent: true,
+            });
+          }
+        }
+
+        const lastPt = lineCoords[lineCoords.length - 1];
+        const targetStr = data.targetPrice ? ` 🎯 ₹${Number(data.targetPrice).toFixed(1)}` : "";
+        figures.push({
+          type: "text",
+          attrs: {
+            x: lastPt.x + 8,
+            y: lastPt.y,
+            text: `${data.label}${targetStr}`,
+            align: "left",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: isBull ? "#166534" : (isBear ? "#991b1b" : "#0284c7"),
+            size: 9.5,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 5,
+            paddingRight: 5,
+            paddingTop: 2,
+            paddingBottom: 2,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      }
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "harmonicPatternOverlay",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || coordinates.length < 4) return [];
+      const data = overlay.extendData || {};
+      const isBull = data.bias === "bullish";
+      const lineColor = isBull ? "#22c55e" : "#ef4444";
+      const fillXAB = isBull ? "rgba(34, 197, 94, 0.14)" : "rgba(239, 68, 68, 0.14)";
+      const fillBCD = isBull ? "rgba(34, 197, 94, 0.20)" : "rgba(239, 68, 68, 0.20)";
+      const figures = [];
+
+      if (coordinates.length >= 5) {
+        const X = coordinates[0];
+        const A = coordinates[1];
+        const B = coordinates[2];
+        const C = coordinates[3];
+        const D = coordinates[4];
+
+        if (X && A && B && C && D) {
+          figures.push({
+            type: "polygon",
+            attrs: { coordinates: [{ x: X.x, y: X.y }, { x: A.x, y: A.y }, { x: B.x, y: B.y }] },
+            styles: { style: "fill", color: fillXAB },
+            ignoreEvent: true,
+          });
+
+          figures.push({
+            type: "polygon",
+            attrs: { coordinates: [{ x: B.x, y: B.y }, { x: C.x, y: C.y }, { x: D.x, y: D.y }] },
+            styles: { style: "fill", color: fillBCD },
+            ignoreEvent: true,
+          });
+
+          figures.push({
+            type: "line",
+            attrs: {
+              coordinates: [
+                { x: X.x, y: X.y },
+                { x: A.x, y: A.y },
+                { x: B.x, y: B.y },
+                { x: C.x, y: C.y },
+                { x: D.x, y: D.y },
+              ],
+            },
+            styles: { style: "solid", size: 1.5, color: lineColor },
+            ignoreEvent: true,
+          });
+
+          figures.push({
+            type: "line",
+            attrs: { coordinates: [{ x: X.x, y: X.y }, { x: B.x, y: B.y }] },
+            styles: { style: "dashed", dashedValue: [3, 3], size: 1, color: "rgba(255,255,255,0.4)" },
+            ignoreEvent: true,
+          });
+          figures.push({
+            type: "line",
+            attrs: { coordinates: [{ x: A.x, y: A.y }, { x: C.x, y: C.y }] },
+            styles: { style: "dashed", dashedValue: [3, 3], size: 1, color: "rgba(255,255,255,0.4)" },
+            ignoreEvent: true,
+          });
+          figures.push({
+            type: "line",
+            attrs: { coordinates: [{ x: X.x, y: X.y }, { x: D.x, y: D.y }] },
+            styles: { style: "dashed", dashedValue: [3, 3], size: 1, color: "rgba(255,255,255,0.4)" },
+            ignoreEvent: true,
+          });
+
+          const labels = ["X", "A", "B", "C", "D"];
+          const pts = [X, A, B, C, D];
+          for (let i = 0; i < 5; i++) {
+            figures.push({
+              type: "circle",
+              attrs: { x: pts[i].x, y: pts[i].y, r: 3.5 },
+              styles: { style: "fill", color: lineColor, borderColor: "#ffffff", borderSize: 1 },
+              ignoreEvent: true,
+            });
+            figures.push({
+              type: "text",
+              attrs: {
+                x: pts[i].x,
+                y: pts[i].y - 8,
+                text: labels[i],
+                align: "center",
+                baseline: "bottom",
+              },
+              styles: {
+                color: "#ffffff",
+                backgroundColor: "rgba(15, 23, 42, 0.85)",
+                size: 9,
+                weight: "bold",
+                paddingLeft: 3,
+                paddingRight: 3,
+                paddingTop: 1,
+                paddingBottom: 1,
+                borderRadius: 2,
+              },
+              ignoreEvent: true,
+            });
+          }
+
+          if (data.ratios?.xb) {
+            figures.push({
+              type: "text",
+              attrs: {
+                x: (X.x + B.x) / 2,
+                y: (X.y + B.y) / 2,
+                text: `${data.ratios.xb}`,
+                align: "center",
+                baseline: "middle",
+              },
+              styles: {
+                color: "#fbbf24",
+                backgroundColor: "rgba(15, 23, 42, 0.85)",
+                size: 8,
+                weight: "bold",
+                paddingLeft: 2,
+                paddingRight: 2,
+              },
+              ignoreEvent: true,
+            });
+          }
+
+          const przText = data.prz ? `PRZ: ₹${data.prz.low.toFixed(1)} - ₹${data.prz.high.toFixed(1)}` : "PRZ";
+          figures.push({
+            type: "text",
+            attrs: {
+              x: D.x + 8,
+              y: D.y,
+              text: `🎯 ${data.name.toUpperCase()} [${przText}]`,
+              align: "left",
+              baseline: "middle",
+            },
+            styles: {
+              color: "#ffffff",
+              backgroundColor: isBull ? "#15803d" : "#b91c1c",
+              size: 9.5,
+              weight: "bold",
+              family: "system-ui, -apple-system, sans-serif",
+              paddingLeft: 5,
+              paddingRight: 5,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 3,
+            },
+            ignoreEvent: true,
+          });
+        }
+      } else if (coordinates.length === 4) {
+        const A = coordinates[0];
+        const B = coordinates[1];
+        const C = coordinates[2];
+        const D = coordinates[3];
+        if (A && B && C && D) {
+          figures.push({
+            type: "line",
+            attrs: {
+              coordinates: [
+                { x: A.x, y: A.y },
+                { x: B.x, y: B.y },
+                { x: C.x, y: C.y },
+                { x: D.x, y: D.y },
+              ],
+            },
+            styles: { style: "solid", size: 1.5, color: lineColor },
+            ignoreEvent: true,
+          });
+          figures.push({
+            type: "text",
+            attrs: {
+              x: D.x + 8,
+              y: D.y,
+              text: `🎯 ${data.name}`,
+              align: "left",
+              baseline: "middle",
+            },
+            styles: {
+              color: "#ffffff",
+              backgroundColor: isBull ? "#15803d" : "#b91c1c",
+              size: 9.5,
+              weight: "bold",
+              paddingLeft: 5,
+              paddingRight: 5,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 3,
+            },
+            ignoreEvent: true,
+          });
+        }
+      }
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "liquidityPatternOverlay",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+
+      const data = overlay.extendData || {};
+      const isBull = data.bias === "bullish";
+      const color = isBull ? "#22c55e" : "#ef4444";
+      const width = bounding?.width || 800;
+      const figures = [];
+
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: Math.max(0, coord.x - 70), y: coord.y },
+            { x: Math.min(width, coord.x + 70), y: coord.y },
+          ],
+        },
+        styles: {
+          style: "dashed",
+          dashedValue: [4, 3],
+          size: 1.5,
+          color,
+        },
+        ignoreEvent: true,
+      });
+
+      const label = data.label || data.name || "LIQUIDITY SETUP";
+      figures.push({
+        type: "text",
+        attrs: {
+          x: coord.x,
+          y: isBull ? coord.y + 14 : coord.y - 14,
+          text: label,
+          align: "center",
+          baseline: isBull ? "top" : "bottom",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: isBull ? "#14532d" : "#7f1d1d",
+          size: 9,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 5,
+          paddingRight: 5,
+          paddingTop: 1.5,
+          paddingBottom: 1.5,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
 }
 
 function registerCustomIndicators() {
@@ -1073,15 +1577,18 @@ function patchIndicatorLastValueView(chart) {
 }
 
 export class CandleChart {
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
     this.showSR = showSR;
     this.showTrades = showTrades;
     this.showAutoTrendlines = showAutoTrendlines;
+    this.showPatterns = showPatterns;
+    this.patternConfig = { candlestick: true, geometric: true, harmonic: true, liquidity: true };
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
+    this.patternOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
     this.orderPreviewOverlayId = null;
@@ -1318,6 +1825,140 @@ export class CandleChart {
     }
   }
 
+  togglePatterns(forceState) {
+    this.showPatterns = typeof forceState === "boolean" ? forceState : !this.showPatterns;
+    this.refreshPatterns();
+    return this.showPatterns;
+  }
+
+  setPatternConfig(config) {
+    this.patternConfig = { ...this.patternConfig, ...config };
+    if (this.showPatterns) {
+      this.refreshPatterns();
+    }
+  }
+
+  clearPatterns() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "pattern_candlestick" });
+      this.chart.removeOverlay({ groupId: "pattern_geometric" });
+      this.chart.removeOverlay({ groupId: "pattern_harmonic" });
+      this.chart.removeOverlay({ groupId: "pattern_liquidity" });
+    } catch (_) {}
+    for (const id of this.patternOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.patternOverlayIds = [];
+  }
+
+  refreshPatterns() {
+    this.clearPatterns();
+    if (!this.showPatterns || !this.data.length || !this.chart) return;
+
+    const detected = Patterns.detectAllPatterns(this.data, {
+      candlestick: this.patternConfig.candlestick !== false,
+      geometric: this.patternConfig.geometric !== false,
+      harmonic: this.patternConfig.harmonic !== false,
+      liquidity: this.patternConfig.liquidity !== false,
+      lookback: 90,
+    });
+
+    // 1. Candlestick overlays
+    for (const p of (detected.candlestick || [])) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "candlestickPatternMarker",
+          groupId: "pattern_candlestick",
+          points: [{
+            timestamp: p.time > 1e11 ? p.time : p.time * 1000,
+            value: p.price,
+          }],
+          lock: true,
+          extendData: p,
+        });
+        if (id) this.patternOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay candlestick:", e);
+      }
+    }
+
+    // 2. Geometric overlays
+    for (const p of (detected.geometric || [])) {
+      try {
+        let points = [];
+        if (Array.isArray(p.points)) {
+          points = p.points.map(pt => ({
+            timestamp: pt.time > 1e11 ? pt.time : pt.time * 1000,
+            value: pt.price,
+          }));
+        } else if (p.resistance && p.support) {
+          points = [
+            { timestamp: p.resistance.p1.time > 1e11 ? p.resistance.p1.time : p.resistance.p1.time * 1000, value: p.resistance.p1.price },
+            { timestamp: p.resistance.p2.time > 1e11 ? p.resistance.p2.time : p.resistance.p2.time * 1000, value: p.resistance.p2.price },
+            { timestamp: p.support.p1.time > 1e11 ? p.support.p1.time : p.support.p1.time * 1000, value: p.support.p1.price },
+            { timestamp: p.support.p2.time > 1e11 ? p.support.p2.time : p.support.p2.time * 1000, value: p.support.p2.price },
+          ];
+        }
+        if (!points.length) continue;
+
+        const id = this.chart.createOverlay({
+          name: "geometricPatternOverlay",
+          groupId: "pattern_geometric",
+          points,
+          lock: true,
+          extendData: p,
+        });
+        if (id) this.patternOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay geometric:", e);
+      }
+    }
+
+    // 3. Harmonic overlays
+    for (const p of (detected.harmonic || [])) {
+      try {
+        const points = (p.points || []).map(pt => ({
+          timestamp: pt.time > 1e11 ? pt.time : pt.time * 1000,
+          value: pt.price,
+        }));
+        if (!points.length) continue;
+
+        const id = this.chart.createOverlay({
+          name: "harmonicPatternOverlay",
+          groupId: "pattern_harmonic",
+          points,
+          lock: true,
+          extendData: p,
+        });
+        if (id) this.patternOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay harmonic:", e);
+      }
+    }
+
+    // 4. Liquidity overlays
+    for (const p of (detected.liquidity || [])) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "liquidityPatternOverlay",
+          groupId: "pattern_liquidity",
+          points: [{
+            timestamp: p.time > 1e11 ? p.time : p.time * 1000,
+            value: p.levelPrice || p.sweepPrice || 0,
+          }],
+          lock: true,
+          extendData: p,
+        });
+        if (id) this.patternOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay liquidity:", e);
+      }
+    }
+  }
+
   toggleTrendline(button, { onStart, onComplete, onCancel } = {}) {
     if (!this.chart) return null;
     if (this.drawingTrendlineId) {
@@ -1527,6 +2168,7 @@ export class CandleChart {
 
     this.refreshSRLines();
     this.refreshAutoTrendlines();
+    this.refreshPatterns();
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
@@ -1745,6 +2387,9 @@ export class CandleChart {
       if (this.showAutoTrendlines) {
         this.refreshAutoTrendlines();
       }
+      if (this.showPatterns) {
+        this.refreshPatterns();
+      }
     }
     const formatted = this.formatCandle(candle);
     if (formatted && this.subscriberCallback) {
@@ -1774,6 +2419,7 @@ export class CandleChart {
     }
     this.refreshSRLines();
     this.refreshAutoTrendlines();
+    this.refreshPatterns();
   }
 
   schedule() {
@@ -1788,6 +2434,7 @@ export class CandleChart {
     this.clearPositionOverlay();
     this.clearSRLines();
     this.clearAutoTrendlines();
+    this.clearPatterns();
     if (this.chart && window.klinecharts) {
       window.klinecharts.dispose(this.chart);
     }
