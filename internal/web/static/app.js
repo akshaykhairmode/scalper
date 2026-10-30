@@ -104,6 +104,7 @@ const S = {
   historicalCache: new Map(),
   chartLoadID: 0,
   quickOrder: null,
+  autoTargets: [],
   marketOpen: null,
   focusedChart: null,
   soundEnabled: true,
@@ -455,6 +456,7 @@ function init() {
   S.bookMode = S.mode;
   initTheme();
   initSound();
+  S.autoTargets = loadAutoTargets();
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
@@ -584,6 +586,11 @@ function playTradeSound(side) {
     // Crisp descending chime: A5 (880.00 Hz) -> C5 (523.25 Hz)
     playTone(ctx, 880.0, now, 0.08, 0.16, "sine");
     playTone(ctx, 523.25, now + 0.07, 0.18, 0.18, "sine");
+  } else if (action === "target" || action === "tp") {
+    // Celebratory high chime: E5 (659.25 Hz) -> B5 (987.77 Hz) -> E6 (1318.5 Hz)
+    playTone(ctx, 659.25, now, 0.07, 0.14, "sine");
+    playTone(ctx, 987.77, now + 0.06, 0.09, 0.16, "sine");
+    playTone(ctx, 1318.5, now + 0.14, 0.16, 0.20, "sine");
   } else if (action === "reject" || action === "error") {
     // Low warning pulse: 220 Hz -> 175 Hz
     playTone(ctx, 220.0, now, 0.08, 0.14, "triangle");
@@ -917,6 +924,7 @@ async function loadBooksFromAPI(includePositions = true) {
   renderTab();
   renderOrderPad();
   updateChartTrades();
+  checkAutoTargets();
 }
 
 function applyLimitsData(value) {
@@ -1116,6 +1124,7 @@ function handleSocketEvent(event) {
     scheduleBooksRefresh(1000);
     if (event.type === "broker_order" && data) {
       handleBrokerOrderSound(data);
+      checkAutoTargets(data);
     }
     return;
   }
@@ -1336,8 +1345,10 @@ function updateChartTrades() {
   if (S.charts.ce) {
     const ceTrades = ce ? trades.filter((t) => matchesContract(t, ce)) : [];
     const cePos = ce ? positions.find((p) => matchesContract(p, ce) && Math.abs(num(p.quantity)) > 0) : null;
+    const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o)) : [];
     S.charts.ce.setTrades(ceTrades, { isSpot: false });
     S.charts.ce.setPosition(cePos);
+    S.charts.ce.setOpenOrders(ceOpen);
   }
 
   // 2. PE Chart
@@ -1345,8 +1356,10 @@ function updateChartTrades() {
   if (S.charts.pe) {
     const peTrades = pe ? trades.filter((t) => matchesContract(t, pe)) : [];
     const pePos = pe ? positions.find((p) => matchesContract(p, pe) && Math.abs(num(p.quantity)) > 0) : null;
+    const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o)) : [];
     S.charts.pe.setTrades(peTrades, { isSpot: false });
     S.charts.pe.setPosition(pePos);
+    S.charts.pe.setOpenOrders(peOpen);
   }
 
   // 3. Spot Chart
@@ -1372,6 +1385,7 @@ function updateChartTrades() {
     });
     S.charts.spot.setTrades(spotTrades, { isSpot: true });
     S.charts.spot.setPosition(null);
+    S.charts.spot.setOpenOrders([]);
   }
 }
 
@@ -2031,11 +2045,19 @@ function renderTab() {
     button.classList.toggle("active", button.dataset.tab === S.tab);
   }
 
+  const openCount = (S.orders || []).filter(isOpenOrder).length;
+  const badge = $("open-orders-badge");
+  if (badge) {
+    badge.textContent = String(openCount);
+    badge.hidden = openCount === 0;
+  }
+
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
   const sqBtn = $("square-off-button");
   if (sqBtn) sqBtn.disabled = !hasOpen;
 
   if (S.tab === "positions") content.innerHTML = positionsHTML();
+  else if (S.tab === "open") content.innerHTML = openOrdersHTML();
   else if (S.tab === "risk") {
     content.innerHTML = riskHTML();
     requestAnimationFrame(drawRiskCharts);
@@ -2208,10 +2230,42 @@ function drawPayoff(canvas, points, spot) {
   }
 }
 
+function isOpenOrder(o) {
+  if (!o) return false;
+  const status = String(o.status || "").toUpperCase();
+  const terminal = ["TRAD", "COMPLETE", "EXECUTED", "FILLED", "CAN", "CANCELLED", "REJ", "REJECTED", "EXPIRED"];
+  if (terminal.includes(status)) return false;
+  const qty = num(o.quantity);
+  const filled = num(o.filled_quantity);
+  if (qty > 0 && filled >= qty) return false;
+  return true;
+}
+
+function openOrdersHTML() {
+  const open = (S.orders || []).filter(isOpenOrder);
+  if (!open.length) return `<div class="empty-state">No pending limit orders. Click on a chart to place a limit order.</div>`;
+  return `<div class="open-orders-bar">
+    <span class="open-orders-title">${open.length} Pending Limit Order${open.length === 1 ? "" : "s"}</span>
+    <button type="button" class="ghost danger small" id="btn-cancel-all-open">Cancel All Open</button>
+  </div>
+  <table class="book"><thead><tr>
+    <th>Contract</th><th>Side</th><th>Pending / Total</th><th>Limit Price</th><th>Status</th><th>Order ID</th><th>Time</th><th>Action</th>
+  </tr></thead><tbody>${open.map((o) => `<tr>
+    <td class="sym font-bold">${esc(o.symbol || "—")}</td>
+    <td class="${o.side === "B" ? "up" : "down"} font-bold">${o.side === "B" ? "BUY" : o.side === "S" ? "SELL" : esc(o.side)}</td>
+    <td>${Math.max(0, o.quantity - (num(o.filled_quantity) || 0))} / ${o.quantity}</td>
+    <td class="font-bold">₹${o.price ? fmt(o.price) : "MKT"}</td>
+    <td><span class="status-badge pending">${esc(o.status)}</span></td>
+    <td class="sym">${esc(o.id)}</td>
+    <td>${fmtTime(o.timestamp || o.placed_at)}</td>
+    <td><button type="button" class="btn-cancel-order danger small ghost" data-order-id="${esc(o.id)}" title="Cancel order ${esc(o.id)}">Cancel</button></td>
+  </tr>`).join("")}</tbody></table>`;
+}
+
 function ordersHTML() {
   if (!S.orders.length) return `<div class="empty-state">No orders yet.</div>`;
   return `<table class="book"><thead><tr>
-    <th>Order</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Time</th>
+    <th>Order</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Time</th><th>Action</th>
   </tr></thead><tbody>${S.orders.map((o) => `<tr>
     <td class="sym">${esc(o.id)}</td>
     <td class="sym">${esc(o.symbol)}</td>
@@ -2219,8 +2273,82 @@ function ordersHTML() {
     <td>${o.quantity}</td>
     <td>${o.price ? fmt(o.price) : "MKT"}</td>
     <td>${o.status}${o.reason ? `<span class="muted"> · ${esc(o.reason)}</span>` : ""}</td>
-    <td>${fmtTime(o.timestamp)}</td>
+    <td>${fmtTime(o.timestamp || o.placed_at)}</td>
+    <td>${isOpenOrder(o) ? `<button type="button" class="btn-cancel-order danger small ghost" data-order-id="${esc(o.id)}" title="Cancel order ${esc(o.id)}">Cancel</button>` : "—"}</td>
   </tr>`).join("")}</tbody></table>`;
+}
+
+function cancelBrokerOrder(orderId) {
+  return requestJSON(`/api/broker/orders/${encodeURIComponent(orderId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ confirm: true }),
+  });
+}
+
+async function onCancelOrder(orderId) {
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before managing orders.", "warn");
+    return;
+  }
+  if (!orderId || orderId === "—") {
+    toast("Invalid order ID.", "error");
+    return;
+  }
+
+  const target = (S.autoTargets || []).find((t) => t.orderId === orderId && t.status === "PENDING_ENTRY");
+  if (target) {
+    target.status = "CANCELLED";
+    saveAutoTargets();
+  }
+
+  try {
+    toast(`Cancelling order ${orderId}…`, "info", 2000);
+    await cancelBrokerOrder(orderId);
+    playTradeSound("reject");
+    toast(`Order ${orderId} cancelled.`, "ok", 3000);
+    scheduleBooksRefresh(300);
+  } catch (err) {
+    toast(`Failed to cancel order ${orderId}: ${err.message}`, "error", 5000);
+  }
+}
+
+async function onCancelAllOpenOrders() {
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before managing orders.", "warn");
+    return;
+  }
+  const openOrders = (S.orders || []).filter(isOpenOrder);
+  if (!openOrders.length) {
+    toast("No open orders to cancel.", "info", 2000);
+    return;
+  }
+  const ok = await confirmAction({
+    title: "Cancel All Open Orders",
+    body: `Are you sure you want to cancel all <b>${openOrders.length}</b> open limit order(s)?`,
+    okLabel: "Cancel All",
+    danger: true,
+  });
+  if (!ok) return;
+
+  toast(`Cancelling ${openOrders.length} open order(s)…`, "info", 3000);
+  let cancelled = 0;
+  for (const o of openOrders) {
+    if (!o.id || o.id === "—") continue;
+    try {
+      await cancelBrokerOrder(o.id);
+      cancelled++;
+      const tgt = (S.autoTargets || []).find((t) => t.orderId === o.id && t.status === "PENDING_ENTRY");
+      if (tgt) tgt.status = "CANCELLED";
+    } catch (e) {
+      console.warn("failed to cancel order", o.id, e);
+    }
+  }
+  saveAutoTargets();
+  playTradeSound("reject");
+  toast(`Cancelled ${cancelled} of ${openOrders.length} order(s).`, "ok", 4000);
+  scheduleBooksRefresh(300);
 }
 
 function tradesHTML() {
@@ -2405,7 +2533,7 @@ async function onTrade(action, type) {
   }
 }
 
-async function onLimitTrade(action, type, targetPrice, shares) {
+async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0) {
   const orderMode = tradingMode();
   if (!S.session?.authenticated) {
     openLogin();
@@ -2465,12 +2593,161 @@ async function onLimitTrade(action, type, targetPrice, shares) {
     const result = await postOrder(payload);
     lastUiOrderTime = Date.now();
     playTradeSound(action);
+    const orderId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
     toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
+
+    if (autoTargetPrice > 0) {
+      registerAutoTarget({
+        id: "tgt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+        orderId,
+        symbol: option.symbol,
+        instrumentKey: option.instrumentKey,
+        exchangeSegment: option.exchangeSegment,
+        type,
+        action,
+        entryPrice: price,
+        targetPrice: autoTargetPrice,
+        shares: qty,
+        filledQty: 0,
+        status: "PENDING_ENTRY",
+        createdAt: Date.now(),
+      });
+      toast(`🎯 Auto-Target armed: Exit at ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts) once filled.`, "info", 4500);
+    }
+
     scheduleBooksRefresh(400);
     return result;
   } catch (err) {
     playTradeSound("reject");
     toast(`Order rejected: ${err.message}`, "error", 6000);
+  }
+}
+
+/* ── Auto-Target (Take-Profit Bracket) ─────────────────── */
+
+function loadAutoTargets() {
+  try {
+    const raw = localStorage.getItem("scalper-auto-targets");
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    const now = Date.now();
+    return Array.isArray(list) ? list.filter((t) => t && (now - (t.createdAt || 0)) < 86400000) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveAutoTargets() {
+  try {
+    localStorage.setItem("scalper-auto-targets", JSON.stringify(S.autoTargets || []));
+  } catch (_) {}
+}
+
+function registerAutoTarget(target) {
+  if (!S.autoTargets) S.autoTargets = [];
+  S.autoTargets.push(target);
+  saveAutoTargets();
+}
+
+function checkAutoTargets(eventOrder) {
+  if (!S.autoTargets || !S.autoTargets.length) return;
+  const pendingTargets = S.autoTargets.filter((t) => t.status === "PENDING_ENTRY");
+  if (!pendingTargets.length) return;
+
+  const orders = S.orders || [];
+
+  for (const target of pendingTargets) {
+    let matchedOrder = null;
+
+    if (eventOrder) {
+      const evId = String(eventOrder.nOrdNo ?? eventOrder.order_id ?? eventOrder.id ?? "");
+      if (target.orderId && evId && target.orderId === evId) {
+        matchedOrder = normalizeOrder(eventOrder);
+      }
+    }
+
+    if (!matchedOrder && target.orderId) {
+      matchedOrder = orders.find((o) => String(o.id) === target.orderId);
+    }
+
+    if (!matchedOrder) {
+      const targetSide = target.action === "buy" ? "B" : "S";
+      matchedOrder = orders.find((o) => {
+        if (o.symbol !== target.symbol) return false;
+        if (o.side !== targetSide) return false;
+        if (Math.abs(num(o.price) - target.entryPrice) > 0.06) return false;
+        return true;
+      });
+      if (matchedOrder && matchedOrder.id && matchedOrder.id !== "—") {
+        target.orderId = String(matchedOrder.id);
+        saveAutoTargets();
+      }
+    }
+
+    if (!matchedOrder) continue;
+
+    const status = String(matchedOrder.status || "").toUpperCase();
+    const isCancelled = ["CAN", "CANCELLED", "REJ", "REJECTED"].includes(status);
+    const isFilledStatus = ["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(status);
+    const filledQty = num(matchedOrder.filled_quantity);
+
+    if (isCancelled && filledQty === 0) {
+      target.status = "CANCELLED";
+      saveAutoTargets();
+      toast(`Auto-Target cancelled: entry order ${matchedOrder.id} was ${status.toLowerCase()}.`, "warn", 4000);
+      continue;
+    }
+
+    const currentFilled = Math.max(filledQty, isFilledStatus ? target.shares : 0);
+    const previousFilled = target.filledQty || 0;
+
+    if (currentFilled > previousFilled) {
+      const qtyToExit = currentFilled - previousFilled;
+      target.filledQty = currentFilled;
+
+      if (currentFilled >= target.shares || isFilledStatus) {
+        target.status = "COMPLETED";
+      }
+      saveAutoTargets();
+
+      placeAutoTargetExit(target, qtyToExit);
+    }
+  }
+}
+
+async function placeAutoTargetExit(target, qtyToExit) {
+  const exitSide = target.action === "buy" ? "S" : "B";
+  const lot = lotSize(target.type);
+  const payload = {
+    instrument_key: target.instrumentKey,
+    exchange_segment: target.exchangeSegment,
+    symbol: target.symbol,
+    underlying: S.activeIndex,
+    strike: target.strike,
+    option_type: target.type,
+    side: exitSide,
+    buy_sell: exitSide,
+    quantity: qtyToExit,
+    qty: qtyToExit,
+    price: target.targetPrice,
+    order_type: "LIMIT",
+    product: S.product || "NRML",
+    intent: "EXIT",
+    mode: tradingMode(),
+    lot_size: lot,
+  };
+
+  try {
+    toast(`🎯 Auto-Target: placing ${exitSide === "S" ? "Sell" : "Buy"} Limit for ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}…`, "info", 3000);
+    const result = await postOrder(payload);
+    lastUiOrderTime = Date.now();
+    playTradeSound("target");
+    toast(`🎯 Auto-Target exit limit placed! ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}.`, "ok", 6000);
+    scheduleBooksRefresh(400);
+    return result;
+  } catch (err) {
+    playTradeSound("reject");
+    toast(`Auto-Target exit failed: ${err.message}`, "error", 8000);
   }
 }
 
@@ -2493,6 +2770,11 @@ function initChartQuickOrder() {
       $("cqo-buy-price").textContent = `@ ₹${val.toFixed(2)}`;
       $("cqo-sell-price").textContent = `@ ₹${val.toFixed(2)}`;
       S.charts[S.quickOrder.pane]?.showOrderPreview(val);
+      if (S.quickOrder.targetEnabled) {
+        S.quickOrder.targetPrice = Math.round((val + S.quickOrder.targetPts) * 20) / 20;
+        renderQuickOrderTarget();
+        S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
+      }
     }
   });
   $("cqo-price")?.addEventListener("change", (e) => {
@@ -2504,6 +2786,55 @@ function initChartQuickOrder() {
 
   $("cqo-qty-dec")?.addEventListener("click", () => updateQuickOrderLots(-1));
   $("cqo-qty-inc")?.addEventListener("click", () => updateQuickOrderLots(1));
+
+  // Auto-Target controls
+  $("cqo-target-enable")?.addEventListener("change", (e) => {
+    if (!S.quickOrder) return;
+    S.quickOrder.targetEnabled = e.target.checked;
+    try {
+      localStorage.setItem("scalper-target-enabled", e.target.checked ? "true" : "false");
+    } catch (_) {}
+    renderQuickOrderTarget();
+    if (S.quickOrder.targetEnabled) {
+      S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
+    } else {
+      S.charts[S.quickOrder.pane]?.clearTargetPreview();
+    }
+  });
+
+  $("cqo-target-dec")?.addEventListener("click", () => {
+    if (!S.quickOrder) return;
+    const newPts = Math.max(0.5, S.quickOrder.targetPts - 1);
+    updateQuickOrderTargetPts(newPts);
+  });
+
+  $("cqo-target-inc")?.addEventListener("click", () => {
+    if (!S.quickOrder) return;
+    updateQuickOrderTargetPts(S.quickOrder.targetPts + 1);
+  });
+
+  $("cqo-target-price")?.addEventListener("input", (e) => {
+    if (!S.quickOrder) return;
+    const val = num(e.target.value);
+    if (Number.isFinite(val) && val > 0) {
+      S.quickOrder.targetPrice = val;
+      const pts = Math.max(0.05, Math.round((val - S.quickOrder.price) * 20) / 20);
+      S.quickOrder.targetPts = pts;
+      try { localStorage.setItem("scalper-target-pts", String(pts)); } catch (_) {}
+      renderQuickOrderTarget();
+      if (S.quickOrder.targetEnabled) {
+        S.charts[S.quickOrder.pane]?.showTargetPreview(val, "TARGET");
+      }
+    }
+  });
+
+  $("cqo-target-price")?.addEventListener("change", (e) => {
+    if (!S.quickOrder) return;
+    const val = num(e.target.value);
+    if (Number.isFinite(val) && val > 0) {
+      updateQuickOrderTargetPrice(val);
+    }
+  });
 
   $("cqo-buy-btn")?.addEventListener("click", () => submitQuickOrder("buy"));
   $("cqo-sell-btn")?.addEventListener("click", () => submitQuickOrder("sell"));
@@ -2580,7 +2911,10 @@ function openChartQuickOrder(pane, price, x, y) {
   }
 
   for (const [p, c] of Object.entries(S.charts)) {
-    if (p !== pane) c?.clearOrderPreview?.();
+    if (p !== pane) {
+      c?.clearOrderPreview?.();
+      c?.clearTargetPreview?.();
+    }
   }
 
   const lot = lotSize(type);
@@ -2589,6 +2923,20 @@ function openChartQuickOrder(pane, price, x, y) {
     lotsCount = Math.max(1, Math.round(lotsCount / lot));
   }
 
+  let defaultPts = 10;
+  try {
+    const saved = localStorage.getItem("scalper-target-pts");
+    if (saved) defaultPts = num(saved, 10);
+  } catch (_) {}
+  if (defaultPts <= 0) defaultPts = 10;
+
+  let targetEnabled = true;
+  try {
+    if (localStorage.getItem("scalper-target-enabled") === "false") targetEnabled = false;
+  } catch (_) {}
+
+  const targetPrice = Math.round((price + defaultPts) * 20) / 20;
+
   S.quickOrder = {
     pane,
     type,
@@ -2596,6 +2944,9 @@ function openChartQuickOrder(pane, price, x, y) {
     price,
     lotsCount,
     lot,
+    targetPts: defaultPts,
+    targetPrice,
+    targetEnabled,
   };
 
   const widget = $("chart-quick-order");
@@ -2606,13 +2957,14 @@ function openChartQuickOrder(pane, price, x, y) {
   $("cqo-buy-price").textContent = `@ ₹${price.toFixed(2)}`;
   $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
   renderQuickOrderQty();
+  renderQuickOrderTarget();
 
   const frame = chart.container.closest(".chart-frame") || chart.container;
   frame.appendChild(widget);
 
   const frameRect = frame.getBoundingClientRect();
   const widgetWidth = 250;
-  const widgetHeight = 125;
+  const widgetHeight = 160;
 
   let left = x - widgetWidth / 2;
   left = Math.max(10, Math.min(left, frameRect.width - widgetWidth - 10));
@@ -2628,6 +2980,9 @@ function openChartQuickOrder(pane, price, x, y) {
   widget.hidden = false;
 
   chart.showOrderPreview(price);
+  if (targetEnabled) {
+    chart.showTargetPreview(targetPrice, "TARGET");
+  }
 }
 
 function renderQuickOrderQty() {
@@ -2638,6 +2993,65 @@ function renderQuickOrderQty() {
   $("cqo-lots-info").textContent = `${lotsCount} ${lotsCount === 1 ? "Lot" : "Lots"}`;
 }
 
+function renderQuickOrderTarget() {
+  if (!S.quickOrder) return;
+  const { targetPts, targetPrice, targetEnabled, lotsCount, lot } = S.quickOrder;
+  const shares = lotsCount * lot;
+  const pnl = Math.round(targetPts * shares);
+
+  const enableEl = $("cqo-target-enable");
+  if (enableEl) enableEl.checked = targetEnabled;
+
+  const targetPriceEl = $("cqo-target-price");
+  if (targetPriceEl) {
+    targetPriceEl.value = targetPrice.toFixed(2);
+    targetPriceEl.disabled = !targetEnabled;
+  }
+
+  const decBtn = $("cqo-target-dec");
+  const incBtn = $("cqo-target-inc");
+  if (decBtn) decBtn.disabled = !targetEnabled;
+  if (incBtn) incBtn.disabled = !targetEnabled;
+
+  const summaryEl = $("cqo-target-summary");
+  if (summaryEl) summaryEl.style.opacity = targetEnabled ? "1" : "0.35";
+
+  const ptsEl = $("cqo-target-pts");
+  if (ptsEl) ptsEl.textContent = `+${targetPts.toFixed(2)} pts`;
+
+  const pnlEl = $("cqo-target-pnl");
+  if (pnlEl) pnlEl.textContent = `(Est. +₹${pnl.toLocaleString("en-IN")})`;
+}
+
+function updateQuickOrderTargetPts(newPts) {
+  if (!S.quickOrder) return;
+  const pts = Math.max(0.05, Math.round(num(newPts) * 20) / 20);
+  S.quickOrder.targetPts = pts;
+  S.quickOrder.targetPrice = Math.round((S.quickOrder.price + pts) * 20) / 20;
+  try {
+    localStorage.setItem("scalper-target-pts", String(pts));
+  } catch (_) {}
+  renderQuickOrderTarget();
+  if (S.quickOrder.targetEnabled) {
+    S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
+  }
+}
+
+function updateQuickOrderTargetPrice(newTargetPrice) {
+  if (!S.quickOrder) return;
+  const tp = Math.max(0.05, Math.round(num(newTargetPrice) * 20) / 20);
+  S.quickOrder.targetPrice = tp;
+  const pts = Math.max(0.05, Math.round((tp - S.quickOrder.price) * 20) / 20);
+  S.quickOrder.targetPts = pts;
+  try {
+    localStorage.setItem("scalper-target-pts", String(pts));
+  } catch (_) {}
+  renderQuickOrderTarget();
+  if (S.quickOrder.targetEnabled) {
+    S.charts[S.quickOrder.pane]?.showTargetPreview(tp, "TARGET");
+  }
+}
+
 function updateQuickOrderPrice(newPrice) {
   if (!S.quickOrder) return;
   const price = Math.max(0.05, Math.round(num(newPrice) * 20) / 20);
@@ -2646,6 +3060,12 @@ function updateQuickOrderPrice(newPrice) {
   $("cqo-buy-price").textContent = `@ ₹${price.toFixed(2)}`;
   $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
   S.charts[S.quickOrder.pane]?.showOrderPreview(price);
+
+  if (S.quickOrder.targetEnabled) {
+    S.quickOrder.targetPrice = Math.round((price + S.quickOrder.targetPts) * 20) / 20;
+    renderQuickOrderTarget();
+    S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
+  }
 }
 
 function updateQuickOrderLots(delta) {
@@ -2654,12 +3074,14 @@ function updateQuickOrderLots(delta) {
   S.quickOrder.lotsCount = newLots;
   S.qty[S.quickOrder.type] = S.unit[S.quickOrder.type] === "SHARES" ? newLots * S.quickOrder.lot : newLots;
   renderQuickOrderQty();
+  renderQuickOrderTarget();
   renderOrderPad();
 }
 
 function closeChartQuickOrder() {
   if (S.quickOrder) {
     S.charts[S.quickOrder.pane]?.clearOrderPreview();
+    S.charts[S.quickOrder.pane]?.clearTargetPreview();
     S.quickOrder = null;
   }
   const widget = $("chart-quick-order");
@@ -2668,13 +3090,14 @@ function closeChartQuickOrder() {
 
 async function submitQuickOrder(action) {
   if (!S.quickOrder) return;
-  const { type, lotsCount, lot } = S.quickOrder;
+  const { type, lotsCount, lot, targetEnabled, targetPrice } = S.quickOrder;
   const inputPrice = num($("cqo-price")?.value);
   const price = Number.isFinite(inputPrice) && inputPrice > 0 ? inputPrice : S.quickOrder.price;
   const shares = lotsCount * lot;
+  const autoTarget = (targetEnabled && action === "buy" && targetPrice > price) ? targetPrice : 0;
 
   closeChartQuickOrder();
-  await onLimitTrade(action, type, price, shares);
+  await onLimitTrade(action, type, price, shares, autoTarget);
 }
 
 async function onExit(instrumentKey) {
@@ -3197,7 +3620,11 @@ function bindEvents() {
 
   $("tab-content").addEventListener("click", (event) => {
     const exit = event.target.closest("[data-exit]");
-    if (exit) onExit(exit.dataset.exit);
+    if (exit) { onExit(exit.dataset.exit); return; }
+    const cancelBtn = event.target.closest(".btn-cancel-order");
+    if (cancelBtn) { onCancelOrder(cancelBtn.dataset.orderId); return; }
+    const cancelAllBtn = event.target.closest("#btn-cancel-all-open");
+    if (cancelAllBtn) { onCancelAllOpenOrders(); return; }
   });
 
   $("square-off-button").addEventListener("click", onSquareOffAll);

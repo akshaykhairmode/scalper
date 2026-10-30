@@ -193,9 +193,10 @@
         <h2 class="bottom-title">Positions &amp; books</h2>
         <div class="tabs" role="tablist" id="tabs">
           <button type="button" role="tab" data-tab="positions" class="active">Positions</button>
-          <button type="button" role="tab" data-tab="risk">Risk</button>
+          <button type="button" role="tab" data-tab="open">Open <span class="tab-badge" id="open-orders-badge" hidden>0</span></button>
           <button type="button" role="tab" data-tab="orders">Orders</button>
           <button type="button" role="tab" data-tab="trades">Trades</button>
+          <button type="button" role="tab" data-tab="risk">Risk</button>
           <button type="button" role="tab" data-tab="depth">Depth</button>
         </div>
         <div class="bottom-actions">
@@ -371,6 +372,21 @@
         <button type="button" id="cqo-qty-inc" title="Increase quantity by 1 lot" aria-label="Increase quantity">+</button>
       </div>
       <span class="cqo-lots-info" id="cqo-lots-info">1 Lot</span>
+    </div>
+    <div class="cqo-row cqo-target-row">
+      <label class="cqo-checkbox-label">
+        <input type="checkbox" id="cqo-target-enable" checked>
+        <span>Auto Target (TP)</span>
+      </label>
+      <div class="cqo-stepper" id="cqo-target-stepper">
+        <button type="button" id="cqo-target-dec" title="Decrease target by 1 pt" aria-label="Decrease target">−</button>
+        <input type="number" step="0.05" class="cqo-price-input" id="cqo-target-price" aria-label="Target price">
+        <button type="button" id="cqo-target-inc" title="Increase target by 1 pt" aria-label="Increase target">+</button>
+      </div>
+    </div>
+    <div class="cqo-target-summary" id="cqo-target-summary">
+      <span class="cqo-pts-badge" id="cqo-target-pts">+10.00 pts</span>
+      <span class="cqo-target-pnl" id="cqo-target-pnl">(Est. +₹500)</span>
     </div>
     <div class="cqo-actions">
       <button type="button" class="cqo-btn buy" id="cqo-buy-btn">
