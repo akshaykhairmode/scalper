@@ -284,6 +284,21 @@ function buildStyles(colors) {
       },
     },
     indicator: {
+      lastValueMark: {
+        show: true,
+        text: {
+          show: true,
+          style: "fill",
+          color: "#ffffff",
+          size: 11,
+          weight: "bold",
+          paddingLeft: 4,
+          paddingTop: 3,
+          paddingRight: 4,
+          paddingBottom: 3,
+          borderRadius: 2,
+        },
+      },
       bars: [
         {
           style: "fill",
@@ -292,6 +307,29 @@ function buildStyles(colors) {
           noChangeColor: `${colors.text}80`,
         },
       ],
+      tooltip: {
+        showRule: "always",
+        showType: "standard",
+        title: {
+          show: true,
+          showName: true,
+          showParams: true,
+          size: 11,
+          color: colors.text,
+          marginLeft: 8,
+          marginTop: 4,
+          marginRight: 8,
+          marginBottom: 4,
+        },
+        legend: {
+          size: 11,
+          color: colors.text,
+          marginLeft: 8,
+          marginTop: 4,
+          marginRight: 8,
+          marginBottom: 4,
+        },
+      },
     },
     xAxis: {
       axisLine: { show: true, size: 1, color: colors.border },
@@ -866,6 +904,174 @@ function registerCustomOverlays() {
   });
 }
 
+function registerCustomIndicators() {
+  const kc = window.klinecharts;
+  if (!kc || !kc.registerIndicator) return;
+
+  function createVolumeFigure() {
+    return {
+      key: "volume",
+      title: null, // Omit from top header legend so it never moves below into a second row
+      type: "bar",
+      baseValue: 0,
+      styles: function(data) {
+        const current = data?.data?.current;
+        const defaultStyles = data?.defaultStyles;
+        const indicator = data?.indicator;
+        const fallbackColor = defaultStyles?.bars?.[0]?.noChangeColor || "#8292a2";
+        let color = fallbackColor;
+        if (current) {
+          if (current.close > current.open) {
+            color = indicator?.styles?.bars?.[0]?.upColor || defaultStyles?.bars?.[0]?.upColor || "#35c46a80";
+          } else if (current.close < current.open) {
+            color = indicator?.styles?.bars?.[0]?.downColor || defaultStyles?.bars?.[0]?.downColor || "#ff5d5d80";
+          }
+        }
+        return { color };
+      },
+    };
+  }
+
+  kc.registerIndicator({
+    name: "VOL",
+    shortName: "VOL",
+    series: "volume",
+    calcParams: [5, 10, 20],
+    shouldFormatBigNumber: true,
+    precision: 0,
+    minValue: 0,
+    figures: [
+      { key: "ma1", title: "MA5: ", type: "line" },
+      { key: "ma2", title: "MA10: ", type: "line" },
+      { key: "ma3", title: "MA20: ", type: "line" },
+      createVolumeFigure(),
+    ],
+    regenerateFigures: function(calcParams) {
+      const figs = (calcParams || []).map((p, idx) => ({
+        key: `ma${idx + 1}`,
+        title: `MA${p}: `,
+        type: "line",
+      }));
+      figs.push(createVolumeFigure());
+      return figs;
+    },
+    calc: function(dataList, indicator) {
+      const params = indicator.calcParams || [];
+      const sums = [];
+      return (dataList || []).map((candle, idx) => {
+        const vol = Number.isFinite(candle?.volume) ? candle.volume : 0;
+        const result = {
+          volume: vol,
+          open: candle?.open,
+          close: candle?.close,
+        };
+        params.forEach((period, pIdx) => {
+          sums[pIdx] = (sums[pIdx] || 0) + vol;
+          if (idx >= period - 1) {
+            result[`ma${pIdx + 1}`] = sums[pIdx] / period;
+            const prevBar = dataList[idx - (period - 1)];
+            const oldVol = prevBar?.volume;
+            sums[pIdx] -= Number.isFinite(oldVol) ? oldVol : 0;
+          } else {
+            result[`ma${pIdx + 1}`] = null;
+          }
+        });
+        return result;
+      });
+    },
+  });
+}
+
+function patchIndicatorLastValueView(chart) {
+  try {
+    const yAxisWidget = chart?._drawPanes?.[0]?._yAxisWidgets?.values()?.next()?.value;
+    const view = yAxisWidget?._indicatorLastValueView;
+    if (!view) return;
+    const proto = Object.getPrototypeOf(view);
+    if (!proto || proto._scalperPatched) return;
+    proto._scalperPatched = true;
+
+    proto.drawImp = function(ctx) {
+      const widget = this.getWidget();
+      const pane = widget.getPane();
+      const bounding = widget.getBounding();
+      const chartStore = pane.getChart().getChartStore();
+      const styles = chartStore.getStyles().indicator;
+      const lastValueMark = styles.lastValueMark;
+      const textStyle = lastValueMark?.text;
+
+      if (!lastValueMark?.show) return;
+
+      const axis = widget.getAxisComponent();
+      const range = axis.getRange();
+      const dataList = chartStore.getDataList();
+      const lastIdx = dataList.length - 1;
+      if (lastIdx < 0) return;
+
+      const yAxisIds = new Set([axis.id]);
+      const defaultYAxisId = pane.getDefaultYAxisId();
+      if (pane.isManualYAxis(axis.id) && defaultYAxisId != null) {
+        yAxisIds.add(defaultYAxisId);
+      }
+
+      const indicators = chartStore.getIndicatorsByPaneId(pane.getId()).filter((ind) => yAxisIds.has(ind.yAxisId));
+      const formatter = chartStore.getInnerFormatter();
+      const decimalFold = chartStore.getDecimalFold();
+      const thousands = chartStore.getThousandsSeparator();
+
+      indicators.forEach((ind) => {
+        const lastResult = ind.result?.[lastIdx];
+        if (!lastResult || !ind.visible) return;
+
+        const figures = ind.figures || [];
+        figures.forEach((fig) => {
+          // If VOL indicator, ONLY draw lastValueMark for live volume on the axis, skip MAs
+          if (ind.name === "VOL" && fig.key !== "volume") return;
+
+          const val = lastResult[fig.key];
+          if (!Number.isFinite(val)) return;
+
+          const y = axis.convertToNicePixel(val);
+          let text = axis.displayValueToText(
+            axis.realValueToDisplayValue(axis.valueToRealValue(val, { range }), { range }),
+            ind.precision
+          );
+          if (ind.shouldFormatBigNumber && formatter) {
+            text = formatter.formatBigNumber(text);
+          }
+          if (decimalFold && thousands) {
+            text = decimalFold.format(thousands.format(text));
+          }
+
+          const isFromZero = typeof axis.isFromZero === "function" ? axis.isFromZero() : false;
+          const x = isFromZero ? 0 : bounding.width;
+          const align = isFromZero ? "left" : "right";
+
+          const lastBar = dataList[lastIdx];
+          const isUp = lastBar && lastBar.close >= lastBar.open;
+          let bgColor = fig.key === "volume"
+            ? (isUp ? (styles.bars?.[0]?.upColor || "#35c46a") : (styles.bars?.[0]?.downColor || "#ff5d5d"))
+            : "#8292a2";
+
+          // Solid color on the axis badge
+          if (typeof bgColor === "string" && bgColor.startsWith("#") && bgColor.length === 9) {
+            bgColor = bgColor.slice(0, 7);
+          }
+
+          const figure = this.createFigure({
+            name: "text",
+            attrs: { x, y, text, align, baseline: "middle" },
+            styles: Object.assign({}, textStyle, { backgroundColor: bgColor }),
+          });
+          if (figure) figure.draw(ctx);
+        });
+      });
+    };
+  } catch (err) {
+    console.warn("patchIndicatorLastValueView error:", err);
+  }
+}
+
 export class CandleChart {
   constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false } = {}) {
     this.container = container;
@@ -899,12 +1105,23 @@ export class CandleChart {
     }
 
     registerCustomOverlays();
+    registerCustomIndicators();
 
     this.chart = kc.init(container, {
       styles: buildStyles(this.colors),
     });
 
     if (!this.chart) return;
+
+    patchIndicatorLastValueView(this.chart);
+
+    const origRemoveOverlay = this.chart.removeOverlay.bind(this.chart);
+    this.chart.removeOverlay = (filter) => {
+      if (typeof filter === "string") {
+        return origRemoveOverlay({ id: filter });
+      }
+      return origRemoveOverlay(filter);
+    };
 
     this.chart.setTimezone("Asia/Kolkata");
     this.chart.setSymbol({ ticker: container.id || "CHART", pricePrecision: 2, volumePrecision: 0 });
@@ -927,9 +1144,6 @@ export class CandleChart {
         console.warn("createIndicator VOL:", e);
       }
     }
-
-    this.createVolumeBadge();
-    this.bindEvents();
   }
 
   formatCandle(c) {
@@ -957,40 +1171,6 @@ export class CandleChart {
     return result;
   }
 
-  createVolumeBadge() {
-    this.volBadge = document.createElement("div");
-    this.volBadge.className = "chart-vol-badge";
-    this.volBadge.setAttribute("aria-hidden", "true");
-    this.volBadge.textContent = "Vol: —";
-    this.container.parentElement?.appendChild(this.volBadge);
-  }
-
-  bindEvents() {
-    if (!this.chart) return;
-    this.chart.subscribeAction("onCrosshairChange", (data) => {
-      const bar = data?.kLineData;
-      if (bar) {
-        this.updateVolumeBadge(bar.volume, bar.dayVolume);
-      } else {
-        this.updateVolumeBadge();
-      }
-    });
-  }
-
-  updateVolumeBadge(customVol, customDayVol) {
-    if (!this.volBadge) return;
-    const latest = this.data.length ? this.data[this.data.length - 1] : null;
-    const vol = Number.isFinite(customVol) ? customVol : latest?.volume;
-    const dayVol = Number.isFinite(customDayVol) ? customDayVol : latest?.dayVolume;
-    if (Number.isFinite(vol)) {
-      this.volBadge.textContent = Number.isFinite(dayVol) && dayVol > 0
-        ? `Vol: ${formatVolume(vol)} (Day: ${formatVolume(dayVol)})`
-        : `Vol: ${formatVolume(vol)}`;
-    } else {
-      this.volBadge.textContent = "Vol: —";
-    }
-  }
-
   toggleSR(forceState) {
     this.showSR = typeof forceState === "boolean" ? forceState : !this.showSR;
     this.refreshSRLines();
@@ -999,9 +1179,12 @@ export class CandleChart {
 
   clearSRLines() {
     if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "sr" });
+    } catch (_) {}
     for (const id of this.srOverlayIds) {
       try {
-        this.chart.removeOverlay(id);
+        this.chart.removeOverlay({ id });
       } catch (_) {}
     }
     this.srOverlayIds = [];
@@ -1017,6 +1200,7 @@ export class CandleChart {
       try {
         const id = this.chart.createOverlay({
           name: "horizontalStraightLine",
+          groupId: "sr",
           points: [{ value: price }],
           lock: true,
           styles: {
@@ -1033,6 +1217,7 @@ export class CandleChart {
       try {
         const id = this.chart.createOverlay({
           name: "horizontalStraightLine",
+          groupId: "sr",
           points: [{ value: price }],
           lock: true,
           styles: {
@@ -1053,9 +1238,12 @@ export class CandleChart {
 
   clearAutoTrendlines() {
     if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "auto_trendline" });
+    } catch (_) {}
     for (const id of this.autoTrendlineOverlayIds) {
       try {
-        this.chart.removeOverlay(id);
+        this.chart.removeOverlay({ id });
       } catch (_) {}
     }
     this.autoTrendlineOverlayIds = [];
@@ -1071,6 +1259,7 @@ export class CandleChart {
       try {
         const id = this.chart.createOverlay({
           name: "rayLine",
+          groupId: "auto_trendline",
           points: [
             { timestamp: resistance.p1.time > 1e11 ? resistance.p1.time : resistance.p1.time * 1000, value: resistance.p1.price },
             { timestamp: resistance.p2.time > 1e11 ? resistance.p2.time : resistance.p2.time * 1000, value: resistance.p2.price },
@@ -1101,6 +1290,7 @@ export class CandleChart {
       try {
         const id = this.chart.createOverlay({
           name: "rayLine",
+          groupId: "auto_trendline",
           points: [
             { timestamp: support.p1.time > 1e11 ? support.p1.time : support.p1.time * 1000, value: support.p1.price },
             { timestamp: support.p2.time > 1e11 ? support.p2.time : support.p2.time * 1000, value: support.p2.price },
@@ -1208,7 +1398,7 @@ export class CandleChart {
     }
     if (this.drawingTrendlineId) {
       try {
-        this.chart?.removeOverlay(this.drawingTrendlineId);
+        this.chart?.removeOverlay({ id: this.drawingTrendlineId });
       } catch (_) {}
       this.drawingTrendlineId = null;
     }
@@ -1254,6 +1444,7 @@ export class CandleChart {
     try {
       this.orderPreviewOverlayId = this.chart.createOverlay({
         name: "orderPreviewLine",
+        groupId: "order_preview",
         points: [{ value: price }],
         lock: true,
         extendData: { price },
@@ -1262,11 +1453,16 @@ export class CandleChart {
   }
 
   clearOrderPreview() {
-    if (!this.chart || !this.orderPreviewOverlayId) return;
+    if (!this.chart) return;
     try {
-      this.chart.removeOverlay(this.orderPreviewOverlayId);
+      this.chart.removeOverlay({ groupId: "order_preview" });
     } catch (_) {}
-    this.orderPreviewOverlayId = null;
+    if (this.orderPreviewOverlayId) {
+      try {
+        this.chart.removeOverlay({ id: this.orderPreviewOverlayId });
+      } catch (_) {}
+      this.orderPreviewOverlayId = null;
+    }
   }
 
   showTargetPreview(price, label = "") {
@@ -1275,6 +1471,7 @@ export class CandleChart {
     try {
       this.targetPreviewOverlayId = this.chart.createOverlay({
         name: "targetPreviewLine",
+        groupId: "target_preview",
         points: [{ value: price }],
         lock: true,
         extendData: { price, label },
@@ -1283,11 +1480,16 @@ export class CandleChart {
   }
 
   clearTargetPreview() {
-    if (!this.chart || !this.targetPreviewOverlayId) return;
+    if (!this.chart) return;
     try {
-      this.chart.removeOverlay(this.targetPreviewOverlayId);
+      this.chart.removeOverlay({ groupId: "target_preview" });
     } catch (_) {}
-    this.targetPreviewOverlayId = null;
+    if (this.targetPreviewOverlayId) {
+      try {
+        this.chart.removeOverlay({ id: this.targetPreviewOverlayId });
+      } catch (_) {}
+      this.targetPreviewOverlayId = null;
+    }
   }
 
   setData(data, { symbol = "", resetScale = true } = {}) {
@@ -1323,7 +1525,6 @@ export class CandleChart {
       } catch (_) {}
     }
 
-    this.updateVolumeBadge();
     this.refreshSRLines();
     this.refreshAutoTrendlines();
     this.refreshTradeOverlays();
@@ -1349,9 +1550,12 @@ export class CandleChart {
 
   clearOpenOrders() {
     if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "open_orders" });
+    } catch (_) {}
     for (const id of this.openOrderOverlayIds) {
       try {
-        this.chart.removeOverlay(id);
+        this.chart.removeOverlay({ id });
       } catch (_) {}
     }
     this.openOrderOverlayIds = [];
@@ -1366,6 +1570,7 @@ export class CandleChart {
       try {
         const id = this.chart.createOverlay({
           name: "openOrderLine",
+          groupId: "open_orders",
           points: [{ value: price }],
           lock: true,
           extendData: {
@@ -1389,9 +1594,12 @@ export class CandleChart {
 
   clearTradeOverlays() {
     if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "trades" });
+    } catch (_) {}
     for (const id of this.tradeOverlayIds) {
       try {
-        this.chart.removeOverlay(id);
+        this.chart.removeOverlay({ id });
       } catch (_) {}
     }
     this.tradeOverlayIds = [];
@@ -1399,9 +1607,12 @@ export class CandleChart {
 
   clearPositionOverlay() {
     if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "position" });
+    } catch (_) {}
     if (this.positionOverlayId) {
       try {
-        this.chart.removeOverlay(this.positionOverlayId);
+        this.chart.removeOverlay({ id: this.positionOverlayId });
       } catch (_) {}
       this.positionOverlayId = null;
     }
@@ -1427,6 +1638,7 @@ export class CandleChart {
         try {
           const id = this.chart.createOverlay({
             name: "tradeMarker",
+            groupId: "trades",
             points: [{ timestamp: candle.time > 1e11 ? candle.time : candle.time * 1000, value: priceVal }],
             lock: true,
             extendData: {
@@ -1452,6 +1664,7 @@ export class CandleChart {
         try {
           const id = this.chart.createOverlay({
             name: "tradeMarker",
+            groupId: "trades",
             points: [{ timestamp: ts, value: price }],
             lock: true,
             extendData: {
@@ -1477,6 +1690,7 @@ export class CandleChart {
         try {
           const id = this.chart.createOverlay({
             name: "tradeConnector",
+            groupId: "trades",
             points: [
               { timestamp: t1, value: p1 },
               { timestamp: t2, value: p2 },
@@ -1508,6 +1722,7 @@ export class CandleChart {
     try {
       const id = this.chart.createOverlay({
         name: "positionLine",
+        groupId: "position",
         points: [{ value: avg }],
         lock: true,
         extendData: {
@@ -1535,7 +1750,6 @@ export class CandleChart {
     if (formatted && this.subscriberCallback) {
       this.subscriberCallback(formatted);
     }
-    this.updateVolumeBadge(candle.volume, candle.dayVolume);
   }
 
   zoomIn() {
@@ -1574,7 +1788,6 @@ export class CandleChart {
     this.clearPositionOverlay();
     this.clearSRLines();
     this.clearAutoTrendlines();
-    this.volBadge?.remove();
     if (this.chart && window.klinecharts) {
       window.klinecharts.dispose(this.chart);
     }
