@@ -14,15 +14,28 @@ android {
              ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        debug {
+            storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.debug
+            if (file("${System.getProperty('user.home')}/.android/debug.keystore").exists()) {
+                signingConfig signingConfigs.debug
+            }
         }
         debug {
             applicationIdSuffix ""
             debuggable true
+            if (file("${System.getProperty('user.home')}/.android/debug.keystore").exists()) {
+                signingConfig signingConfigs.debug
+            }
         }
     }
     compileOptions {

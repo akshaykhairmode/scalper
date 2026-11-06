@@ -1,5 +1,49 @@
 {
-  "appId": "com.scalper.terminal",
-  "appName": "Scalper",
-  "webDir": "public"
+	"appId": "com.scalper.terminal",
+	"appName": "Scalper",
+	"webDir": "www",
+	"bundledWebRuntime": false,
+	"server": {
+		"url": "https://130.210.18.97.sslip.io",
+		"cleartext": true,
+		"androidScheme": "https",
+		"allowNavigation": [
+			"130.210.18.97.sslip.io",
+			"*.sslip.io",
+			"10.0.2.2",
+			"localhost",
+			"127.0.0.1"
+		]
+	},
+	"plugins": {
+		"StatusBar": {
+			"style": "DARK",
+			"backgroundColor": "#0b0e14",
+			"overlaysWebView": false
+		},
+		"SplashScreen": {
+			"launchShowDuration": 1500,
+			"launchAutoHide": true,
+			"backgroundColor": "#0b0e14",
+			"androidSplashResourceName": "splash",
+			"androidScaleType": "CENTER_CROP",
+			"showSpinner": false,
+			"splashFullScreen": true,
+			"splashImmersive": true
+		}
+	},
+	"android": {
+		"allowMixedContent": true,
+		"captureInput": true,
+		"webContentsDebuggingEnabled": true
+	},
+	"ios": {
+		"contentInset": "always",
+		"preferredContentMode": "mobile"
+	},
+	"packageClassList": [
+		"AppPlugin",
+		"SplashScreenPlugin",
+		"StatusBarPlugin"
+	]
 }

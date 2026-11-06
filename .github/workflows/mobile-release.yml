@@ -33,10 +33,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: mobile-release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build-android:
     name: build Android APK
@@ -57,12 +53,17 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "17"
-          cache: "gradle"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install Capacitor mobile dependencies
         working-directory: mobile
         run: |
-          npm install
+          npm ci || npm install
 
       - name: Sync web assets & configure server URL
         working-directory: mobile
@@ -82,6 +83,13 @@ jobs:
           npm run bundle
           npx cap sync android
 
+      - name: Ensure Android debug keystore
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Build Android APK with Gradle
         working-directory: mobile/android
         run: |
@@ -90,7 +98,6 @@ jobs:
           if [ "$build_type" = "debug" ]; then
             ./gradlew assembleDebug --stacktrace
           else
-            # Try assembleRelease; if unsigned signing blocks, fallback to assembleDebug
             ./gradlew assembleRelease --stacktrace || ./gradlew assembleDebug --stacktrace
           fi
 
@@ -145,23 +152,37 @@ jobs:
       - name: Install Capacitor mobile dependencies
         working-directory: mobile
         run: |
-          npm install
+          npm ci || npm install
 
-      - name: Sync web assets to iOS
+      - name: Sync web assets & prepare iOS project
         working-directory: mobile
         run: |
           npm run bundle
-          npx cap sync ios
+          npx cap sync ios || (npx cap copy ios && cd ios/App && pod install)
 
       - name: Validate Xcode project build
         working-directory: mobile/ios/App
         run: |
-          xcodebuild \
-            -project App.xcodeproj \
-            -scheme App \
-            -destination 'generic/platform=iOS Simulator' \
-            -configuration Release \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          if [ -d "App.xcworkspace" ]; then
+            echo "Building with Xcode Workspace (CocoaPods)..."
+            xcodebuild \
+              -workspace App.xcworkspace \
+              -scheme App \
+              -destination 'generic/platform=iOS Simulator' \
+              -configuration Release \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              build
+          else
+            echo "Building with Xcode Project..."
+            xcodebuild \
+              -project App.xcodeproj \
+              -scheme App \
+              -destination 'generic/platform=iOS Simulator' \
+              -configuration Release \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              build
+          fi
