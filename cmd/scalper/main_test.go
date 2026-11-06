@@ -86,7 +86,7 @@ func TestRunMissingConfigFile(t *testing.T) {
 func TestRunInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	body := "app:\n  listen: \"0.0.0.0:8080\"\n"
+	body := "app:\n  listen: \"127.0.0.1:9999999\"\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +149,9 @@ func TestRunOfflineModeStartsAndShutsDown(t *testing.T) {
 func TestRunBadListen(t *testing.T) {
 	t.Setenv("KOTAK_CONSUMER_KEY", "")
 	// A privileged port is not the point here: bind an address that cannot be
-	// listened on because the host does not resolve to a local interface.
-	path := writeConfig(t, "127.0.0.1:18082", filepath.Join(t.TempDir(), "scalper.db"))
-	blocker, err := net.Listen("tcp", "127.0.0.1:18082")
+	// listened on because the port is already bound.
+	path := writeConfig(t, "0.0.0.0:18082", filepath.Join(t.TempDir(), "scalper.db"))
+	blocker, err := net.Listen("tcp", "0.0.0.0:18082")
 	if err != nil {
 		t.Skipf("port unavailable: %v", err)
 	}

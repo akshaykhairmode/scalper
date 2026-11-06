@@ -7,11 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"runtime"
 	"strings"
@@ -43,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "config.yaml", "path to config.yaml (defaults to config.yaml in the current directory)")
 	showVersion := fs.Bool("version", false, "print version and exit")
-	serveMode := fs.Bool("serve", false, "serve mode: listen on 0.0.0.0, disable browser auto-open, and require basic auth if configured")
+	_ = fs.Bool("serve", true, "serve mode (always enabled; flag retained for backwards compatibility)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -54,10 +52,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return nil
 	}
 
-	var loadOpts []config.Option
-	if *serveMode {
-		loadOpts = append(loadOpts, config.WithServeMode(true))
-	}
+	loadOpts := []config.Option{config.WithServeMode(true)}
 	cfg, err := config.Load(*configPath, loadOpts...)
 	if err != nil {
 		return err
@@ -220,10 +215,6 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		"event", "http_listening",
 		"address", listener.Addr().String())
 
-	if cfg.Web.OpenBrowser {
-		openBrowser("http://"+listener.Addr().String(), log)
-	}
-
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown requested", "event", "shutdown_requested")
@@ -243,25 +234,4 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}
 	log.Info("shutdown complete", "event", "shutdown_complete")
 	return nil
-}
-
-func openBrowser(url string, log *slog.Logger) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	if err := cmd.Start(); err != nil {
-		log.Warn("could not open browser", "event", "browser_open_failed", "error", err)
-		return
-	}
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Warn("browser command failed", "event", "browser_open_failed", "error", err)
-		}
-	}()
 }

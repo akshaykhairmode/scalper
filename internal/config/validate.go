@@ -60,11 +60,8 @@ func (c Config) validateApp() error {
 	if err != nil {
 		return fieldErr("app.listen", "must be host:port: %v", err)
 	}
-	if !c.App.ServeMode && !isLoopbackHost(host) {
-		return fieldErr("app.listen", "must bind to localhost (127.0.0.1, ::1 or localhost), got %q", host)
-	}
-	if c.App.ServeMode && !isLoopbackHost(host) && !isAnyHost(host) {
-		return fieldErr("app.listen", "in serve mode must bind to localhost or 0.0.0.0/::, got %q", host)
+	if !isLoopbackHost(host) && !isAnyHost(host) {
+		return fieldErr("app.listen", "must bind to localhost (127.0.0.1, ::1) or 0.0.0.0/::, got %q", host)
 	}
 	p, err := strconv.Atoi(port)
 	if err != nil || p < 1 || p > 65535 {

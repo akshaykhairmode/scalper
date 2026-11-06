@@ -201,9 +201,10 @@ type BasicAuth struct {
 func Default() Config {
 	return Config{
 		App: App{
-			Listen:   "127.0.0.1:8080",
-			DBPath:   "./data/scalper.db",
-			Timezone: "Asia/Kolkata",
+			Listen:    "0.0.0.0:8080",
+			DBPath:    "./data/scalper.db",
+			Timezone:  "Asia/Kolkata",
+			ServeMode: true,
 		},
 		Logging: Logging{
 			Level:             "info",
@@ -316,18 +317,18 @@ type Option func(*Config)
 
 // WithServeMode configures serve mode on the Config: binds listen to 0.0.0.0
 // (preserving any configured port), sets ServeMode to true, and disables browser auto-open.
-func WithServeMode(serve bool) Option {
+// WithServeMode configures serve mode on the Config: binds listen to 0.0.0.0
+// (preserving any configured port), sets ServeMode to true, and disables browser auto-open.
+func WithServeMode(_ bool) Option {
 	return func(c *Config) {
-		if serve {
-			host, port, err := net.SplitHostPort(c.App.Listen)
-			if err == nil && port != "" {
-				c.App.Listen = net.JoinHostPort("0.0.0.0", port)
-			} else if host == "" && port == "" {
-				c.App.Listen = "0.0.0.0:8080"
-			}
-			c.App.ServeMode = true
-			c.Web.OpenBrowser = false
+		host, port, err := net.SplitHostPort(c.App.Listen)
+		if err == nil && port != "" {
+			c.App.Listen = net.JoinHostPort("0.0.0.0", port)
+		} else if host == "" && port == "" {
+			c.App.Listen = "0.0.0.0:8080"
 		}
+		c.App.ServeMode = true
+		c.Web.OpenBrowser = false
 	}
 }
 
@@ -346,6 +347,8 @@ func Load(path string, opts ...Option) (Config, error) {
 		return Config{}, err
 	}
 	cfg.applyEnv()
+	cfg.App.ServeMode = true
+	cfg.Web.OpenBrowser = false
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)

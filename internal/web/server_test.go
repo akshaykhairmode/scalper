@@ -94,6 +94,7 @@ func TestWebSocketUpgradeThroughMiddleware(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	s.hsm = market.NewHSMFeed(testConfig(), nil, testLogger())
 	defer s.Close()
+	_, _ = s.a.SessionManager().NewBrokerSession(auth.TradeSession{Token: "tok", SID: "sid"}, auth.LoginMethodTOTP)
 
 	httpServer := httptest.NewServer(s.Handler())
 	defer httpServer.Close()
@@ -588,22 +589,19 @@ func TestHealthComprehensiveDetails(t *testing.T) {
 	}
 }
 
-func TestLocalOnly(t *testing.T) {
+func TestOriginProtection(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	cases := []struct {
-		name   string
-		host   string
-		origin string
-		want   int
+		name         string
+		host         string
+		origin       string
+		secFetchSite string
+		want         int
 	}{
-		{name: "ipv4", host: "127.0.0.1:8080", want: http.StatusOK},
-		{name: "localhost", host: "localhost:8080", want: http.StatusOK},
-		{name: "ipv6", host: "[::1]:8080", want: http.StatusOK},
-		{name: "bare host", host: "127.0.0.1", want: http.StatusOK},
-		{name: "remote host", host: "example.com:8080", want: http.StatusForbidden},
-		{name: "remote ip", host: "10.0.0.1:8080", want: http.StatusForbidden},
-		{name: "local origin", host: "127.0.0.1:8080", origin: "http://localhost:8080", want: http.StatusOK},
-		{name: "remote origin", host: "127.0.0.1:8080", origin: "http://evil.test", want: http.StatusForbidden},
+		{name: "ipv4 same origin", host: "127.0.0.1:8080", origin: "http://127.0.0.1:8080", want: http.StatusOK},
+		{name: "no origin header", host: "127.0.0.1:8080", want: http.StatusOK},
+		{name: "remote origin mismatch", host: "127.0.0.1:8080", origin: "http://evil.test", want: http.StatusForbidden},
+		{name: "cross-site fetch", host: "127.0.0.1:8080", secFetchSite: "cross-site", want: http.StatusForbidden},
 		{name: "invalid origin", host: "127.0.0.1:8080", origin: "://bad", want: http.StatusForbidden},
 	}
 	for _, tc := range cases {
@@ -613,14 +611,12 @@ func TestLocalOnly(t *testing.T) {
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
 			}
+			if tc.secFetchSite != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.secFetchSite)
+			}
 			rec := do(t, s, req)
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
-			}
-			if tc.want == http.StatusForbidden {
-				if !strings.Contains(rec.Body.String(), "localhost only") {
-					t.Fatalf("body = %s", rec.Body.String())
-				}
 			}
 		})
 	}
@@ -835,27 +831,6 @@ func TestStatusRecorder(t *testing.T) {
 	}
 	if sr.Unwrap() != rec {
 		t.Fatal("Unwrap mismatch")
-	}
-}
-
-func TestIsLocalHost(t *testing.T) {
-	cases := map[string]bool{
-		"127.0.0.1":       true,
-		"127.0.0.1:8080":  true,
-		"localhost":       true,
-		"localhost:1234":  true,
-		"LOCALHOST:80":    true,
-		"[::1]:8080":      true,
-		"::1":             true,
-		"0.0.0.0:8080":    false,
-		"192.168.1.10:80": false,
-		"evil.test:80":    false,
-		"":                false,
-	}
-	for host, want := range cases {
-		if got := isLocalHost(host); got != want {
-			t.Errorf("isLocalHost(%q) = %v, want %v", host, got, want)
-		}
 	}
 }
 

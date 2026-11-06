@@ -145,6 +145,7 @@ func TestConfigResponsesRedactSecrets(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := newLocalRequest(http.MethodGet, "/api/config")
+	req.SetBasicAuth(cfg.Web.BasicAuth.Username, cfg.Web.BasicAuth.Password)
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -171,7 +172,9 @@ func TestConfigResponsesRedactSecrets(t *testing.T) {
 	}
 
 	settingsRec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(settingsRec, newLocalRequest(http.MethodGet, "/settings"))
+	settingsReq := newLocalRequest(http.MethodGet, "/settings")
+	settingsReq.SetBasicAuth(cfg.Web.BasicAuth.Username, cfg.Web.BasicAuth.Password)
+	s.Handler().ServeHTTP(settingsRec, settingsReq)
 	if settingsRec.Code != http.StatusOK {
 		t.Fatalf("settings status = %d", settingsRec.Code)
 	}
@@ -189,7 +192,9 @@ func TestSaveConfigPreservesMaskedSecrets(t *testing.T) {
 	defer s.Close()
 
 	getRec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(getRec, newLocalRequest(http.MethodGet, "/api/config"))
+	getReq := newLocalRequest(http.MethodGet, "/api/config")
+	getReq.SetBasicAuth(cfg.Web.BasicAuth.Username, cfg.Web.BasicAuth.Password)
+	s.Handler().ServeHTTP(getRec, getReq)
 	var getResp struct {
 		YAML string `json:"yaml"`
 	}
@@ -205,6 +210,7 @@ func TestSaveConfigPreservesMaskedSecrets(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := newLocalRequest(http.MethodPost, "/api/config", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(cfg.Web.BasicAuth.Username, cfg.Web.BasicAuth.Password)
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -243,6 +249,7 @@ func TestSaveConfigAcceptsNewSecret(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := newLocalRequest(http.MethodPost, "/api/config", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(cfg.Web.BasicAuth.Username, cfg.Web.BasicAuth.Password)
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -570,18 +577,19 @@ func TestConfigAuthProtectionInServeMode(t *testing.T) {
 	}
 }
 
-func TestConfigLocalOnlyProtection(t *testing.T) {
+func TestConfigCrossOriginProtection(t *testing.T) {
 	tmpPath := writeTempConfigFile(t, sampleValidYAML())
 	s := newTestServer(t, serverOpts{db: fakeDB{}, configPath: tmpPath})
 	defer s.Close()
 
-	// Non-local Host header
+	// Cross-origin request
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	req.Host = "evil-hacker.com"
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("Origin", "http://evil-hacker.com")
 	s.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("expected 403 Forbidden for non-local host, got %d", rec.Code)
+		t.Errorf("expected 403 Forbidden for cross-origin host, got %d", rec.Code)
 	}
 }

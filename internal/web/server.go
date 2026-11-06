@@ -19,7 +19,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -284,7 +283,7 @@ func New(opts Options) (*Server, error) {
 		feedClients:         make(map[*feedClient]struct{}),
 		feedCtx:             feedCtx,
 		feedCancel:          feedCancel,
-		serveMode:           opts.ServeMode || opts.Config.App.ServeMode,
+		serveMode:           true,
 		serveSessions:       make(map[string]time.Time),
 		serveUnlockFailures: make(map[string]serveUnlockFailure),
 		configPath:          cfgPath,
@@ -369,11 +368,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
 
 	var h http.Handler = mux
-	if s.serveMode {
-		h = s.serveAuthMiddleware(h)
-	} else {
-		h = localOnly(s.log, h)
-	}
+	h = s.serveAuthMiddleware(h)
 	h = securityHeaders(h)
 	h = s.accessLog(h)
 	h = requestID(h)
@@ -865,68 +860,7 @@ func (s *Server) handleLogsView(w http.ResponseWriter, _ *http.Request) {
   <span id="log-summary">Showing 0 lines</span>
   <span id="last-updated">—</span>
 </footer>
-<script>
-  let allLines = [];
-  const container = document.getElementById("log-container");
-  const filterInput = document.getElementById("filter-input");
-  const linesSelect = document.getElementById("lines-select");
-  const autoscrollToggle = document.getElementById("autoscroll-toggle");
-  const autorefreshToggle = document.getElementById("autorefresh-toggle");
-  const summaryEl = document.getElementById("log-summary");
-  const updatedEl = document.getElementById("last-updated");
-  const pathEl = document.getElementById("log-path");
-
-  async function fetchLogs() {
-    try {
-      const linesCount = linesSelect.value;
-      const res = await fetch('/api/logs?lines=' + linesCount);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      allLines = data.lines || [];
-      if (data.path) pathEl.textContent = data.path;
-      renderLogs();
-      updatedEl.textContent = 'Updated: ' + new Date().toLocaleTimeString();
-    } catch (err) {
-      console.warn("fetch logs error:", err);
-    }
-  }
-
-  function renderLogs() {
-    const q = filterInput.value.toLowerCase().trim();
-    const filtered = q ? allLines.filter(l => l.toLowerCase().includes(q)) : allLines;
-    
-    if (filtered.length === 0) {
-      container.innerHTML = '<div style="color:var(--text-dim); text-align:center; padding:40px;">No matching log lines.</div>';
-      summaryEl.textContent = 'Showing 0 / ' + allLines.length + ' lines';
-      return;
-    }
-
-    let html = '';
-    for (let i = 0; i < filtered.length; i++) {
-      const line = filtered[i];
-      let cls = 'log-info';
-      if (/ERROR|FATAL/i.test(line)) cls = 'log-error';
-      else if (/WARN/i.test(line)) cls = 'log-warn';
-      const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      html += '<div class="log-line ' + cls + '"><span class="line-num">' + (i + 1) + '</span>' + escaped + '</div>';
-    }
-    container.innerHTML = html;
-    summaryEl.textContent = 'Showing ' + filtered.length + ' of ' + allLines.length + ' lines';
-    if (autoscrollToggle.checked) {
-      container.scrollTop = container.scrollHeight;
-    }
-  }
-
-  filterInput.addEventListener('input', renderLogs);
-  linesSelect.addEventListener('change', fetchLogs);
-  document.getElementById('refresh-btn').addEventListener('click', fetchLogs);
-
-  setInterval(() => {
-    if (autorefreshToggle.checked) fetchLogs();
-  }, 3000);
-
-  fetchLogs();
-</script>
+<script src="/static/logs.js"></script>
 </body>
 </html>`
 	_, _ = w.Write([]byte(html))
@@ -956,6 +890,11 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.mpin != "" {
+		select {
+		case <-time.After(1200 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
 		s.finishMPINLogin(w, r, flowID, s.mpin)
 		return
 	}
@@ -1333,48 +1272,6 @@ func securityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func localOnly(log *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isLocalHost(r.Host) {
-			log.Warn("rejected non-local Host",
-				"event", "http_non_local_host", "host", r.Host,
-				"path", r.URL.Path, "request_id", logging.RequestID(r.Context()))
-			if werr := writeJSONError(w, http.StatusForbidden, "localhost only", logging.RequestID(r.Context())); werr != nil {
-				log.Warn("write forbidden response", "event", "http_write_failed", "error", werr,
-					"request_id", logging.RequestID(r.Context()))
-			}
-			return
-		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			u, err := url.Parse(origin)
-			if err != nil || !isLocalHost(u.Host) {
-				log.Warn("rejected non-local Origin",
-					"event", "http_non_local_origin", "origin", origin,
-					"path", r.URL.Path, "request_id", logging.RequestID(r.Context()))
-				if werr := writeJSONError(w, http.StatusForbidden, "localhost only", logging.RequestID(r.Context())); werr != nil {
-					log.Warn("write forbidden response", "event", "http_write_failed", "error", werr,
-						"request_id", logging.RequestID(r.Context()))
-				}
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func isLocalHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 type statusRecorder struct {

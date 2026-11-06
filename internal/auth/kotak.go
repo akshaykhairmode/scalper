@@ -38,9 +38,13 @@ func (e *InputError) Error() string { return e.Message }
 type APIError struct {
 	Step       string
 	HTTPStatus int
+	Message    string
 }
 
 func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("Kotak %s request failed (HTTP %d): %s", e.Step, e.HTTPStatus, e.Message)
+	}
 	return fmt.Sprintf("Kotak %s request failed (HTTP %d)", e.Step, e.HTTPStatus)
 }
 
@@ -134,7 +138,24 @@ func (c *kotakClient) ValidateMPIN(ctx context.Context, view ViewSession, mpin s
 			req.Header.Set("Auth", view.Token)
 		})
 	if err != nil {
-		return TradeSession{}, err
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && strings.Contains(strings.ToLower(apiErr.Message), "before issued") {
+			c.log.Warn("Kotak token clock skew detected; retrying MPIN validation after delay",
+				"event", "kotak_clock_skew_retry")
+			select {
+			case <-time.After(1500 * time.Millisecond):
+			case <-ctx.Done():
+				return TradeSession{}, ctx.Err()
+			}
+			data, err = c.post(ctx, "/login/1.0/tradeApiValidate", body, "MPIN validation",
+				func(req *http.Request) {
+					req.Header.Set("sid", view.SID)
+					req.Header.Set("Auth", view.Token)
+				})
+		}
+		if err != nil {
+			return TradeSession{}, err
+		}
 	}
 	baseURL, err := validateBaseURL(data.BaseURL)
 	if err != nil {
@@ -222,7 +243,27 @@ func (c *kotakClient) post(ctx context.Context, path string, body any, step stri
 	}
 	c.logAPIExchange(req, resp, raw, started, nil)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return loginResponse{}, &APIError{Step: step, HTTPStatus: resp.StatusCode}
+		var errResp struct {
+			Error []struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+			Fault   struct {
+				FaultString string `json:"faultstring"`
+			} `json:"fault"`
+		}
+		msg := ""
+		if err := json.Unmarshal(raw, &errResp); err == nil {
+			if len(errResp.Error) > 0 && errResp.Error[0].Message != "" {
+				msg = errResp.Error[0].Message
+			} else if errResp.Message != "" {
+				msg = errResp.Message
+			} else if errResp.Fault.FaultString != "" {
+				msg = errResp.Fault.FaultString
+			}
+		}
+		return loginResponse{}, &APIError{Step: step, HTTPStatus: resp.StatusCode, Message: msg}
 	}
 	var result loginResponse
 	if err := json.Unmarshal(raw, &result); err != nil {

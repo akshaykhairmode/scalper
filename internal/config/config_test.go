@@ -165,7 +165,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	t.Run("validation carries path", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.yaml")
-		data := []byte("app:\n  listen: \"0.0.0.0:8080\"\n")
+		data := []byte("app:\n  listen: \"192.168.1.50:8080\"\n")
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestValidate(t *testing.T) {
 		{name: "localhost host", mutate: func(c *Config) { c.App.Listen = "localhost:8080" }},
 		{name: "ipv6 loopback", mutate: func(c *Config) { c.App.Listen = "[::1]:8080" }},
 		{name: "missing port", mutate: func(c *Config) { c.App.Listen = "127.0.0.1" }, wantField: "app.listen"},
-		{name: "non local host", mutate: func(c *Config) { c.App.Listen = "0.0.0.0:8080" }, wantField: "app.listen"},
+		{name: "non local host", mutate: func(c *Config) { c.App.Listen = "192.168.1.50:8080" }, wantField: "app.listen"},
 		{name: "bad port", mutate: func(c *Config) { c.App.Listen = "127.0.0.1:0" }, wantField: "app.listen"},
 		{name: "empty db", mutate: func(c *Config) { c.App.DBPath = " " }, wantField: "app.db_path"},
 		{name: "bad timezone", mutate: func(c *Config) { c.App.Timezone = "Mars/Olympus" }, wantField: "app.timezone"},
@@ -324,7 +324,7 @@ func TestSummaryHasNoPII(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["listen"] != "127.0.0.1:8080" {
+	if m["listen"] != "0.0.0.0:8080" {
 		t.Fatalf("summary listen = %v", m["listen"])
 	}
 }

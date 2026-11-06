@@ -90,8 +90,7 @@ check:
 run: build
 	./$(BIN) -config $(CONFIG)
 
-serve: build
-	./$(BIN) -serve -config $(CONFIG)
+serve: run
 
 deploy:
 	./scripts/deploy.sh $(SERVER_IP) $(SSH_KEY) $(DEPLOY_USER)
