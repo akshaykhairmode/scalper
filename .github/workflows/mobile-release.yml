@@ -170,10 +170,12 @@ jobs:
               -workspace App.xcworkspace \
               -scheme App \
               -sdk iphonesimulator \
-              -configuration Release \
+              -configuration Debug \
               CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGN_IDENTITY="" \
               CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGN_STYLE=Manual \
+              COMPILER_INDEX_STORE_ENABLE=NO \
               build
           else
             echo "Building with Xcode Project..."
@@ -181,9 +183,11 @@ jobs:
               -project App.xcodeproj \
               -scheme App \
               -sdk iphonesimulator \
-              -configuration Release \
+              -configuration Debug \
               CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGN_IDENTITY="" \
               CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGN_STYLE=Manual \
+              COMPILER_INDEX_STORE_ENABLE=NO \
               build
           fi
