@@ -155,43 +155,31 @@ jobs:
         run: |
           npm ci || npm install
 
-      - name: Sync web assets & prepare iOS project
+      - name: Sync web assets & install CocoaPods
         working-directory: mobile
         run: |
           npm run bundle
-          npx cap sync ios || (npx cap copy ios && cd ios/App && pod install)
+          npx cap copy ios
+          cd ios/App
+          pod install --repo-update || pod install
 
       - name: Validate Xcode project build
         working-directory: mobile/ios/App
         run: |
-          if [ -d "App.xcworkspace" ]; then
-            echo "Listing workspace schemes:"
-            xcodebuild -workspace App.xcworkspace -list || true
-            echo "Building with Xcode Workspace (CocoaPods)..."
-            xcodebuild \
-              -workspace App.xcworkspace \
-              -scheme App \
-              -sdk iphonesimulator \
-              -configuration Debug \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGN_STYLE=Manual \
-              COMPILER_INDEX_STORE_ENABLE=NO \
-              build
-          else
-            echo "Listing project schemes:"
-            xcodebuild -project App.xcodeproj -list || true
-            echo "Building with Xcode Project..."
-            xcodebuild \
-              -project App.xcodeproj \
-              -scheme App \
-              -sdk iphonesimulator \
-              -configuration Debug \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGN_STYLE=Manual \
-              COMPILER_INDEX_STORE_ENABLE=NO \
-              build
+          echo "Listing available schemes and configurations:"
+          xcodebuild -list || true
+
+          build_cmd="xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
+          if [ ! -d "App.xcworkspace" ]; then
+            build_cmd="xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
           fi
+
+          echo "Executing: $build_cmd"
+          if ! eval "$build_cmd" > xcodebuild.log 2>&1; then
+            echo "::error::Xcode build failed. Showing last 120 lines of build log:"
+            tail -n 120 xcodebuild.log
+            echo "::error::Filtered compiler errors:"
+            grep -i -E '(error:|fatal error:)' xcodebuild.log || true
+            exit 1
+          fi
+          echo "iOS build validation succeeded!"
