@@ -28,6 +28,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
+	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
 type fakeDB struct{ err error }
@@ -46,19 +47,20 @@ func testConfig() config.Config {
 }
 
 type serverOpts struct {
-	db          DBPinger
-	degraded    bool
-	token       bool
-	mpin        string
-	consumerKey string
-	kotak       *kotakapi.Client
-	now         func() time.Time
-	started     time.Time
-	cfg         *config.Config
-	authClient  auth.KotakAuthenticator
-	marketAPI   MarketAPI
-	noTokenFunc bool
-	configPath  string
+	db           DBPinger
+	sessionStore auth.SessionStore
+	degraded     bool
+	token        bool
+	mpin         string
+	consumerKey  string
+	kotak        *kotakapi.Client
+	now          func() time.Time
+	started      time.Time
+	cfg          *config.Config
+	authClient   auth.KotakAuthenticator
+	marketAPI    MarketAPI
+	noTokenFunc  bool
+	configPath   string
 }
 
 func newTestServer(t *testing.T, o serverOpts) *Server {
@@ -76,18 +78,19 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		started = now().Add(-90 * time.Minute)
 	}
 	opts := Options{
-		Logger:      testLogger(),
-		Config:      cfg,
-		ConfigPath:  o.configPath,
-		ConsumerKey: o.consumerKey,
-		Kotak:       o.kotak,
-		MPIN:        o.mpin,
-		AuthClient:  o.authClient,
-		Market:      o.marketAPI,
-		DB:          o.db,
-		LogDegraded: func() bool { return o.degraded },
-		Started:     started,
-		Now:         now,
+		Logger:       testLogger(),
+		Config:       cfg,
+		ConfigPath:   o.configPath,
+		ConsumerKey:  o.consumerKey,
+		Kotak:        o.kotak,
+		MPIN:         o.mpin,
+		AuthClient:   o.authClient,
+		Market:       o.marketAPI,
+		DB:           o.db,
+		SessionStore: o.sessionStore,
+		LogDegraded:  func() bool { return o.degraded },
+		Started:      started,
+		Now:          now,
 	}
 	if !o.noTokenFunc {
 		opts.TokenPresent = func() bool { return o.token }
@@ -1366,4 +1369,243 @@ func TestBrokerSquareOffAll(t *testing.T) {
 			t.Errorf("short position exit product should be NRML, got %s", shortExit.Product)
 		}
 	})
+}
+
+func TestPersistentSessionAcrossRestartsAndExpiration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "scalper_auth_test.db")
+	st, err := store.Open(context.Background(), store.Options{
+		Path:   dbPath,
+		Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	client := &testKotakAuthenticator{
+		view:  auth.ViewSession{Token: "view-token-persisted", SID: "view-sid-persisted"},
+		trade: auth.TradeSession{Token: "trade-token-persisted", SID: "trade-sid-persisted", BaseURL: "https://cis.kotaksecurities.com"},
+	}
+
+	// 1. Initially unauthenticated
+	s1 := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
+	statusRec1 := do(t, s1, localRequest(http.MethodGet, "/api/session"))
+	var status1 struct {
+		Authenticated    bool   `json:"authenticated"`
+		LoginMethod      string `json:"login_method"`
+		ExpiresIn        int    `json:"expires_in"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		ExpiresAt        string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(statusRec1.Body.Bytes(), &status1); err != nil {
+		t.Fatalf("unmarshal status1: %v", err)
+	}
+	if status1.Authenticated {
+		t.Fatal("expected unauthenticated session before login")
+	}
+
+	// 2. Perform TOTP + MPIN login
+	totpReq := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq.Header.Set("Content-Type", "application/json")
+	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
+	totpRec := do(t, s1, totpReq)
+	if totpRec.Code != http.StatusOK {
+		t.Fatalf("TOTP status = %d, body = %s", totpRec.Code, totpRec.Body.String())
+	}
+	cookies := totpRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 auth flow cookie, got %d", len(cookies))
+	}
+
+	mpinReq := localRequest(http.MethodPost, "/api/auth/mpin")
+	mpinReq.Header.Set("Content-Type", "application/json")
+	mpinReq.Body = io.NopCloser(strings.NewReader(`{"mpin":"654321"}`))
+	mpinReq.AddCookie(cookies[0])
+	mpinRec := do(t, s1, mpinReq)
+	if mpinRec.Code != http.StatusOK {
+		t.Fatalf("MPIN status = %d, body = %s", mpinRec.Code, mpinRec.Body.String())
+	}
+
+	// 3. Verify /api/session returns authenticated: true and countdown fields
+	statusRec2 := do(t, s1, localRequest(http.MethodGet, "/api/session"))
+	var status2 struct {
+		Authenticated    bool   `json:"authenticated"`
+		LoginMethod      string `json:"login_method"`
+		ExpiresIn        int    `json:"expires_in"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		ExpiresAt        string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(statusRec2.Body.Bytes(), &status2); err != nil {
+		t.Fatalf("unmarshal status2: %v", err)
+	}
+	if !status2.Authenticated {
+		t.Fatalf("expected authenticated = true, got %+v", status2)
+	}
+	if status2.LoginMethod != "mpin" {
+		t.Errorf("login method = %q, want 'mpin'", status2.LoginMethod)
+	}
+	if status2.ExpiresIn <= 0 || status2.ExpiresInSeconds <= 0 || status2.ExpiresAt == "" {
+		t.Errorf("expected valid expiry info, got %+v", status2)
+	}
+
+	// 4. Simulate daemon restart: close s1 and start s2 with same SQLite DB
+	s1.Close()
+
+	s2 := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
+	defer s2.Close()
+
+	statusRec3 := do(t, s2, localRequest(http.MethodGet, "/api/session"))
+	var status3 struct {
+		Authenticated    bool   `json:"authenticated"`
+		LoginMethod      string `json:"login_method"`
+		ExpiresIn        int    `json:"expires_in"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		ExpiresAt        string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(statusRec3.Body.Bytes(), &status3); err != nil {
+		t.Fatalf("unmarshal status3: %v", err)
+	}
+	if !status3.Authenticated {
+		t.Fatalf("expected session to survive restart and be authenticated, got %+v", status3)
+	}
+	if s2.a.CurrentSession() == nil {
+		t.Fatal("expected CurrentSession to be non-nil on s2")
+	}
+
+	// 5. Test expiration (> 3 hours): clear and save an expired session into the store
+	if err := st.RevokeAllSessions(context.Background()); err != nil {
+		t.Fatalf("RevokeAllSessions: %v", err)
+	}
+	now := time.Now()
+	expiredSess := auth.Session{
+		AccessToken: "expired-token",
+		BrokerToken: "tok",
+		BrokerSID:   "sid",
+		BaseURL:     "https://api.example.com",
+		FeedURL:     "wss://api.example.com",
+		LoginMethod: auth.LoginMethodMPIN,
+		CreatedAt:   now.Add(-4 * time.Hour),
+		TokenExpiry: now.Add(-1 * time.Hour), // expired 1h ago
+	}
+	if err := st.SaveSession(context.Background(), expiredSess); err != nil {
+		t.Fatalf("save expired session: %v", err)
+	}
+
+	sExpired := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
+	defer sExpired.Close()
+
+	statusRecExp := do(t, sExpired, localRequest(http.MethodGet, "/api/session"))
+	var statusExp struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.Unmarshal(statusRecExp.Body.Bytes(), &statusExp); err != nil {
+		t.Fatalf("unmarshal statusExp: %v", err)
+	}
+	if statusExp.Authenticated {
+		t.Fatalf("expected authenticated = false after expiration, got %+v", statusExp)
+	}
+
+	// 6. Test logout removes persistent session from SQLite
+	totpReq2 := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq2.Header.Set("Content-Type", "application/json")
+	totpReq2.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
+	totpRec2 := do(t, sExpired, totpReq2)
+	cookies2 := totpRec2.Result().Cookies()
+
+	mpinReq2 := localRequest(http.MethodPost, "/api/auth/mpin")
+	mpinReq2.Header.Set("Content-Type", "application/json")
+	mpinReq2.Body = io.NopCloser(strings.NewReader(`{"mpin":"654321"}`))
+	mpinReq2.AddCookie(cookies2[0])
+	do(t, sExpired, mpinReq2)
+
+	latestBeforeLogout, err := st.GetLatestSession(context.Background())
+	if err != nil || latestBeforeLogout == nil {
+		t.Fatalf("expected active session in store before logout, got: %v", latestBeforeLogout)
+	}
+
+	logoutReq := localRequest(http.MethodPost, "/api/auth/logout")
+	logoutRec := do(t, sExpired, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d", logoutRec.Code)
+	}
+
+	latestAfterLogout, err := st.GetLatestSession(context.Background())
+	if err != nil || latestAfterLogout != nil {
+		t.Fatalf("expected nil session in store after logout, got: %v", latestAfterLogout)
+	}
+
+	// Restart s4 with same DB after logout
+	s4 := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
+	defer s4.Close()
+
+	statusRec4 := do(t, s4, localRequest(http.MethodGet, "/api/session"))
+	var status4 struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.Unmarshal(statusRec4.Body.Bytes(), &status4); err != nil {
+		t.Fatalf("unmarshal status4: %v", err)
+	}
+	if status4.Authenticated {
+		t.Fatal("expected unauthenticated after logout and restart")
+	}
+}
+
+func TestCORSAndPreflight(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	defer s.Close()
+
+	// 1. Test OPTIONS preflight
+	req := localRequest(http.MethodOptions, "/api/session")
+	req.Header.Set("Origin", "capacitor://localhost")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type, X-Request-ID")
+	rec := do(t, s, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content for preflight, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "capacitor://localhost" {
+		t.Fatalf("expected Access-Control-Allow-Origin = capacitor://localhost, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Methods"), "POST") {
+		t.Fatalf("expected Access-Control-Allow-Methods to contain POST, got %q", rec.Header().Get("Access-Control-Allow-Methods"))
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("expected Access-Control-Allow-Credentials = true, got %q", rec.Header().Get("Access-Control-Allow-Credentials"))
+	}
+
+	// 2. Test cross-origin GET request
+	getReq := localRequest(http.MethodGet, "/api/session")
+	getReq.Header.Set("Origin", "https://130.210.18.97.sslip.io")
+	getRec := do(t, s, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", getRec.Code)
+	}
+	if getRec.Header().Get("Access-Control-Allow-Origin") != "https://130.210.18.97.sslip.io" {
+		t.Fatalf("expected Access-Control-Allow-Origin = https://130.210.18.97.sslip.io, got %q", getRec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// 3. Test WebSocket Origin check
+	checkOriginCases := []struct {
+		origin string
+		want   bool
+	}{
+		{"", true},
+		{"http://127.0.0.1:8080", true},
+		{"capacitor://localhost", true},
+		{"http://localhost:3000", true},
+		{"https://130.210.18.97.sslip.io", true},
+		{"http://10.0.2.2:8080", true},
+		{"https://malicious-site.com", false},
+	}
+	for _, tc := range checkOriginCases {
+		wsReq := localRequest(http.MethodGet, "/ws")
+		if tc.origin != "" {
+			wsReq.Header.Set("Origin", tc.origin)
+		}
+		got := feedUpgrader.CheckOrigin(wsReq)
+		if got != tc.want {
+			t.Errorf("CheckOrigin(%q) = %v, want %v", tc.origin, got, tc.want)
+		}
+	}
 }

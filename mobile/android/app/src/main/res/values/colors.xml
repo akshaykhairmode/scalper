@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#131822</color>
+    <color name="colorPrimaryDark">#0b0e14</color>
+    <color name="colorAccent">#2962ff</color>
+    <color name="backgroundColor">#0b0e14</color>
+    <color name="status_bar_color">#0b0e14</color>
+    <color name="navigation_bar_color">#0b0e14</color>
+    <color name="card_background">#111827</color>
+</resources>

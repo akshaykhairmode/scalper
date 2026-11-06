@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0e14">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Scalper">
+  <title>Scalper · Options Terminal</title>
+  <link rel="icon" type="image/svg+xml" href="static/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="static/icon-192.png">
+  <link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+  <link rel="stylesheet" href="static/app.css">
+  <style>
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+    }
+    body {
+      margin: 0;
+      padding-top: var(--safe-top);
+      padding-bottom: var(--safe-bottom);
+      padding-left: var(--safe-left);
+      padding-right: var(--safe-right);
+      background-color: #0b0e14;
+      color: #e1e7ef;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    .mobile-gateway {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      max-width: 480px;
+      margin: 0 auto;
+      text-align: center;
+      min-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 48px);
+    }
+    .gateway-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .gateway-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #1f2937, #111827);
+      border: 1px solid #374151;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 24px;
+      color: #60a5fa;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+    .gateway-title {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin: 0;
+    }
+    .gateway-subtitle {
+      font-size: 13px;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .gateway-card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      padding: 20px;
+      width: 100%;
+      box-sizing: border-box;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      margin-bottom: 16px;
+      text-align: left;
+    }
+    .gateway-card label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #9ca3af;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+    .gateway-input-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .gateway-input {
+      flex: 1;
+      background: #0b0e14;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #fff;
+      font-size: 14px;
+      font-family: monospace;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .gateway-input:focus {
+      border-color: #3b82f6;
+    }
+    .gateway-presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    .preset-chip {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 4px;
+      color: #d1d5db;
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .preset-chip:hover, .preset-chip:active {
+      background: #2563eb;
+      color: #fff;
+      border-color: #3b82f6;
+    }
+    .gateway-btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity 0.2s, background-color 0.2s;
+      margin-bottom: 8px;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: #fff;
+    }
+    .btn-primary:active {
+      background: #1d4ed8;
+    }
+    .btn-secondary {
+      background: #1f2937;
+      color: #d1d5db;
+      border: 1px solid #374151;
+    }
+    .btn-secondary:active {
+      background: #374151;
+    }
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+    }
+    .status-dot.online {
+      background: #10b981;
+    }
+    .status-dot.checking {
+      background: #f59e0b;
+      animation: pulse 1s infinite alternate;
+    }
+    @keyframes pulse {
+      from { opacity: 0.4; }
+      to { opacity: 1; }
+    }
+    .terminal-shell {
+      display: none;
+      width: 100%;
+    }
+  </style>
+</head>
+<body data-mode="mobile-app">
+  <div class="mobile-gateway" id="gateway-view">
+    <div class="gateway-brand">
+      <div class="gateway-logo">S</div>
+      <div>
+        <h1 class="gateway-title">Scalper</h1>
+        <div class="gateway-subtitle">Mobile Options Terminal</div>
+      </div>
+    </div>
+
+    <div class="gateway-card">
+      <label for="server-url">Target Backend Server</label>
+      <div class="gateway-input-group">
+        <input type="url" id="server-url" class="gateway-input" placeholder="https://..." value="https://130.210.18.97.sslip.io" spellcheck="false" autocomplete="off" autocapitalize="none">
+      </div>
+
+      <label>Quick Presets</label>
+      <div class="gateway-presets">
+        <button type="button" class="preset-chip" onclick="setPreset('https://130.210.18.97.sslip.io')">Hosted Cloud (sslip.io)</button>
+        <button type="button" class="preset-chip" onclick="setPreset('http://10.0.2.2:18080')">Android Emulator (10.0.2.2)</button>
+        <button type="button" class="preset-chip" onclick="setPreset('http://localhost:18080')">Local / iOS Sim</button>
+        <button type="button" class="preset-chip" onclick="setPreset('http://192.168.1.100:18080')">LAN Wi-Fi</button>
+      </div>
+
+      <button type="button" class="gateway-btn btn-primary" id="btn-connect" onclick="connectToServer()">
+        <span>Connect to Terminal</span>
+      </button>
+
+      <button type="button" class="gateway-btn btn-secondary" id="btn-ping" onclick="pingServer()">
+        <span>Test Connection (Ping)</span>
+      </button>
+
+      <div class="status-indicator">
+        <span class="status-dot checking" id="status-dot"></span>
+        <span id="status-text">Probing backend connectivity…</span>
+      </div>
+    </div>
+
+    <button type="button" class="gateway-btn btn-secondary" onclick="launchOfflineShell()">
+      <span>Offline Terminal Preview</span>
+    </button>
+  </div>
+
+  <!-- Embedded Offline Terminal Shell -->
+  <div class="terminal-shell" id="offline-terminal">
+    <header class="topbar">
+      <div class="brand">
+        <button type="button" class="mark" onclick="showGateway()">S</button>
+        <span class="name">Scalper</span>
+        <span class="tag">Mobile Offline</span>
+      </div>
+      <div class="spot-strip" id="spot-strip" aria-label="Underlying prices">
+        <span class="spot-chip" data-index="NIFTY"><span class="spot-name">NIFTY</span><span class="spot-price">24,350.00</span><span class="spot-change">+45.20</span></span>
+        <span class="spot-chip" data-index="BANKNIFTY"><span class="spot-name">BANKNIFTY</span><span class="spot-price">51,800.00</span><span class="spot-change">-110.40</span></span>
+      </div>
+      <div class="topbar-right">
+        <span class="metric"><span class="metric-label">MARGIN</span><span class="metric-value">₹2,50,000</span></span>
+        <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value">+₹4,250</span></span>
+        <button type="button" class="ghost small" onclick="showGateway()">Switch Server</button>
+      </div>
+    </header>
+
+    <nav class="toolbar" aria-label="Chain controls">
+      <label class="select-field">
+        <span>UNDERLYING</span>
+        <select id="index-select">
+          <option value="NIFTY">NIFTY</option>
+          <option value="BANKNIFTY">BANKNIFTY</option>
+          <option value="FINNIFTY">FINNIFTY</option>
+        </select>
+      </label>
+      <div class="tf-group" role="group">
+        <button class="active">1m</button>
+        <button>3m</button>
+        <button>5m</button>
+        <button>15m</button>
+      </div>
+      <span class="atm-chip">ATM <b>24350</b></span>
+      <span class="atm-chip">PCR <b>0.94</b></span>
+    </nav>
+
+    <nav class="mobile-nav" id="mobile-nav" aria-label="Mobile view switcher">
+      <button type="button" class="mobile-nav-btn active"><span class="m-nav-pill m-nav-ce"></span>CALL</button>
+      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-spot"></span>SPOT</button>
+      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-pe"></span>PUT</button>
+      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-chain"></span>CHAIN</button>
+      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-pos"></span>POSITIONS</button>
+    </nav>
+
+    <div style="padding: 20px; text-align: center; color: #9ca3af;">
+      <p>Running in offline terminal shell. Use <strong>Switch Server</strong> above to connect to your live trading backend.</p>
+    </div>
+  </div>
+
+  <script>
+    const DEFAULT_SERVER = "https://130.210.18.97.sslip.io";
+    const serverInput = document.getElementById("server-url");
+    const statusDot = document.getElementById("status-dot");
+    const statusText = document.getElementById("status-text");
+
+    // Load saved server URL from localStorage
+    const savedUrl = localStorage.getItem("scalper_server_url");
+    if (savedUrl) {
+      serverInput.value = savedUrl;
+    }
+
+    function setPreset(url) {
+      serverInput.value = url;
+      pingServer();
+    }
+
+    async function pingServer() {
+      const url = serverInput.value.trim().replace(/\/$/, "");
+      if (!url) return;
+      statusDot.className = "status-dot checking";
+      statusText.textContent = "Checking " + url + "…";
+      const start = performance.now();
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const resp = await fetch(url + "/healthz", {
+          signal: controller.signal,
+          mode: "cors"
+        }).catch(() => null);
+        clearTimeout(timeout);
+        const latency = Math.round(performance.now() - start);
+        if (resp && resp.ok) {
+          statusDot.className = "status-dot online";
+          statusText.textContent = "Online (" + latency + "ms latency)";
+          return true;
+        } else {
+          statusDot.className = "status-dot";
+          statusText.textContent = "Server responded with status " + (resp ? resp.status : "unreachable");
+          return false;
+        }
+      } catch (err) {
+        statusDot.className = "status-dot";
+        statusText.textContent = "Connection failed: " + err.message;
+        return false;
+      }
+    }
+
+    function connectToServer() {
+      const url = serverInput.value.trim().replace(/\/$/, "");
+      if (!url) return;
+      localStorage.setItem("scalper_server_url", url);
+      // Redirect Capacitor webview to the target backend
+      window.location.href = url;
+    }
+
+    function launchOfflineShell() {
+      document.getElementById("gateway-view").style.display = "none";
+      document.getElementById("offline-terminal").style.display = "block";
+    }
+
+    function showGateway() {
+      document.getElementById("offline-terminal").style.display = "none";
+      document.getElementById("gateway-view").style.display = "flex";
+      pingServer();
+    }
+
+    // Auto-ping on load
+    window.addEventListener("DOMContentLoaded", () => {
+      pingServer();
+    });
+  </script>
+</body>
+</html>

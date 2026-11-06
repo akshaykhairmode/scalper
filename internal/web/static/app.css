@@ -248,6 +248,63 @@ a { color: var(--blue); }
 
 .clock { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: .04em;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.session-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+.session-chip-label {
+  color: var(--muted-2);
+  font-size: 9px;
+  letter-spacing: .1em;
+  font-weight: 700;
+}
+.session-chip-time {
+  font-weight: 700;
+  color: var(--text);
+}
+.session-chip.expiring-soon {
+  border-color: #4a3a10;
+  background: #1a1608;
+  color: var(--accent);
+}
+.session-chip.expiring-soon .session-chip-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.session-chip.expiring-soon .session-chip-time {
+  color: var(--accent);
+}
+.session-chip.expired {
+  border-color: #5a1f1c;
+  background: #210f0e;
+  color: var(--red);
+}
+.session-chip.expired .session-chip-dot {
+  background: var(--red);
+  box-shadow: none;
+}
+.session-chip.expired .session-chip-time {
+  color: var(--red);
+}
+
 .ghost {
   background: transparent;
   border: 1px solid var(--line);

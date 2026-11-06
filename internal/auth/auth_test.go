@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,5 +390,152 @@ func TestServerSessionStatusWithoutLogin(t *testing.T) {
 	status := server.SessionStatus()
 	if status.Authenticated {
 		t.Fatalf("unauthenticated status = %+v", status)
+	}
+}
+
+type fakeSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]Session
+	latest   *Session
+}
+
+func newFakeSessionStore() *fakeSessionStore {
+	return &fakeSessionStore{
+		sessions: make(map[string]Session),
+	}
+}
+
+func (f *fakeSessionStore) SaveSession(_ context.Context, s Session) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions[s.AccessToken] = s
+	sCopy := s
+	f.latest = &sCopy
+	return nil
+}
+
+func (f *fakeSessionStore) GetLatestSession(_ context.Context) (*Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.latest == nil {
+		return nil, nil
+	}
+	if time.Now().After(f.latest.TokenExpiry) {
+		return nil, nil
+	}
+	sCopy := *f.latest
+	return &sCopy, nil
+}
+
+func (f *fakeSessionStore) DeleteSession(_ context.Context, tokenID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.sessions, tokenID)
+	if f.latest != nil && f.latest.AccessToken == tokenID {
+		f.latest = nil
+	}
+	return nil
+}
+
+func (f *fakeSessionStore) RevokeAllSessions(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions = make(map[string]Session)
+	f.latest = nil
+	return nil
+}
+
+func TestServerPersistentSessionFlow(t *testing.T) {
+	store := newFakeSessionStore()
+	client := &fakeKotak{
+		view:  ViewSession{Token: "view-token", SID: "view-sid"},
+		trade: TradeSession{Token: "trade-token", SID: "trade-sid", BaseURL: "https://cis.kotaksecurities.com"},
+	}
+
+	server := NewServerWithAuthenticator(slog.Default(), client, WithSessionStore(store))
+	defer server.Close()
+
+	if err := server.BeginLogin(context.Background(), "flow-p", "123456"); err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	sess, err := server.CompleteLogin(context.Background(), "flow-p", "654321")
+	if err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	// Verify session TTL is 3 hours
+	expectedExpiry := sess.CreatedAt.Add(SessionTTL)
+	if sess.TokenExpiry.Sub(expectedExpiry).Abs() > time.Second {
+		t.Fatalf("expected TTL 3h, got CreatedAt=%v, TokenExpiry=%v", sess.CreatedAt, sess.TokenExpiry)
+	}
+
+	// Verify session was saved to store
+	latest, err := store.GetLatestSession(context.Background())
+	if err != nil || latest == nil {
+		t.Fatalf("store latest session = %+v, err = %v", latest, err)
+	}
+	if latest.AccessToken != sess.AccessToken {
+		t.Fatalf("store token = %q, want %q", latest.AccessToken, sess.AccessToken)
+	}
+
+	// Check SessionStatus response
+	status := server.SessionStatus()
+	if !status.Authenticated || status.LoginMethod != string(LoginMethodMPIN) {
+		t.Fatalf("status = %+v", status)
+	}
+	if status.ExpiresIn <= 0 || status.ExpiresInSeconds <= 0 || status.ExpiresAt == "" {
+		t.Fatalf("status expiry fields invalid: %+v", status)
+	}
+
+	// Simulate restart: create a new server with the same store
+	server2 := NewServerWithAuthenticator(slog.Default(), client, WithSessionStore(store))
+	defer server2.Close()
+
+	restored := server2.CurrentSession()
+	if restored == nil {
+		t.Fatal("expected restored session on startup, got nil")
+	}
+	if restored.AccessToken != sess.AccessToken {
+		t.Fatalf("restored token = %q, want %q", restored.AccessToken, sess.AccessToken)
+	}
+	status2 := server2.SessionStatus()
+	if !status2.Authenticated {
+		t.Fatalf("restored server status unauthenticated: %+v", status2)
+	}
+
+	// Test RevokeAll removes from store
+	if err := server2.RevokeAll(context.Background()); err != nil {
+		t.Fatalf("RevokeAll: %v", err)
+	}
+	if server2.CurrentSession() != nil {
+		t.Fatal("CurrentSession should be nil after RevokeAll")
+	}
+	if store.latest != nil {
+		t.Fatal("store session should be cleared after RevokeAll")
+	}
+}
+
+func TestServerDoesNotRestoreExpiredSession(t *testing.T) {
+	store := newFakeSessionStore()
+	store.latest = &Session{
+		AccessToken: "old-token",
+		BrokerToken: "tok",
+		BrokerSID:   "sid",
+		BaseURL:     "https://api.example.com",
+		FeedURL:     "wss://api.example.com",
+		LoginMethod: LoginMethodMPIN,
+		CreatedAt:   time.Now().Add(-4 * time.Hour),
+		TokenExpiry: time.Now().Add(-1 * time.Hour), // expired
+	}
+
+	server := NewServerWithAuthenticator(slog.Default(), &fakeKotak{}, WithSessionStore(store))
+	defer server.Close()
+
+	if sess := server.CurrentSession(); sess != nil {
+		t.Fatalf("expected nil session for expired store entry, got: %+v", sess)
+	}
+	status := server.SessionStatus()
+	if status.Authenticated {
+		t.Fatalf("status should be unauthenticated, got: %+v", status)
 	}
 }

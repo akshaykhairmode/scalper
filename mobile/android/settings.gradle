@@ -1,0 +1,7 @@
+include ':app'
+rootProject.name = "Scalper"
+
+// Apply capacitor plugin dependencies if capacitor.settings.gradle exists
+if (file('capacitor.settings.gradle').exists()) {
+    apply from: 'capacitor.settings.gradle'
+}

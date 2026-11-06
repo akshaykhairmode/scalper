@@ -24,8 +24,19 @@ var feedUpgrader = websocket.Upgrader{
 			return true
 		}
 		parsed, err := url.Parse(origin)
-		return err == nil && parsed.Host == r.Host &&
-			(parsed.Scheme == "http" || parsed.Scheme == "https")
+		if err != nil {
+			return false
+		}
+		if parsed.Host == r.Host {
+			return true
+		}
+		// Allow Capacitor, localhost, 127.0.0.1, Android emulator, and sslip.io origins
+		if parsed.Scheme == "capacitor" || parsed.Hostname() == "localhost" ||
+			parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "10.0.2.2" ||
+			strings.HasSuffix(parsed.Hostname(), ".sslip.io") {
+			return true
+		}
+		return false
 	},
 }
 

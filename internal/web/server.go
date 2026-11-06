@@ -92,6 +92,7 @@ type Options struct {
 	CandleStore   CandleStore
 	BracketStore  bracket.ActiveStore
 	BracketEngine *bracket.Engine
+	SessionStore  auth.SessionStore
 	LogDegraded   func() bool
 	TokenPresent  func() bool
 	Started       time.Time
@@ -258,9 +259,19 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	authServer := auth.NewServer(opts.Logger, opts.Config, opts.ConsumerKey)
+	sessionStore := opts.SessionStore
+	if sessionStore == nil {
+		if ss, ok := opts.DB.(auth.SessionStore); ok {
+			sessionStore = ss
+		}
+	}
+	var authOpts []auth.ServerOption
+	if sessionStore != nil {
+		authOpts = append(authOpts, auth.WithSessionStore(sessionStore))
+	}
+	authServer := auth.NewServer(opts.Logger, opts.Config, opts.ConsumerKey, authOpts...)
 	if opts.AuthClient != nil {
-		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient)
+		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient, authOpts...)
 	}
 	feedCtx, feedCancel := context.WithCancel(context.Background())
 	s := &Server{
@@ -438,6 +449,7 @@ func New(opts Options) (*Server, error) {
 
 	var h http.Handler = mux
 	h = s.serveAuthMiddleware(h)
+	h = corsMiddleware(h)
 	h = securityHeaders(h)
 	h = s.accessLog(h)
 	h = requestID(h)
@@ -659,7 +671,10 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 // handleLogout clears every in-memory session.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.a.CancelAllLogins()
-	s.a.SessionManager().RevokeAll()
+	_ = s.a.RevokeAll(r.Context())
+	if sm := s.a.SessionManager(); sm != nil {
+		sm.RevokeAll()
+	}
 	s.revokeCurrentServeSession(r)
 	s.clearServeSessionCookie(w, r)
 	if s.hsm != nil {
@@ -1323,13 +1338,33 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 	})
 }
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-Serve-Password, Accept, Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "+
-				"font-src 'self'; "+
-				"connect-src 'self' ws: wss: https://api.github.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+			"default-src 'self' capacitor:; img-src 'self' data: capacitor:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "+
+				"font-src 'self' data:; "+
+				"connect-src 'self' ws: wss: https: http: capacitor:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

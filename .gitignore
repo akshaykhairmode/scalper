@@ -8,8 +8,24 @@ kotak-neo-api-v2.md
 GO_STANDARDS.md
 *.png
 !internal/web/static/*.png
+!mobile/**/*.png
 data
 logs
 config.yaml
 *.db
 *.br
+
+# Mobile dependencies & build artifacts
+node_modules/
+mobile/node_modules/
+mobile/www/
+mobile/android/app/src/main/assets/public/
+mobile/ios/App/App/public/
+.gradle/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/build/
+mobile/ios/App/Pods/
+mobile/ios/App/build/
+*.apk
+*.aab

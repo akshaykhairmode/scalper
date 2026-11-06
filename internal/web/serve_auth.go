@@ -259,19 +259,29 @@ func secureRequest(r *http.Request) bool {
 }
 
 func requestOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		parsed, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		if parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host) {
+			return true
+		}
+		// Allow mobile Capacitor apps, local/emulator development, and sslip.io origins
+		if parsed.Scheme == "capacitor" || parsed.Hostname() == "localhost" ||
+			parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "10.0.2.2" ||
+			strings.HasSuffix(parsed.Hostname(), ".sslip.io") {
+			return true
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
 		return false
 	}
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return true
 	}
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" {
-		return false
-	}
-	return strings.EqualFold(parsed.Host, r.Host) &&
-		(parsed.Scheme == "http" || parsed.Scheme == "https")
+	return false
 }
 
 func requireJSONContentType(r *http.Request) bool {

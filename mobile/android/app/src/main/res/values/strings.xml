@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Scalper</string>
+    <string name="title_activity_main">Scalper</string>
+    <string name="package_name">com.scalper.terminal</string>
+    <string name="custom_url_scheme">com.scalper.terminal</string>
+</resources>

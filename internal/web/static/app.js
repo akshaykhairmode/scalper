@@ -1179,12 +1179,69 @@ async function checkSession() {
 
 function updateAuthButton() {
   const button = $("auth-button");
+  const chip = $("session-chip");
   if (S.session?.authenticated) {
-    button.textContent = "Logout";
-    button.classList.add("logged-in");
+    if (button) {
+      button.textContent = "Logout";
+      button.classList.add("logged-in");
+    }
+    if (chip) chip.hidden = false;
+    updateSessionCountdown();
   } else {
-    button.textContent = "Login";
-    button.classList.remove("logged-in");
+    if (button) {
+      button.textContent = "Login";
+      button.classList.remove("logged-in");
+    }
+    if (chip) chip.hidden = true;
+  }
+}
+
+function updateSessionCountdown() {
+  const chip = $("session-chip");
+  const timer = $("session-countdown");
+  if (!chip || !timer || !S.session?.authenticated) {
+    if (chip) chip.hidden = true;
+    return;
+  }
+
+  let rem = 0;
+  if (S.session.expires_at) {
+    const expMs = Date.parse(S.session.expires_at);
+    if (!isNaN(expMs)) {
+      rem = Math.max(0, Math.floor((expMs - Date.now()) / 1000));
+    }
+  } else if (typeof S.session.expires_in_seconds === "number") {
+    rem = Math.max(0, S.session.expires_in_seconds);
+  } else if (typeof S.session.expires_in === "number") {
+    rem = Math.max(0, S.session.expires_in * 60);
+  }
+
+  if (rem <= 0) {
+    timer.textContent = "EXPIRED";
+    chip.classList.remove("expiring-soon");
+    chip.classList.add("expired");
+    if (S.session.authenticated) {
+      S.session.authenticated = false;
+      clearBooksForMode("live");
+      updateAuthButton();
+      openLogin();
+      toast("Kotak session expired (3h TTL). Please re-authenticate.", "warn");
+    }
+    return;
+  }
+
+  const hours = Math.floor(rem / 3600);
+  const minutes = Math.floor((rem % 3600) / 60);
+  const seconds = rem % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  timer.textContent = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+
+  if (rem <= 900) {
+    chip.classList.add("expiring-soon");
+    chip.classList.remove("expired");
+  } else {
+    chip.classList.remove("expiring-soon");
+    chip.classList.remove("expired");
   }
 }
 
@@ -5395,15 +5452,17 @@ function toggleFullscreen() {
 
 function updateClock() {
   const clock = $("clock");
-  if (!clock) return;
-  const text = new Date().toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Kolkata",
-  });
-  clock.textContent = `${text} IST`;
+  if (clock) {
+    const text = new Date().toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Kolkata",
+    });
+    clock.textContent = `${text} IST`;
+  }
+  updateSessionCountdown();
 }
 
 function currentMarketState() {

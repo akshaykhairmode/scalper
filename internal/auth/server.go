@@ -24,28 +24,71 @@ type Server struct {
 	log           *slog.Logger
 	kotak         KotakAuthenticator
 	sm            *SessionManager
+	store         SessionStore
 	pendingMu     sync.Mutex
 	pendingLogins map[string]pendingLogin
 }
 
+// ServerOption configures an authentication Server.
+type ServerOption func(*Server)
+
+// WithSessionStore attaches a persistent store for broker sessions.
+func WithSessionStore(store SessionStore) ServerOption {
+	return func(s *Server) {
+		s.store = store
+		if s.sm != nil {
+			s.sm.SetStore(store)
+		}
+		s.restoreSessionFromStore()
+	}
+}
+
 // NewServer creates an authentication server backed by the Kotak API.
-func NewServer(log *slog.Logger, cfg config.Config, consumerKey string) *Server {
+func NewServer(log *slog.Logger, cfg config.Config, consumerKey string, opts ...ServerOption) *Server {
 	return NewServerWithAuthenticator(log, NewKotakAuthenticatorWithLogger(log,
 		consumerKey, cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Kotak.NeoFinKey,
-	))
+	), opts...)
 }
 
 // NewServerWithAuthenticator creates an authentication server with a supplied authenticator.
-func NewServerWithAuthenticator(log *slog.Logger, kotak KotakAuthenticator) *Server {
+func NewServerWithAuthenticator(log *slog.Logger, kotak KotakAuthenticator, opts ...ServerOption) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{
+	s := &Server{
 		log:           log,
 		kotak:         kotak,
-		sm:            NewSessionManager(24 * time.Hour),
+		sm:            NewSessionManager(SessionTTL),
 		pendingLogins: make(map[string]pendingLogin),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+func (a *Server) restoreSessionFromStore() {
+	if a.store == nil {
+		return
+	}
+	sess, err := a.store.GetLatestSession(context.Background())
+	if err != nil {
+		a.log.Warn("failed to load persistent session", "event", "session_restore_failed", "error", err)
+		return
+	}
+	if sess == nil {
+		return
+	}
+	now := time.Now()
+	if !sess.TokenExpiry.IsZero() && !now.Before(sess.TokenExpiry) {
+		return
+	}
+	a.sm.RestoreSession(sess)
+	a.log.Info("restored active Kotak session from database",
+		"event", "session_restored",
+		"login_method", sess.LoginMethod,
+		"expires_in_min", int(time.Until(sess.TokenExpiry).Minutes()),
+	)
 }
 
 // BeginLogin exchanges the TOTP and stores the short-lived view session on the
@@ -78,7 +121,7 @@ func (a *Server) BeginLogin(ctx context.Context, flowID, totp string) error {
 }
 
 // CompleteLogin exchanges the MPIN for the Kotak trade session. Broker
-// credentials are retained only in the server-side session manager.
+// credentials are retained only in the server-side session manager and persistent store.
 func (a *Server) CompleteLogin(ctx context.Context, flowID, mpin string) (*Session, error) {
 	if err := validateDigits("MPIN", mpin, 6); err != nil {
 		return nil, err
@@ -121,6 +164,9 @@ func (a *Server) CompleteLogin(ctx context.Context, flowID, mpin string) (*Sessi
 		return nil, ErrNoPendingLogin
 	}
 	a.sm.RevokeAll()
+	if a.store != nil {
+		_ = a.store.RevokeAllSessions(ctx)
+	}
 	session, err := a.sm.NewBrokerSession(trade, LoginMethodMPIN)
 	if err != nil {
 		current.validating = false
@@ -130,6 +176,14 @@ func (a *Server) CompleteLogin(ctx context.Context, flowID, mpin string) (*Sessi
 	}
 	delete(a.pendingLogins, flowID)
 	a.pendingMu.Unlock()
+
+	if a.store != nil {
+		if err := a.store.SaveSession(ctx, *session); err != nil {
+			a.log.Warn("failed to persist session to database", "error", err)
+			return nil, fmt.Errorf("persist session: %w", err)
+		}
+	}
+
 	a.log.Info("Kotak login successful", "event", "auth_login_success")
 	return session, nil
 }
@@ -148,6 +202,15 @@ func (a *Server) CancelAllLogins() {
 	a.pendingMu.Lock()
 	clear(a.pendingLogins)
 	a.pendingMu.Unlock()
+}
+
+// RevokeAll revokes all active sessions in memory and persistent storage.
+func (a *Server) RevokeAll(ctx context.Context) error {
+	a.sm.RevokeAll()
+	if a.store != nil {
+		return a.store.RevokeAllSessions(ctx)
+	}
+	return nil
 }
 
 func validateDigits(name, value string, length int) error {
@@ -195,11 +258,7 @@ func (a *Server) Close() {
 
 // SessionStatus returns the current authentication status without exposing
 // broker tokens, SIDs, or the dynamic API URL.
-func (a *Server) SessionStatus() *struct {
-	Authenticated bool   `json:"authenticated"`
-	LoginMethod   string `json:"login_method"`
-	ExpiresIn     int    `json:"expires_in"`
-} {
+func (a *Server) SessionStatus() *SessionStatusResponse {
 	a.sm.mu.Lock()
 	now := time.Now()
 	var foundSession Session
@@ -213,14 +272,16 @@ func (a *Server) SessionStatus() *struct {
 	}
 	a.sm.mu.Unlock()
 
-	status := &struct {
-		Authenticated bool   `json:"authenticated"`
-		LoginMethod   string `json:"login_method"`
-		ExpiresIn     int    `json:"expires_in"`
-	}{Authenticated: found}
+	status := &SessionStatusResponse{Authenticated: found}
 	if found {
 		status.LoginMethod = string(foundSession.LoginMethod)
 		status.ExpiresIn = int(time.Until(foundSession.TokenExpiry).Minutes())
+		remSecs := int(time.Until(foundSession.TokenExpiry).Seconds())
+		if remSecs < 0 {
+			remSecs = 0
+		}
+		status.ExpiresInSeconds = remSecs
+		status.ExpiresAt = foundSession.TokenExpiry.UTC().Format(time.RFC3339)
 	}
 	return status
 }

@@ -46,6 +46,11 @@
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">LIVE</span>
       <span class="clock" id="clock">{{.Now}}</span>
+      <span class="session-chip" id="session-chip" title="Kotak session timer. Countdown before TOTP re-authentication is required." hidden>
+        <span class="session-chip-dot"></span>
+        <span class="session-chip-label">SESSION</span>
+        <span class="session-chip-time" id="session-countdown">03:00:00</span>
+      </span>
       <button type="button" class="ghost" id="auth-button">Login</button>
     </div>
   </header>

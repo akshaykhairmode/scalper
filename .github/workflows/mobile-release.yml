@@ -1,0 +1,155 @@
+name: Mobile Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Android build type (release or debug)"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - debug
+      server_url:
+        description: "Scalper backend URL to embed in mobile bundle"
+        required: false
+        default: "https://130.210.18.97.sslip.io"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    name: build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: "mobile/package.json"
+
+      - name: Setup Java (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "gradle"
+
+      - name: Install Capacitor mobile dependencies
+        working-directory: mobile
+        run: |
+          npm install
+
+      - name: Sync web assets & configure server URL
+        working-directory: mobile
+        env:
+          INPUT_SERVER_URL: ${{ inputs.server_url }}
+        run: |
+          if [ -n "$INPUT_SERVER_URL" ]; then
+            echo "Configuring custom server URL: $INPUT_SERVER_URL"
+            node -e "
+              const fs = require('fs');
+              const cfg = JSON.parse(fs.readFileSync('capacitor.config.json', 'utf8'));
+              cfg.server = cfg.server || {};
+              cfg.server.url = process.env.INPUT_SERVER_URL;
+              fs.writeFileSync('capacitor.config.json', JSON.stringify(cfg, null, 2));
+            "
+          fi
+          npm run bundle
+          npx cap sync android
+
+      - name: Build Android APK with Gradle
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          build_type="${{ inputs.build_type || 'release' }}"
+          if [ "$build_type" = "debug" ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            # Try assembleRelease; if unsigned signing blocks, fallback to assembleDebug
+            ./gradlew assembleRelease --stacktrace || ./gradlew assembleDebug --stacktrace
+          fi
+
+      - name: Package APK artifact
+        run: |
+          set -euo pipefail
+          apk_file="$(find mobile/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          if [ -z "$apk_file" ]; then
+            echo "ERROR: No APK binary was produced by Gradle build."
+            exit 1
+          fi
+          echo "Found compiled APK: $apk_file"
+          cp "$apk_file" scalper-android.apk
+          sha256sum scalper-android.apk > scalper-android.apk.sha256
+          echo "APK SHA-256:"
+          cat scalper-android.apk.sha256
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalper-android.apk
+          path: |
+            scalper-android.apk
+            scalper-android.apk.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            scalper-android.apk
+            scalper-android.apk.sha256
+
+  build-ios:
+    name: validate iOS build
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: "mobile/package.json"
+
+      - name: Install Capacitor mobile dependencies
+        working-directory: mobile
+        run: |
+          npm install
+
+      - name: Sync web assets to iOS
+        working-directory: mobile
+        run: |
+          npm run bundle
+          npx cap sync ios
+
+      - name: Validate Xcode project build
+        working-directory: mobile/ios/App
+        run: |
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            build

@@ -13,7 +13,7 @@ LDFLAGS   := -s -w -X github.com/akshaykhairmode/scalper/internal/version.Versio
              -X github.com/akshaykhairmode/scalper/internal/version.Commit=$(COMMIT) \
              -X github.com/akshaykhairmode/scalper/internal/version.BuildDate=$(BUILD_DATE)
 
-.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve deploy clean
+.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve deploy clean mobile-install mobile-bundle mobile-sync mobile-android mobile-ios
 
 all: fmt vet lint test build
 
@@ -32,6 +32,8 @@ help:
 	@echo "make run        run with -config $(CONFIG)"
 	@echo "make serve      build and run in serve mode (0.0.0.0, no browser)"
 	@echo "make deploy     cross-compile and deploy to remote server (SERVER_IP, SSH_KEY)"
+	@echo "make mobile-bundle sync web assets for Capacitor mobile app"
+	@echo "make mobile-sync   sync web assets and run Capacitor sync"
 
 fmt:
 	gofmt -w .
@@ -97,3 +99,19 @@ deploy:
 
 clean:
 	rm -rf bin coverage.out
+
+mobile-install:
+	cd mobile && npm install
+
+mobile-bundle:
+	node mobile/scripts/sync-assets.js
+
+mobile-sync: mobile-bundle
+	cd mobile && npx cap sync
+
+mobile-android: mobile-bundle
+	cd mobile/android && ./gradlew assembleRelease || ./gradlew assembleDebug
+
+mobile-ios: mobile-bundle
+	cd mobile && npx cap sync ios
+

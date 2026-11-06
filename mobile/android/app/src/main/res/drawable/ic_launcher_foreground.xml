@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.6"
+        android:scaleY="0.6"
+        android:translateX="21.6"
+        android:translateY="21.6">
+        <!-- Teal/Cyan S for Scalper -->
+        <path
+            android:fillColor="#38bdf8"
+            android:pathData="M30,24 L78,24 L78,38 L46,38 L46,48 L78,48 L78,84 L30,84 L30,70 L62,70 L62,60 L30,60 Z"/>
+    </group>
+</vector>
