@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -863,8 +865,8 @@ func TestBasicAuthMiddleware(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(rec.Header().Get("WWW-Authenticate"), "Basic realm=") {
-		t.Fatalf("missing WWW-Authenticate header: %q", rec.Header().Get("WWW-Authenticate"))
+	if rec.Header().Get("WWW-Authenticate") != "" {
+		t.Fatalf("WWW-Authenticate header must not be set to prevent browser native basic auth popup: %q", rec.Header().Get("WWW-Authenticate"))
 	}
 
 	// 2. Request with invalid credentials should return 401 Unauthorized
@@ -952,5 +954,59 @@ func TestServeModeIndexFooter(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "serve mode") {
 		t.Fatalf("expected 'serve mode' in footer, got: %s", body)
+	}
+}
+
+func TestLogsEndpoints(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "scalper.log")
+	if err := os.WriteFile(logFile, []byte("line 1\nline 2: WARN something\nline 3: ERROR test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.Logging.File = logFile
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+
+	// Test GET /logs (HTML view)
+	reqView := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/logs", nil)
+	reqView.Host = "127.0.0.1:8080"
+	recView := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recView, reqView)
+	if recView.Code != http.StatusOK {
+		t.Fatalf("GET /logs status = %d, want 200", recView.Code)
+	}
+	if !strings.Contains(recView.Body.String(), "Scalper Logs") {
+		t.Fatalf("expected 'Scalper Logs' in /logs HTML")
+	}
+
+	// Test GET /api/logs (JSON API)
+	reqAPI := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/logs?lines=10", nil)
+	reqAPI.Host = "127.0.0.1:8080"
+	recAPI := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recAPI, reqAPI)
+	if recAPI.Code != http.StatusOK {
+		t.Fatalf("GET /api/logs status = %d, want 200", recAPI.Code)
+	}
+	var data struct {
+		Ok    bool     `json:"ok"`
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(recAPI.Body.Bytes(), &data); err != nil {
+		t.Fatalf("unmarshal logs json: %v", err)
+	}
+	if !data.Ok || len(data.Lines) != 3 {
+		t.Fatalf("unexpected logs response: %+v", data)
+	}
+
+	// Test GET /api/logs?download=1 (download raw file)
+	reqDL := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/logs?download=1", nil)
+	reqDL.Host = "127.0.0.1:8080"
+	recDL := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recDL, reqDL)
+	if recDL.Code != http.StatusOK {
+		t.Fatalf("GET /api/logs?download=1 status = %d, want 200", recDL.Code)
+	}
+	if !strings.Contains(recDL.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("expected Content-Disposition attachment header, got: %s", recDL.Header().Get("Content-Disposition"))
 	}
 }

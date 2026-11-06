@@ -40,6 +40,10 @@ type feedCommand struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.App.ServeMode && s.a != nil && s.a.CurrentSession() == nil {
+		http.Error(w, "broker authentication required", http.StatusUnauthorized)
+		return
+	}
 	if s.hsm == nil && s.orderFeed == nil {
 		http.Error(w, "market and order feeds are not configured", http.StatusServiceUnavailable)
 		return

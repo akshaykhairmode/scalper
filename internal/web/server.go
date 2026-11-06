@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -21,9 +22,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -309,6 +312,8 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/candles", s.handleCandles)
 	mux.HandleFunc("GET /api/candles/batch", s.handleCandlesBatch)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
+	mux.HandleFunc("GET /logs", s.handleLogsView)
+	mux.HandleFunc("GET /api/logs", s.handleLogsAPI)
 
 	var h http.Handler = mux
 	if opts.Config.App.ServeMode {
@@ -566,12 +571,11 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	token := hex.EncodeToString(b)
+	exp := time.Now().Add(24 * time.Hour)
+	token := makeServeToken(req.Username, req.Password, exp)
 
 	s.serveSessionsMu.Lock()
-	s.serveSessions[token] = time.Now().Add(24 * time.Hour)
+	s.serveSessions[token] = exp
 	s.serveSessionsMu.Unlock()
 
 	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
@@ -582,14 +586,40 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   isSecure,
 		SameSite: http.SameSiteStrictMode,
+		Expires:  exp,
 	})
 	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
+}
+
+func makeServeToken(username, password string, expiresAt time.Time) string {
+	expStr := strconv.FormatInt(expiresAt.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(password))
+	mac.Write([]byte(expStr + ":" + username))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return expStr + "." + sig
+}
+
+func verifyServeToken(token, username, password string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return false
+	}
+	expUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return false
+	}
+	if time.Now().Unix() > expUnix {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(password))
+	mac.Write([]byte(parts[0] + ":" + username))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expectedSig)) == 1
 }
 
 func (s *Server) serveAuthMiddleware(username, password string, next http.Handler) http.Handler {
 	wantUser := sha256.Sum256([]byte(username))
 	wantPass := sha256.Sum256([]byte(password))
-	realm := `Basic realm="Scalper Terminal", charset="UTF-8"`
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. Allow homepage HTML and unlock endpoint without prior authentication
@@ -603,7 +633,7 @@ func (s *Server) serveAuthMiddleware(username, password string, next http.Handle
 			s.serveSessionsMu.RLock()
 			exp, found := s.serveSessions[cookie.Value]
 			s.serveSessionsMu.RUnlock()
-			if found && time.Now().Before(exp) {
+			if (found && time.Now().Before(exp)) || verifyServeToken(cookie.Value, username, password) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -620,10 +650,328 @@ func (s *Server) serveAuthMiddleware(username, password string, next http.Handle
 			}
 		}
 
-		// 4. Unauthorized
-		w.Header().Set("WWW-Authenticate", realm)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		// 4. Unauthorized - DO NOT send WWW-Authenticate header to prevent native browser dialog
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Terminal locked. Please authenticate."})
 	})
+}
+
+func tailLogFile(logPath string, maxLines int) ([]string, error) {
+	cleanPath := filepath.Clean(logPath)
+	f, err := os.Open(cleanPath) // #nosec G304
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := stat.Size()
+	if size == 0 {
+		return []string{}, nil
+	}
+
+	readSize := int64(2 * 1024 * 1024)
+	if readSize > size {
+		readSize = size
+	}
+	buf := make([]byte, readSize)
+	_, err = f.ReadAt(buf, size-readSize)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+
+	rawLines := strings.Split(string(buf), "\n")
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+		rawLines = rawLines[:len(rawLines)-1]
+	}
+	if maxLines > 0 && len(rawLines) > maxLines {
+		rawLines = rawLines[len(rawLines)-maxLines:]
+	}
+	return rawLines, nil
+}
+
+func (s *Server) handleLogsAPI(w http.ResponseWriter, r *http.Request) {
+	logPath := s.cfg.Logging.File
+	if logPath == "" {
+		_ = writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"path":  "stderr",
+			"lines": []string{"Logging is configured to stderr only; no log file on disk."},
+		})
+		return
+	}
+
+	if r.URL.Query().Get("download") == "1" {
+		cleanPath := filepath.Clean(logPath)
+		w.Header().Set("Content-Disposition", "attachment; filename=scalper.log")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		http.ServeFile(w, r, cleanPath)
+		return
+	}
+
+	linesLimit := 500
+	if l := r.URL.Query().Get("lines"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 5000 {
+			linesLimit = n
+		}
+	}
+
+	lines, err := tailLogFile(logPath, linesLimit)
+	if err != nil {
+		_ = writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"path":  logPath,
+			"lines": []string{fmt.Sprintf("Log file %s could not be opened: %v", logPath, err)},
+		})
+		return
+	}
+
+	_ = writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"path":  logPath,
+		"lines": lines,
+	})
+}
+
+func (s *Server) handleLogsView(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scalper — Server Logs</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #f59e0b;
+    --err: #ff7b72;
+    --warn: #d29922;
+    --info: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .title-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .title-group h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  .status-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: rgba(46, 160, 67, 0.2);
+    color: #3fb950;
+    font-weight: 600;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  input[type="text"], select {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    outline: none;
+  }
+  input[type="text"]:focus, select:focus {
+    border-color: var(--accent);
+  }
+  button, a.btn {
+    background: #21262d;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }
+  button:hover, a.btn:hover {
+    background: #30363d;
+  }
+  .toggle-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #log-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    background: #07090e;
+  }
+  .log-line {
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  }
+  .log-error { color: var(--err); font-weight: 600; }
+  .log-warn { color: var(--warn); }
+  .log-info { color: var(--text); }
+  .line-num {
+    color: var(--text-dim);
+    user-select: none;
+    display: inline-block;
+    width: 48px;
+    text-align: right;
+    margin-right: 12px;
+    opacity: 0.5;
+  }
+  footer {
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    padding: 6px 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="title-group">
+    <h1>⚡ Scalper Logs</h1>
+    <span class="status-badge" id="live-indicator">● LIVE</span>
+    <span id="log-path" style="font-size:11px; color:var(--text-dim);"></span>
+  </div>
+  <div class="controls">
+    <input type="text" id="filter-input" placeholder="Filter logs (e.g. error, order, hsm)..." size="28">
+    <select id="lines-select">
+      <option value="200">200 lines</option>
+      <option value="500" selected>500 lines</option>
+      <option value="1000">1000 lines</option>
+      <option value="2500">2500 lines</option>
+    </select>
+    <label class="toggle-label">
+      <input type="checkbox" id="autoscroll-toggle" checked> Auto-scroll
+    </label>
+    <label class="toggle-label">
+      <input type="checkbox" id="autorefresh-toggle" checked> Auto-refresh (3s)
+    </label>
+    <button type="button" id="refresh-btn">Refresh</button>
+    <a href="/api/logs?download=1" class="btn" download>Download</a>
+  </div>
+</header>
+<div id="log-container">
+  <div style="color:var(--text-dim); text-align:center; padding:40px;">Loading server logs…</div>
+</div>
+<footer>
+  <span id="log-summary">Showing 0 lines</span>
+  <span id="last-updated">—</span>
+</footer>
+<script>
+  let allLines = [];
+  const container = document.getElementById("log-container");
+  const filterInput = document.getElementById("filter-input");
+  const linesSelect = document.getElementById("lines-select");
+  const autoscrollToggle = document.getElementById("autoscroll-toggle");
+  const autorefreshToggle = document.getElementById("autorefresh-toggle");
+  const summaryEl = document.getElementById("log-summary");
+  const updatedEl = document.getElementById("last-updated");
+  const pathEl = document.getElementById("log-path");
+
+  async function fetchLogs() {
+    try {
+      const linesCount = linesSelect.value;
+      const res = await fetch('/api/logs?lines=' + linesCount);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      allLines = data.lines || [];
+      if (data.path) pathEl.textContent = data.path;
+      renderLogs();
+      updatedEl.textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      console.warn("fetch logs error:", err);
+    }
+  }
+
+  function renderLogs() {
+    const q = filterInput.value.toLowerCase().trim();
+    const filtered = q ? allLines.filter(l => l.toLowerCase().includes(q)) : allLines;
+    
+    if (filtered.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-dim); text-align:center; padding:40px;">No matching log lines.</div>';
+      summaryEl.textContent = 'Showing 0 / ' + allLines.length + ' lines';
+      return;
+    }
+
+    let html = '';
+    for (let i = 0; i < filtered.length; i++) {
+      const line = filtered[i];
+      let cls = 'log-info';
+      if (/ERROR|FATAL/i.test(line)) cls = 'log-error';
+      else if (/WARN/i.test(line)) cls = 'log-warn';
+      const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      html += '<div class="log-line ' + cls + '"><span class="line-num">' + (i + 1) + '</span>' + escaped + '</div>';
+    }
+    container.innerHTML = html;
+    summaryEl.textContent = 'Showing ' + filtered.length + ' of ' + allLines.length + ' lines';
+    if (autoscrollToggle.checked) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  filterInput.addEventListener('input', renderLogs);
+  linesSelect.addEventListener('change', fetchLogs);
+  document.getElementById('refresh-btn').addEventListener('click', fetchLogs);
+
+  setInterval(() => {
+    if (autorefreshToggle.checked) fetchLogs();
+  }, 3000);
+
+  fetchLogs();
+</script>
+</body>
+</html>`
+	_, _ = w.Write([]byte(html))
 }
 
 // handleTotpLogin handles TOTP-based login.

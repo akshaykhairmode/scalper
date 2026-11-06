@@ -680,10 +680,30 @@ function init() {
     updateClock();
     updateMarketPhase();
   }, 1000);
-  checkSession();
-  window.setInterval(refreshSession, 30000);
-  loadMarket();
+
+  const serveAuthModal = $("serve-auth-modal");
+  const isTerminalLocked = serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none";
+  if (!isTerminalLocked) {
+    startTerminalSession();
+  }
+}
+
+let sessionRefreshTimer = null;
+
+async function startTerminalSession() {
   checkVersionUpdate();
+  await refreshSession();
+  if (!S.session?.authenticated) {
+    openLogin();
+    return;
+  }
+  closeLogin();
+  connectWebSocket();
+  loadMarket();
+  refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
+  if (!sessionRefreshTimer) {
+    sessionRefreshTimer = window.setInterval(refreshSession, 30000);
+  }
 }
 
 function initTheme() {
@@ -999,6 +1019,7 @@ function updateAuthButton() {
 /* ── Market loading ────────────────────────────────────── */
 
 async function loadMarket() {
+  if (!S.session?.authenticated) return;
   try {
     await loadFromAPI();
     if (S.feed !== "live") S.feed = S.session?.authenticated ? "connecting" : "degraded";
@@ -1220,6 +1241,7 @@ let liveTimer = null;
 let underlyingTimer = null;
 let booksRefreshTimer = null;
 function startLivePolling() {
+  if (!S.session?.authenticated) return;
   if (!liveTimer) {
     // Poll account books regularly when logged in and visible.
     liveTimer = window.setInterval(() => {
@@ -1283,6 +1305,7 @@ async function pollLive({ refreshChain = false } = {}) {
 
 function connectWebSocket() {
   if (S.ws) return;
+  if (!S.session?.authenticated) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   try {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -4318,9 +4341,21 @@ async function logout() {
     S.ws = null;
     ws.close();
   }
+  if (sessionRefreshTimer) {
+    window.clearInterval(sessionRefreshTimer);
+    sessionRefreshTimer = null;
+  }
+  if (liveTimer) {
+    window.clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  if (underlyingTimer) {
+    window.clearInterval(underlyingTimer);
+    underlyingTimer = null;
+  }
   updateAuthButton();
   renderHeader();
-  closeLogin();
+  openLogin();
   toast("Signed out. Sign in with Kotak to view account data or place orders.", "warn");
 }
 
@@ -4806,6 +4841,7 @@ function bindEvents() {
         if (resp.ok && data.ok) {
           serveAuthModal.style.display = "none";
           serveAuthModal.hidden = true;
+          startTerminalSession();
         } else {
           if (serveAuthErr) {
             serveAuthErr.textContent = data.error || "Invalid username or password";
