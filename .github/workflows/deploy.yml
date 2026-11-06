@@ -26,12 +26,50 @@ jobs:
           TARGET_HOST="${{ secrets.SERVER_HOST || secrets.SERVER_IP }}"
           TARGET_KEY="${{ secrets.SSH_PRIVATE_KEY || secrets.SSH_KEY }}"
 
-          if [ -z "$TARGET_HOST" ] || [ -z "$TARGET_KEY" ]; then
+          # If neither is set, handle gracefully on push vs explicitly on manual trigger
+          if [ -z "$TARGET_HOST" ] && [ -z "$TARGET_KEY" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::error title=Missing Secrets::Neither SERVER_HOST nor SSH_PRIVATE_KEY secret is configured. Please configure them in Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
             echo "::notice title=Deployment Skipped::Neither SERVER_HOST nor SSH_PRIVATE_KEY secret is configured. Add them to Settings -> Secrets and variables -> Actions to enable automated server deployment."
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          if [ -z "$TARGET_HOST" ]; then
+            echo "::error title=Missing SERVER_HOST::SERVER_HOST secret is not configured in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          if [ -z "$TARGET_KEY" ]; then
+            echo "::error title=Missing SSH_PRIVATE_KEY::SSH_PRIVATE_KEY secret is not configured in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          # Pre-flight credential checks
+          if [ -z "${{ secrets.KOTAK_CONSUMER_KEY }}" ]; then
+            echo "::warning title=Kotak Key Missing::KOTAK_CONSUMER_KEY secret is not set. Kotak login and live trading will be disabled on the remote server."
+          fi
+          if [ -z "${{ secrets.KOTAK_MOBILE_NUMBER || secrets.KOTAK_MOBILE }}" ]; then
+            echo "::warning title=Kotak Mobile Missing::KOTAK_MOBILE_NUMBER secret is not set; server will rely on config.yaml."
+          fi
+          if [ -z "${{ secrets.KOTAK_UCC }}" ]; then
+            echo "::warning title=Kotak UCC Missing::KOTAK_UCC secret is not set; server will rely on config.yaml."
+          fi
+
+          AUTH_USER="${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || '' }}"
+          AUTH_PASS="${{ secrets.SERVE_AUTH_PASSWORD || '' }}"
+          if [ -n "$AUTH_USER" ] && [ -z "$AUTH_PASS" ]; then
+            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_USERNAME is configured but SERVE_AUTH_PASSWORD is missing. Both must be set to protect the terminal."
+            exit 1
+          fi
+          if [ -z "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
+            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_PASSWORD is configured but SERVE_AUTH_USERNAME is missing. Both must be set to protect the terminal."
+            exit 1
+          fi
+
+          echo "can_deploy=true" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go environment
         if: steps.config-check.outputs.can_deploy == 'true'

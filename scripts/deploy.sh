@@ -126,6 +126,36 @@ info "SSH Key       : ${KEY_PATH}"
 info "Remote Dir    : ${REMOTE_DIR}"
 info "Service Name  : ${SVC_NAME}"
 
+# ── Pre-flight Credential Validations ──────────────────────────────────────
+AUTH_USER="${SERVE_AUTH_USERNAME:-${SCALPER_SERVE_USERNAME:-}}"
+AUTH_PASS="${SERVE_AUTH_PASSWORD:-${SCALPER_SERVE_PASSWORD:-}}"
+if [[ -n "${AUTH_USER}" && -z "${AUTH_PASS}" ]]; then
+  fatal "SERVE_AUTH_USERNAME is set but SERVE_AUTH_PASSWORD is missing. Both must be provided."
+fi
+if [[ -z "${AUTH_USER}" && -n "${AUTH_PASS}" ]]; then
+  fatal "SERVE_AUTH_PASSWORD is set but SERVE_AUTH_USERNAME is missing. Both must be provided."
+fi
+
+if [[ -n "${AUTH_USER}" ]]; then
+  success "Serve-mode web auth: ENABLED (user: ${AUTH_USER})"
+else
+  warn "Serve-mode web auth: NOT SET (UI terminal will not prompt for password)"
+fi
+
+if [[ -n "${KOTAK_CONSUMER_KEY:-}" ]]; then
+  success "Kotak Consumer Key : CONFIGURED"
+else
+  warn "Kotak Consumer Key : NOT SET (Kotak live trading & login will be disabled)"
+fi
+
+if [[ -n "${KOTAK_MOBILE_NUMBER:-${KOTAK_MOBILE:-}}" ]]; then
+  success "Kotak Mobile Number: CONFIGURED"
+fi
+
+if [[ -n "${KOTAK_UCC:-}" ]]; then
+  success "Kotak UCC          : CONFIGURED"
+fi
+
 # ── Check Remote Connectivity & Architecture ──────────────────────────────
 info "Checking SSH connection to remote host..."
 REMOTE_ARCH=""
