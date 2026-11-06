@@ -28,11 +28,11 @@ type Event struct {
 
 // Client maintains a reconnecting Kotak order and position feed.
 type Client struct {
-	log       *slog.Logger
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	events    chan Event
-	connected bool
+	log           *slog.Logger
+	mu            sync.Mutex
+	cancel        context.CancelFunc
+	events        chan Event
+	connected     bool
 	endpoint      string
 	lastEventNano atomic.Int64
 }

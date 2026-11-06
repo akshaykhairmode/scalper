@@ -32,15 +32,15 @@ type HSMFeed struct {
 	scrips *scrip.Manager
 	log    *slog.Logger
 
-	mu      sync.RWMutex
-	client  *hsm.HSMClient
-	user    string
-	auth    string
-	feedURL string
-	subs    map[string]hsmSubscription
-	events  chan HSMEvent
-	cancel  func()
-	done    chan struct{}
+	mu            sync.RWMutex
+	client        *hsm.HSMClient
+	user          string
+	auth          string
+	feedURL       string
+	subs          map[string]hsmSubscription
+	events        chan HSMEvent
+	cancel        func()
+	done          chan struct{}
 	lastEventNano atomic.Int64
 }
 

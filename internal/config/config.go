@@ -395,6 +395,31 @@ func (c *Config) applyEnv() {
 	if v, ok := os.LookupEnv("SCALPER_LOG_FILE"); ok {
 		c.Logging.File = v
 	}
+	if v, ok := os.LookupEnv("KOTAK_MOBILE_NUMBER"); ok && strings.TrimSpace(v) != "" {
+		c.Kotak.MobileNumber = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("KOTAK_MOBILE"); ok && strings.TrimSpace(v) != "" {
+		c.Kotak.MobileNumber = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("KOTAK_UCC"); ok && strings.TrimSpace(v) != "" {
+		c.Kotak.UCC = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("KOTAK_NEO_FIN_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.Kotak.NeoFinKey = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("SCALPER_SERVE_USERNAME"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Username = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("SERVE_AUTH_USERNAME"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Username = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("SCALPER_BASIC_AUTH_USERNAME"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Username = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("SCALPER_SERVE_PASSWORD"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Password = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("SERVE_AUTH_PASSWORD"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Password = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("SCALPER_BASIC_AUTH_PASSWORD"); ok && strings.TrimSpace(v) != "" {
+		c.Web.BasicAuth.Password = strings.TrimSpace(v)
+	}
 }
 
 // Location returns the configured timezone. It assumes Validate succeeded.

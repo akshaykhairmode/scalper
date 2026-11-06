@@ -6,18 +6,25 @@
 # running in serve mode.
 #
 # Environment variables:
-#   SERVER_IP / DEPLOY_IP       (Required) Remote server IP or hostname (e.g. 192.0.2.1)
-#   SSH_KEY / DEPLOY_KEY         (Required) Path to SSH private key file
-#   DEPLOY_USER / SERVER_USER   (Optional) Remote SSH user, default: "opc"
-#   DEPLOY_PORT                 (Optional) Remote SSH port, default: 22
-#   DEPLOY_DIR                  (Optional) Remote directory, default: "/home/$DEPLOY_USER/scalper"
-#   CONFIG_FILE                 (Optional) Local config file to upload, default: "config.yaml"
-#   SERVICE_NAME                (Optional) systemd service name, default: "scalper"
-#   TARGET_ARCH                 (Optional) Override auto-detected architecture: "amd64" or "arm64"
-#   SKIP_BUILD                  (Optional) Set to 1 to skip compilation and upload existing binary
+#   SERVER_HOST / SERVER_IP / DEPLOY_IP (Required) Remote server IP or hostname (e.g. 192.0.2.1)
+#   SSH_PRIVATE_KEY / SSH_KEY           (Required) Path to SSH private key file OR raw private key string
+#   SSH_USER / DEPLOY_USER              (Optional) Remote SSH user, default: "opc"
+#   SSH_PORT / DEPLOY_PORT              (Optional) Remote SSH port, default: 22
+#   DEPLOY_DIR                          (Optional) Remote directory, default: "/home/$DEPLOY_USER/scalper"
+#   CONFIG_FILE                         (Optional) Local config file to upload, default: "config.yaml"
+#   SERVICE_NAME                        (Optional) systemd service name, default: "scalper"
+#   TARGET_ARCH                         (Optional) Override auto-detected architecture: "amd64" or "arm64"
+#   SKIP_BUILD                          (Optional) Set to 1 to skip compilation and upload existing binary
+#   KOTAK_CONSUMER_KEY                  (Optional) Kotak Neo Consumer Key
+#   KOTAK_MPIN                          (Optional) Kotak Neo MPIN
+#   KOTAK_MOBILE_NUMBER                 (Optional) Registered Kotak mobile number
+#   KOTAK_UCC                           (Optional) Kotak User Client Code
+#   KOTAK_NEO_FIN_KEY                   (Optional) Kotak Neo Fin Key (default: neotradeapi)
+#   SERVE_AUTH_USERNAME                 (Optional) Web serve mode login username
+#   SERVE_AUTH_PASSWORD                 (Optional) Web serve mode login password
 #
 # Usage:
-#   SERVER_IP="<server-ip>" SSH_KEY="~/.ssh/oci-key.pem" ./scripts/deploy.sh
+#   SERVER_HOST="<server-ip>" SSH_KEY="~/.ssh/oci-key.pem" ./scripts/deploy.sh
 #   Or via arguments:
 #   ./scripts/deploy.sh <server-ip> ~/.ssh/oci-key.pem [DEPLOY_USER]
 
@@ -39,10 +46,10 @@ error()   { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; }
 fatal()   { printf "${RED}[FATAL]${NC} %s\n" "$*" >&2; exit 1; }
 
 # ── Resolve Environment Variables and Arguments ───────────────────────────
-TARGET_IP="${1:-${SERVER_IP:-${DEPLOY_IP:-}}}"
-KEY_PATH="${2:-${SSH_KEY:-${DEPLOY_KEY:-}}}"
-USER_NAME="${3:-${DEPLOY_USER:-${SERVER_USER:-opc}}}"
-PORT="${DEPLOY_PORT:-22}"
+TARGET_IP="${1:-${SERVER_HOST:-${SERVER_IP:-${DEPLOY_IP:-}}}}"
+KEY_INPUT="${2:-${SSH_PRIVATE_KEY:-${SSH_KEY:-${DEPLOY_KEY:-}}}}"
+USER_NAME="${3:-${SSH_USER:-${DEPLOY_USER:-${SERVER_USER:-opc}}}}"
+PORT="${SSH_PORT:-${DEPLOY_PORT:-22}}"
 REMOTE_DIR="${DEPLOY_DIR:-/home/${USER_NAME}/scalper}"
 LOCAL_CONFIG="${CONFIG_FILE:-config.yaml}"
 SVC_NAME="${SERVICE_NAME:-scalper}"
@@ -54,12 +61,22 @@ if [[ -z "${TARGET_IP}" ]]; then
   echo -e "${BOLD}Scalper Deployment Script${NC}\n"
   error "Missing server IP address."
   echo "Usage:"
-  echo "  SERVER_IP=\"<ip>\" SSH_KEY=\"<path_to_key>\" ./scripts/deploy.sh"
+  echo "  SERVER_HOST=\"<ip>\" SSH_KEY=\"<path_to_key>\" ./scripts/deploy.sh"
   echo "  ./scripts/deploy.sh <server_ip> <ssh_key_path> [ssh_user]"
   exit 1
 fi
 
-if [[ -z "${KEY_PATH}" ]]; then
+KEY_PATH=""
+if [[ "${KEY_INPUT}" =~ "BEGIN" ]]; then
+  # Raw private key string provided (e.g. from GitHub Actions secrets)
+  TMP_KEY_FILE="$(mktemp /tmp/scalper_deploy_key.XXXXXX)"
+  printf "%s\n" "${KEY_INPUT}" > "${TMP_KEY_FILE}"
+  chmod 600 "${TMP_KEY_FILE}"
+  KEY_PATH="${TMP_KEY_FILE}"
+  trap 'rm -f "${TMP_KEY_FILE}"' EXIT
+elif [[ -n "${KEY_INPUT}" ]]; then
+  KEY_PATH="${KEY_INPUT}"
+else
   # Check known default key locations as convenience
   for candidate in "${HOME}/.ssh/oci-key.pem" "${HOME}/.ssh/id_rsa" "${HOME}/.ssh/id_ed25519"; do
     if [[ -f "${candidate}" ]]; then
@@ -71,12 +88,12 @@ if [[ -z "${KEY_PATH}" ]]; then
 fi
 
 if [[ -z "${KEY_PATH}" ]]; then
-  error "Missing SSH private key path."
-  echo "Please set SSH_KEY=\"/path/to/key.pem\" or pass it as the second argument."
+  error "Missing SSH private key."
+  echo "Please set SSH_KEY=\"/path/to/key.pem\" or SSH_PRIVATE_KEY=\"<key-content>\"."
   exit 1
 fi
 
-# Expand tilde in key path
+# Expand tilde in key path if string
 KEY_PATH="${KEY_PATH/#\~/$HOME}"
 
 if [[ ! -f "${KEY_PATH}" ]]; then
@@ -215,21 +232,40 @@ info "Step 4/5: Uploading binary and configuration..."
 scp "${SCP_OPTS[@]}" "${TARGET_BIN}" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/scalper.tmp"
 ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "chmod +x ${REMOTE_DIR}/scalper.tmp && mv -f ${REMOTE_DIR}/scalper.tmp ${REMOTE_DIR}/scalper && (sudo chcon -t bin_t ${REMOTE_DIR}/scalper 2>/dev/null || true)"
 
-# Upload config if present locally and not already configured on server
+# Upload config if present locally; otherwise ensure remote config.yaml exists
 if [[ -f "${LOCAL_CONFIG}" ]]; then
   info "Uploading ${LOCAL_CONFIG}..."
   scp "${SCP_OPTS[@]}" "${LOCAL_CONFIG}" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/config.yaml"
 elif [[ -f "config.example.yaml" ]]; then
-  warn "No config.yaml found locally. Uploading config.example.yaml as remote config template..."
+  info "Ensuring remote config.yaml is present from config.example.yaml..."
   scp "${SCP_OPTS[@]}" "config.example.yaml" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/config.example.yaml"
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "test -f ${REMOTE_DIR}/config.yaml || cp ${REMOTE_DIR}/config.example.yaml ${REMOTE_DIR}/config.yaml"
 fi
 
-# Configure remote environment file with Kotak credentials if present in environment
-KOTAK_KEY_VAL="${KOTAK_CONSUMER_KEY:-}"
-KOTAK_MPIN_VAL="${KOTAK_MPIN:-}"
-if [[ -n "${KOTAK_KEY_VAL}" ]]; then
-  info "Configuring remote Kotak credentials in /etc/default/${SVC_NAME}..."
-  printf "KOTAK_CONSUMER_KEY=%s\nKOTAK_MPIN=%s\n" "${KOTAK_KEY_VAL}" "${KOTAK_MPIN_VAL}" | \
+# Configure remote environment file with credentials if present in environment
+ENV_PAYLOAD=""
+append_env() {
+  local k="$1"
+  local v="$2"
+  if [[ -n "${v}" ]]; then
+    # Escape backslashes and double quotes for systemd EnvironmentFile
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    ENV_PAYLOAD+="${k}=\"${v}\""$'\n'
+  fi
+}
+
+append_env "KOTAK_CONSUMER_KEY" "${KOTAK_CONSUMER_KEY:-}"
+append_env "KOTAK_MPIN" "${KOTAK_MPIN:-}"
+append_env "KOTAK_MOBILE_NUMBER" "${KOTAK_MOBILE_NUMBER:-${KOTAK_MOBILE:-}}"
+append_env "KOTAK_UCC" "${KOTAK_UCC:-}"
+append_env "KOTAK_NEO_FIN_KEY" "${KOTAK_NEO_FIN_KEY:-}"
+append_env "SERVE_AUTH_USERNAME" "${SERVE_AUTH_USERNAME:-${SCALPER_SERVE_USERNAME:-}}"
+append_env "SERVE_AUTH_PASSWORD" "${SERVE_AUTH_PASSWORD:-${SCALPER_SERVE_PASSWORD:-}}"
+
+if [[ -n "${ENV_PAYLOAD}" ]]; then
+  info "Configuring remote credentials in /etc/default/${SVC_NAME}..."
+  printf "%s" "${ENV_PAYLOAD}" | \
     ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "sudo tee /etc/default/${SVC_NAME} >/dev/null && sudo chmod 600 /etc/default/${SVC_NAME}"
 fi
 

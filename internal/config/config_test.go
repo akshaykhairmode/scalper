@@ -21,7 +21,12 @@ func validConfig() Config {
 
 func clearScalperEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"SCALPER_LISTEN", "SCALPER_LOG_LEVEL", "SCALPER_LOG_FILE"} {
+	for _, key := range []string{
+		"SCALPER_LISTEN", "SCALPER_LOG_LEVEL", "SCALPER_LOG_FILE",
+		"KOTAK_MOBILE_NUMBER", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_NEO_FIN_KEY",
+		"SCALPER_SERVE_USERNAME", "SERVE_AUTH_USERNAME", "SCALPER_BASIC_AUTH_USERNAME",
+		"SCALPER_SERVE_PASSWORD", "SERVE_AUTH_PASSWORD", "SCALPER_BASIC_AUTH_PASSWORD",
+	} {
 		key := key
 		old, ok := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
@@ -89,6 +94,12 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("SCALPER_LISTEN", "localhost:9090")
 	t.Setenv("SCALPER_LOG_LEVEL", "debug")
 	t.Setenv("SCALPER_LOG_FILE", "")
+	t.Setenv("KOTAK_MOBILE_NUMBER", "+919876543210")
+	t.Setenv("KOTAK_UCC", "MYUCC123")
+	t.Setenv("KOTAK_NEO_FIN_KEY", "customfinkey")
+	t.Setenv("SERVE_AUTH_USERNAME", "customuser")
+	t.Setenv("SERVE_AUTH_PASSWORD", "custompass")
+
 	cfg, err := LoadBytes([]byte("{}"), "inline")
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
@@ -101,6 +112,21 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Logging.File != "" {
 		t.Fatalf("log file = %q, want empty", cfg.Logging.File)
+	}
+	if cfg.Kotak.MobileNumber != "+919876543210" {
+		t.Fatalf("mobile = %q, want +919876543210", cfg.Kotak.MobileNumber)
+	}
+	if cfg.Kotak.UCC != "MYUCC123" {
+		t.Fatalf("ucc = %q, want MYUCC123", cfg.Kotak.UCC)
+	}
+	if cfg.Kotak.NeoFinKey != "customfinkey" {
+		t.Fatalf("neo_fin_key = %q, want customfinkey", cfg.Kotak.NeoFinKey)
+	}
+	if cfg.Web.BasicAuth.Username != "customuser" {
+		t.Fatalf("auth username = %q, want customuser", cfg.Web.BasicAuth.Username)
+	}
+	if cfg.Web.BasicAuth.Password != "custompass" {
+		t.Fatalf("auth password = %q, want custompass", cfg.Web.BasicAuth.Password)
 	}
 }
 

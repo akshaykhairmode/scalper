@@ -125,8 +125,8 @@ type Server struct {
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
 
-	indicesMu  sync.Mutex
-	indicesRaw json.RawMessage
+	indicesMu       sync.Mutex
+	indicesRaw      json.RawMessage
 	indicesAt       time.Time
 	serveMode       bool
 	serveSessionsMu sync.RWMutex
@@ -244,26 +244,26 @@ func New(opts Options) (*Server, error) {
 	}
 	feedCtx, feedCancel := context.WithCancel(context.Background())
 	s := &Server{
-		log:          opts.Logger,
-		cfg:          opts.Config,
-		mpin:         strings.TrimSpace(opts.MPIN),
-		db:           opts.DB,
-		candleStore:  opts.CandleStore,
-		logDegraded:  opts.LogDegraded,
-		tokenPresent: opts.TokenPresent,
-		started:      opts.Started,
-		now:          opts.Now,
-		tmpl:         tmpl,
-		bootstrap:    bootstrap,
-		a:            authServer,
-		market:       opts.Market,
-		hsm:          opts.HSM,
-		kotak:        opts.Kotak,
-		orderFeed:    opts.OrderFeed,
-		consumerKey:  strings.TrimSpace(opts.ConsumerKey),
-		books:        newBooksCache(),
-		feedClients:  make(map[*feedClient]struct{}),
-		feedCtx:      feedCtx,
+		log:           opts.Logger,
+		cfg:           opts.Config,
+		mpin:          strings.TrimSpace(opts.MPIN),
+		db:            opts.DB,
+		candleStore:   opts.CandleStore,
+		logDegraded:   opts.LogDegraded,
+		tokenPresent:  opts.TokenPresent,
+		started:       opts.Started,
+		now:           opts.Now,
+		tmpl:          tmpl,
+		bootstrap:     bootstrap,
+		a:             authServer,
+		market:        opts.Market,
+		hsm:           opts.HSM,
+		kotak:         opts.Kotak,
+		orderFeed:     opts.OrderFeed,
+		consumerKey:   strings.TrimSpace(opts.ConsumerKey),
+		books:         newBooksCache(),
+		feedClients:   make(map[*feedClient]struct{}),
+		feedCtx:       feedCtx,
 		feedCancel:    feedCancel,
 		serveMode:     opts.ServeMode || opts.Config.App.ServeMode,
 		serveSessions: make(map[string]time.Time),

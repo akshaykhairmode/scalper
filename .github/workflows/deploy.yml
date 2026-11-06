@@ -1,0 +1,65 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Deployment Configuration
+        id: config-check
+        run: |
+          TARGET_HOST="${{ secrets.SERVER_HOST || secrets.SERVER_IP }}"
+          TARGET_KEY="${{ secrets.SSH_PRIVATE_KEY || secrets.SSH_KEY }}"
+
+          if [ -z "$TARGET_HOST" ] || [ -z "$TARGET_KEY" ]; then
+            echo "::notice title=Deployment Skipped::Neither SERVER_HOST nor SSH_PRIVATE_KEY secret is configured. Add them to Settings -> Secrets and variables -> Actions to enable automated server deployment."
+            echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Go environment
+        if: steps.config-check.outputs.can_deploy == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Test Suite
+        if: steps.config-check.outputs.can_deploy == 'true'
+        run: go test -race -count=1 ./...
+
+      - name: Deploy to Remote Server
+        if: steps.config-check.outputs.can_deploy == 'true'
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.SERVER_IP }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SSH_KEY }}
+          SSH_USER: ${{ secrets.SSH_USER || vars.SSH_USER || 'opc' }}
+          SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '' }}
+          SERVICE_NAME: ${{ vars.SERVICE_NAME || 'scalper' }}
+          KOTAK_CONSUMER_KEY: ${{ secrets.KOTAK_CONSUMER_KEY }}
+          KOTAK_MPIN: ${{ secrets.KOTAK_MPIN }}
+          KOTAK_MOBILE_NUMBER: ${{ secrets.KOTAK_MOBILE_NUMBER || secrets.KOTAK_MOBILE }}
+          KOTAK_UCC: ${{ secrets.KOTAK_UCC }}
+          KOTAK_NEO_FIN_KEY: ${{ secrets.KOTAK_NEO_FIN_KEY || vars.KOTAK_NEO_FIN_KEY || 'neotradeapi' }}
+          SERVE_AUTH_USERNAME: ${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || 'trader' }}
+          SERVE_AUTH_PASSWORD: ${{ secrets.SERVE_AUTH_PASSWORD }}
+        run: |
+          chmod +x ./scripts/deploy.sh
+          ./scripts/deploy.sh
