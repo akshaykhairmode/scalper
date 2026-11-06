@@ -51,6 +51,7 @@ type serverOpts struct {
 	authClient  auth.KotakAuthenticator
 	marketAPI   MarketAPI
 	noTokenFunc bool
+	configPath  string
 }
 
 func newTestServer(t *testing.T, o serverOpts) *Server {
@@ -70,6 +71,7 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 	opts := Options{
 		Logger:      testLogger(),
 		Config:      cfg,
+		ConfigPath:  o.configPath,
 		MPIN:        o.mpin,
 		AuthClient:  o.authClient,
 		Market:      o.marketAPI,

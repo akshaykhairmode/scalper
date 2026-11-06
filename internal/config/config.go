@@ -19,181 +19,181 @@ import (
 
 // Config is the root of config.yaml.
 type Config struct {
-	App     App     `yaml:"app"`
-	Logging Logging `yaml:"logging"`
-	Kotak   Kotak   `yaml:"kotak"`
-	Market  Market  `yaml:"market"`
-	Charts  Charts  `yaml:"charts"`
-	Trading Trading `yaml:"trading"`
-	Scrip   Scrip   `yaml:"scrip"`
-	Web     Web     `yaml:"web"`
+	App     App     `yaml:"app" json:"app"`
+	Logging Logging `yaml:"logging" json:"logging"`
+	Kotak   Kotak   `yaml:"kotak" json:"kotak"`
+	Market  Market  `yaml:"market" json:"market"`
+	Charts  Charts  `yaml:"charts" json:"charts"`
+	Trading Trading `yaml:"trading" json:"trading"`
+	Scrip   Scrip   `yaml:"scrip" json:"scrip"`
+	Web     Web     `yaml:"web" json:"web"`
 }
 
 // App holds process-level settings.
 type App struct {
-	Listen    string `yaml:"listen"`
-	DBPath    string `yaml:"db_path"`
-	Timezone  string `yaml:"timezone"`
-	ServeMode bool   `yaml:"-"` // set at runtime by the -serve flag; not read from config
+	Listen    string `yaml:"listen" json:"listen"`
+	DBPath    string `yaml:"db_path" json:"db_path"`
+	Timezone  string `yaml:"timezone" json:"timezone"`
+	ServeMode bool   `yaml:"-" json:"serve_mode"` // set at runtime by the -serve flag; not read from config
 }
 
 // Logging holds structured logging settings.
 type Logging struct {
-	Level             string `yaml:"level"`
-	Format            string `yaml:"format"`
-	File              string `yaml:"file"`
-	MaxSizeMB         int    `yaml:"max_size_mb"`
-	MaxBackups        int    `yaml:"max_backups"`
-	RetentionDays     int    `yaml:"retention_days"`
-	TickSampleSeconds int    `yaml:"tick_sample_seconds"`
-	Redact            bool   `yaml:"redact"`
+	Level             string `yaml:"level" json:"level"`
+	Format            string `yaml:"format" json:"format"`
+	File              string `yaml:"file" json:"file"`
+	MaxSizeMB         int    `yaml:"max_size_mb" json:"max_size_mb"`
+	MaxBackups        int    `yaml:"max_backups" json:"max_backups"`
+	RetentionDays     int    `yaml:"retention_days" json:"retention_days"`
+	TickSampleSeconds int    `yaml:"tick_sample_seconds" json:"tick_sample_seconds"`
+	Redact            bool   `yaml:"redact" json:"redact"`
 }
 
 // Kotak holds the non-secret parts of the broker identity. The consumer key is
 // read from KOTAK_CONSUMER_KEY only; TOTP and MPIN are never configured.
 type Kotak struct {
-	MobileNumber string `yaml:"mobile_number"`
-	UCC          string `yaml:"ucc"`
-	NeoFinKey    string `yaml:"neo_fin_key"`
+	MobileNumber string `yaml:"mobile_number" json:"mobile_number"`
+	UCC          string `yaml:"ucc" json:"ucc"`
+	NeoFinKey    string `yaml:"neo_fin_key" json:"neo_fin_key"`
 }
 
 // Market holds index, chain and feed settings.
 type Market struct {
-	DataMode    string      `yaml:"data_mode"`
-	HSMURL      string      `yaml:"hsm_url"`
-	Indices     []Index     `yaml:"indices"`
-	Commodities []Commodity `yaml:"commodities"`
-	IndiaVIX    IndiaVIX    `yaml:"india_vix"`
-	Chain       Chain       `yaml:"chain"`
-	Depth       Depth       `yaml:"depth"`
-	Holidays    []string    `yaml:"holidays"`
+	DataMode    string      `yaml:"data_mode" json:"data_mode"`
+	HSMURL      string      `yaml:"hsm_url" json:"hsm_url"`
+	Indices     []Index     `yaml:"indices" json:"indices"`
+	Commodities []Commodity `yaml:"commodities" json:"commodities"`
+	IndiaVIX    IndiaVIX    `yaml:"india_vix" json:"india_vix"`
+	Chain       Chain       `yaml:"chain" json:"chain"`
+	Depth       Depth       `yaml:"depth" json:"depth"`
+	Holidays    []string    `yaml:"holidays" json:"holidays"`
 }
 
 // Commodity is an option underlying traded on a commodity exchange.
 type Commodity struct {
-	Key             string `yaml:"key"`
-	DisplayName     string `yaml:"display_name"`
-	ExchangeSegment string `yaml:"exchange_segment"`
-	ScripName       string `yaml:"scrip_name"`
+	Key             string `yaml:"key" json:"key"`
+	DisplayName     string `yaml:"display_name" json:"display_name"`
+	ExchangeSegment string `yaml:"exchange_segment" json:"exchange_segment"`
+	ScripName       string `yaml:"scrip_name" json:"scrip_name"`
 }
 
 // Index is one configurable underlying.
 type Index struct {
-	Key             string `yaml:"key"`
-	DisplayName     string `yaml:"display_name"`
-	ExchangeSegment string `yaml:"exchange_segment"`
-	IndexSegment    string `yaml:"index_segment"`
-	IndexSymbol     string `yaml:"index_symbol"`
+	Key             string `yaml:"key" json:"key"`
+	DisplayName     string `yaml:"display_name" json:"display_name"`
+	ExchangeSegment string `yaml:"exchange_segment" json:"exchange_segment"`
+	IndexSegment    string `yaml:"index_segment" json:"index_segment"`
+	IndexSymbol     string `yaml:"index_symbol" json:"index_symbol"`
 	// ScripName is the pSymbolName used by the Scrip Master for this
 	// underlying (and its index spot row). It defaults to Key when empty.
-	ScripName     string `yaml:"scrip_name"`
-	ExpiryMode    string `yaml:"expiry_mode"`
-	DefaultExpiry string `yaml:"default_expiry"`
+	ScripName     string `yaml:"scrip_name" json:"scrip_name"`
+	ExpiryMode    string `yaml:"expiry_mode" json:"expiry_mode"`
+	DefaultExpiry string `yaml:"default_expiry" json:"default_expiry"`
 }
 
 // IndiaVIX controls the optional volatility widget.
 type IndiaVIX struct {
-	Enabled         bool   `yaml:"enabled"`
-	ExchangeSegment string `yaml:"exchange_segment"`
-	Symbol          string `yaml:"symbol"`
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	ExchangeSegment string `yaml:"exchange_segment" json:"exchange_segment"`
+	Symbol          string `yaml:"symbol" json:"symbol"`
 	// ScripName is the pSymbolName in the Scrip Master; defaults to Symbol.
-	ScripName string `yaml:"scrip_name"`
+	ScripName string `yaml:"scrip_name" json:"scrip_name"`
 }
 
 // Chain holds option-chain polling cadence.
 type Chain struct {
-	VisiblePollMS   int  `yaml:"visible_poll_ms"`
-	FullPollMS      int  `yaml:"full_poll_ms"`
-	BatchSize       int  `yaml:"batch_size"`
-	VisiblePriority bool `yaml:"visible_priority"`
+	VisiblePollMS   int  `yaml:"visible_poll_ms" json:"visible_poll_ms"`
+	FullPollMS      int  `yaml:"full_poll_ms" json:"full_poll_ms"`
+	BatchSize       int  `yaml:"batch_size" json:"batch_size"`
+	VisiblePriority bool `yaml:"visible_priority" json:"visible_priority"`
 }
 
 // Depth holds market-depth settings.
 type Depth struct {
-	Enabled bool   `yaml:"enabled"`
-	Mode    string `yaml:"mode"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Mode    string `yaml:"mode" json:"mode"`
 }
 
 // Charts holds candle settings.
 type Charts struct {
-	BaseTimeframe    string   `yaml:"base_timeframe"`
-	Timeframes       []string `yaml:"timeframes"`
-	DefaultTimeframe string   `yaml:"default_timeframe"`
-	RetentionDays    int      `yaml:"retention_days"`
-	Persist          bool     `yaml:"persist"`
+	BaseTimeframe    string   `yaml:"base_timeframe" json:"base_timeframe"`
+	Timeframes       []string `yaml:"timeframes" json:"timeframes"`
+	DefaultTimeframe string   `yaml:"default_timeframe" json:"default_timeframe"`
+	RetentionDays    int      `yaml:"retention_days" json:"retention_days"`
+	Persist          bool     `yaml:"persist" json:"persist"`
 }
 
 // Trading holds quantity, margin, session and risk settings.
 type Trading struct {
-	DefaultProduct    string   `yaml:"default_product"`
-	DefaultOrderType  string   `yaml:"default_order_type"`
-	ConfirmLiveOrders bool     `yaml:"confirm_live_orders"`
-	MarketProtection  int      `yaml:"market_protection"`
-	Quantity          Quantity `yaml:"quantity"`
-	Margin            Margin   `yaml:"margin"`
-	Session           Session  `yaml:"session"`
-	Risk              Risk     `yaml:"risk"`
-	RiskView          RiskView `yaml:"risk_view"`
+	DefaultProduct    string   `yaml:"default_product" json:"default_product"`
+	DefaultOrderType  string   `yaml:"default_order_type" json:"default_order_type"`
+	ConfirmLiveOrders bool     `yaml:"confirm_live_orders" json:"confirm_live_orders"`
+	MarketProtection  int      `yaml:"market_protection" json:"market_protection"`
+	Quantity          Quantity `yaml:"quantity" json:"quantity"`
+	Margin            Margin   `yaml:"margin" json:"margin"`
+	Session           Session  `yaml:"session" json:"session"`
+	Risk              Risk     `yaml:"risk" json:"risk"`
+	RiskView          RiskView `yaml:"risk_view" json:"risk_view"`
 }
 
 // Quantity controls the default order quantity and unit.
 type Quantity struct {
-	DefaultLots int    `yaml:"default_lots"`
-	DefaultUnit string `yaml:"default_unit"`
-	AllowShares bool   `yaml:"allow_shares"`
+	DefaultLots int    `yaml:"default_lots" json:"default_lots"`
+	DefaultUnit string `yaml:"default_unit" json:"default_unit"`
+	AllowShares bool   `yaml:"allow_shares" json:"allow_shares"`
 }
 
 // Margin holds pre-trade margin settings.
 type Margin struct {
-	CheckBeforeOrder  bool `yaml:"check_before_order"`
-	FailClosed        bool `yaml:"fail_closed"`
-	RefreshMS         int  `yaml:"refresh_ms"`
-	PreviewDebounceMS int  `yaml:"preview_debounce_ms"`
+	CheckBeforeOrder  bool `yaml:"check_before_order" json:"check_before_order"`
+	FailClosed        bool `yaml:"fail_closed" json:"fail_closed"`
+	RefreshMS         int  `yaml:"refresh_ms" json:"refresh_ms"`
+	PreviewDebounceMS int  `yaml:"preview_debounce_ms" json:"preview_debounce_ms"`
 }
 
 // Session holds the trading window in IST.
 type Session struct {
-	Open              string `yaml:"open"`
-	Close             string `yaml:"close"`
-	AllowOutsideHours bool   `yaml:"allow_outside_hours"`
+	Open              string `yaml:"open" json:"open"`
+	Close             string `yaml:"close" json:"close"`
+	AllowOutsideHours bool   `yaml:"allow_outside_hours" json:"allow_outside_hours"`
 }
 
 // Risk holds self-imposed caps. Zero means "no cap" for every cap field.
 type Risk struct {
-	MaxLotsPerOrder        int `yaml:"max_lots_per_order"`
-	MaxOpenLotsPerIndex    int `yaml:"max_open_lots_per_index"`
-	MaxOrderValueINR       int `yaml:"max_order_value_inr"`
-	MaxDailyLossINR        int `yaml:"max_daily_loss_inr"`
-	MaxOrdersPerMinute     int `yaml:"max_orders_per_minute"`
-	MaxExitOrdersPerSecond int `yaml:"max_exit_orders_per_second"`
-	BlockOnDataStaleMS     int `yaml:"block_on_data_stale_ms"`
+	MaxLotsPerOrder        int `yaml:"max_lots_per_order" json:"max_lots_per_order"`
+	MaxOpenLotsPerIndex    int `yaml:"max_open_lots_per_index" json:"max_open_lots_per_index"`
+	MaxOrderValueINR       int `yaml:"max_order_value_inr" json:"max_order_value_inr"`
+	MaxDailyLossINR        int `yaml:"max_daily_loss_inr" json:"max_daily_loss_inr"`
+	MaxOrdersPerMinute     int `yaml:"max_orders_per_minute" json:"max_orders_per_minute"`
+	MaxExitOrdersPerSecond int `yaml:"max_exit_orders_per_second" json:"max_exit_orders_per_second"`
+	BlockOnDataStaleMS     int `yaml:"block_on_data_stale_ms" json:"block_on_data_stale_ms"`
 }
 
 // RiskView holds payoff chart settings.
 type RiskView struct {
-	Enabled        bool `yaml:"enabled"`
-	PayoffRangePct int  `yaml:"payoff_range_pct"`
-	PayoffPoints   int  `yaml:"payoff_points"`
-	IncludePreview bool `yaml:"include_preview"`
+	Enabled        bool `yaml:"enabled" json:"enabled"`
+	PayoffRangePct int  `yaml:"payoff_range_pct" json:"payoff_range_pct"`
+	PayoffPoints   int  `yaml:"payoff_points" json:"payoff_points"`
+	IncludePreview bool `yaml:"include_preview" json:"include_preview"`
 }
 
 // Scrip holds Scrip Master refresh settings.
 type Scrip struct {
-	RefreshAt string   `yaml:"refresh_at"`
-	Segments  []string `yaml:"segments"`
+	RefreshAt string   `yaml:"refresh_at" json:"refresh_at"`
+	Segments  []string `yaml:"segments" json:"segments"`
 }
 
 // Web holds browser settings.
 type Web struct {
-	OpenBrowser bool      `yaml:"open_browser"`
-	BasicAuth   BasicAuth `yaml:"basic_auth"`
+	OpenBrowser bool      `yaml:"open_browser" json:"open_browser"`
+	BasicAuth   BasicAuth `yaml:"basic_auth" json:"basic_auth"`
 }
 
 // BasicAuth holds optional HTTP Basic Auth credentials for serve mode.
 // Leave both fields empty to disable Basic Auth.
 type BasicAuth struct {
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
 }
 
 // Default returns the documented defaults. A minimal config file can omit any

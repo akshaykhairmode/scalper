@@ -43,7 +43,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/version"
 )
 
-//go:embed templates/index.html
+//go:embed templates/*
 var templateFS embed.FS
 
 //go:embed static/*
@@ -97,6 +97,7 @@ type Options struct {
 	Started      time.Time
 	Now          func() time.Time
 	ServeMode    bool
+	ConfigPath   string
 }
 
 // Server holds the HTTP handler and its dependencies.
@@ -111,6 +112,7 @@ type Server struct {
 	started      time.Time
 	now          func() time.Time
 	tmpl         *template.Template
+	settingsTmpl *template.Template
 	handler      http.Handler
 	bootstrap    template.JS
 
@@ -134,6 +136,9 @@ type Server struct {
 	serveMode       bool
 	serveSessionsMu sync.RWMutex
 	serveSessions   map[string]time.Time
+
+	configPath string
+	configMu   sync.RWMutex
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -237,6 +242,14 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
+	settingsTmpl, err := template.ParseFS(templateFS, "templates/settings.html")
+	if err != nil {
+		return nil, fmt.Errorf("web: parse settings template: %w", err)
+	}
+	cfgPath := strings.TrimSpace(opts.ConfigPath)
+	if cfgPath == "" {
+		cfgPath = "config.yaml"
+	}
 	bootstrap, err := newBootstrap(opts.Config, strings.TrimSpace(opts.MPIN) != "")
 	if err != nil {
 		return nil, err
@@ -257,6 +270,7 @@ func New(opts Options) (*Server, error) {
 		started:       opts.Started,
 		now:           opts.Now,
 		tmpl:          tmpl,
+		settingsTmpl:  settingsTmpl,
 		bootstrap:     bootstrap,
 		a:             authServer,
 		market:        opts.Market,
@@ -270,6 +284,7 @@ func New(opts Options) (*Server, error) {
 		feedCancel:    feedCancel,
 		serveMode:     opts.ServeMode || opts.Config.App.ServeMode,
 		serveSessions: make(map[string]time.Time),
+		configPath:    cfgPath,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -345,6 +360,10 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 	mux.HandleFunc("GET /logs", s.handleLogsView)
 	mux.HandleFunc("GET /api/logs", s.handleLogsAPI)
+	mux.HandleFunc("GET /settings", s.handleSettingsView)
+	mux.HandleFunc("GET /api/config", s.handleGetConfig)
+	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
+	mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
 
 	var h http.Handler = mux
 	if opts.Config.App.ServeMode {
