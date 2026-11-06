@@ -169,7 +169,7 @@ jobs:
             xcodebuild \
               -workspace App.xcworkspace \
               -scheme App \
-              -destination 'generic/platform=iOS Simulator' \
+              -sdk iphonesimulator \
               -configuration Release \
               CODE_SIGNING_ALLOWED=NO \
               CODE_SIGN_IDENTITY="" \
@@ -180,7 +180,7 @@ jobs:
             xcodebuild \
               -project App.xcodeproj \
               -scheme App \
-              -destination 'generic/platform=iOS Simulator' \
+              -sdk iphonesimulator \
               -configuration Release \
               CODE_SIGNING_ALLOWED=NO \
               CODE_SIGN_IDENTITY="" \
