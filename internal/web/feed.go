@@ -172,10 +172,42 @@ func (s *Server) forwardOrderFeedEvents() {
 }
 
 func (s *Server) forwardHSMEvents() {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	pendingTicks := make(map[string]map[string]any)
+
+	flush := func() {
+		if len(pendingTicks) == 0 {
+			return
+		}
+		if len(pendingTicks) == 1 {
+			for _, t := range pendingTicks {
+				s.broadcast(map[string]any{
+					"type": "tick",
+					"data": t,
+				})
+			}
+		} else {
+			ticks := make([]map[string]any, 0, len(pendingTicks))
+			for _, t := range pendingTicks {
+				ticks = append(ticks, t)
+			}
+			s.broadcast(map[string]any{
+				"type": "ticks",
+				"data": ticks,
+			})
+		}
+		pendingTicks = make(map[string]map[string]any)
+	}
+
 	for {
 		select {
 		case <-s.feedCtx.Done():
+			flush()
 			return
+		case <-ticker.C:
+			flush()
 		case event := <-s.hsm.Events():
 			if event.Status != "" {
 				s.broadcast(map[string]any{
@@ -198,18 +230,19 @@ func (s *Server) forwardHSMEvents() {
 				"prev_close": event.Quote.PreviousClose,
 				"change":     event.Quote.Change,
 				"change_pct": event.Quote.ChangePct,
-				"volume":     event.Quote.Volume, "oi": event.Quote.OI,
-				"bid": event.Quote.Bid, "ask": event.Quote.Ask,
-				"timestamp": event.Quote.Timestamp,
+				"volume":     event.Quote.Volume,
+				"bid":        event.Quote.Bid,
+				"ask":        event.Quote.Ask,
+				"timestamp":  event.Quote.Timestamp,
+			}
+			if event.Quote.OI >= 0 && event.Quote.OI <= 100_000_000 {
+				tickData["oi"] = event.Quote.OI
 			}
 			if len(event.Quote.Bids) > 0 || len(event.Quote.Asks) > 0 {
 				tickData["bids"] = event.Quote.Bids
 				tickData["asks"] = event.Quote.Asks
 			}
-			s.broadcast(map[string]any{
-				"type": "tick",
-				"data": tickData,
-			})
+			pendingTicks[key] = tickData
 		}
 	}
 }

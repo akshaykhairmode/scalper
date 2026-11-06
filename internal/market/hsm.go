@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
@@ -40,6 +41,7 @@ type HSMFeed struct {
 	events  chan HSMEvent
 	cancel  func()
 	done    chan struct{}
+	lastEventNano atomic.Int64
 }
 
 // NewHSMFeed creates a market feed using the configured Scrip Master.
@@ -318,6 +320,7 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 }
 
 func (f *HSMFeed) emit(event HSMEvent) {
+	f.lastEventNano.Store(time.Now().UnixNano())
 	select {
 	case f.events <- event:
 	default:
@@ -356,13 +359,54 @@ func (f *HSMFeed) topicForKey(key string) (hsmSubscription, error) {
 
 func (f *HSMFeed) feedEndpoint() string {
 	f.mu.RLock()
-	sessionURL := f.feedURL
-	f.mu.RUnlock()
+	defer f.mu.RUnlock()
+	return f.feedEndpointLocked()
+}
+
+func (f *HSMFeed) feedEndpointLocked() string {
 	if configured := strings.TrimSpace(f.cfg.Market.HSMURL); configured != "" {
 		return configured
 	}
-	if sessionURL != "" {
-		return sessionURL
+	if f.feedURL != "" {
+		return f.feedURL
 	}
 	return hsm.DefaultURL
+}
+
+// HSMFeedStatus holds connection metadata for health checks and status reporting.
+type HSMFeedStatus struct {
+	Status    string    `json:"status"`
+	Endpoint  string    `json:"endpoint"`
+	LastEvent time.Time `json:"last_event,omitempty"`
+}
+
+// Status returns connection state for health checks.
+func (f *HSMFeed) Status() HSMFeedStatus {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	status := "stopped"
+	if f.cancel != nil {
+		if f.client != nil && f.client.IsConnected() {
+			status = "connected"
+		} else {
+			status = "degraded"
+		}
+	}
+	var lastEv time.Time
+	if nano := f.lastEventNano.Load(); nano > 0 {
+		lastEv = time.Unix(0, nano)
+	}
+	return HSMFeedStatus{
+		Status:    status,
+		Endpoint:  f.feedEndpointLocked(),
+		LastEvent: lastEv,
+	}
+}
+
+// ScripStatus returns the current status of the underlying Scrip Master.
+func (f *HSMFeed) ScripStatus() scrip.Status {
+	if f.scrips == nil {
+		return scrip.Status{Source: "none"}
+	}
+	return f.scrips.Status()
 }

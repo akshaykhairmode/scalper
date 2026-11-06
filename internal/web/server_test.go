@@ -19,6 +19,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
@@ -504,6 +505,83 @@ func TestHealthWithoutCallbacks(t *testing.T) {
 	}
 }
 
+type fakeMarketWithScrip struct {
+	fakeMarketAPI
+	status scrip.Status
+}
+
+func (f fakeMarketWithScrip) ScripStatus() scrip.Status {
+	return f.status
+}
+
+func TestHealthComprehensiveDetails(t *testing.T) {
+	mockMarket := fakeMarketWithScrip{
+		status: scrip.Status{
+			Loaded:  true,
+			Source:  "database",
+			Options: 12000,
+			Spots:   500,
+		},
+	}
+	s := newTestServer(t, serverOpts{
+		db:        fakeDB{},
+		token:     true,
+		marketAPI: mockMarket,
+	})
+	s.orderFeed = orderfeed.New(testLogger())
+	s.hsm = market.NewHSMFeed(testConfig(), nil, testLogger())
+	defer s.Close()
+
+	rec := do(t, s, localRequest(http.MethodGet, "/api/health"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp healthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+
+	// 1. Database
+	db := resp.Checks["database"]
+	if db.Status != "ok" || !strings.Contains(db.Detail, "connected") {
+		t.Fatalf("database check = %+v", db)
+	}
+
+	// 2. Logging
+	log := resp.Checks["logging"]
+	if log.Status != "ok" {
+		t.Fatalf("logging check = %+v", log)
+	}
+
+	// 3. Session / Broker
+	sess := resp.Checks["session"]
+	if sess.Status != "ok" || !sess.TokenPresent {
+		t.Fatalf("session check = %+v", sess)
+	}
+	broker := resp.Checks["broker"]
+	if broker.Status != "ok" {
+		t.Fatalf("broker check = %+v", broker)
+	}
+
+	// 4. Market Feed
+	mf := resp.Checks["market_feed"]
+	if mf.Status != "stopped" || mf.Endpoint == "" {
+		t.Fatalf("market_feed check = %+v", mf)
+	}
+
+	// 5. Order Feed
+	of := resp.Checks["order_feed"]
+	if of.Status != "disconnected" {
+		t.Fatalf("order_feed check = %+v", of)
+	}
+
+	// 6. Scrip Master
+	sm := resp.Checks["scrip_master"]
+	if sm.Status != "ok" || !sm.Loaded || sm.Count != 12500 || sm.Source != "database" {
+		t.Fatalf("scrip_master check = %+v", sm)
+	}
+}
+
 func TestLocalOnly(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	cases := []struct {
@@ -805,6 +883,58 @@ func TestBasicAuthMiddleware(t *testing.T) {
 	s.Handler().ServeHTTP(recValid, reqValid)
 	if recValid.Code != http.StatusOK {
 		t.Fatalf("valid credentials status = %d, want %d", recValid.Code, http.StatusOK)
+	}
+}
+
+func TestServeUnlockEndpoint(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "testuser"
+	cfg.Web.BasicAuth.Password = "testpass123"
+
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+
+	// Invalid password
+	bodyWrong := strings.NewReader(`{"username":"testuser","password":"wrong"}`)
+	reqWrong := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock", bodyWrong)
+	reqWrong.SetBasicAuth("testuser", "testpass123")
+	recWrong := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recWrong, reqWrong)
+	if recWrong.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong pass status = %d, want %d", recWrong.Code, http.StatusUnauthorized)
+	}
+
+	// Valid credentials
+	bodyOK := strings.NewReader(`{"username":"testuser","password":"testpass123"}`)
+	reqOK := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock", bodyOK)
+	reqOK.SetBasicAuth("testuser", "testpass123")
+	recOK := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recOK, reqOK)
+	if recOK.Code != http.StatusOK {
+		t.Fatalf("valid unlock status = %d, want %d", recOK.Code, http.StatusOK)
+	}
+
+	cookie := recOK.Result().Cookies()
+	var found bool
+	var sessionToken string
+	for _, c := range cookie {
+		if c.Name == "scalper_serve_session" {
+			found = true
+			sessionToken = c.Value
+			break
+		}
+	}
+	if !found || sessionToken == "" {
+		t.Fatalf("expected scalper_serve_session cookie to be set")
+	}
+
+	// Verify that subsequent request to /healthz with the session cookie succeeds without BasicAuth header
+	reqCookie := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	reqCookie.AddCookie(&http.Cookie{Name: "scalper_serve_session", Value: sessionToken})
+	recCookie := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recCookie, reqCookie)
+	if recCookie.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with session cookie, got %d", recCookie.Code)
 	}
 }
 

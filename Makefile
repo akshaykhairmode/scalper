@@ -13,7 +13,7 @@ LDFLAGS   := -s -w -X github.com/akshaykhairmode/scalper/internal/version.Versio
              -X github.com/akshaykhairmode/scalper/internal/version.Commit=$(COMMIT) \
              -X github.com/akshaykhairmode/scalper/internal/version.BuildDate=$(BUILD_DATE)
 
-.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve clean
+.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve deploy clean
 
 all: fmt vet lint test build
 
@@ -31,6 +31,7 @@ help:
 	@echo "make check      fmt check + vet + race + coverage"
 	@echo "make run        run with -config $(CONFIG)"
 	@echo "make serve      build and run in serve mode (0.0.0.0, no browser)"
+	@echo "make deploy     cross-compile and deploy to remote server (SERVER_IP, SSH_KEY)"
 
 fmt:
 	gofmt -w cmd internal
@@ -86,6 +87,9 @@ run: build
 
 serve: build
 	./$(BIN) -serve -config $(CONFIG)
+
+deploy:
+	./scripts/deploy.sh $(SERVER_IP) $(SSH_KEY) $(DEPLOY_USER)
 
 clean:
 	rm -rf bin coverage.out

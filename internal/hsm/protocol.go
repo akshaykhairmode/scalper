@@ -181,6 +181,9 @@ func decodeSFeedMarketPicture(packet []byte, header sfeedPacket, exchange string
 	sellDepthCount := binary.LittleEndian.Uint32(packet[93:97])
 	netChangePercent := signedUint32(binary.LittleEndian.Uint32(packet[99:103]))
 	openInterest := clampUint64ToInt64(binary.LittleEndian.Uint64(packet[103:111]))
+	if openInterest > 100_000_000 {
+		openInterest = 0
+	}
 	netChange := signedUint32(binary.LittleEndian.Uint32(packet[115:119]))
 	buyCount, sellCount := int(buyDepthCount), int(sellDepthCount)
 	if header.level == sfeedTouchLevel {

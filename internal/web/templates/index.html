@@ -29,8 +29,9 @@
         <span class="metric-value" id="margin-chip">—</span>
       </div>
       <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value" id="pnl-chip">—</span></span>
-      <span class="feed-badge connecting" id="feed-badge"><i></i><span id="feed-label">connecting</span></span>
-      <span class="feed-badge connecting" id="order-feed-badge" title="Kotak order and position updates"><i></i><span id="order-feed-label">order feed</span></span>
+      <span class="feed-badge connecting feed-badge-interactive" id="feed-badge" role="button" tabindex="0" title="Market feed status (click for system status)"><i></i><span id="feed-label">connecting</span></span>
+      <span class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" role="button" tabindex="0" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></span>
+      <button type="button" class="ghost small" id="status-button" title="System & Network Status">Status</button>
       <span class="badge live" id="mode-badge">LIVE</span>
       <span class="clock" id="clock">{{.Now}}</span>
       <button type="button" class="ghost" id="auth-button">Login</button>
@@ -230,6 +231,201 @@
     <a href="/healthz" target="_blank" rel="noreferrer">health</a>
     <span class="footer-uptime" title="Diagnostics">DB {{if .DBOK}}ok{{else}}down{{end}} · token {{if .TokenPresent}}present{{else}}missing{{end}}</span>
   </footer>
+
+  <!-- System Status modal -->
+  <div class="modal-backdrop" id="status-modal" hidden>
+    <div class="modal status-modal" role="dialog" aria-modal="true" aria-labelledby="status-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">DIAGNOSTICS &amp; TELEMETRY</span>
+          <h2 id="status-title">System Status &amp; Connectivity</h2>
+        </div>
+        <button type="button" class="icon-button" id="status-close" aria-label="Close system status">×</button>
+      </div>
+
+      <div class="status-summary-bar">
+        <div class="status-overall-wrap">
+          <span class="status-pill status-ok" id="status-overall-pill">HEALTHY</span>
+          <span class="status-uptime-text" id="status-uptime-text">Uptime: —</span>
+        </div>
+        <button type="button" class="ghost small" id="status-refresh-button" title="Refresh system status immediately">↻ Refresh Status</button>
+      </div>
+
+      <div class="status-grid" id="status-grid">
+        <!-- 1. Browser WebSocket -->
+        <div class="status-card" id="status-card-browser-ws">
+          <div class="status-card-header">
+            <span class="status-card-title">Browser WebSocket</span>
+            <span class="status-pill status-ok" id="status-card-ws-pill">LIVE</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">State</span>
+              <span class="metric-val" id="status-card-ws-state">Connected</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Heartbeat / Ping</span>
+              <span class="metric-val mono" id="status-card-ws-ping">Active</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Endpoint</span>
+              <span class="metric-val mono truncate" id="status-card-ws-endpoint" title="/ws">/ws</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Market Feed (HSM WebSocket) -->
+        <div class="status-card" id="status-card-market-feed">
+          <div class="status-card-header">
+            <span class="status-card-title">Market Feed (HSM)</span>
+            <span class="status-pill status-warn" id="status-card-market-pill">CONNECTING</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">Status</span>
+              <span class="metric-val" id="status-card-market-status">Connecting</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Endpoint</span>
+              <span class="metric-val mono truncate" id="status-card-market-endpoint" title="—">—</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Last Event</span>
+              <span class="metric-val mono" id="status-card-market-event">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Order Feed WebSocket -->
+        <div class="status-card" id="status-card-order-feed">
+          <div class="status-card-header">
+            <span class="status-card-title">Order Feed</span>
+            <span class="status-pill status-fail" id="status-card-order-pill">DISCONNECTED</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">Status</span>
+              <span class="metric-val" id="status-card-order-status">Disconnected</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Endpoint</span>
+              <span class="metric-val mono truncate" id="status-card-order-endpoint" title="—">—</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Last Event</span>
+              <span class="metric-val mono" id="status-card-order-event">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Kotak Broker API / Session -->
+        <div class="status-card" id="status-card-broker">
+          <div class="status-card-header">
+            <span class="status-card-title">Kotak Broker API</span>
+            <span class="status-pill status-fail" id="status-card-broker-pill">NOT SIGNED IN</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">Session</span>
+              <span class="metric-val" id="status-card-broker-session">Not Signed In</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">UCC</span>
+              <span class="metric-val mono" id="status-card-broker-ucc">—</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Token Status</span>
+              <span class="metric-val" id="status-card-broker-token">Missing</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. SQLite Database -->
+        <div class="status-card" id="status-card-db">
+          <div class="status-card-header">
+            <span class="status-card-title">SQLite Database</span>
+            <span class="status-pill status-ok" id="status-card-db-pill">CONNECTED</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">Connection</span>
+              <span class="metric-val" id="status-card-db-status">Connected</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Latency</span>
+              <span class="metric-val mono" id="status-card-db-latency">— ms</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Storage Detail</span>
+              <span class="metric-val" id="status-card-db-detail">Healthy</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Scrip Master Cache -->
+        <div class="status-card" id="status-card-scrip">
+          <div class="status-card-header">
+            <span class="status-card-title">Scrip Master</span>
+            <span class="status-pill status-ok" id="status-card-scrip-pill">READY</span>
+          </div>
+          <div class="status-card-body">
+            <div class="status-metric-row">
+              <span class="metric-key">Cache Status</span>
+              <span class="metric-val" id="status-card-scrip-status">Ready</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Contracts Cached</span>
+              <span class="metric-val mono" id="status-card-scrip-count">—</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Source</span>
+              <span class="metric-val" id="status-card-scrip-source">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-footer">
+        <span class="status-last-checked" id="status-last-checked">Checked: Just now</span>
+        <div class="modal-actions">
+          <button type="button" class="primary small" id="status-modal-close-btn">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Serve mode lock modal -->
+  {{if and .ServeMode .BasicAuth}}
+  <div class="modal-backdrop" id="serve-auth-modal" style="display:grid; place-items:center; z-index:99999;">
+    <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="serve-auth-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">SERVE MODE · ACCESS CONTROL</span>
+          <h2 id="serve-auth-title">Terminal Locked</h2>
+        </div>
+      </div>
+      <form id="serve-auth-form" novalidate style="margin-top:16px;">
+        <p class="modal-copy">
+          Enter your terminal username and password to unlock. On page refresh, you will be prompted again.
+        </p>
+        <label class="field">
+          <span>Username</span>
+          <input id="serve-auth-user" name="username" type="text" autocomplete="username"
+                 placeholder="Username" autofocus required>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="serve-auth-pass" name="password" type="password" autocomplete="current-password"
+                 placeholder="Password" required>
+        </label>
+        <p class="form-error" id="serve-auth-error" role="alert" hidden></p>
+        <div class="modal-actions" style="margin-top:16px;">
+          <button type="submit" class="primary" id="serve-auth-submit">Unlock Terminal</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {{end}}
 
   <!-- Login modal -->
   <div class="modal-backdrop" id="login-modal" hidden>

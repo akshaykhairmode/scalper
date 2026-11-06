@@ -108,6 +108,8 @@ const S = {
   marketOpen: null,
   focusedChart: null,
   soundEnabled: true,
+  wsConnectedAt: null,
+  lastWsEventTime: null,
 };
 window.S = S;
 
@@ -1287,10 +1289,13 @@ function connectWebSocket() {
     S.ws = ws;
     ws.addEventListener("open", () => {
       S.wsFailCount = 0;
+      S.wsConnectedAt = Date.now();
+      S.lastWsEventTime = Date.now();
       hideServerDownModal();
       updateFeedSubscriptions();
     });
     ws.addEventListener("message", (event) => {
+      S.lastWsEventTime = Date.now();
       try {
         handleSocketEvent(JSON.parse(event.data));
       } catch (error) {
@@ -1331,6 +1336,124 @@ function showServerDownModal(attempt) {
 function hideServerDownModal() {
   const modal = $("server-down-modal");
   if (modal) modal.hidden = true;
+}
+
+function handleTickData(data) {
+  if (!data || !data.key) return;
+  updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
+  if (data.bids || data.asks) {
+    if (!S.depths) S.depths = {};
+    S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
+    const ceKey = selectedOption("CE")?.instrumentKey;
+    const peKey = selectedOption("PE")?.instrumentKey;
+    if (S.tab === "depth" && (data.key === ceKey || data.key === peKey)) {
+      scheduleDepthRender();
+    }
+  }
+  for (const spot of S.spots.values()) {
+    if (spot.spotKey !== data.key) continue;
+    spot.ltp = num(data.ltp, spot.ltp);
+    spot.prevClose = num(data.prev_close, spot.prevClose);
+    spot.change = num(data.change, spot.ltp - spot.prevClose);
+    spot.changePct = num(data.change_pct,
+      spot.prevClose ? ((spot.ltp - spot.prevClose) / spot.prevClose) * 100 : 0);
+    renderHeader();
+    renderPaneHeaders();
+    renderOrderPad();
+    return;
+  }
+  let updatedPosition = false;
+  for (const position of S.positions) {
+    if (position.instrument_key !== data.key) continue;
+    position.ltp = num(data.ltp, position.ltp);
+    position.unrealised_pnl = position.quantity !== 0 ? (position.ltp - position.average_price) * position.quantity : 0;
+    position.pnl = position.unrealised_pnl + (position.realised_pnl || 0);
+    updatedPosition = true;
+  }
+  if (S.autoTargets && S.autoTargets.length) {
+    for (const tgt of S.autoTargets) {
+      if (tgt.instrumentKey === data.key) {
+        tgt.ltp = num(data.ltp, tgt.ltp);
+        updatedPosition = true;
+
+        if (tgt.status === "IN_POSITION" && tgt.targetPrice > 0) {
+          const isHit = tgt.action === "buy" ? (tgt.ltp >= tgt.targetPrice) : (tgt.ltp <= tgt.targetPrice);
+          if (isHit) {
+            tgt.status = "TARGET_HIT";
+            tgt.exitPrice = tgt.targetPrice;
+            saveAutoTargets();
+            playTradeSound("target");
+            const pnl = (tgt.exitPrice - tgt.entryPrice) * tgt.shares * (tgt.action === "buy" ? 1 : -1);
+            toast(`🎯 Bracket Target Hit! Sold ${tgt.shares} @ ₹${fmt(tgt.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+
+            if (tgt.exitOrderId) {
+              const oInState = (S.orders || []).find((o) => String(o.id) === String(tgt.exitOrderId));
+              if (oInState) {
+                oInState.status = "TRAD";
+                oInState.filled_quantity = tgt.shares;
+              }
+            }
+            S.charts.ce?.clearTargetPreview?.();
+            S.charts.pe?.clearTargetPreview?.();
+            renderTab();
+            scheduleBooksRefresh(100);
+          }
+        }
+      }
+    }
+  }
+  if (updatedPosition) {
+    renderHeader();
+    updateLiveTabQuotes(data.key);
+    updateChartTrades();
+  }
+  const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
+  if (row) {
+    const opt = row.call?.instrumentKey === data.key ? row.call : row.put;
+    opt.ltp = num(data.ltp, opt.ltp);
+    opt.prevClose = num(data.prev_close, opt.prevClose);
+    opt.bid = num(data.bid, opt.bid);
+    opt.ask = num(data.ask, opt.ask);
+    opt.volume = num(data.volume, opt.volume);
+    if (data.oi != null && Number(data.oi) >= 0 && Number(data.oi) <= 100000000) {
+      opt.oi = num(data.oi, opt.oi);
+    }
+    if (data.bids || data.asks) {
+      const merged = mergeDepthData({ bids: opt.bids, asks: opt.asks }, data.bids, data.asks);
+      opt.bids = merged.bids;
+      opt.asks = merged.asks;
+    }
+    opt.quoteAvailable = opt.ltp > 0;
+    opt.change = opt.ltp - opt.prevClose;
+    opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
+    const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
+    const cell = [...$("chain-body").querySelectorAll(".chain-row")]
+      .find((item) => item.dataset.strike === String(row.strike))
+      ?.querySelector(`[data-select="${type}"]`);
+    if (cell) {
+      cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
+      cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
+      cell.classList.toggle("up", opt.changePct > 0);
+      cell.classList.toggle("down", opt.changePct < 0);
+      renderPCR();
+    }
+    if (selectedOption(type)?.instrumentKey === data.key) {
+      renderPaneHeaders();
+      renderOrderPad();
+    }
+  } else {
+    let updatedSelected = false;
+    for (const type of ["CE", "PE"]) {
+      const option = selectedOption(type);
+      if (option?.instrumentKey !== data.key) continue;
+      updateOptionFromTick(option, data);
+      updatedSelected = true;
+    }
+    if (updatedSelected) {
+      renderPaneHeaders();
+      renderOrderPad();
+    }
+  }
 }
 
 function handleSocketEvent(event) {
@@ -1377,118 +1500,12 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "tick") {
-    updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
-    if (data.bids || data.asks) {
-      if (!S.depths) S.depths = {};
-      S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
-      const ceKey = selectedOption("CE")?.instrumentKey;
-      const peKey = selectedOption("PE")?.instrumentKey;
-      if (S.tab === "depth" && (data.key === ceKey || data.key === peKey)) {
-        scheduleDepthRender();
-      }
-    }
-    for (const spot of S.spots.values()) {
-      if (spot.spotKey !== data.key) continue;
-      spot.ltp = num(data.ltp, spot.ltp);
-      spot.prevClose = num(data.prev_close, spot.prevClose);
-      spot.change = num(data.change, spot.ltp - spot.prevClose);
-      spot.changePct = num(data.change_pct,
-        spot.prevClose ? ((spot.ltp - spot.prevClose) / spot.prevClose) * 100 : 0);
-      renderHeader();
-      renderPaneHeaders();
-      renderOrderPad();
-      return;
-    }
-    let updatedPosition = false;
-    for (const position of S.positions) {
-      if (position.instrument_key !== data.key) continue;
-      position.ltp = num(data.ltp, position.ltp);
-      position.unrealised_pnl = position.quantity !== 0 ? (position.ltp - position.average_price) * position.quantity : 0;
-      position.pnl = position.unrealised_pnl + (position.realised_pnl || 0);
-      updatedPosition = true;
-    }
-    if (S.autoTargets && S.autoTargets.length) {
-      for (const tgt of S.autoTargets) {
-        if (tgt.instrumentKey === data.key) {
-          tgt.ltp = num(data.ltp, tgt.ltp);
-          updatedPosition = true;
-
-          // If bracket is IN_POSITION and live tick crosses target price, trigger TARGET_HIT immediately
-          if (tgt.status === "IN_POSITION" && tgt.targetPrice > 0) {
-            const isHit = tgt.action === "buy" ? (tgt.ltp >= tgt.targetPrice) : (tgt.ltp <= tgt.targetPrice);
-            if (isHit) {
-              tgt.status = "TARGET_HIT";
-              tgt.exitPrice = tgt.targetPrice;
-              saveAutoTargets();
-              playTradeSound("target");
-              const pnl = (tgt.exitPrice - tgt.entryPrice) * tgt.shares * (tgt.action === "buy" ? 1 : -1);
-              toast(`🎯 Bracket Target Hit! Sold ${tgt.shares} @ ₹${fmt(tgt.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
-
-              if (tgt.exitOrderId) {
-                const oInState = (S.orders || []).find((o) => String(o.id) === String(tgt.exitOrderId));
-                if (oInState) {
-                  oInState.status = "TRAD";
-                  oInState.filled_quantity = tgt.shares;
-                }
-              }
-              S.charts.ce?.clearTargetPreview?.();
-              S.charts.pe?.clearTargetPreview?.();
-              renderTab();
-              scheduleBooksRefresh(100);
-            }
-          }
-        }
-      }
-    }
-    if (updatedPosition) {
-      renderHeader();
-      updateLiveTabQuotes(data.key);
-      updateChartTrades();
-    }
-    const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
-    if (row) {
-      const opt = row.call?.instrumentKey === data.key ? row.call : row.put;
-      opt.ltp = num(data.ltp, opt.ltp);
-      opt.prevClose = num(data.prev_close, opt.prevClose);
-      opt.bid = num(data.bid, opt.bid);
-      opt.ask = num(data.ask, opt.ask);
-      opt.volume = num(data.volume, opt.volume);
-      opt.oi = num(data.oi, opt.oi);
-      if (data.bids || data.asks) {
-        const merged = mergeDepthData({ bids: opt.bids, asks: opt.asks }, data.bids, data.asks);
-        opt.bids = merged.bids;
-        opt.asks = merged.asks;
-      }
-      opt.quoteAvailable = opt.ltp > 0;
-      opt.change = opt.ltp - opt.prevClose;
-      opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
-      const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
-      const cell = [...$("chain-body").querySelectorAll(".chain-row")]
-        .find((item) => item.dataset.strike === String(row.strike))
-        ?.querySelector(`[data-select="${type}"]`);
-      if (cell) {
-        cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
-        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
-        cell.classList.toggle("up", opt.changePct > 0);
-        cell.classList.toggle("down", opt.changePct < 0);
-        renderPCR();
-      }
-      if (selectedOption(type)?.instrumentKey === data.key) {
-        renderPaneHeaders();
-        renderOrderPad();
-      }
-    } else {
-      let updatedSelected = false;
-      for (const type of ["CE", "PE"]) {
-        const option = selectedOption(type);
-        if (option?.instrumentKey !== data.key) continue;
-        updateOptionFromTick(option, data);
-        updatedSelected = true;
-      }
-      if (updatedSelected) {
-        renderPaneHeaders();
-        renderOrderPad();
-      }
+    handleTickData(data);
+    return;
+  }
+  if (event.type === "ticks" && Array.isArray(data)) {
+    for (const tick of data) {
+      handleTickData(tick);
     }
     return;
   }
@@ -1567,8 +1584,21 @@ function computePCR() {
     }
   }
 
-  const pcrOI = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
-  const pcrVol = totalCallVol > 0 ? totalPutVol / totalCallVol : null;
+  let pcrOI = null;
+  if (totalCallOI > 0 && totalPutOI > 0) {
+    const ratio = totalPutOI / totalCallOI;
+    if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
+      pcrOI = ratio;
+    }
+  }
+
+  let pcrVol = null;
+  if (totalCallVol > 0 && totalPutVol > 0) {
+    const ratio = totalPutVol / totalCallVol;
+    if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
+      pcrVol = ratio;
+    }
+  }
 
   return {
     pcrOI,
@@ -1589,8 +1619,21 @@ function computeStrikePCR(strike) {
   const callVol = num(row.call?.volume);
   const putVol = num(row.put?.volume);
 
-  const pcrOI = callOI > 0 ? putOI / callOI : null;
-  const pcrVol = callVol > 0 ? putVol / callVol : null;
+  let pcrOI = null;
+  if (callOI > 0 && putOI > 0) {
+    const ratio = putOI / callOI;
+    if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
+      pcrOI = ratio;
+    }
+  }
+
+  let pcrVol = null;
+  if (callVol > 0 && putVol > 0) {
+    const ratio = putVol / callVol;
+    if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
+      pcrVol = ratio;
+    }
+  }
 
   return {
     strike,
@@ -1618,8 +1661,8 @@ function renderPanePCR(pane, option, chainPCR, expiryLabel) {
   }
 
   const strikePCR = computeStrikePCR(option.strike);
-  const totalPCRVal = chainPCR?.pcrOI != null ? chainPCR.pcrOI : chainPCR?.pcrVol;
-  const strikePCRVal = strikePCR?.pcrOI != null ? strikePCR.pcrOI : strikePCR?.pcrVol;
+  const totalPCRVal = (chainPCR?.pcrOI != null && Number.isFinite(chainPCR.pcrOI) && chainPCR.pcrOI <= 50) ? chainPCR.pcrOI : (chainPCR?.pcrVol != null && Number.isFinite(chainPCR.pcrVol) && chainPCR.pcrVol <= 50 ? chainPCR.pcrVol : null);
+  const strikePCRVal = (strikePCR?.pcrOI != null && Number.isFinite(strikePCR.pcrOI) && strikePCR.pcrOI <= 50) ? strikePCR.pcrOI : (strikePCR?.pcrVol != null && Number.isFinite(strikePCR.pcrVol) && strikePCR.pcrVol <= 50 ? strikePCR.pcrVol : null);
 
   const displayVal = strikePCRVal != null ? strikePCRVal : totalPCRVal;
   const isStrike = strikePCRVal != null;
@@ -1776,7 +1819,9 @@ function updateOptionFromTick(option, data) {
   option.bid = num(data.bid, option.bid);
   option.ask = num(data.ask, option.ask);
   option.volume = num(data.volume, option.volume);
-  option.oi = num(data.oi, option.oi);
+  if (data.oi != null && Number(data.oi) >= 0 && Number(data.oi) <= 100000000) {
+    option.oi = num(data.oi, option.oi);
+  }
   if (data.bids || data.asks) {
     const merged = mergeDepthData({ bids: option.bids, asks: option.asks }, data.bids, data.asks);
     option.bids = merged.bids;
@@ -4292,6 +4337,249 @@ function toast(message, kind = "ok", ms = 3500) {
   }, ms);
 }
 
+/* ── System Status Modal ──────────────────────────────── */
+
+let statusRefreshTimer = null;
+let statusBusy = false;
+
+function formatRelativeTime(dateOrIso) {
+  if (!dateOrIso) return "—";
+  const time = typeof dateOrIso === "number" ? dateOrIso : new Date(dateOrIso).getTime();
+  if (isNaN(time) || time <= 0) return "—";
+  const diffSec = Math.round((Date.now() - time) / 1000);
+  if (diffSec < 2) return "Just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.round(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return new Date(time).toLocaleDateString();
+}
+
+function formatUptime(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds < 0) return "—";
+  const s = Math.floor(seconds % 60);
+  const m = Math.floor((seconds / 60) % 60);
+  const h = Math.floor((seconds / 3600) % 24);
+  const d = Math.floor(seconds / 86400);
+  const parts = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0 || d > 0) parts.push(`${h}h`);
+  if (m > 0 || h > 0 || d > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(" ");
+}
+
+function setStatusPill(el, statusType, text) {
+  if (!el) return;
+  el.className = `status-pill status-${statusType}`;
+  el.textContent = text;
+}
+
+async function openStatusModal() {
+  const modal = $("status-modal");
+  if (!modal) return;
+  modal.hidden = false;
+  await refreshStatusModal(true);
+  if (!statusRefreshTimer) {
+    statusRefreshTimer = window.setInterval(() => refreshStatusModal(false), 3500);
+  }
+}
+
+function closeStatusModal() {
+  const modal = $("status-modal");
+  if (modal) modal.hidden = true;
+  if (statusRefreshTimer) {
+    window.clearInterval(statusRefreshTimer);
+    statusRefreshTimer = null;
+  }
+}
+
+async function refreshStatusModal(force = false) {
+  const modal = $("status-modal");
+  if (!modal || modal.hidden) return;
+  if (statusBusy && !force) return;
+  statusBusy = true;
+  const refreshBtn = $("status-refresh-button");
+  if (force && refreshBtn) refreshBtn.textContent = "↻ Refreshing…";
+
+  try {
+    const res = await fetch("/api/health");
+    let health = null;
+    try {
+      health = await res.json();
+    } catch {}
+    if (!health) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    renderStatusModalData(health);
+  } catch (err) {
+    console.warn("failed to fetch /api/health", err);
+    renderStatusModalOffline(err);
+  } finally {
+    statusBusy = false;
+    if (refreshBtn) refreshBtn.textContent = "↻ Refresh Status";
+  }
+}
+
+function renderStatusModalData(health) {
+  const checks = health?.checks || {};
+
+  // Overall status
+  const overallPill = $("status-overall-pill");
+  if (health?.status === "ok") {
+    setStatusPill(overallPill, "ok", "SYSTEM HEALTHY");
+  } else if (health?.status === "degraded") {
+    setStatusPill(overallPill, "warn", "SYSTEM DEGRADED");
+  } else {
+    setStatusPill(overallPill, "fail", "ATTENTION NEEDED");
+  }
+  if ($("status-uptime-text")) {
+    $("status-uptime-text").textContent = `Uptime: ${formatUptime(health?.uptime_seconds)}`;
+  }
+  if ($("status-last-checked")) {
+    const now = new Date();
+    $("status-last-checked").textContent = `Checked: ${now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Kolkata" })} IST`;
+  }
+
+  // 1. Browser WebSocket
+  const wsOpen = S.ws && S.ws.readyState === WebSocket.OPEN;
+  const wsConnecting = S.ws && S.ws.readyState === WebSocket.CONNECTING;
+  if (wsOpen) {
+    setStatusPill($("status-card-ws-pill"), "ok", "LIVE");
+    if ($("status-card-ws-state")) $("status-card-ws-state").textContent = "Connected (Open)";
+  } else if (wsConnecting) {
+    setStatusPill($("status-card-ws-pill"), "warn", "CONNECTING");
+    if ($("status-card-ws-state")) $("status-card-ws-state").textContent = "Connecting…";
+  } else {
+    setStatusPill($("status-card-ws-pill"), "fail", "DISCONNECTED");
+    if ($("status-card-ws-state")) $("status-card-ws-state").textContent = "Disconnected";
+  }
+  if ($("status-card-ws-ping")) {
+    if (wsOpen) {
+      $("status-card-ws-ping").textContent = S.lastWsEventTime ? `Active (${formatRelativeTime(S.lastWsEventTime)})` : "Active";
+    } else {
+      $("status-card-ws-ping").textContent = "Inactive";
+    }
+  }
+  if ($("status-card-ws-endpoint")) {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    $("status-card-ws-endpoint").textContent = `${proto}//${location.host}/ws`;
+  }
+
+  // 2. Market Feed (HSM WebSocket)
+  const mCheck = checks.market_feed || {};
+  const isMarketLive = S.feed === "live" || mCheck.status === "connected";
+  const isMarketDegraded = S.feed === "degraded" || mCheck.status === "degraded";
+  const isMarketPolling = S.feed === "polling";
+  if (isMarketLive) {
+    setStatusPill($("status-card-market-pill"), "ok", "CONNECTED");
+    if ($("status-card-market-status")) $("status-card-market-status").textContent = "Connected (Kotak SFeed)";
+  } else if (isMarketDegraded) {
+    setStatusPill($("status-card-market-pill"), "warn", "DEGRADED");
+    if ($("status-card-market-status")) $("status-card-market-status").textContent = "Degraded (Reconnecting)";
+  } else if (isMarketPolling) {
+    setStatusPill($("status-card-market-pill"), "warn", "POLLING");
+    if ($("status-card-market-status")) $("status-card-market-status").textContent = "Polling REST Quotes";
+  } else {
+    setStatusPill($("status-card-market-pill"), "neutral", "STOPPED");
+    if ($("status-card-market-status")) $("status-card-market-status").textContent = "Stopped / Inactive";
+  }
+  const marketEndpoint = mCheck.endpoint || (S.feed === "live" ? "wss://tradeapi.kotaksecurities.com/websocket" : "—");
+  if ($("status-card-market-endpoint")) {
+    $("status-card-market-endpoint").textContent = marketEndpoint;
+    $("status-card-market-endpoint").title = marketEndpoint;
+  }
+  if ($("status-card-market-event")) {
+    $("status-card-market-event").textContent = mCheck.last_event ? formatRelativeTime(mCheck.last_event) : (isMarketLive ? "Streaming live" : "—");
+  }
+
+  // 3. Order Feed WebSocket
+  const oCheck = checks.order_feed || {};
+  const isOrderLive = S.orderFeed === "live" || oCheck.status === "connected";
+  const isOrderConnecting = S.orderFeed === "connecting" || oCheck.status === "connecting";
+  if (isOrderLive) {
+    setStatusPill($("status-card-order-pill"), "ok", "CONNECTED");
+    if ($("status-card-order-status")) $("status-card-order-status").textContent = "Connected (Kotak Neo)";
+  } else if (isOrderConnecting) {
+    setStatusPill($("status-card-order-pill"), "warn", "CONNECTING");
+    if ($("status-card-order-status")) $("status-card-order-status").textContent = "Connecting to Order Stream…";
+  } else {
+    setStatusPill($("status-card-order-pill"), "fail", "DISCONNECTED");
+    if ($("status-card-order-status")) $("status-card-order-status").textContent = "Disconnected";
+  }
+  const orderEndpoint = oCheck.endpoint || (isOrderLive ? "wss://tradeapi.kotaksecurities.com/realtime" : "—");
+  if ($("status-card-order-endpoint")) {
+    $("status-card-order-endpoint").textContent = orderEndpoint;
+    $("status-card-order-endpoint").title = orderEndpoint;
+  }
+  if ($("status-card-order-event")) {
+    $("status-card-order-event").textContent = oCheck.last_event ? formatRelativeTime(oCheck.last_event) : (isOrderLive ? "Listening for events" : "—");
+  }
+
+  // 4. Broker API / Session
+  const bCheck = checks.session || checks.broker || {};
+  const isAuth = Boolean(S.session?.authenticated || bCheck.authenticated || bCheck.session_active);
+  const tokenPresent = Boolean(bCheck.token_present || bCheck.status === "ok");
+  if (isAuth) {
+    setStatusPill($("status-card-broker-pill"), "ok", "ACTIVE");
+    const method = (bCheck.login_method || S.session?.login_method || "Token").toUpperCase();
+    const exp = bCheck.expires_in != null ? ` (exp in ${bCheck.expires_in}m)` : "";
+    if ($("status-card-broker-session")) $("status-card-broker-session").textContent = `Active via ${method}${exp}`;
+  } else if (tokenPresent) {
+    setStatusPill($("status-card-broker-pill"), "warn", "NOT SIGNED IN");
+    if ($("status-card-broker-session")) $("status-card-broker-session").textContent = "Sign-in required to trade";
+  } else {
+    setStatusPill($("status-card-broker-pill"), "fail", "NO TOKEN");
+    if ($("status-card-broker-session")) $("status-card-broker-session").textContent = "Consumer key not configured";
+  }
+  if ($("status-card-broker-ucc")) {
+    $("status-card-broker-ucc").textContent = bCheck.ucc || S.session?.ucc || "—";
+  }
+  if ($("status-card-broker-token")) {
+    $("status-card-broker-token").textContent = tokenPresent ? "Configured" : "Missing";
+  }
+
+  // 5. SQLite Database
+  const dbCheck = checks.database || {};
+  if (dbCheck.status === "ok") {
+    setStatusPill($("status-card-db-pill"), "ok", "CONNECTED");
+    if ($("status-card-db-status")) $("status-card-db-status").textContent = "Operational (Read/Write)";
+  } else {
+    setStatusPill($("status-card-db-pill"), "fail", "ERROR");
+    if ($("status-card-db-status")) $("status-card-db-status").textContent = "Unreachable";
+  }
+  if ($("status-card-db-latency")) {
+    $("status-card-db-latency").textContent = dbCheck.latency_ms != null ? `${dbCheck.latency_ms} ms` : "— ms";
+  }
+  if ($("status-card-db-detail")) {
+    $("status-card-db-detail").textContent = dbCheck.detail || (dbCheck.status === "ok" ? "Healthy" : "Offline");
+  }
+
+  // 6. Scrip Master Cache
+  const sCheck = checks.scrip_master || {};
+  if (sCheck.loaded) {
+    setStatusPill($("status-card-scrip-pill"), "ok", "READY");
+    if ($("status-card-scrip-status")) $("status-card-scrip-status").textContent = `Ready (${sCheck.source || "Database"})`;
+    if ($("status-card-scrip-count")) $("status-card-scrip-count").textContent = Number(sCheck.count || 0).toLocaleString();
+    if ($("status-card-scrip-source")) $("status-card-scrip-source").textContent = sCheck.source || "Database";
+  } else {
+    setStatusPill($("status-card-scrip-pill"), "warn", "NOT LOADED");
+    if ($("status-card-scrip-status")) $("status-card-scrip-status").textContent = sCheck.detail || "Cache not ready";
+    if ($("status-card-scrip-count")) $("status-card-scrip-count").textContent = "0";
+    if ($("status-card-scrip-source")) $("status-card-scrip-source").textContent = sCheck.source || "None";
+  }
+}
+
+function renderStatusModalOffline(err) {
+  setStatusPill($("status-overall-pill"), "fail", "SERVER UNREACHABLE");
+  if ($("status-uptime-text")) $("status-uptime-text").textContent = "Uptime: Unavailable";
+  setStatusPill($("status-card-ws-pill"), "fail", "DISCONNECTED");
+  if ($("status-card-ws-state")) $("status-card-ws-state").textContent = "Server unreachable";
+  setStatusPill($("status-card-db-pill"), "fail", "UNKNOWN");
+  if ($("status-card-db-status")) $("status-card-db-status").textContent = String(err?.message || "Fetch failed");
+}
+
 /* ── Events ───────────────────────────────────────────── */
 
 function bindEvents() {
@@ -4489,6 +4777,69 @@ function bindEvents() {
     if (cancelAllBtn) { onCancelAllOpenOrders(); return; }
   });
 
+  const serveAuthModal = $("serve-auth-modal");
+  const serveAuthForm = $("serve-auth-form");
+  const serveAuthUser = $("serve-auth-user");
+  const serveAuthPass = $("serve-auth-pass");
+  const serveAuthErr = $("serve-auth-error");
+  const serveAuthSubmit = $("serve-auth-submit");
+
+  if (serveAuthForm && serveAuthModal) {
+    serveAuthForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (serveAuthErr) serveAuthErr.hidden = true;
+      if (serveAuthSubmit) {
+        serveAuthSubmit.disabled = true;
+        serveAuthSubmit.textContent = "Verifying...";
+      }
+
+      try {
+        const resp = await fetch("/api/auth/serve-unlock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: serveAuthUser ? serveAuthUser.value.trim() : "",
+            password: serveAuthPass ? serveAuthPass.value : ""
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+          serveAuthModal.style.display = "none";
+          serveAuthModal.hidden = true;
+        } else {
+          if (serveAuthErr) {
+            serveAuthErr.textContent = data.error || "Invalid username or password";
+            serveAuthErr.hidden = false;
+          }
+          if (serveAuthPass) {
+            serveAuthPass.value = "";
+            serveAuthPass.focus();
+          }
+        }
+      } catch (err) {
+        if (serveAuthErr) {
+          serveAuthErr.textContent = "Verification request failed. Please retry.";
+          serveAuthErr.hidden = false;
+        }
+      } finally {
+        if (serveAuthSubmit) {
+          serveAuthSubmit.disabled = false;
+          serveAuthSubmit.textContent = "Unlock Terminal";
+        }
+      }
+    });
+
+    if (serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none") {
+      setTimeout(() => {
+        if (serveAuthUser && !serveAuthUser.value) {
+          serveAuthUser.focus();
+        } else if (serveAuthPass) {
+          serveAuthPass.focus();
+        }
+      }, 100);
+    }
+  }
+
   $("square-off-button").addEventListener("click", onSquareOffAll);
   $("auth-button").addEventListener("click", () => {
     if (S.session?.authenticated) logout();
@@ -4500,6 +4851,24 @@ function bindEvents() {
   $("confirm-ok").addEventListener("click", () => closeConfirm(true));
   $("confirm-modal").addEventListener("click", (event) => {
     if (event.target === $("confirm-modal")) closeConfirm(false);
+  });
+
+  $("status-button")?.addEventListener("click", openStatusModal);
+  $("feed-badge")?.addEventListener("click", openStatusModal);
+  $("order-feed-badge")?.addEventListener("click", openStatusModal);
+  for (const id of ["feed-badge", "order-feed-badge"]) {
+    $(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openStatusModal();
+      }
+    });
+  }
+  $("status-close")?.addEventListener("click", closeStatusModal);
+  $("status-modal-close-btn")?.addEventListener("click", closeStatusModal);
+  $("status-refresh-button")?.addEventListener("click", () => refreshStatusModal(true));
+  $("status-modal")?.addEventListener("click", (event) => {
+    if (event.target === $("status-modal")) closeStatusModal();
   });
 
   // Pattern popover & filters
@@ -4588,6 +4957,10 @@ function bindEvents() {
     }
     if (!$("confirm-modal").hidden) {
       closeConfirm(false);
+      return;
+    }
+    if (!$("status-modal")?.hidden) {
+      closeStatusModal();
       return;
     }
     if (!$("strike-modal").hidden) {

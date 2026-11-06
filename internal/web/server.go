@@ -127,8 +127,10 @@ type Server struct {
 
 	indicesMu  sync.Mutex
 	indicesRaw json.RawMessage
-	indicesAt  time.Time
-	serveMode  bool
+	indicesAt       time.Time
+	serveMode       bool
+	serveSessionsMu sync.RWMutex
+	serveSessions   map[string]time.Time
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -262,8 +264,9 @@ func New(opts Options) (*Server, error) {
 		books:        newBooksCache(),
 		feedClients:  make(map[*feedClient]struct{}),
 		feedCtx:      feedCtx,
-		feedCancel:   feedCancel,
-		serveMode:    opts.ServeMode || opts.Config.App.ServeMode,
+		feedCancel:    feedCancel,
+		serveMode:     opts.ServeMode || opts.Config.App.ServeMode,
+		serveSessions: make(map[string]time.Time),
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -285,6 +288,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/totp", s.handleTotpLogin)
 	mux.HandleFunc("POST /api/auth/mpin", s.handleMPINLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/auth/serve-unlock", s.handleServeUnlock)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/version/check", s.handleVersionCheck)
@@ -308,12 +312,9 @@ func New(opts Options) (*Server, error) {
 
 	var h http.Handler = mux
 	if opts.Config.App.ServeMode {
-		// In serve mode the app is reachable over a network interface.
-		// Replace the loopback guard with HTTP Basic Auth so only authorised
-		// browsers can access the terminal.
 		ba := opts.Config.Web.BasicAuth
 		if strings.TrimSpace(ba.Username) != "" {
-			h = basicAuth(ba.Username, ba.Password, h)
+			h = s.serveAuthMiddleware(ba.Username, ba.Password, h)
 		}
 	} else {
 		h = localOnly(s.log, h)
@@ -373,6 +374,7 @@ type pageData struct {
 	DBOK           bool
 	MPINConfigured bool
 	ServeMode      bool
+	BasicAuth      bool
 	Bootstrap      template.JS
 }
 
@@ -416,6 +418,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		DBOK:           dbOK,
 		MPINConfigured: s.mpin != "",
 		ServeMode:      s.serveMode,
+		BasicAuth:      strings.TrimSpace(s.cfg.Web.BasicAuth.Username) != "",
 		Bootstrap:      s.bootstrap,
 	}
 	var buf strings.Builder
@@ -458,9 +461,20 @@ func underlyingLabel(name, segment string) string {
 }
 
 type healthCheck struct {
-	Status    string `json:"status"`
-	Detail    string `json:"detail,omitempty"`
-	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Status        string `json:"status"`
+	Detail        string `json:"detail,omitempty"`
+	LatencyMS     int64  `json:"latency_ms,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	LastEvent     string `json:"last_event,omitempty"`
+	Authenticated bool   `json:"authenticated,omitempty"`
+	SessionActive bool   `json:"session_active,omitempty"`
+	UCC           string `json:"ucc,omitempty"`
+	TokenPresent  bool   `json:"token_present,omitempty"`
+	LoginMethod   string `json:"login_method,omitempty"`
+	ExpiresIn     int    `json:"expires_in,omitempty"`
+	Loaded        bool   `json:"loaded,omitempty"`
+	Count         int    `json:"count,omitempty"`
+	Source        string `json:"source,omitempty"`
 }
 
 type healthResponse struct {
@@ -524,6 +538,90 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("write logout response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
+}
+
+// handleServeUnlock validates serve mode username and password.
+func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		_ = writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request body"})
+		return
+	}
+	ba := s.cfg.Web.BasicAuth
+	if strings.TrimSpace(ba.Username) == "" {
+		_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	wantUser := sha256.Sum256([]byte(ba.Username))
+	wantPass := sha256.Sum256([]byte(ba.Password))
+	gotUser := sha256.Sum256([]byte(req.Username))
+	gotPass := sha256.Sum256([]byte(req.Password))
+	if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) != 1 ||
+		subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) != 1 {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid username or password"})
+		return
+	}
+
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	s.serveSessionsMu.Lock()
+	s.serveSessions[token] = time.Now().Add(24 * time.Hour)
+	s.serveSessionsMu.Unlock()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "scalper_serve_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
+}
+
+func (s *Server) serveAuthMiddleware(username, password string, next http.Handler) http.Handler {
+	wantUser := sha256.Sum256([]byte(username))
+	wantPass := sha256.Sum256([]byte(password))
+	realm := `Basic realm="Scalper Terminal", charset="UTF-8"`
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Allow homepage HTML and unlock endpoint without prior authentication
+		if r.URL.Path == "/" || r.URL.Path == "/api/auth/serve-unlock" || strings.HasPrefix(r.URL.Path, "/static/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Check session cookie
+		if cookie, err := r.Cookie("scalper_serve_session"); err == nil && cookie.Value != "" {
+			s.serveSessionsMu.RLock()
+			exp, found := s.serveSessions[cookie.Value]
+			s.serveSessionsMu.RUnlock()
+			if found && time.Now().Before(exp) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// 3. Check HTTP Basic Auth header
+		if u, p, ok := r.BasicAuth(); ok {
+			gotUser := sha256.Sum256([]byte(u))
+			gotPass := sha256.Sum256([]byte(p))
+			if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) == 1 &&
+				subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// 4. Unauthorized
+		w.Header().Set("WWW-Authenticate", realm)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	})
 }
 
 // handleTotpLogin handles TOTP-based login.
@@ -680,9 +778,9 @@ func (s *Server) currentMode() string {
 }
 
 func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
-	checks := make(map[string]healthCheck, 3)
+	checks := make(map[string]healthCheck, 6)
 
-	dbCheck := healthCheck{Status: "ok"}
+	dbCheck := healthCheck{Status: "ok", Detail: "connected"}
 	if s.db == nil {
 		dbCheck = healthCheck{Status: "fail", Detail: "database not configured"}
 	} else {
@@ -693,11 +791,13 @@ func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
 		dbCheck.LatencyMS = s.now().Sub(start).Milliseconds()
 		if err != nil {
 			dbCheck = healthCheck{Status: "fail", Detail: "database unreachable", LatencyMS: dbCheck.LatencyMS}
+		} else {
+			dbCheck.Detail = fmt.Sprintf("connected (%d ms)", dbCheck.LatencyMS)
 		}
 	}
 	checks["database"] = dbCheck
 
-	logCheck := healthCheck{Status: "ok"}
+	logCheck := healthCheck{Status: "ok", Detail: "file and console sinks active"}
 	if s.loggingDegraded() {
 		logCheck = healthCheck{Status: "degraded", Detail: "file sink failed; writing to stderr"}
 	}
@@ -707,11 +807,127 @@ func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
 	if s.tokenPresent != nil {
 		token = s.tokenPresent()
 	}
-	session := healthCheck{Status: "unauthenticated", Detail: "login required"}
+	sessionStatus := "unauthenticated"
+	sessionDetail := "login required"
 	if token {
-		session = healthCheck{Status: "ok", Detail: "consumer key present; session not established"}
+		sessionStatus = "ok"
+		sessionDetail = "consumer key present; session not established"
 	}
-	checks["session"] = session
+	sessionActive := false
+	loginMethod := ""
+	expiresIn := 0
+	if s.a != nil {
+		if sess := s.a.SessionStatus(); sess != nil && sess.Authenticated {
+			sessionActive = true
+			sessionStatus = "ok"
+			loginMethod = sess.LoginMethod
+			expiresIn = sess.ExpiresIn
+			sessionDetail = fmt.Sprintf("session active via %s (expires in %dm)", sess.LoginMethod, sess.ExpiresIn)
+		}
+	}
+	uccMasked := s.cfg.Kotak.UCC
+	if len(uccMasked) > 2 {
+		uccMasked = uccMasked[:2] + strings.Repeat("*", len(uccMasked)-2)
+	}
+	sessionCheck := healthCheck{
+		Status:        sessionStatus,
+		Detail:        sessionDetail,
+		Authenticated: sessionActive,
+		SessionActive: sessionActive,
+		UCC:           uccMasked,
+		TokenPresent:  token,
+		LoginMethod:   loginMethod,
+		ExpiresIn:     expiresIn,
+	}
+	checks["session"] = sessionCheck
+	checks["broker"] = sessionCheck
+
+	marketCheck := healthCheck{
+		Status: "stopped",
+		Detail: "market feed not configured",
+	}
+	if s.hsm != nil {
+		hsmSt := s.hsm.Status()
+		lastEv := ""
+		if !hsmSt.LastEvent.IsZero() {
+			lastEv = hsmSt.LastEvent.UTC().Format(time.RFC3339)
+		}
+		detail := hsmSt.Status
+		if hsmSt.Endpoint != "" {
+			detail += fmt.Sprintf(" (%s)", hsmSt.Endpoint)
+		}
+		if lastEv != "" {
+			detail += fmt.Sprintf(", last event %s", lastEv)
+		}
+		marketCheck = healthCheck{
+			Status:    hsmSt.Status,
+			Detail:    detail,
+			Endpoint:  hsmSt.Endpoint,
+			LastEvent: lastEv,
+		}
+	}
+	checks["market_feed"] = marketCheck
+
+	orderCheck := healthCheck{
+		Status: "disconnected",
+		Detail: "order feed not configured",
+	}
+	if s.orderFeed != nil {
+		ofSt := s.orderFeed.Status()
+		lastEv := ""
+		if !ofSt.LastEvent.IsZero() {
+			lastEv = ofSt.LastEvent.UTC().Format(time.RFC3339)
+		}
+		detail := ofSt.Status
+		if ofSt.Endpoint != "" {
+			detail += fmt.Sprintf(" (%s)", ofSt.Endpoint)
+		}
+		if lastEv != "" {
+			detail += fmt.Sprintf(", last event %s", lastEv)
+		}
+		orderCheck = healthCheck{
+			Status:    ofSt.Status,
+			Detail:    detail,
+			Endpoint:  ofSt.Endpoint,
+			LastEvent: lastEv,
+		}
+	}
+	checks["order_feed"] = orderCheck
+
+	scripCheck := healthCheck{
+		Status: "ok",
+		Detail: "scrip master not configured",
+	}
+	type scripStatusReporter interface {
+		ScripStatus() scrip.Status
+	}
+	var scripStat *scrip.Status
+	if rep, ok := s.market.(scripStatusReporter); ok {
+		st := rep.ScripStatus()
+		scripStat = &st
+	} else if s.hsm != nil {
+		st := s.hsm.ScripStatus()
+		scripStat = &st
+	}
+	if scripStat != nil {
+		total := scripStat.Options + scripStat.Spots
+		detail := fmt.Sprintf("%d contracts loaded (%s)", total, scripStat.Source)
+		if !scripStat.Loaded {
+			if scripStat.LastError != "" {
+				detail = fmt.Sprintf("cache load error: %s", scripStat.LastError)
+			} else {
+				detail = "cache not loaded"
+			}
+		}
+		scripCheck = healthCheck{
+			Status: "ok",
+			Detail: detail,
+			Loaded: scripStat.Loaded,
+			Count:  total,
+			Source: scripStat.Source,
+		}
+	}
+	checks["scrip_master"] = scripCheck
 
 	return checks
 }

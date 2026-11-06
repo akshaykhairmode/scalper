@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -32,6 +33,8 @@ type Client struct {
 	cancel    context.CancelFunc
 	events    chan Event
 	connected bool
+	endpoint      string
+	lastEventNano atomic.Int64
 }
 
 // New creates a feed client.
@@ -61,6 +64,7 @@ func (c *Client) Start(parent context.Context, s Session) error {
 	ctx, cancel := context.WithCancel(parent)
 	c.mu.Lock()
 	c.cancel = cancel
+	c.endpoint = u
 	c.mu.Unlock()
 	go c.run(ctx, u, s)
 	return nil
@@ -160,10 +164,45 @@ func (c *Client) readConnection(ctx context.Context, conn *websocket.Conn, s Ses
 }
 func (c *Client) setConnected(v bool) { c.mu.Lock(); c.connected = v; c.mu.Unlock() }
 func (c *Client) emit(e Event) {
+	c.lastEventNano.Store(time.Now().UnixNano())
 	select {
 	case c.events <- e:
 	default:
 		c.log.Warn("Kotak order feed event dropped", "event", "order_feed_event_dropped", "type", e.Type)
+	}
+}
+
+// FeedStatus holds order feed connection details for diagnostics.
+type FeedStatus struct {
+	Status    string    `json:"status"`
+	Endpoint  string    `json:"endpoint,omitempty"`
+	LastEvent time.Time `json:"last_event,omitempty"`
+}
+
+// Status returns a snapshot of the order feed status.
+func (c *Client) Status() FeedStatus {
+	c.mu.Lock()
+	endpoint := c.endpoint
+	connected := c.connected
+	started := c.cancel != nil
+	c.mu.Unlock()
+
+	status := "disconnected"
+	if started {
+		if connected {
+			status = "connected"
+		} else {
+			status = "connecting"
+		}
+	}
+	var lastEv time.Time
+	if nano := c.lastEventNano.Load(); nano > 0 {
+		lastEv = time.Unix(0, nano)
+	}
+	return FeedStatus{
+		Status:    status,
+		Endpoint:  endpoint,
+		LastEvent: lastEv,
 	}
 }
 func feedURL(base string) (string, error) {

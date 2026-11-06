@@ -601,6 +601,14 @@ func (s *Service) validExpiry(indexKey, expiry string) bool {
 	return false
 }
 
+// ScripStatus reports health and contract counts of the underlying Scrip Master.
+func (s *Service) ScripStatus() scrip.Status {
+	if s.scrips == nil {
+		return scrip.Status{Source: "none"}
+	}
+	return s.scrips.Status()
+}
+
 func sortStrikeRows(strikes []int64) {
 	for i := 1; i < len(strikes); i++ {
 		for j := i; j > 0 && strikes[j] < strikes[j-1]; j-- {
