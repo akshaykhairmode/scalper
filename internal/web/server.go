@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -92,6 +93,7 @@ type Options struct {
 	TokenPresent func() bool
 	Started      time.Time
 	Now          func() time.Time
+	ServeMode    bool
 }
 
 // Server holds the HTTP handler and its dependencies.
@@ -126,6 +128,7 @@ type Server struct {
 	indicesMu  sync.Mutex
 	indicesRaw json.RawMessage
 	indicesAt  time.Time
+	serveMode  bool
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -260,6 +263,7 @@ func New(opts Options) (*Server, error) {
 		feedClients:  make(map[*feedClient]struct{}),
 		feedCtx:      feedCtx,
 		feedCancel:   feedCancel,
+		serveMode:    opts.ServeMode || opts.Config.App.ServeMode,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -303,7 +307,17 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	var h http.Handler = mux
-	h = localOnly(s.log, h)
+	if opts.Config.App.ServeMode {
+		// In serve mode the app is reachable over a network interface.
+		// Replace the loopback guard with HTTP Basic Auth so only authorised
+		// browsers can access the terminal.
+		ba := opts.Config.Web.BasicAuth
+		if strings.TrimSpace(ba.Username) != "" {
+			h = basicAuth(ba.Username, ba.Password, h)
+		}
+	} else {
+		h = localOnly(s.log, h)
+	}
 	h = securityHeaders(h)
 	h = s.accessLog(h)
 	h = requestID(h)
@@ -358,6 +372,7 @@ type pageData struct {
 	LogDegraded    bool
 	DBOK           bool
 	MPINConfigured bool
+	ServeMode      bool
 	Bootstrap      template.JS
 }
 
@@ -400,6 +415,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		LogDegraded:    s.loggingDegraded(),
 		DBOK:           dbOK,
 		MPINConfigured: s.mpin != "",
+		ServeMode:      s.serveMode,
 		Bootstrap:      s.bootstrap,
 	}
 	var buf strings.Builder
@@ -809,6 +825,28 @@ func localOnly(log *slog.Logger, next http.Handler) http.Handler {
 				}
 				return
 			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// basicAuth wraps next with HTTP Basic Authentication using a constant-time
+// comparison to prevent timing attacks.
+func basicAuth(username, password string, next http.Handler) http.Handler {
+	// Pre-hash credentials so we can compare hashes in constant time.
+	wantUser := sha256.Sum256([]byte(username))
+	wantPass := sha256.Sum256([]byte(password))
+	realm := `Basic realm="Scalper Terminal", charset="UTF-8"`
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		gotUser := sha256.Sum256([]byte(u))
+		gotPass := sha256.Sum256([]byte(p))
+		if !ok ||
+			subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) != 1 ||
+			subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", realm)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

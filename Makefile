@@ -13,7 +13,7 @@ LDFLAGS   := -s -w -X github.com/akshaykhairmode/scalper/internal/version.Versio
              -X github.com/akshaykhairmode/scalper/internal/version.Commit=$(COMMIT) \
              -X github.com/akshaykhairmode/scalper/internal/version.BuildDate=$(BUILD_DATE)
 
-.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run clean
+.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve clean
 
 all: fmt vet lint test build
 
@@ -30,6 +30,7 @@ help:
 	@echo "make cover-html open the coverage report"
 	@echo "make check      fmt check + vet + race + coverage"
 	@echo "make run        run with -config $(CONFIG)"
+	@echo "make serve      build and run in serve mode (0.0.0.0, no browser)"
 
 fmt:
 	gofmt -w cmd internal
@@ -82,6 +83,9 @@ check:
 
 run: build
 	./$(BIN) -config $(CONFIG)
+
+serve: build
+	./$(BIN) -serve -config $(CONFIG)
 
 clean:
 	rm -rf bin coverage.out

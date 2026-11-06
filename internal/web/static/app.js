@@ -113,6 +113,46 @@ window.S = S;
 
 let marketRetryTimer = null;
 let chartRetryTimer = null;
+let depthRenderTimer = null;
+
+// scheduleDepthRender debounces re-renders of the depth tab so that a burst of
+// tick events (one per instrument) only triggers a single DOM update.
+function scheduleDepthRender() {
+  if (depthRenderTimer !== null) return; // already scheduled
+  depthRenderTimer = window.setTimeout(() => {
+    depthRenderTimer = null;
+    if (S.tab === "depth") renderTab();
+  }, 200);
+}
+
+// mergeDepthData updates the cached depth ladder.
+// If incoming bids/asks contain full depth (> 1 level), it replaces the ladder.
+// If incoming bids/asks contain only 1 level (top-of-book / touch packet), it
+// updates level 0 while preserving levels 1..4 so the depth ladder does not collapse
+// and flicker between 1 and 5 rows.
+function mergeDepthData(existing, incomingBids, incomingAsks) {
+  const current = existing || { bids: [], asks: [] };
+  let newBids = Array.isArray(current.bids) ? [...current.bids] : [];
+  let newAsks = Array.isArray(current.asks) ? [...current.asks] : [];
+
+  if (Array.isArray(incomingBids) && incomingBids.length > 0) {
+    if (incomingBids.length > 1 || newBids.length <= 1) {
+      newBids = incomingBids;
+    } else {
+      newBids[0] = incomingBids[0];
+    }
+  }
+
+  if (Array.isArray(incomingAsks) && incomingAsks.length > 0) {
+    if (incomingAsks.length > 1 || newAsks.length <= 1) {
+      newAsks = incomingAsks;
+    } else {
+      newAsks[0] = incomingAsks[0];
+    }
+  }
+
+  return { bids: newBids, asks: newAsks };
+}
 
 /* ── API helpers ───────────────────────────────────────── */
 
@@ -172,13 +212,13 @@ function normalizeOption(raw, type) {
   const strike = normalizeStrike(raw.strike ?? raw.strike_price ?? raw.strike_paise ?? raw.strikePaise);
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice ?? raw.price);
   const prevClose = num(raw.previous_close ?? raw.prev_close ?? raw.prevClose ?? raw.close ?? ltp);
-  const oi = num(raw.oi ?? raw.open_interest ?? raw.openInterest);
+  const oi = num(raw.oi ?? raw.open_int ?? raw.open_interest ?? raw.openInterest);
   const bids = Array.isArray(raw.bids) ? raw.bids : [];
   const asks = Array.isArray(raw.asks) ? raw.asks : [];
   const instrumentKey = raw.instrument_key ?? raw.instrumentKey ?? raw.key ?? "";
   if (instrumentKey && (bids.length || asks.length)) {
     if (!S.depths) S.depths = {};
-    S.depths[instrumentKey] = { bids, asks };
+    S.depths[instrumentKey] = mergeDepthData(S.depths[instrumentKey], bids, asks);
   }
   return {
     instrumentKey,
@@ -335,12 +375,15 @@ function normalizeExpiry(value) {
 
 function matchesSameContract(a, b) {
   if (!a || !b) return false;
-  const symA = a.symbol || a.trdSym || a.trading_symbol || "";
-  const symB = b.symbol || b.trdSym || b.trading_symbol || "";
+  const symA = String(a.symbol || a.trading_symbol || a.tradingSymbol || a.trdSym || a.sym || "").trim().toUpperCase();
+  const symB = String(b.symbol || b.trading_symbol || b.tradingSymbol || b.trdSym || b.sym || "").trim().toUpperCase();
   if (symA && symB && symA === symB) return true;
-  const keyA = a.instrument_key || a.instrumentKey || "";
-  const keyB = b.instrument_key || b.instrumentKey || "";
+  const keyA = String(a.instrument_key || a.instrumentKey || "").trim();
+  const keyB = String(b.instrument_key || b.instrumentKey || "").trim();
   if (keyA && keyB && keyA === keyB) return true;
+  const tokA = String(a.tok || a.token || a.p_symbol || "").trim();
+  const tokB = String(b.tok || b.token || b.p_symbol || "").trim();
+  if (tokA && tokB && tokA === tokB) return true;
   return false;
 }
 
@@ -419,7 +462,9 @@ function computeRealisedPnLFromTrades(pos, fallbackPnL = 0) {
 
   const sorted = [...contractTrades].sort((a, b) => (num(a.timestamp) || 0) - (num(b.timestamp) || 0));
   let buyQueue = [];
+  let sellQueue = [];
   let realised = 0;
+  let matchedQty = 0;
 
   for (const t of sorted) {
     const side = String(t.side || "").toUpperCase();
@@ -428,19 +473,41 @@ function computeRealisedPnLFromTrades(pos, fallbackPnL = 0) {
     if (qty <= 0 || price <= 0) continue;
 
     if (side === "B" || side === "BUY") {
-      buyQueue.push({ qty, price });
+      let remainingBuy = qty;
+      while (remainingBuy > 0 && sellQueue.length > 0) {
+        const matchQty = Math.min(sellQueue[0].qty, remainingBuy);
+        realised += matchQty * (sellQueue[0].price - price);
+        matchedQty += matchQty;
+        remainingBuy -= matchQty;
+        sellQueue[0].qty -= matchQty;
+        if (sellQueue[0].qty <= 0) {
+          sellQueue.shift();
+        }
+      }
+      if (remainingBuy > 0) {
+        buyQueue.push({ qty: remainingBuy, price });
+      }
     } else if (side === "S" || side === "SELL") {
       let remainingSell = qty;
       while (remainingSell > 0 && buyQueue.length > 0) {
         const matchQty = Math.min(buyQueue[0].qty, remainingSell);
         realised += matchQty * (price - buyQueue[0].price);
+        matchedQty += matchQty;
         remainingSell -= matchQty;
         buyQueue[0].qty -= matchQty;
         if (buyQueue[0].qty <= 0) {
           buyQueue.shift();
         }
       }
+      if (remainingSell > 0) {
+        sellQueue.push({ qty: remainingSell, price });
+      }
     }
+  }
+
+  // If FIFO could not match any executed legs, keep position-level fallback P&L
+  if (matchedQty === 0) {
+    return fallbackPnL;
   }
   return Math.round(realised * 100) / 100;
 }
@@ -468,14 +535,17 @@ function normalizePosition(raw) {
   // Realised P&L from closed trades
   const closedQty = Math.min(totalBought, totalSold);
   let realisedPnL = 0;
-  if (raw.rPnl != null || raw.realised_pnl != null || raw.realizedPnl != null) {
-    realisedPnL = num(raw.rPnl ?? raw.realised_pnl ?? raw.realizedPnl);
+  const rawRPnl = raw.rPnl ?? raw.rpnl ?? raw.realised_pnl ?? raw.realizedPnl;
+  if (rawRPnl != null && num(rawRPnl) !== 0) {
+    realisedPnL = num(rawRPnl);
   } else if (closedQty > 0) {
     const buyAvg = totalBought > 0 ? buyAmt / totalBought : 0;
     const sellAvg = totalSold > 0 ? sellAmt / totalSold : 0;
     realisedPnL = (sellAvg - buyAvg) * closedQty;
   } else if (quantity === 0 && (buyAmt > 0 || sellAmt > 0)) {
     realisedPnL = sellAmt - buyAmt;
+  } else if (rawRPnl != null) {
+    realisedPnL = num(rawRPnl);
   }
 
   // Live open position Unrealised P&L: strictly (LTP - Avg) * quantity
@@ -544,29 +614,33 @@ function comparePositions(a, b) {
 }
 
 function normalizeOrder(raw) {
+  const rawSide = String(raw.side ?? raw.tt ?? raw.trdType ?? raw.trnsTp ?? raw.transactionType ?? raw.buy_sell ?? raw.buySell ?? "").trim().toUpperCase();
+  const side = (rawSide === "B" || rawSide === "BUY") ? "B" : (rawSide === "S" || rawSide === "SELL") ? "S" : rawSide;
   return {
     id: raw.id ?? raw.client_order_id ?? raw.order_id ?? raw.broker_order_id ?? raw.nOrdNo ?? "—",
-    symbol: raw.symbol ?? raw.trading_symbol ?? raw.trdSym ?? raw.instrument_key ?? "",
+    symbol: raw.symbol ?? raw.trading_symbol ?? raw.tradingSymbol ?? raw.trdSym ?? raw.sym ?? raw.instrument_key ?? "",
     instrument_key: raw.instrument_key ?? raw.instrumentKey ?? "",
-    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? raw.trnsTp ?? "",
-    quantity: num(raw.quantity ?? raw.qty),
-    price: num(raw.price ?? raw.prc ?? raw.avgPrc),
+    side,
+    quantity: num(raw.quantity ?? raw.qty ?? raw.fldQty ?? raw.fillSz),
+    price: num(raw.price ?? raw.prc ?? raw.avgPrc ?? raw.fillPrc),
     status: raw.status ?? raw.ordSt ?? "",
-    reason: raw.reason ?? raw.reject_reason ?? "",
-    timestamp: raw.timestamp ?? raw.created_at ?? raw.updated_at ?? raw.ordDtTm ?? 0,
+    reason: raw.reason ?? raw.reject_reason ?? raw.rejRsn ?? "",
+    timestamp: raw.timestamp ?? raw.created_at ?? raw.updated_at ?? raw.ordDtTm ?? raw.hsUpTm ?? raw.ordDt ?? 0,
     product: raw.product ?? raw.prod ?? "MIS",
     mode: raw.mode ?? "",
   };
 }
 
 function normalizeTrade(raw) {
+  const rawSide = String(raw.side ?? raw.tt ?? raw.trdType ?? raw.trnsTp ?? raw.transactionType ?? raw.buy_sell ?? raw.buySell ?? "").trim().toUpperCase();
+  const side = (rawSide === "B" || rawSide === "BUY") ? "B" : (rawSide === "S" || rawSide === "SELL") ? "S" : rawSide;
   return {
-    id: raw.id ?? raw.trade_id ?? raw.order_id ?? raw.nOrdNo ?? raw.exOrdId ?? "—",
-    symbol: raw.symbol ?? raw.trdSym ?? raw.instrument_key ?? "",
-    side: raw.side ?? raw.buy_sell ?? raw.buySell ?? raw.trnsTp ?? "",
-    quantity: num(raw.quantity ?? raw.qty),
-    price: num(raw.price ?? raw.prc ?? raw.avgPrc),
-    timestamp: raw.timestamp ?? raw.executed_at ?? raw.executedAt ?? raw.ordDtTm ?? 0,
+    id: raw.id ?? raw.trade_id ?? raw.trdId ?? raw.order_id ?? raw.nOrdNo ?? raw.exOrdId ?? raw.exchOrdId ?? raw.flId ?? "—",
+    symbol: raw.symbol ?? raw.trading_symbol ?? raw.tradingSymbol ?? raw.trdSym ?? raw.sym ?? raw.instrument_key ?? "",
+    side,
+    quantity: num(raw.quantity ?? raw.qty ?? raw.fillSz ?? raw.fldQty ?? raw.flQty ?? raw.tradedQty),
+    price: num(raw.price ?? raw.prc ?? raw.avgPrc ?? raw.fillPrc ?? raw.fldPrc ?? raw.flPrc ?? raw.tradePrice ?? raw.trdPrc),
+    timestamp: raw.timestamp ?? raw.executed_at ?? raw.executedAt ?? raw.ordDtTm ?? raw.hsUpTm ?? raw.ordDt ?? raw.trdDt ?? 0,
   };
 }
 
@@ -1283,19 +1357,35 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "broker_order" || event.type === "broker_position") {
-    scheduleBooksRefresh(1000);
     if (event.type === "broker_order" && data) {
+      const norm = normalizeOrder(data);
+      if (norm.id && norm.id !== "—") {
+        if (!S.orders) S.orders = [];
+        const existingIdx = S.orders.findIndex((o) => String(o.id) === String(norm.id));
+        if (existingIdx !== -1) {
+          S.orders[existingIdx] = { ...S.orders[existingIdx], ...norm };
+        } else {
+          S.orders.unshift(norm);
+        }
+      }
       handleBrokerOrderSound(data);
       checkAutoTargets(data);
+      updateChartTrades();
+      renderTab();
     }
+    scheduleBooksRefresh(400);
     return;
   }
   if (event.type === "tick") {
     updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
     if (data.bids || data.asks) {
       if (!S.depths) S.depths = {};
-      S.depths[data.key] = { bids: data.bids || [], asks: data.asks || [] };
-      if (S.tab === "depth") renderTab();
+      S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
+      const ceKey = selectedOption("CE")?.instrumentKey;
+      const peKey = selectedOption("PE")?.instrumentKey;
+      if (S.tab === "depth" && (data.key === ceKey || data.key === peKey)) {
+        scheduleDepthRender();
+      }
     }
     for (const spot of S.spots.values()) {
       if (spot.spotKey !== data.key) continue;
@@ -1322,12 +1412,37 @@ function handleSocketEvent(event) {
         if (tgt.instrumentKey === data.key) {
           tgt.ltp = num(data.ltp, tgt.ltp);
           updatedPosition = true;
+
+          // If bracket is IN_POSITION and live tick crosses target price, trigger TARGET_HIT immediately
+          if (tgt.status === "IN_POSITION" && tgt.targetPrice > 0) {
+            const isHit = tgt.action === "buy" ? (tgt.ltp >= tgt.targetPrice) : (tgt.ltp <= tgt.targetPrice);
+            if (isHit) {
+              tgt.status = "TARGET_HIT";
+              tgt.exitPrice = tgt.targetPrice;
+              saveAutoTargets();
+              playTradeSound("target");
+              const pnl = (tgt.exitPrice - tgt.entryPrice) * tgt.shares * (tgt.action === "buy" ? 1 : -1);
+              toast(`🎯 Bracket Target Hit! Sold ${tgt.shares} @ ₹${fmt(tgt.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+
+              if (tgt.exitOrderId) {
+                const oInState = (S.orders || []).find((o) => String(o.id) === String(tgt.exitOrderId));
+                if (oInState) {
+                  oInState.status = "TRAD";
+                  oInState.filled_quantity = tgt.shares;
+                }
+              }
+              S.charts.ce?.clearTargetPreview?.();
+              S.charts.pe?.clearTargetPreview?.();
+              renderTab();
+              scheduleBooksRefresh(100);
+            }
+          }
         }
       }
     }
     if (updatedPosition) {
       renderHeader();
-      if (S.tab === "positions" || S.tab === "brackets") renderTab();
+      updateLiveTabQuotes(data.key);
       updateChartTrades();
     }
     const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
@@ -1339,8 +1454,11 @@ function handleSocketEvent(event) {
       opt.ask = num(data.ask, opt.ask);
       opt.volume = num(data.volume, opt.volume);
       opt.oi = num(data.oi, opt.oi);
-      if (data.bids) opt.bids = data.bids;
-      if (data.asks) opt.asks = data.asks;
+      if (data.bids || data.asks) {
+        const merged = mergeDepthData({ bids: opt.bids, asks: opt.asks }, data.bids, data.asks);
+        opt.bids = merged.bids;
+        opt.asks = merged.asks;
+      }
       opt.quoteAvailable = opt.ltp > 0;
       opt.change = opt.ltp - opt.prevClose;
       opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
@@ -1350,9 +1468,10 @@ function handleSocketEvent(event) {
         ?.querySelector(`[data-select="${type}"]`);
       if (cell) {
         cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
-        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Volume ${fmtCompact(opt.volume)}`;
+        cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
         cell.classList.toggle("up", opt.changePct > 0);
         cell.classList.toggle("down", opt.changePct < 0);
+        renderPCR();
       }
       if (selectedOption(type)?.instrumentKey === data.key) {
         renderPaneHeaders();
@@ -1382,6 +1501,7 @@ function handleSocketEvent(event) {
     if (S.bookMode !== "live") return;
     S.positions = toArray(data).map(normalizePosition).sort(comparePositions);
     updateFeedSubscriptions();
+    renderHeader();
     renderTab();
     renderOrderPad();
     return;
@@ -1427,6 +1547,181 @@ function computeATM() {
     }
   }
   return best.strike;
+}
+
+function computePCR() {
+  if (!Array.isArray(S.chain) || !S.chain.length) return null;
+  let totalCallOI = 0;
+  let totalPutOI = 0;
+  let totalCallVol = 0;
+  let totalPutVol = 0;
+
+  for (const row of S.chain) {
+    if (row.call) {
+      totalCallOI += num(row.call.oi);
+      totalCallVol += num(row.call.volume);
+    }
+    if (row.put) {
+      totalPutOI += num(row.put.oi);
+      totalPutVol += num(row.put.volume);
+    }
+  }
+
+  const pcrOI = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
+  const pcrVol = totalCallVol > 0 ? totalPutVol / totalCallVol : null;
+
+  return {
+    pcrOI,
+    pcrVol,
+    totalCallOI,
+    totalPutOI,
+    totalCallVol,
+    totalPutVol,
+  };
+}
+
+function computeStrikePCR(strike) {
+  if (!strike || !Array.isArray(S.chain) || !S.chain.length) return null;
+  const row = S.chain.find((r) => r.strike === strike);
+  if (!row) return null;
+  const callOI = num(row.call?.oi);
+  const putOI = num(row.put?.oi);
+  const callVol = num(row.call?.volume);
+  const putVol = num(row.put?.volume);
+
+  const pcrOI = callOI > 0 ? putOI / callOI : null;
+  const pcrVol = callVol > 0 ? putVol / callVol : null;
+
+  return {
+    strike,
+    pcrOI,
+    pcrVol,
+    callOI,
+    putOI,
+    callVol,
+    putVol,
+  };
+}
+
+function renderPanePCR(pane, option, chainPCR, expiryLabel) {
+  const chip = $(`${pane}-pcr-chip`);
+  const valEl = $(`${pane}-pcr-val`);
+  const subEl = $(`${pane}-sub`);
+  if (!chip || !valEl) return;
+
+  if (!option) {
+    valEl.textContent = "—";
+    valEl.className = "";
+    chip.title = "Select a strike to view PCR";
+    if (subEl) subEl.textContent = "select a strike";
+    return;
+  }
+
+  const strikePCR = computeStrikePCR(option.strike);
+  const totalPCRVal = chainPCR?.pcrOI != null ? chainPCR.pcrOI : chainPCR?.pcrVol;
+  const strikePCRVal = strikePCR?.pcrOI != null ? strikePCR.pcrOI : strikePCR?.pcrVol;
+
+  const displayVal = strikePCRVal != null ? strikePCRVal : totalPCRVal;
+  const isStrike = strikePCRVal != null;
+
+  if (displayVal != null) {
+    valEl.textContent = displayVal.toFixed(2);
+    valEl.className = displayVal > 1.02 ? "up" : displayVal < 0.98 ? "down" : "";
+
+    const sentiment = displayVal >= 1.3 ? "Strong Bullish / Put Support" :
+      displayVal >= 1.05 ? "Mild Bullish" :
+      displayVal >= 0.95 ? "Neutral" :
+      displayVal >= 0.7 ? "Mild Bearish" : "Strong Bearish / Call Resistance";
+
+    let tooltip = `${option.symbol || `${S.activeIndex} ${option.strike} ${option.type}`}\n`;
+    if (isStrike) {
+      tooltip += `Strike ${fmtStrike(option.strike)} PCR: ${displayVal.toFixed(2)} [${sentiment}]\n`;
+      tooltip += `  Put OI: ${fmtCompact(strikePCR.putOI)} · Call OI: ${fmtCompact(strikePCR.callOI)}\n`;
+      if (strikePCR.putVol || strikePCR.callVol) {
+        tooltip += `  Put Vol: ${fmtCompact(strikePCR.putVol)} · Call Vol: ${fmtCompact(strikePCR.callVol)}${strikePCR.pcrVol != null ? ` (Vol PCR: ${strikePCR.pcrVol.toFixed(2)})` : ""}\n`;
+      }
+    }
+    if (totalPCRVal != null) {
+      tooltip += `Total Chain PCR: ${totalPCRVal.toFixed(2)}\n`;
+      tooltip += `  Total Put OI: ${fmtCompact(chainPCR.totalPutOI)} · Total Call OI: ${fmtCompact(chainPCR.totalCallOI)}`;
+    }
+    chip.title = tooltip.trim();
+
+    if (subEl) {
+      const strikePart = isStrike ? ` · Strike PCR ${displayVal.toFixed(2)}` : "";
+      const totalPart = totalPCRVal != null ? ` · Total PCR ${totalPCRVal.toFixed(2)}` : "";
+      subEl.textContent = `${expiryLabel} · ${S.timeframe}${strikePart}${totalPart}`;
+    }
+  } else {
+    valEl.textContent = "—";
+    valEl.className = "";
+    chip.title = "PCR quote data loading…";
+    if (subEl) subEl.textContent = `${expiryLabel} · ${S.timeframe}`;
+  }
+}
+
+function renderPCR() {
+  const pcrEl = $("pcr-value");
+  const pcrChip = $("pcr-chip");
+  const pcr = computePCR();
+  if (pcrEl) {
+    if (!pcr || (pcr.pcrOI == null && pcr.pcrVol == null)) {
+      pcrEl.textContent = "—";
+      pcrEl.className = "";
+      if (pcrChip) pcrChip.title = "Put/Call Ratio: loading chain data";
+    } else {
+      const primaryPCR = pcr.pcrOI != null ? pcr.pcrOI : pcr.pcrVol;
+      const isOI = pcr.pcrOI != null;
+      pcrEl.textContent = primaryPCR.toFixed(2);
+      pcrEl.className = primaryPCR > 1.02 ? "up" : primaryPCR < 0.98 ? "down" : "";
+
+      if (pcrChip) {
+        const sentiment = primaryPCR >= 1.3 ? "Strong Bullish / Put Support" :
+          primaryPCR >= 1.05 ? "Mild Bullish" :
+          primaryPCR >= 0.95 ? "Neutral" :
+          primaryPCR >= 0.7 ? "Mild Bearish" : "Strong Bearish / Call Resistance";
+        const oiText = isOI ? `Put OI: ${fmtCompact(pcr.totalPutOI)} | Call OI: ${fmtCompact(pcr.totalCallOI)}` : "OI: unavailable";
+        const volText = pcr.pcrVol != null ? `Vol PCR: ${pcr.pcrVol.toFixed(2)} (Put: ${fmtCompact(pcr.totalPutVol)} | Call: ${fmtCompact(pcr.totalCallVol)})` : "";
+        pcrChip.title = `PCR (${isOI ? "Open Interest" : "Volume"}): ${primaryPCR.toFixed(2)} [${sentiment}]\n${oiText}\n${volText}`.trim();
+      }
+    }
+  }
+
+  // Update PCR on both left (CE) and right (PE) chart panes
+  const expiryLabel = expiryText(S.expiry);
+  renderPanePCR("ce", selectedOption("CE"), pcr, expiryLabel);
+  renderPanePCR("pe", selectedOption("PE"), pcr, expiryLabel);
+}
+
+function updateLiveTabQuotes(key) {
+  if (S.tab === "positions") {
+    const pos = S.positions.find((p) => p.instrument_key === key);
+    if (!pos) return;
+    const ltpCells = $$(`[data-pos-ltp="${key}"]`);
+    for (const cell of ltpCells) cell.textContent = fmt(pos.ltp);
+    const pnlCells = $$(`[data-pos-pnl="${key}"]`);
+    for (const cell of pnlCells) {
+      const isOpen = Math.abs(num(pos.quantity)) > 0;
+      const openPnL = pos.unrealised_pnl != null ? pos.unrealised_pnl : pos.pnl;
+      const val = isOpen ? openPnL : pos.pnl;
+      cell.className = directionClass(val);
+      const span = cell.querySelector(".font-bold");
+      if (span) span.textContent = fmtSigned(val, 0);
+      else cell.textContent = fmtSigned(val, 0);
+    }
+  } else if (S.tab === "brackets") {
+    const matchingTargets = (S.autoTargets || []).filter((t) => t.instrumentKey === key);
+    for (const tgt of matchingTargets) {
+      const ltpCell = document.querySelector(`[data-bracket-ltp="${tgt.id}"]`);
+      if (ltpCell) ltpCell.textContent = `₹${fmt(tgt.ltp)}`;
+      const pnlCell = document.querySelector(`[data-bracket-pnl="${tgt.id}"]`);
+      if (pnlCell && tgt.status === "IN_POSITION") {
+        const pnl = (tgt.ltp - tgt.entryPrice) * tgt.shares * (tgt.action === "buy" ? 1 : -1);
+        pnlCell.className = `${directionClass(pnl)} font-bold`;
+        pnlCell.textContent = fmtSigned(pnl, 0);
+      }
+    }
+  }
 }
 
 function selectDefaultStrike() {
@@ -1482,8 +1777,11 @@ function updateOptionFromTick(option, data) {
   option.ask = num(data.ask, option.ask);
   option.volume = num(data.volume, option.volume);
   option.oi = num(data.oi, option.oi);
-  if (data.bids) option.bids = data.bids;
-  if (data.asks) option.asks = data.asks;
+  if (data.bids || data.asks) {
+    const merged = mergeDepthData({ bids: option.bids, asks: option.asks }, data.bids, data.asks);
+    option.bids = merged.bids;
+    option.asks = merged.asks;
+  }
   option.quoteAvailable = option.ltp > 0;
   option.change = option.ltp - option.prevClose;
   option.changePct = option.prevClose ? (option.change / option.prevClose) * 100 : 0;
@@ -1510,6 +1808,11 @@ function matchesContract(item, option) {
 function updateChartTrades() {
   const trades = Array.isArray(S.trades) ? S.trades : [];
   const positions = Array.isArray(S.positions) ? S.positions : [];
+  const finishedExitIds = new Set(
+    (S.autoTargets || [])
+      .filter((t) => t.status !== "IN_POSITION" && t.exitOrderId)
+      .map((t) => String(t.exitOrderId))
+  );
 
   // 1. CE Chart
   const ce = selectedOption("CE");
@@ -1533,7 +1836,7 @@ function updateChartTrades() {
     } else if (!S.quickOrder || S.quickOrder.pane !== "ce") {
       S.charts.ce.clearTargetPreview?.();
     }
-    const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o)) : [];
+    const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
     S.charts.ce.setTrades(ceTrades, { isSpot: false });
     S.charts.ce.setPosition(cePos);
     S.charts.ce.setOpenOrders(ceOpen);
@@ -1561,7 +1864,7 @@ function updateChartTrades() {
     } else if (!S.quickOrder || S.quickOrder.pane !== "pe") {
       S.charts.pe.clearTargetPreview?.();
     }
-    const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o)) : [];
+    const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
     S.charts.pe.setTrades(peTrades, { isSpot: false });
     S.charts.pe.setPosition(pePos);
     S.charts.pe.setOpenOrders(peOpen);
@@ -1828,13 +2131,14 @@ function renderPaneHeaders() {
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
   const spot = S.spots.get(S.activeIndex);
+  const chainPCR = computePCR();
 
   $("ce-title").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
-  $("ce-sub").textContent = ce ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
   $("ce-ltp").textContent = ce ? fmt(ce.ltp) : "—";
   $("ce-change").textContent = ce ? `${fmtSigned(ce.change)} (${fmtSigned(ce.changePct)}%)` : "—";
   $("ce-change").className = "pane-change " + directionClass(ce?.changePct);
   renderOptionStrikeSelect("CE", ce);
+  renderPanePCR("ce", ce, chainPCR, expiryLabel);
 
   const spotTitle = $("spot-title");
   if (spotTitle) spotTitle.textContent = spot?.displayName || S.activeIndex || "UNDERLYING";
@@ -1849,11 +2153,11 @@ function renderPaneHeaders() {
   }
 
   $("pe-title").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
-  $("pe-sub").textContent = pe ? `${expiryLabel} · ${S.timeframe}` : "select a strike";
   $("pe-ltp").textContent = pe ? fmt(pe.ltp) : "—";
   $("pe-change").textContent = pe ? `${fmtSigned(pe.change)} (${fmtSigned(pe.changePct)}%)` : "—";
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
   renderOptionStrikeSelect("PE", pe);
+  renderPanePCR("pe", pe, chainPCR, expiryLabel);
 
   renderOrderPad();
 }
@@ -1951,6 +2255,7 @@ function renderToolbar() {
     button.classList.toggle("active", button.dataset.tf === S.timeframe);
   }
   $("atm-value").textContent = fmtStrike(computeATM() ?? 0);
+  renderPCR();
 }
 
 function expiryOptionsHTML() {
@@ -1976,6 +2281,7 @@ function renderChain(preserveScroll = false) {
     body.innerHTML = `<div class="empty-state">Waiting for the option chain…</div>`;
     $("strike-meta").textContent = "—";
     renderChainMoreControls();
+    renderPCR();
     return;
   }
   const scrollTop = preserveScroll ? body.scrollTop : 0;
@@ -1987,13 +2293,16 @@ function renderChain(preserveScroll = false) {
     const putSelected = S.selected.PE?.strike === row.strike;
     const active = callSelected || putSelected;
     return `<div class="chain-row${row.strike === atm ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
-      <button type="button" class="cell-ce${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Volume ${fmtCompact(call.volume)}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
+      <button type="button" class="cell-ce${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
       <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${row.strike === atm ? '<span class="atm-dot">◆</span>' : ""}${fmtStrike(row.strike)}</button>
-      <button type="button" class="cell-pe${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Volume ${fmtCompact(put.volume)}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
+      <button type="button" class="cell-pe${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
     </div>`;
   }).join("");
-  $("strike-meta").textContent = `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
+  const pcr = computePCR();
+  const pcrSummary = pcr && pcr.pcrOI != null ? ` · PCR ${pcr.pcrOI.toFixed(2)}` : (pcr && pcr.pcrVol != null ? ` · Vol PCR ${pcr.pcrVol.toFixed(2)}` : "");
+  $("strike-meta").textContent = `${S.chain.length} strikes${pcrSummary} · ${expiryText(S.expiry)}`;
   renderChainMoreControls();
+  renderPCR();
 
   body.scrollTop = scrollTop;
   applyStrikeFilter();
@@ -2012,9 +2321,11 @@ function applyStrikeFilter() {
     row.hidden = !matches;
     if (matches) visible++;
   }
+  const pcr = computePCR();
+  const pcrSummary = pcr && pcr.pcrOI != null ? ` · PCR ${pcr.pcrOI.toFixed(2)}` : (pcr && pcr.pcrVol != null ? ` · Vol PCR ${pcr.pcrVol.toFixed(2)}` : "");
   $("strike-meta").textContent = query
     ? `${visible} matching strike${visible === 1 ? "" : "s"} · ${S.chain.length} available`
-    : `${S.chain.length} strikes · ${expiryText(S.expiry)}`;
+    : `${S.chain.length} strikes${pcrSummary} · ${expiryText(S.expiry)}`;
 }
 
 function openStrikeModal(targetType = S.selected.type) {
@@ -2264,6 +2575,13 @@ function renderTab() {
     bracketBadge.hidden = activeBracketsCount === 0;
   }
 
+  const openPositionsCount = (S.positions || []).filter((p) => Math.abs(num(p.quantity)) > 0).length;
+  const posBadge = $("positions-badge");
+  if (posBadge) {
+    posBadge.textContent = String(openPositionsCount);
+    posBadge.hidden = openPositionsCount === 0;
+  }
+
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
   const sqBtn = $("square-off-button");
   if (sqBtn) sqBtn.disabled = !hasOpen;
@@ -2310,12 +2628,12 @@ function positionsHTML() {
       const risk = legRisk(p);
       const isOpen = Math.abs(num(p.quantity)) > 0;
       const openPnL = p.unrealised_pnl != null ? p.unrealised_pnl : p.pnl;
-      html += `<tr class="${isOpen ? "" : "closed"}">
+      html += `<tr class="${isOpen ? "" : "closed"}" data-pos-row="${esc(p.instrument_key)}">
         <td class="sym">${esc(p.symbol || `${p.underlying} ${fmtStrike(p.strike)} ${p.option_type}`)}</td>
         <td>${p.quantity > 0 ? "+" : ""}${p.quantity}</td>
         <td>${fmt(p.average_price)}</td>
-        <td>${fmt(p.ltp)}</td>
-        <td class="${directionClass(isOpen ? openPnL : p.pnl)}">
+        <td data-pos-ltp="${esc(p.instrument_key)}">${fmt(p.ltp)}</td>
+        <td class="${directionClass(isOpen ? openPnL : p.pnl)}" data-pos-pnl="${esc(p.instrument_key)}">
           <span class="font-bold">${fmtSigned(isOpen ? openPnL : p.pnl, 0)}</span>
           ${isOpen && p.realised_pnl ? `<span class="muted" style="display:block;font-size:9.5px;" title="Realised earlier today">Day: ${fmtSigned(p.pnl, 0)}</span>` : ""}
         </td>
@@ -2952,14 +3270,14 @@ function bracketsHTML() {
     const sideClass = b.action === "buy" ? "up" : "down";
     const targetDiff = (b.targetPrice - b.entryPrice) * (b.action === "buy" ? 1 : -1);
 
-    html += `<tr>
+    html += `<tr data-bracket-id="${esc(b.id)}">
       <td class="sym font-bold">${esc(b.symbol || `${b.underlying || S.activeIndex} ${b.strike} ${b.type}`)}</td>
       <td class="${sideClass} font-bold">${sideLabel}</td>
       <td>${b.shares}</td>
       <td class="font-bold">₹${fmt(b.entryPrice)}</td>
       <td class="up font-bold">₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span></td>
-      <td class="font-bold">₹${fmt(ltp)}</td>
-      <td class="${pnlClass} font-bold">${pnlText}</td>
+      <td class="font-bold" data-bracket-ltp="${esc(b.id)}">₹${fmt(ltp)}</td>
+      <td class="${pnlClass} font-bold" data-bracket-pnl="${esc(b.id)}">${pnlText}</td>
       <td><span class="status-badge ${badgeClass}">${badgeLabel}</span></td>
       <td>${actionBtn}</td>
     </tr>`;
@@ -3056,23 +3374,32 @@ async function onCancelBracket(bracketId) {
     return;
   }
 
-  // Cancel entry limit order if present
-  if (bracket.orderId && bracket.orderId !== "—") {
-    try {
-      toast(`Cancelling entry limit order ${bracket.orderId}…`, "info", 2000);
-      await cancelBrokerOrder(bracket.orderId);
-      playTradeSound("reject");
-    } catch (e) {
-      console.warn("Entry cancel failed:", e);
+  const orderId = bracket.orderId;
+  bracket.status = "CANCELLED";
+  saveAutoTargets();
+
+  if (orderId && orderId !== "—") {
+    const oInState = (S.orders || []).find((o) => String(o.id) === String(orderId));
+    if (oInState) {
+      oInState.status = "CANCELLED";
     }
   }
 
-  bracket.status = "CANCELLED";
-  saveAutoTargets();
+  playTradeSound("reject");
   toast("Bracket entry order cancelled.", "ok", 3000);
-  scheduleBooksRefresh(300);
   renderTab();
   updateChartTrades();
+
+  // Cancel entry limit order on broker in background
+  if (orderId && orderId !== "—") {
+    try {
+      await cancelBrokerOrder(orderId);
+      scheduleBooksRefresh(300);
+    } catch (e) {
+      console.warn("Entry cancel failed:", e);
+      toast(`Broker order cancel failed: ${e.message}`, "error", 4000);
+    }
+  }
 }
 
 function onClearFinishedBrackets() {
@@ -3175,6 +3502,17 @@ function checkAutoTargets(eventOrder) {
           playTradeSound("target");
           const pnl = (target.exitPrice - target.entryPrice) * target.shares * (target.action === "buy" ? 1 : -1);
           toast(`🎯 Bracket Target Hit! Sold ${target.shares} @ ₹${fmt(target.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+
+          if (target.exitOrderId) {
+            const oInState = (S.orders || []).find((o) => String(o.id) === String(target.exitOrderId));
+            if (oInState) {
+              oInState.status = "TRAD";
+              oInState.filled_quantity = target.shares;
+            }
+          }
+          S.charts.ce?.clearTargetPreview?.();
+          S.charts.pe?.clearTargetPreview?.();
+
           renderTab();
           updateChartTrades();
           continue;

@@ -769,3 +769,58 @@ func TestIsMalformedCandleRun(t *testing.T) {
 		t.Error("malformed run was not detected")
 	}
 }
+
+func TestBasicAuthMiddleware(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "supersecret"
+
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+
+	// 1. Unauthenticated request should return 401 Unauthorized
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if !strings.Contains(rec.Header().Get("WWW-Authenticate"), "Basic realm=") {
+		t.Fatalf("missing WWW-Authenticate header: %q", rec.Header().Get("WWW-Authenticate"))
+	}
+
+	// 2. Request with invalid credentials should return 401 Unauthorized
+	reqWrong := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	reqWrong.SetBasicAuth("admin", "wrongpassword")
+	recWrong := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recWrong, reqWrong)
+	if recWrong.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong credentials status = %d, want %d", recWrong.Code, http.StatusUnauthorized)
+	}
+
+	// 3. Request with valid credentials should succeed (200 OK)
+	reqValid := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	reqValid.SetBasicAuth("admin", "supersecret")
+	recValid := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusOK {
+		t.Fatalf("valid credentials status = %d, want %d", recValid.Code, http.StatusOK)
+	}
+}
+
+func TestServeModeIndexFooter(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "serve mode") {
+		t.Fatalf("expected 'serve mode' in footer, got: %s", body)
+	}
+}

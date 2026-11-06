@@ -162,8 +162,9 @@ func (s *Server) forwardOrderFeedEvents() {
 			if len(event.Data) == 0 {
 				continue
 			}
-			// Let the shared book cache decide when to re-read Kotak; the
-			// browser only receives the event and reads the cache.
+			// Expire cached orders and positions so the subsequent read fetches
+			// fresh status from Kotak, and mark the cache dirty.
+			s.books.expire(bookOrders, bookPositions)
 			s.books.invalidate()
 			s.broadcast(map[string]any{"type": "broker_" + event.Type, "data": event.Data})
 		}

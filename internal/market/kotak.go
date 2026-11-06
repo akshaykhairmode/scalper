@@ -534,7 +534,7 @@ func decodeQuote(row map[string]json.RawMessage) (Quote, error) {
 	quote.Change, _ = floatField(row, "change")
 	quote.ChangePct, _ = floatField(row, "per_change", "change_pct")
 	quote.Volume = intField(row, "last_volume", "volume")
-	quote.OI = intField(row, "oi", "open_interest")
+	quote.OI = intField(row, "oi", "open_interest", "open_int")
 
 	var ohlc map[string]json.RawMessage
 	if raw := row["ohlc"]; len(raw) > 0 {

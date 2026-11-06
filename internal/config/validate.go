@@ -49,6 +49,9 @@ func (c Config) Validate() error {
 	if err := c.validateScrip(); err != nil {
 		return err
 	}
+	if err := c.validateWeb(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -57,8 +60,11 @@ func (c Config) validateApp() error {
 	if err != nil {
 		return fieldErr("app.listen", "must be host:port: %v", err)
 	}
-	if !isLoopbackHost(host) {
+	if !c.App.ServeMode && !isLoopbackHost(host) {
 		return fieldErr("app.listen", "must bind to localhost (127.0.0.1, ::1 or localhost), got %q", host)
+	}
+	if c.App.ServeMode && !isLoopbackHost(host) && !isAnyHost(host) {
+		return fieldErr("app.listen", "in serve mode must bind to localhost or 0.0.0.0/::, got %q", host)
 	}
 	p, err := strconv.Atoi(port)
 	if err != nil || p < 1 || p > 65535 {
@@ -79,6 +85,12 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// isAnyHost reports whether host is an unspecified (all-interfaces) address.
+func isAnyHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 func (c Config) validateLogging() error {
@@ -434,4 +446,14 @@ func contains(list []string, want string) bool {
 // normalizeScripName compares pSymbolName values case- and space-insensitively.
 func normalizeScripName(s string) string {
 	return strings.ToUpper(strings.Join(strings.Fields(s), ""))
+}
+
+func (c Config) validateWeb() error {
+	ba := c.Web.BasicAuth
+	hasUser := strings.TrimSpace(ba.Username) != ""
+	hasPass := strings.TrimSpace(ba.Password) != ""
+	if hasUser != hasPass {
+		return fieldErr("web.basic_auth", "username and password must both be set or both be empty")
+	}
+	return nil
 }

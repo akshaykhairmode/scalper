@@ -139,3 +139,9 @@ scrip:
 
 web:
   open_browser: true
+  # basic_auth: Optional HTTP Basic Auth credentials for serve mode (-serve flag).
+  # When set, every route requires the browser to authenticate.
+  # Both fields must be set together; leave both empty to disable Basic Auth.
+  basic_auth:
+    username: ""
+    password: ""

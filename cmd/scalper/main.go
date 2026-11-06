@@ -43,6 +43,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "config.yaml", "path to config.yaml (defaults to config.yaml in the current directory)")
 	showVersion := fs.Bool("version", false, "print version and exit")
+	serveMode := fs.Bool("serve", false, "serve mode: listen on 0.0.0.0, disable browser auto-open, and require basic auth if configured")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,7 +54,11 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return nil
 	}
 
-	cfg, err := config.Load(*configPath)
+	var loadOpts []config.Option
+	if *serveMode {
+		loadOpts = append(loadOpts, config.WithServeMode(true))
+	}
+	cfg, err := config.Load(*configPath, loadOpts...)
 	if err != nil {
 		return err
 	}
@@ -84,6 +89,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		"config", cfg.Summary(),
 		"config_path", *configPath,
 		"listen", cfg.App.Listen,
+		"serve_mode", cfg.App.ServeMode,
 		"db_path", cfg.App.DBPath)
 	if warning := config.PermissionsWarning(*configPath); warning != "" {
 		log.Warn(warning, "event", "config_permissions")
@@ -185,6 +191,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		CandleStore:  st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasConsumerKey },
+		ServeMode:    cfg.App.ServeMode,
 	})
 	if err != nil {
 		log.Error("web startup failed", "event", "startup_failed", "error", err)

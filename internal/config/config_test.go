@@ -336,3 +336,50 @@ func TestLocation(t *testing.T) {
 		t.Fatalf("fallback location = %q, want UTC", got)
 	}
 }
+
+func TestWithServeMode(t *testing.T) {
+	clearScalperEnv(t)
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), WithServeMode(true))
+	if err != nil {
+		t.Fatalf("Load with serve mode: %v", err)
+	}
+	if !cfg.App.ServeMode {
+		t.Fatal("ServeMode should be true")
+	}
+	if cfg.App.Listen != "0.0.0.0:8080" {
+		t.Fatalf("listen = %q, want 0.0.0.0:8080", cfg.App.Listen)
+	}
+	if cfg.Web.OpenBrowser {
+		t.Fatal("OpenBrowser should be false in serve mode")
+	}
+	warnings := cfg.Warnings()
+	foundAuthWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "serve mode is active without basic auth") {
+			foundAuthWarning = true
+			break
+		}
+	}
+	if !foundAuthWarning {
+		t.Fatalf("expected serve mode warning in warnings: %v", warnings)
+	}
+}
+
+func TestBasicAuthValidation(t *testing.T) {
+	c := validConfig()
+	c.Web.BasicAuth.Username = "admin"
+	c.Web.BasicAuth.Password = ""
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error when username set but password empty")
+	}
+	c.Web.BasicAuth.Username = ""
+	c.Web.BasicAuth.Password = "secret"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error when password set but username empty")
+	}
+	c.Web.BasicAuth.Username = "admin"
+	c.Web.BasicAuth.Password = "secret"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected valid config when both set, got: %v", err)
+	}
+}

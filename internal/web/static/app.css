@@ -337,6 +337,8 @@ a { color: var(--blue); }
   letter-spacing: .08em;
 }
 .atm-chip b { color: var(--accent); font-family: var(--mono); margin-left: 3px; }
+.atm-chip b.up { color: var(--green); }
+.atm-chip b.down { color: var(--red); }
 
 /* ── Layout ─────────────────────────────────────────────── */
 .terminal {
@@ -434,6 +436,28 @@ a { color: var(--blue); }
   font-weight: 650;
 }
 .pane-strike-select:disabled { color: var(--muted-2); opacity: .65; }
+.pane-pcr-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid #3c4560;
+  border-radius: 4px;
+  background: #12182a;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: .05em;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+}
+.pane-pcr-chip b {
+  color: var(--accent);
+  margin-left: 3px;
+  font-weight: 700;
+}
+.pane-pcr-chip b.up { color: var(--green); }
+.pane-pcr-chip b.down { color: var(--red); }
 .pane-sub { color: var(--muted-2); font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pane-quote { display: flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
 .pane-ltp { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 700; }
@@ -1511,6 +1535,8 @@ body[data-theme="light"] .tf-group button:hover { background: var(--surface-hove
 body[data-theme="light"] .tf-group button.active { background: var(--text); color: #ffffff; }
 body[data-theme="light"] .atm-chip { border-color: var(--line); background: var(--panel); color: var(--muted); }
 body[data-theme="light"] .atm-chip b { color: var(--accent); font-weight: 700; }
+body[data-theme="light"] .pane-pcr-chip { border-color: var(--line); background: var(--panel-2); color: var(--muted); }
+body[data-theme="light"] .pane-pcr-chip b { color: var(--accent); font-weight: 700; }
 body[data-theme="light"] .pane { box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05); }
 body[data-theme="light"] .pane.focused { border-color: var(--border-strong); box-shadow: inset 0 0 0 1px var(--border-strong), 0 1px 3px rgba(15, 23, 42, 0.05); }
 body[data-theme="light"] .pane-strike-select { background: #ffffff; border-color: var(--line); color: var(--text); }

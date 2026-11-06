@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -29,9 +31,10 @@ type Config struct {
 
 // App holds process-level settings.
 type App struct {
-	Listen   string `yaml:"listen"`
-	DBPath   string `yaml:"db_path"`
-	Timezone string `yaml:"timezone"`
+	Listen    string `yaml:"listen"`
+	DBPath    string `yaml:"db_path"`
+	Timezone  string `yaml:"timezone"`
+	ServeMode bool   `yaml:"-"` // set at runtime by the -serve flag; not read from config
 }
 
 // Logging holds structured logging settings.
@@ -182,7 +185,15 @@ type Scrip struct {
 
 // Web holds browser settings.
 type Web struct {
-	OpenBrowser bool `yaml:"open_browser"`
+	OpenBrowser bool      `yaml:"open_browser"`
+	BasicAuth   BasicAuth `yaml:"basic_auth"`
+}
+
+// BasicAuth holds optional HTTP Basic Auth credentials for serve mode.
+// Leave both fields empty to disable Basic Auth.
+type BasicAuth struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }
 
 // Default returns the documented defaults. A minimal config file can omit any
@@ -300,8 +311,28 @@ func Default() Config {
 	}
 }
 
-// Load reads path, applies defaults and environment overrides, then validates.
-func Load(path string) (Config, error) {
+// Option customizes Config during loading.
+type Option func(*Config)
+
+// WithServeMode configures serve mode on the Config: binds listen to 0.0.0.0
+// (preserving any configured port), sets ServeMode to true, and disables browser auto-open.
+func WithServeMode(serve bool) Option {
+	return func(c *Config) {
+		if serve {
+			host, port, err := net.SplitHostPort(c.App.Listen)
+			if err == nil && port != "" {
+				c.App.Listen = net.JoinHostPort("0.0.0.0", port)
+			} else if host == "" && port == "" {
+				c.App.Listen = "0.0.0.0:8080"
+			}
+			c.App.ServeMode = true
+			c.Web.OpenBrowser = false
+		}
+	}
+}
+
+// Load reads path, applies defaults and environment overrides, runs options, then validates.
+func Load(path string, opts ...Option) (Config, error) {
 	if path == "" {
 		return Config{}, &errs.ConfigError{Err: errors.New("config path is empty")}
 	}
@@ -315,6 +346,11 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.applyEnv()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		var ce *errs.ConfigError
 		if errors.As(err, &ce) && ce.Path == "" {
@@ -388,6 +424,12 @@ func PermissionsWarning(path string) string {
 // Warnings returns non-fatal configuration advisories for startup logging.
 func (c Config) Warnings() []string {
 	var out []string
+	if c.App.ServeMode {
+		ba := c.Web.BasicAuth
+		if strings.TrimSpace(ba.Username) == "" {
+			out = append(out, "serve mode is active without basic auth; the terminal is accessible by anyone who can reach the port")
+		}
+	}
 	r := c.Trading.Risk
 	if r.MaxLotsPerOrder == 0 && r.MaxOpenLotsPerIndex == 0 && r.MaxOrderValueINR == 0 {
 		out = append(out, "all lot and order-value caps are disabled (0); exposure is limited only by manual entry")

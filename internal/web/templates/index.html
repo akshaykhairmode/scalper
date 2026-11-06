@@ -53,6 +53,7 @@
     <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe"></div>
 
     <span class="atm-chip">ATM <b id="atm-value">—</b></span>
+    <span class="atm-chip" id="pcr-chip" title="Put/Call Ratio (Open Interest)">PCR <b id="pcr-value">—</b></span>
     <label class="select-field compact product-control">
       <span>PRODUCT</span>
       <select id="product-select">
@@ -72,7 +73,7 @@
       <article class="pane" data-pane="ce">
         <div class="pane-head">
           <div class="pane-id">
-            <div class="pane-title-row"><span class="pane-title" id="ce-title">CALL</span><select class="pane-strike-select" id="ce-strike-select" aria-label="Call strike" disabled><option value="">—</option></select></div>
+            <div class="pane-title-row"><span class="pane-title" id="ce-title">CALL</span><select class="pane-strike-select" id="ce-strike-select" aria-label="Call strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="ce-pcr-chip" title="Put/Call Ratio">PCR <b id="ce-pcr-val">—</b></span></div>
             <span class="pane-sub" id="ce-sub">select a strike</span>
           </div>
           <div class="pane-quote">
@@ -148,7 +149,7 @@
       <article class="pane" data-pane="pe">
         <div class="pane-head">
           <div class="pane-id">
-            <div class="pane-title-row"><span class="pane-title" id="pe-title">PUT</span><select class="pane-strike-select" id="pe-strike-select" aria-label="Put strike" disabled><option value="">—</option></select></div>
+            <div class="pane-title-row"><span class="pane-title" id="pe-title">PUT</span><select class="pane-strike-select" id="pe-strike-select" aria-label="Put strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="pe-pcr-chip" title="Put/Call Ratio">PCR <b id="pe-pcr-val">—</b></span></div>
             <span class="pane-sub" id="pe-sub">select a strike</span>
           </div>
           <div class="pane-quote">
@@ -199,7 +200,7 @@
         <h2 class="bottom-title">Positions &amp; books</h2>
         <div class="tabs" role="tablist" id="tabs">
           <button type="button" role="tab" data-tab="brackets">Brackets <span class="tab-badge" id="brackets-badge" hidden>0</span></button>
-          <button type="button" role="tab" data-tab="positions" class="active">Positions</button>
+          <button type="button" role="tab" data-tab="positions" class="active">Positions <span class="tab-badge" id="positions-badge" hidden>0</span></button>
           <button type="button" role="tab" data-tab="open">Open <span class="tab-badge" id="open-orders-badge" hidden>0</span></button>
           <button type="button" role="tab" data-tab="orders">Orders</button>
           <button type="button" role="tab" data-tab="trades">Trades</button>
@@ -220,7 +221,7 @@
   <footer class="footer">
     <span class="footer-brand">SCALPER <span id="footer-version">v{{.Version}}</span></span>
     <span class="dot-sep">·</span>
-    <span>127.0.0.1 only</span>
+    <span>{{if .ServeMode}}serve mode{{else}}127.0.0.1 only{{end}}</span>
     <span class="dot-sep">·</span>
     <span id="footer-feed">feed connecting</span>
     <span class="dot-sep">·</span>
