@@ -194,6 +194,7 @@ func (s *Server) forwardHSMEvents() {
 	defer ticker.Stop()
 
 	pendingTicks := make(map[string]map[string]any)
+	keyCache := make(map[string]string)
 
 	flush := func() {
 		if len(pendingTicks) == 0 {
@@ -216,7 +217,7 @@ func (s *Server) forwardHSMEvents() {
 				"data": ticks,
 			})
 		}
-		pendingTicks = make(map[string]map[string]any)
+		clear(pendingTicks)
 	}
 
 	for {
@@ -237,11 +238,20 @@ func (s *Server) forwardHSMEvents() {
 			if event.Quote == nil {
 				continue
 			}
-			key, err := s.resolveHSMKey(event.Quote)
-			if err != nil {
-				s.log.Warn("HSM quote could not be mapped", "event", "hsm_quote_unmapped", "error", err,
-					"instrument", event.Quote.InstrumentKey)
-				continue
+			cacheKey := event.Quote.InstrumentKey
+			if event.Quote.Identifier != "" {
+				cacheKey = event.Quote.InstrumentKey + "\x00" + event.Quote.Identifier
+			}
+			key, ok := keyCache[cacheKey]
+			if !ok {
+				var err error
+				key, err = s.resolveHSMKey(event.Quote)
+				if err != nil {
+					s.log.Warn("HSM quote could not be mapped", "event", "hsm_quote_unmapped", "error", err,
+						"instrument", event.Quote.InstrumentKey)
+					continue
+				}
+				keyCache[cacheKey] = key
 			}
 			if s.bracketEngine != nil {
 				s.bracketEngine.OnTick(s.feedCtx, key, event.Quote.LTP)
@@ -272,17 +282,26 @@ func (s *Server) forwardHSMEvents() {
 }
 
 func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
-	parts := strings.SplitN(quote.InstrumentKey, "|", 3)
-	if len(parts) != 3 {
+	firstPipe := strings.IndexByte(quote.InstrumentKey, '|')
+	if firstPipe < 0 {
 		return "", errors.New("invalid HSM topic name")
 	}
-	switch parts[0] {
+	prefix := quote.InstrumentKey[:firstPipe]
+	rest := quote.InstrumentKey[firstPipe+1:]
+	secondPipe := strings.IndexByte(rest, '|')
+	if secondPipe < 0 {
+		return "", errors.New("invalid HSM topic name")
+	}
+	segment := rest[:secondPipe]
+	token := rest[secondPipe+1:]
+
+	switch prefix {
 	case "sf":
 		symbol := quote.Identifier
 		if symbol == "" {
-			symbol = parts[2]
+			symbol = token
 		}
-		instrument, found := s.market.FindOption(parts[1], symbol)
+		instrument, found := s.market.FindOption(segment, symbol)
 		if found {
 			return instrument.InstrumentKey, nil
 		}
@@ -292,14 +311,15 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 		if !canResolveSpot {
 			return "", errors.New("market does not support spot-symbol resolution")
 		}
-		spot, found := spotResolver.FindSpot(parts[1], symbol)
+		spot, found := spotResolver.FindSpot(segment, symbol)
 		if !found {
 			return "", errors.New("scrip symbol is not in the Scrip Master")
 		}
 		return spot.InstrumentKey, nil
 	case "if":
-		for _, index := range s.configSnapshot().Market.Indices {
-			if index.IndexSegment == parts[1] && market.IndexQuoteSymbol(index) == parts[2] {
+		snap := s.configSnapshot()
+		for _, index := range snap.Market.Indices {
+			if index.IndexSegment == segment && market.IndexQuoteSymbol(index) == token {
 				return index.IndexSegment + "|" + index.ScripName, nil
 			}
 		}
@@ -310,6 +330,13 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 }
 
 func (s *Server) broadcast(value any) {
+	s.feedMu.RLock()
+	hasClients := len(s.feedClients) > 0
+	s.feedMu.RUnlock()
+	if !hasClients {
+		return
+	}
+
 	data, err := json.Marshal(value)
 	if err != nil {
 		if s.log != nil {
@@ -319,13 +346,7 @@ func (s *Server) broadcast(value any) {
 	}
 
 	s.feedMu.RLock()
-	clients := make([]*feedClient, 0, len(s.feedClients))
 	for client := range s.feedClients {
-		clients = append(clients, client)
-	}
-	s.feedMu.RUnlock()
-
-	for _, client := range clients {
 		select {
 		case client.send <- data:
 		default:
@@ -334,4 +355,5 @@ func (s *Server) broadcast(value any) {
 			}
 		}
 	}
+	s.feedMu.RUnlock()
 }

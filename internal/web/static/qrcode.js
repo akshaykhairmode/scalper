@@ -7,18 +7,18 @@ export function generateQRCodeSVG(text, size = 220) {
   const margin = 2;
   const viewBoxSize = count + margin * 2;
 
-  let path = "";
+  const pathParts = [];
   for (let r = 0; r < count; r++) {
     for (let c = 0; c < count; c++) {
       if (qr.isDark(r, c)) {
-        path += `M${c + margin},${r + margin}h1v1h-1z `;
+        pathParts.push(`M${c + margin},${r + margin}h1v1h-1z`);
       }
     }
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBoxSize} ${viewBoxSize}" width="${size}" height="${size}" shape-rendering="crispEdges">
     <rect width="${viewBoxSize}" height="${viewBoxSize}" fill="#ffffff"/>
-    <path d="${path.trim()}" fill="#000000"/>
+    <path d="${pathParts.join(" ")}" fill="#000000"/>
   </svg>`;
 }
 
@@ -263,11 +263,8 @@ function createQRCode(text) {
   let col = size - 1;
   while (col > 0) {
     if (col === 6) col--; // skip vertical timing column
-    const rowRange = dir === -1
-      ? Array.from({ length: size }, (_, i) => size - 1 - i)
-      : Array.from({ length: size }, (_, i) => i);
-
-    for (const r of rowRange) {
+    for (let step = 0; step < size; step++) {
+      const r = dir === -1 ? size - 1 - step : step;
       for (let c = col; c >= col - 1; c--) {
         if (matrix[r][c] === -1) {
           const bit = bitIdx < finalBits.length ? finalBits[bitIdx++] : 0;

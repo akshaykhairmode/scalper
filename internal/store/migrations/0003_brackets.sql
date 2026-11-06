@@ -23,3 +23,4 @@ CREATE TABLE brackets (
 
 CREATE INDEX idx_brackets_status ON brackets(status);
 CREATE INDEX idx_brackets_instrument ON brackets(instrument_key);
+CREATE INDEX idx_brackets_created ON brackets(created_at DESC);

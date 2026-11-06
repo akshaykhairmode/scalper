@@ -9,3 +9,5 @@ CREATE TABLE devices (
   created_at   DATETIME NOT NULL,
   last_used_at DATETIME NOT NULL
 );
+
+CREATE INDEX idx_devices_last_used ON devices(last_used_at DESC, created_at DESC);

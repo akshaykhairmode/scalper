@@ -1,5 +1,5 @@
 // Scalper Service Worker for PWA Support and Asset Caching
-const CACHE_VERSION = 'scalper-v1';
+const CACHE_VERSION = 'scalper-v2';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 
@@ -11,6 +11,7 @@ const CORE_SHELL = [
   '/static/charts.js',
   '/static/klinecharts.min.js',
   '/static/patterns.js',
+  '/static/qrcode.js',
   '/static/icon.svg',
   '/static/icon-192.png',
   '/static/icon-512.png',
@@ -56,8 +57,8 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // 1. Non-GET requests and WebSocket connections are strictly bypassed
-  if (req.method !== 'GET' || url.protocol === 'ws:' || url.protocol === 'wss:') {
+  // 1. Non-HTTP(S) requests (e.g. chrome-extension:), non-GET, and WebSocket connections are bypassed
+  if (!url.protocol.startsWith('http') || req.method !== 'GET' || url.protocol === 'ws:' || url.protocol === 'wss:') {
     return;
   }
 
@@ -95,29 +96,33 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 4. Static assets (/static/*, /manifest.*, etc.): Cache-first with network background update
+  // 4. Static assets (/static/*, /manifest.*, etc.): Network-first with cache fallback
+  // Ensures fresh scripts and styles are fetched on reload without getting stuck on old versions.
   if (url.pathname.startsWith('/static/') || url.pathname.includes('manifest')) {
     event.respondWith(
-      caches.match(req).then((cachedResp) => {
-        const fetchPromise = fetch(req)
-          .then((networkResp) => {
-            if (networkResp && networkResp.ok) {
-              const copy = networkResp.clone();
-              caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
-            }
-            return networkResp;
-          })
-          .catch(() => cachedResp);
-
-        return cachedResp || fetchPromise;
-      })
+      fetch(req)
+        .then((networkResp) => {
+          if (networkResp.ok) {
+            const copy = networkResp.clone();
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
+          }
+          return networkResp;
+        })
+        .catch(async () => {
+          const cached = await caches.match(req);
+          if (cached) return cached;
+          return new Response(null, { status: 504, statusText: "Offline" });
+        })
     );
     return;
   }
 
-  // Default: network fallback
+  // Default: cache fallback, with caught fetch so policy/network errors do not reject promise
   event.respondWith(
-    caches.match(req).then((cached) => cached || fetch(req))
+    caches.match(req).then((cached) => {
+      if (cached) return cached;
+      return fetch(req).catch(() => new Response(null, { status: 408, statusText: "Fetch failed or blocked by policy" }));
+    })
   );
 });
 

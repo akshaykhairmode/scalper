@@ -137,10 +137,30 @@ jobs:
           go-version-file: go.mod
           go-package: ./...
 
+  validate-mobile:
+    name: validate mobile bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: "mobile/package.json"
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm install
+
+      - name: Verify asset bundle sync
+        working-directory: mobile
+        run: npm run bundle
+
   release-version:
     name: determine release version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, cross-build, lint, vuln]
+    needs: [test, cross-build, lint, vuln, validate-mobile]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -192,6 +212,17 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.release-version.outputs.version }}
+
+  mobile-release:
+    name: publish mobile release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-version.outputs.skip != 'true'
+    needs: [release-version, release]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/mobile-release.yml
+    with:
+      build_type: "release"
+      server_url: "https://130.210.18.97.sslip.io"
 
   deploy:
     name: deploy to server

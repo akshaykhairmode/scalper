@@ -17,6 +17,18 @@ on:
         description: "Scalper backend URL to embed in mobile bundle"
         required: false
         default: "https://130.210.18.97.sslip.io"
+  workflow_call:
+    inputs:
+      build_type:
+        description: "Android build type"
+        required: false
+        default: "release"
+        type: string
+      server_url:
+        description: "Backend URL"
+        required: false
+        default: "https://130.210.18.97.sslip.io"
+        type: string
 
 permissions:
   contents: write

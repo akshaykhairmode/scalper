@@ -1606,8 +1606,8 @@ function hideServerDownModal() {
   if (modal) modal.hidden = true;
 }
 
-function handleTickData(data) {
-  if (!data || !data.key) return;
+function handleTickData(data, { batch = false } = {}) {
+  if (!data || !data.key) return null;
   updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
   if (data.bids || data.asks) {
     if (!S.depths) S.depths = {};
@@ -1625,10 +1625,12 @@ function handleTickData(data) {
     spot.change = num(data.change, spot.ltp - spot.prevClose);
     spot.changePct = num(data.change_pct,
       spot.prevClose ? ((spot.ltp - spot.prevClose) / spot.prevClose) * 100 : 0);
-    renderHeader();
-    renderPaneHeaders();
-    renderOrderPad();
-    return;
+    if (!batch) {
+      renderHeader();
+      renderPaneHeaders();
+      renderOrderPad();
+    }
+    return { spot: true };
   }
   let updatedPosition = false;
   for (const position of S.positions) {
@@ -1646,11 +1648,13 @@ function handleTickData(data) {
       }
     }
   }
-  if (updatedPosition) {
+  if (updatedPosition && !batch) {
     renderHeader();
     updateLiveTabQuotes(data.key);
     updateChartTrades();
   }
+  let hadChain = false;
+  let hadSelected = false;
   const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
   if (row) {
     const opt = row.call?.instrumentKey === data.key ? row.call : row.put;
@@ -1671,33 +1675,35 @@ function handleTickData(data) {
     opt.change = opt.ltp - opt.prevClose;
     opt.changePct = opt.prevClose ? ((opt.ltp - opt.prevClose) / opt.prevClose) * 100 : 0;
     const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
-    const cell = [...$("chain-body").querySelectorAll(".chain-row")]
-      .find((item) => item.dataset.strike === String(row.strike))
-      ?.querySelector(`[data-select="${type}"]`);
+    const cell = $("chain-body")?.querySelector(`button[data-select="${type}"][data-strike="${row.strike}"]`);
     if (cell) {
       cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
       cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
       cell.classList.toggle("up", opt.changePct > 0);
       cell.classList.toggle("down", opt.changePct < 0);
-      renderPCR();
+      if (!batch) renderPCR();
+      hadChain = true;
     }
     if (selectedOption(type)?.instrumentKey === data.key) {
-      renderPaneHeaders();
-      renderOrderPad();
+      if (!batch) {
+        renderPaneHeaders();
+        renderOrderPad();
+      }
+      hadSelected = true;
     }
   } else {
-    let updatedSelected = false;
     for (const type of ["CE", "PE"]) {
       const option = selectedOption(type);
       if (option?.instrumentKey !== data.key) continue;
       updateOptionFromTick(option, data);
-      updatedSelected = true;
+      hadSelected = true;
     }
-    if (updatedSelected) {
+    if (hadSelected && !batch) {
       renderPaneHeaders();
       renderOrderPad();
     }
   }
+  return { position: updatedPosition, chain: hadChain, selected: hadSelected };
 }
 
 function handleSocketEvent(event) {
@@ -1752,8 +1758,36 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "ticks" && Array.isArray(data)) {
+    let hadSpot = false;
+    let hadPosition = false;
+    let hadSelected = false;
+    let hadChain = false;
+    const posKeys = new Set();
     for (const tick of data) {
-      handleTickData(tick);
+      const res = handleTickData(tick, { batch: true });
+      if (res?.spot) hadSpot = true;
+      if (res?.position) {
+        hadPosition = true;
+        if (tick.key) posKeys.add(tick.key);
+      }
+      if (res?.selected) hadSelected = true;
+      if (res?.chain) hadChain = true;
+    }
+    if (hadSpot || hadPosition) {
+      renderHeader();
+    }
+    if (hadSpot || hadSelected) {
+      renderPaneHeaders();
+      renderOrderPad();
+    }
+    if (hadPosition) {
+      for (const k of posKeys) {
+        updateLiveTabQuotes(k);
+      }
+      updateChartTrades();
+    }
+    if (hadChain) {
+      renderPCR();
     }
     return;
   }
@@ -2677,7 +2711,7 @@ function scrollATMIntoView() {
   const atm = computeATM();
   if (!atm) return;
   const selected = selectedOption(S.selected.type)?.strike || atm;
-  const target = [...body.querySelectorAll(".chain-row")].find((row) => num(row.dataset.strike) === selected);
+  const target = body ? body.querySelector(`.chain-row[data-strike="${selected}"]`) : null;
   if (target) {
     const bodyRect = body.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
@@ -5232,8 +5266,12 @@ function bindEvents() {
   }
 
   async function handleRegisterDevice(deviceName = "", pairToken = "") {
+    if (!window.isSecureContext) {
+      toast(`WebAuthn / Passkeys require a secure origin (HTTPS or localhost). Current origin: ${window.location.origin}`, "warn", 6000);
+      return;
+    }
     if (!window.PublicKeyCredential) {
-      toast("WebAuthn is not supported by this browser.", "warn");
+      toast("WebAuthn is not supported by this browser.", "warn", 5000);
       return;
     }
 
@@ -5320,6 +5358,7 @@ function bindEvents() {
     const modal = $("pair-modal");
     if (!modal) return;
     modal.hidden = false;
+    modal.style.display = "grid";
 
     const qrContainer = $("pair-qr-svg");
     const urlInput = $("pair-url-input");
@@ -5346,7 +5385,10 @@ function bindEvents() {
 
   function closePairModal() {
     const modal = $("pair-modal");
-    if (modal) modal.hidden = true;
+    if (modal) {
+      modal.hidden = true;
+      modal.style.display = "none";
+    }
   }
 
   async function loadDevicesList() {
@@ -5516,9 +5558,18 @@ function bindEvents() {
   });
 
   // WebAuthn / Passkey & Device Binding events
-  $("pair-device-button")?.addEventListener("click", openPairModal);
-  $("register-device-button")?.addEventListener("click", () => handleRegisterDevice());
-  $("pair-register-this-btn")?.addEventListener("click", () => handleRegisterDevice());
+  $("pair-device-button")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    openPairModal();
+  });
+  $("register-device-button")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    handleRegisterDevice();
+  });
+  $("pair-register-this-btn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    handleRegisterDevice();
+  });
   $("pair-close")?.addEventListener("click", closePairModal);
   $("pair-modal-close-btn")?.addEventListener("click", closePairModal);
   $("pair-modal")?.addEventListener("click", (event) => {
@@ -5626,6 +5677,10 @@ function bindEvents() {
     }
     if (!$("confirm-modal").hidden) {
       closeConfirm(false);
+      return;
+    }
+    if (!$("pair-modal")?.hidden) {
+      closePairModal();
       return;
     }
     if (!$("status-modal")?.hidden) {

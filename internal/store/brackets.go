@@ -211,17 +211,19 @@ func scanBracket(s rowScanner) (*bracket.Bracket, error) {
 	return &b, nil
 }
 
+var dbTimeLayouts = [...]string{
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04:05.999999999",
+	time.RFC3339,
+	time.RFC3339Nano,
+}
+
 func parseDBTime(s string) time.Time {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}
 	}
-	for _, layout := range []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04:05.999999999",
-		time.RFC3339,
-		time.RFC3339Nano,
-	} {
+	for _, layout := range dbTimeLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t
 		}

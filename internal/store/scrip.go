@@ -75,6 +75,7 @@ func (s *Store) ReplaceScripSnapshot(
 		if perr != nil {
 			return fmt.Errorf("store: prepare instrument insert: %w", perr)
 		}
+		defer func() { _ = stmt.Close() }()
 		now := s.now().Unix()
 		for _, opt := range options {
 			if _, err = stmt.ExecContext(ctx,
@@ -95,6 +96,7 @@ func (s *Store) ReplaceScripSnapshot(
 		if perr != nil {
 			return fmt.Errorf("store: prepare spot insert: %w", perr)
 		}
+		defer func() { _ = stmt.Close() }()
 		now := s.now().Unix()
 		for _, spot := range spots {
 			if _, err = stmt.ExecContext(ctx,
@@ -113,6 +115,7 @@ func (s *Store) ReplaceScripSnapshot(
 		if perr != nil {
 			return fmt.Errorf("store: prepare sync insert: %w", perr)
 		}
+		defer func() { _ = stmt.Close() }()
 		for _, sync := range syncs {
 			if _, err = stmt.ExecContext(ctx,
 				sync.Segment, sync.FileURL, sync.SyncedAt.Unix(), sync.Rows, sync.Status,
@@ -142,7 +145,7 @@ func (s *Store) LoadScripSnapshot(ctx context.Context) ([]scrip.Option, []scrip.
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: query instruments: %w", err)
 	}
-	var options []scrip.Option
+	options := make([]scrip.Option, 0, 512)
 	var scanErr error
 	func() {
 		defer func() {
@@ -178,7 +181,7 @@ func (s *Store) LoadScripSnapshot(ctx context.Context) ([]scrip.Option, []scrip.
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: query spot instruments: %w", err)
 	}
-	var spots []scrip.Spot
+	spots := make([]scrip.Spot, 0, 64)
 	func() {
 		defer func() {
 			if cerr := spotRows.Close(); cerr != nil {

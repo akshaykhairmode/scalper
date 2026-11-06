@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
@@ -22,13 +23,15 @@ import (
 
 // Engine manages active and historical bracket orders in-memory and persists them to Store.
 type Engine struct {
-	mu          sync.RWMutex
-	store       Store
-	placeOrder  func(ctx context.Context, o kotakapi.Order) (string, error)
-	cancelOrder func(ctx context.Context, id string) error
-	log         *slog.Logger
-	brackets    map[string]*Bracket
-	onChange    func(b Bracket)
+	mu                 sync.RWMutex
+	store              Store
+	placeOrder         func(ctx context.Context, o kotakapi.Order) (string, error)
+	cancelOrder        func(ctx context.Context, id string) error
+	log                *slog.Logger
+	brackets           map[string]*Bracket
+	onChange           func(b Bracket)
+	activeInPos        atomic.Int64
+	activeByInstrument map[string]map[string]*Bracket
 }
 
 // NewEngine creates a new bracket and OCO engine.
@@ -42,11 +45,12 @@ func NewEngine(
 		log = slog.Default()
 	}
 	e := &Engine{
-		store:       store,
-		placeOrder:  placeOrder,
-		cancelOrder: cancelOrder,
-		log:         log,
-		brackets:    make(map[string]*Bracket),
+		store:              store,
+		placeOrder:         placeOrder,
+		cancelOrder:        cancelOrder,
+		log:                log,
+		brackets:           make(map[string]*Bracket),
+		activeByInstrument: make(map[string]map[string]*Bracket),
 	}
 
 	if store != nil {
@@ -55,7 +59,11 @@ func NewEngine(
 			if active, err := activeStore.GetActiveBrackets(context.Background()); err == nil {
 				for i := range active {
 					b := active[i]
-					e.brackets[b.ID] = &b
+					bp := &b
+					e.brackets[b.ID] = bp
+					if b.Status == StatusInPosition {
+						e.indexActiveInPosition(bp)
+					}
 				}
 			} else {
 				e.log.Warn("failed to load active brackets from activeStore", "error", err)
@@ -64,7 +72,11 @@ func NewEngine(
 			for i := range list {
 				b := list[i]
 				if b.Status == StatusPendingEntry || b.Status == StatusInPosition {
-					e.brackets[b.ID] = &b
+					bp := &b
+					e.brackets[b.ID] = bp
+					if b.Status == StatusInPosition {
+						e.indexActiveInPosition(bp)
+					}
 				}
 			}
 		} else {
@@ -73,6 +85,30 @@ func NewEngine(
 	}
 
 	return e
+}
+
+func (e *Engine) indexActiveInPosition(b *Bracket) {
+	m, ok := e.activeByInstrument[b.InstrumentKey]
+	if !ok {
+		m = make(map[string]*Bracket)
+		e.activeByInstrument[b.InstrumentKey] = m
+	}
+	if _, exists := m[b.ID]; !exists {
+		m[b.ID] = b
+		e.activeInPos.Add(1)
+	}
+}
+
+func (e *Engine) unindexActiveInPosition(b *Bracket) {
+	if m, ok := e.activeByInstrument[b.InstrumentKey]; ok {
+		if _, exists := m[b.ID]; exists {
+			delete(m, b.ID)
+			if len(m) == 0 {
+				delete(e.activeByInstrument, b.InstrumentKey)
+			}
+			e.activeInPos.Add(-1)
+		}
+	}
 }
 
 // SetOnChange configures the callback invoked when a bracket is created or updated.
@@ -182,6 +218,9 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	e.mu.Lock()
 	bracketCopy := b
 	e.brackets[b.ID] = &bracketCopy
+	if bracketCopy.Status == StatusInPosition {
+		e.indexActiveInPosition(&bracketCopy)
+	}
 	e.mu.Unlock()
 
 	if e.store != nil {
@@ -216,6 +255,7 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 		orderToCancel = b.ExitOrderID
 	}
 
+	e.unindexActiveInPosition(b)
 	b.Status = StatusCancelled
 	b.UpdatedAt = time.Now()
 	bracketCopy := *b
@@ -270,6 +310,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	}
 
 	// In position: cancel resting exit order if any, and execute market exit
+	e.unindexActiveInPosition(b)
 	restingOrder := b.ExitOrderID
 	b.Status = StatusExitedManual
 	b.UpdatedAt = time.Now()
@@ -468,6 +509,7 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 					b.EntryPrice = ord.FilledPrice
 				}
 				b.UpdatedAt = time.Now()
+				e.indexActiveInPosition(b)
 				cp := *b
 				updated = &cp
 				break
@@ -480,6 +522,7 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 			}
 		} else if b.ExitOrderID == ord.OrderID && ord.OrderID != "" {
 			if isFilledStatus(ord.Status) {
+				e.unindexActiveInPosition(b)
 				if ord.FilledPrice > 0 {
 					b.ExitPrice = ord.FilledPrice
 					if b.TransactionType == "BUY" {
@@ -512,6 +555,9 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 	if instrumentKey == "" || ltp <= 0 {
 		return
 	}
+	if e.activeInPos.Load() == 0 {
+		return
+	}
 
 	type tickTrigger struct {
 		bracketID    string
@@ -529,8 +575,14 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 	var triggers []tickTrigger
 
 	e.mu.Lock()
-	for _, b := range e.brackets {
-		if b.InstrumentKey != instrumentKey || b.Status != StatusInPosition {
+	activeMap := e.activeByInstrument[instrumentKey]
+	if len(activeMap) == 0 {
+		e.mu.Unlock()
+		return
+	}
+
+	for _, b := range activeMap {
+		if b.Status != StatusInPosition {
 			continue
 		}
 
@@ -599,6 +651,11 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 			exitPrice:    b.ExitPrice,
 			pnl:          b.PnL,
 		})
+	}
+	for _, trg := range triggers {
+		if b, ok := e.brackets[trg.bracketID]; ok {
+			e.unindexActiveInPosition(b)
+		}
 	}
 	e.mu.Unlock()
 

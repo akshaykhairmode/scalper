@@ -1384,8 +1384,8 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy",
-			"default-src 'self' capacitor:; img-src 'self' data: capacitor:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "+
-				"font-src 'self' data:; "+
+			"default-src 'self' capacitor:; img-src 'self' data: capacitor:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'; "+
+				"font-src 'self' data: https://fonts.gstatic.com; "+
 				"connect-src 'self' ws: wss: https: http: capacitor:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")

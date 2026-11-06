@@ -10,3 +10,5 @@ CREATE TABLE sessions (
   created_at   DATETIME NOT NULL,
   expires_at   DATETIME NOT NULL
 );
+
+CREATE INDEX idx_sessions_created ON sessions(created_at DESC);

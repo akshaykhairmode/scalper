@@ -14,7 +14,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{.Version}}">
 </head>
 <body data-mode="{{.Mode}}">
   <div class="sr-only" id="diagnostics">
@@ -781,6 +781,6 @@
 
   <script id="bootstrap" type="application/json">{{.Bootstrap}}</script>
   <script src="/static/klinecharts.min.js"></script>
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v={{.Version}}"></script>
 </body>
 </html>
