@@ -181,6 +181,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	srv, err := web.New(web.Options{
 		Logger:       log,
 		Config:       cfg,
+		ConfigPath:   *configPath,
 		ConsumerKey:  consumerKey,
 		MPIN:         mpin,
 		Market:       marketService,
