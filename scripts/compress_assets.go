@@ -33,7 +33,7 @@ func main() {
 		}
 		ext := filepath.Ext(name)
 		switch ext {
-		case ".js", ".css", ".html", ".svg", ".json", ".txt":
+		case ".js", ".css", ".html", ".svg", ".json", ".txt", ".webmanifest":
 		default:
 			continue
 		}

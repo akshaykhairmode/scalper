@@ -7,6 +7,7 @@ kotak-neo-api-v2.md
 *.out
 GO_STANDARDS.md
 *.png
+!internal/web/static/*.png
 data
 logs
 config.yaml

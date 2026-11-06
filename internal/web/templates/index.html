@@ -2,9 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0e14">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Scalper">
   <title>{{.Title}} · options terminal</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body data-mode="{{.Mode}}">
@@ -24,6 +33,7 @@
     </div>
 
     <div class="topbar-right">
+      <button type="button" class="accent small install-btn" id="install-button" title="Install Scalper PWA on your device" hidden>⬇ Install App</button>
       <div class="metric metric-clickable" id="margin-metric" role="button" tabindex="0" title="Click to refresh margin" aria-label="Account margin. Click to refresh.">
         <span class="metric-label">MARGIN</span>
         <span class="metric-value" id="margin-chip">—</span>
@@ -70,7 +80,39 @@
     <button type="button" class="ghost small" id="fullscreen-button">Fullscreen</button>
   </nav>
 
-  <main class="terminal bottom-collapsed">
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Mobile view switcher">
+    <button type="button" class="mobile-nav-btn active" data-mobile-view="ce" aria-pressed="true">
+      <span class="m-nav-pill m-nav-ce"></span>CALL
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-view="spot" aria-pressed="false">
+      <span class="m-nav-pill m-nav-spot"></span>SPOT
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-view="pe" aria-pressed="false">
+      <span class="m-nav-pill m-nav-pe"></span>PUT
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-view="chain" aria-pressed="false">
+      <span class="m-nav-pill m-nav-chain"></span>CHAIN
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-view="positions" aria-pressed="false">
+      <span class="m-nav-pill m-nav-pos"></span>POSITIONS <span class="tab-badge" id="mobile-pos-badge" hidden>0</span>
+    </button>
+  </nav>
+
+  <div class="install-banner" id="install-banner" hidden>
+    <div class="install-banner-content">
+      <img src="/static/icon-192.png" alt="Scalper Icon" width="36" height="36" class="install-banner-icon">
+      <div class="install-banner-text">
+        <strong>Install Scalper PWA</strong>
+        <span>Add to home screen for real-time mobile trading</span>
+      </div>
+    </div>
+    <div class="install-banner-actions">
+      <button type="button" class="accent small install-banner-btn" id="banner-install-btn">Install</button>
+      <button type="button" class="ghost small install-banner-close" id="banner-dismiss-btn" aria-label="Dismiss banner">✕</button>
+    </div>
+  </div>
+
+  <main class="terminal bottom-collapsed" data-mobile-view="ce">
     <section class="charts-row" id="charts-row" aria-label="Charts">
       <article class="pane" data-pane="ce">
         <div class="pane-head">

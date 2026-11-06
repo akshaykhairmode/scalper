@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141a24" />
+      <stop offset="100%" stop-color="#0b0e14" />
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="512" height="512" rx="108" fill="url(#bgGrad)" />
+  <rect x="8" y="8" width="496" height="496" rx="100" fill="none" stroke="#f0b429" stroke-width="3" stroke-opacity="0.25" />
+
+  <!-- Amber central badge -->
+  <rect x="76" y="76" width="360" height="360" rx="84" fill="#f0b429" />
+
+  <!-- Stylized Geometric S -->
+  <path d="M 330 185 L 182 185 L 182 256 L 330 256 L 330 327 L 182 327" 
+        fill="none" stroke="#1a1300" stroke-width="34" stroke-linecap="square" stroke-linejoin="miter" />
+
+  <!-- Green candlestick accent (top right) -->
+  <line x1="365" y1="135" x2="365" y2="180" stroke="#35c46a" stroke-width="12" stroke-linecap="round" />
+  <line x1="365" y1="120" x2="365" y2="195" stroke="#35c46a" stroke-width="3" stroke-linecap="round" />
+
+  <!-- Red candlestick accent (bottom left) -->
+  <line x1="147" y1="332" x2="147" y2="377" stroke="#ff5d5d" stroke-width="12" stroke-linecap="round" />
+  <line x1="147" y1="317" x2="147" y2="392" stroke="#ff5d5d" stroke-width="3" stroke-linecap="round" />
+</svg>

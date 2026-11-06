@@ -285,6 +285,37 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /sw.js", func(w http.ResponseWriter, r *http.Request) {
+		data, err := fs.ReadFile(static, "sw.js")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Service-Worker-Allowed", "/")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("GET /manifest.webmanifest", func(w http.ResponseWriter, r *http.Request) {
+		data, err := fs.ReadFile(static, "manifest.webmanifest")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/manifest+json")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("GET /manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		data, err := fs.ReadFile(static, "manifest.json")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/manifest+json")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(data)
+	})
 
 	// Auth routes
 	mux.HandleFunc("GET /login", s.handleLoginPage)
@@ -1486,7 +1517,7 @@ func (s *Server) newStaticHandler(fallback http.Handler) http.Handler {
 			}
 			ext := filepath.Ext(name)
 			switch ext {
-			case ".js", ".css", ".html", ".svg", ".json", ".txt":
+			case ".js", ".css", ".html", ".svg", ".json", ".txt", ".webmanifest":
 			default:
 				continue
 			}
@@ -1498,6 +1529,12 @@ func (s *Server) newStaticHandler(fallback http.Handler) http.Handler {
 					ctype = "application/javascript; charset=utf-8"
 				case ".css":
 					ctype = "text/css; charset=utf-8"
+				case ".webmanifest":
+					ctype = "application/manifest+json"
+				case ".json":
+					ctype = "application/json; charset=utf-8"
+				case ".svg":
+					ctype = "image/svg+xml"
 				default:
 					ctype = "application/octet-stream"
 				}

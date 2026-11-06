@@ -245,7 +245,7 @@ func TestIndexPage(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready"} {
+	for _, want := range []string{"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready", "manifest.webmanifest", "theme-color", "apple-mobile-web-app-capable", "mobile-nav", "install-banner"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
@@ -719,6 +719,70 @@ func TestStaticAssetsAndFavicon(t *testing.T) {
 	}
 	if !strings.Contains(string(decompressed), "--accent") {
 		t.Fatal("decompressed css body missing --accent")
+	}
+}
+
+func TestPWARoutesAndAssets(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+
+	// 1. /sw.js
+	recSW := do(t, s, localRequest(http.MethodGet, "/sw.js"))
+	if recSW.Code != http.StatusOK {
+		t.Fatalf("/sw.js status = %d, want 200", recSW.Code)
+	}
+	if ct := recSW.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/javascript") {
+		t.Fatalf("/sw.js Content-Type = %q, want application/javascript", ct)
+	}
+	if allowed := recSW.Header().Get("Service-Worker-Allowed"); allowed != "/" {
+		t.Fatalf("/sw.js Service-Worker-Allowed = %q, want '/'", allowed)
+	}
+	if !strings.Contains(recSW.Body.String(), "scalper") {
+		t.Fatal("/sw.js content missing 'scalper'")
+	}
+
+	// 2. /manifest.webmanifest
+	recMan := do(t, s, localRequest(http.MethodGet, "/manifest.webmanifest"))
+	if recMan.Code != http.StatusOK {
+		t.Fatalf("/manifest.webmanifest status = %d, want 200", recMan.Code)
+	}
+	if ct := recMan.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Fatalf("/manifest.webmanifest Content-Type = %q, want application/manifest+json", ct)
+	}
+	if !strings.Contains(recMan.Body.String(), `"standalone"`) {
+		t.Fatal("/manifest.webmanifest missing standalone display")
+	}
+
+	// 3. /manifest.json
+	recJSON := do(t, s, localRequest(http.MethodGet, "/manifest.json"))
+	if recJSON.Code != http.StatusOK {
+		t.Fatalf("/manifest.json status = %d, want 200", recJSON.Code)
+	}
+	if ct := recJSON.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Fatalf("/manifest.json Content-Type = %q, want application/manifest+json", ct)
+	}
+
+	// 4. Static icons
+	recIconSVG := do(t, s, localRequest(http.MethodGet, "/static/icon.svg"))
+	if recIconSVG.Code != http.StatusOK {
+		t.Fatalf("/static/icon.svg status = %d, want 200", recIconSVG.Code)
+	}
+
+	recIcon192 := do(t, s, localRequest(http.MethodGet, "/static/icon-192.png"))
+	if recIcon192.Code != http.StatusOK {
+		t.Fatalf("/static/icon-192.png status = %d, want 200", recIcon192.Code)
+	}
+	if ct := recIcon192.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/png") {
+		t.Fatalf("/static/icon-192.png Content-Type = %q, want image/png", ct)
+	}
+
+	for _, icon := range []string{"icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png"} {
+		rec := do(t, s, localRequest(http.MethodGet, "/static/"+icon))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/static/%s status = %d, want 200", icon, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/png") {
+			t.Fatalf("/static/%s Content-Type = %q, want image/png", icon, ct)
+		}
 	}
 }
 

@@ -88,6 +88,7 @@ const S = {
   limits: { available: 0, used: 0, total: 0, loaded: false, error: "" },
   risk: [],
   tab: "positions",
+  mobileView: "ce",
   feed: "connecting",
   orderFeed: "disconnected",
   mode: "live",
@@ -675,6 +676,9 @@ function init() {
   buildTimeframes();
   buildCharts();
   bindEvents();
+  initMobileNavigation();
+  registerServiceWorker();
+  initPWAInstallPrompt();
   updateClock();
   window.setInterval(() => {
     updateClock();
@@ -724,6 +728,10 @@ function setTheme(theme, persist = true) {
   toggle.setAttribute("aria-label", `Switch to ${nextTheme} theme`);
   toggle.title = `Switch to ${nextTheme} theme`;
   document.querySelector('meta[name="color-scheme"]').content = theme;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) {
+    themeMeta.content = theme === "dark" ? "#0b0e14" : "#f8fafc";
+  }
   for (const chart of Object.values(S.charts)) chart.applyTheme();
   if (S.tab === "risk") renderTab();
   if (!persist) return;
@@ -1824,6 +1832,9 @@ function selectStrike(strike, type, rerender = true, reloadCharts = true) {
   updateFeedSubscriptions();
   if (reloadCharts) loadCharts();
   renderPaneHeaders();
+  if (window.innerWidth <= 768) {
+    setMobileView(type === "CE" ? "ce" : "pe");
+  }
   if (rerender) {
     renderChain(true);
     renderOrderPad();
@@ -2648,6 +2659,11 @@ function renderTab() {
   if (posBadge) {
     posBadge.textContent = String(openPositionsCount);
     posBadge.hidden = openPositionsCount === 0;
+  }
+  const mobilePosBadge = $("mobile-pos-badge");
+  if (mobilePosBadge) {
+    mobilePosBadge.textContent = String(openPositionsCount);
+    mobilePosBadge.hidden = openPositionsCount === 0;
   }
 
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
@@ -5193,6 +5209,213 @@ function updateMarketPhase(reloadOnChange = true) {
     loadCharts();
   }
 }
+
+/* ── Mobile Navigation & PWA ───────────────────────────── */
+
+function setMobileView(view) {
+  if (view === "chain") {
+    openStrikeModal();
+    return;
+  }
+  S.mobileView = view;
+  const terminal = $("charts-row")?.closest(".terminal");
+  if (terminal) {
+    terminal.dataset.mobileView = view;
+  }
+  for (const btn of $$(".mobile-nav-btn")) {
+    const isActive = btn.dataset.mobileView === view;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+  requestAnimationFrame(() => {
+    for (const chart of Object.values(S.charts)) {
+      chart.schedule();
+    }
+  });
+}
+
+const MOBILE_VIEWS_CYCLE = ["ce", "spot", "pe", "positions"];
+
+function switchMobileViewRelative(delta) {
+  const current = S.mobileView || "ce";
+  let idx = MOBILE_VIEWS_CYCLE.indexOf(current);
+  if (idx === -1) idx = 0;
+  let nextIdx = idx + delta;
+  if (nextIdx < 0) nextIdx = 0;
+  if (nextIdx >= MOBILE_VIEWS_CYCLE.length) nextIdx = MOBILE_VIEWS_CYCLE.length - 1;
+  setMobileView(MOBILE_VIEWS_CYCLE[nextIdx]);
+}
+
+function initMobileNavigation() {
+  const mobileNav = $("mobile-nav");
+  if (!mobileNav) return;
+
+  mobileNav.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mobile-nav-btn");
+    if (!btn) return;
+    const view = btn.dataset.mobileView;
+    if (view) {
+      setMobileView(view);
+    }
+  });
+
+  // Swipe navigation across views on mobile devices
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartTime = 0;
+
+  document.addEventListener("touchstart", (e) => {
+    if (window.innerWidth > 768) return;
+    if (e.touches.length === 1) {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      touchStartTime = Date.now();
+    }
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (window.innerWidth > 768) return;
+    if (e.changedTouches.length === 1) {
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      const dt = Date.now() - touchStartTime;
+
+      const target = e.target;
+      if (target.closest("input, select, textarea, .chart-canvas, #chain-body, .tab-content, .modal")) {
+        return;
+      }
+
+      if (Math.abs(dx) > 60 && Math.abs(dy) < 45 && dt < 600) {
+        if (dx < 0) {
+          switchMobileViewRelative(1);
+        } else {
+          switchMobileViewRelative(-1);
+        }
+      }
+    }
+  }, { passive: true });
+}
+
+let deferredInstallPrompt = null;
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  const register = () => {
+    navigator.serviceWorker.register("/sw.js", { scope: "/" })
+      .then((reg) => {
+        reg.addEventListener("updatefound", () => {
+          const installing = reg.installing;
+          if (installing) {
+            installing.addEventListener("statechange", () => {
+              if (installing.state === "installed" && navigator.serviceWorker.controller) {
+                console.log("[PWA] Update ready; reload to activate.");
+              }
+            });
+          }
+        });
+      })
+      .catch((err) => {
+        console.warn("[PWA] Service Worker registration failed:", err);
+      });
+  };
+
+  if (document.readyState === "complete") {
+    register();
+  } else {
+    window.addEventListener("load", register);
+  }
+}
+
+function initPWAInstallPrompt() {
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches ||
+                       window.navigator.standalone === true;
+  if (isStandalone) {
+    document.body.classList.add("is-pwa");
+    return;
+  }
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    showInstallPromptUI();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    hideInstallPromptUI();
+    document.body.classList.add("is-pwa");
+    toast("Scalper installed successfully!", "ok");
+  });
+
+  const installBtn = $("install-button");
+  if (installBtn) {
+    installBtn.addEventListener("click", triggerPWAInstall);
+  }
+
+  const bannerInstallBtn = $("banner-install-btn");
+  if (bannerInstallBtn) {
+    bannerInstallBtn.addEventListener("click", triggerPWAInstall);
+  }
+
+  const bannerDismissBtn = $("banner-dismiss-btn");
+  if (bannerDismissBtn) {
+    bannerDismissBtn.addEventListener("click", () => {
+      hideInstallBanner();
+      try {
+        sessionStorage.setItem("scalper-install-banner-dismissed", "true");
+      } catch (_) {}
+    });
+  }
+}
+
+async function triggerPWAInstall() {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  try {
+    const choice = await deferredInstallPrompt.userChoice;
+    if (choice.outcome === "accepted") {
+      toast("Installing Scalper...", "ok");
+    }
+  } catch (err) {
+    console.warn("[PWA] Prompt choice error:", err);
+  }
+  deferredInstallPrompt = null;
+  hideInstallPromptUI();
+}
+
+function showInstallPromptUI() {
+  const installBtn = $("install-button");
+  if (installBtn) installBtn.hidden = false;
+
+  let dismissed = false;
+  try {
+    dismissed = sessionStorage.getItem("scalper-install-banner-dismissed") === "true";
+  } catch (_) {}
+
+  const banner = $("install-banner");
+  if (banner && !dismissed && window.innerWidth <= 768) {
+    banner.hidden = false;
+  }
+}
+
+function hideInstallBanner() {
+  const banner = $("install-banner");
+  if (banner) banner.hidden = true;
+}
+
+function hideInstallPromptUI() {
+  const installBtn = $("install-button");
+  if (installBtn) installBtn.hidden = true;
+  hideInstallBanner();
+}
+
+window.addEventListener("resize", () => {
+  requestAnimationFrame(() => {
+    for (const chart of Object.values(S.charts)) {
+      chart.schedule();
+    }
+  });
+});
 
 /* ── Boot ──────────────────────────────────────────────── */
 
