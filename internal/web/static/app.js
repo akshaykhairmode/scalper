@@ -895,10 +895,21 @@ function buildCharts() {
   const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
   const savedPatterns = localStorage.getItem("scalper-show-patterns") === "true";
   const savedTrades = localStorage.getItem("scalper-show-trades") !== "false";
+  const savedMACE = localStorage.getItem("scalper-ma-ce") === "true";
+  const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
+  const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
+
   S.showTrades = savedTrades;
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE });
+
+  Object.defineProperty(S.charts, "underlying", {
+    get() { return S.charts.spot; },
+    set(val) { S.charts.spot = val; },
+    enumerable: false,
+    configurable: true,
+  });
 
   $$('button[data-chart-action="sr"]').forEach((b) => {
     b.classList.toggle("active", savedSR);
@@ -911,6 +922,14 @@ function buildCharts() {
   $$('button[data-chart-action="patterns"]').forEach((b) => {
     b.classList.toggle("active", savedPatterns);
     b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
+  });
+  $$('button[data-chart-action="ma"]').forEach((b) => {
+    const pane = b.dataset.chart;
+    const active = (pane === "ce" && savedMACE) ||
+                   ((pane === "spot" || pane === "underlying") && savedMAUnderlying) ||
+                   (pane === "pe" && savedMAPE);
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", active ? "true" : "false");
   });
 
   let syncingRange = false;
@@ -955,6 +974,17 @@ function buildCharts() {
     button.classList.toggle("active", savedTrades);
     button.setAttribute("aria-pressed", savedTrades ? "true" : "false");
   }
+
+  for (const button of $$(".chart-tools button[data-chart-action='ma']")) {
+    const pane = button.dataset.chart;
+    const active = (pane === "ce" && savedMACE) ||
+                   ((pane === "spot" || pane === "underlying") && savedMAUnderlying) ||
+                   (pane === "pe" && savedMAPE);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
+  initChartVisibility();
 }
 
 function setFocusedChart(pane) {
@@ -964,17 +994,151 @@ function setFocusedChart(pane) {
   terminal.classList.toggle("chart-focused", Boolean(S.focusedChart));
   $("charts-row").classList.toggle("expanded", Boolean(S.focusedChart));
   for (const article of $$(".charts-row .pane")) {
-    article.classList.toggle("expanded", article.dataset.pane === S.focusedChart);
+    const isTarget = article.dataset.pane === S.focusedChart ||
+      (S.focusedChart === "underlying" && (article.dataset.pane === "spot" || article.dataset.paneAlias === "spot")) ||
+      (S.focusedChart === "spot" && (article.dataset.pane === "underlying" || article.dataset.pane === "spot"));
+    article.classList.toggle("expanded", isTarget);
   }
   for (const button of $$(".chart-tools button[data-chart-action='expand']")) {
-    const active = button.dataset.chart === S.focusedChart;
+    const btnChart = button.dataset.chart;
+    const active = btnChart === S.focusedChart ||
+      (S.focusedChart === "underlying" && btnChart === "spot") ||
+      (S.focusedChart === "spot" && btnChart === "underlying");
     button.classList.toggle("active", active);
     button.title = active ? "Restore chart layout (Esc)" : "Expand chart";
     button.setAttribute("aria-pressed", active ? "true" : "false");
   }
   requestAnimationFrame(() => {
-    for (const chart of Object.values(S.charts)) chart.schedule();
+    for (const chart of Object.values(S.charts)) chart?.schedule?.();
   });
+}
+
+function getVisiblePanes() {
+  const visible = [];
+  const panes = [
+    { key: "ce", el: document.querySelector('.pane[data-pane="ce"]') },
+    { key: "underlying", el: document.querySelector('.pane[data-pane="underlying"], .pane[data-pane-alias="underlying"], .pane[data-pane="spot"]') },
+    { key: "pe", el: document.querySelector('.pane[data-pane="pe"]') },
+  ];
+  for (const { key, el } of panes) {
+    if (el && !el.classList.contains("pane-hidden")) {
+      visible.push(key);
+    }
+  }
+  return visible;
+}
+
+function isPaneVisible(paneKey) {
+  const normKey = (paneKey === "spot" ? "underlying" : paneKey);
+  const el = document.querySelector(`.pane[data-pane="${normKey}"], .pane[data-pane-alias="${normKey}"]${normKey === "underlying" ? ', .pane[data-pane="spot"]' : ''}`);
+  return el ? !el.classList.contains("pane-hidden") : false;
+}
+
+function setPaneVisible(paneKey, visible) {
+  const normKey = (paneKey === "spot" ? "underlying" : paneKey);
+  const currentVisible = getVisiblePanes();
+  const isCurrentlyVis = currentVisible.includes(normKey);
+
+  if (!visible && isCurrentlyVis && currentVisible.length <= 1) {
+    toast("At least one chart must remain visible", "warn", 2000);
+    return false;
+  }
+
+  const el = document.querySelector(`.pane[data-pane="${normKey}"], .pane[data-pane-alias="${normKey}"]${normKey === "underlying" ? ', .pane[data-pane="spot"]' : ''}`);
+  if (el) {
+    el.classList.toggle("pane-hidden", !visible);
+  }
+
+  if (!visible && (S.focusedChart === normKey || (normKey === "underlying" && S.focusedChart === "spot"))) {
+    setFocusedChart(null);
+  }
+
+  updateChartVisibilityUI();
+  saveChartVisibility();
+
+  requestAnimationFrame(() => {
+    for (const [key, chart] of Object.entries(S.charts)) {
+      if (chart) {
+        if (typeof chart.resize === "function") chart.resize();
+        else if (typeof chart.schedule === "function") chart.schedule();
+        if (chart.chart && typeof chart.chart.resize === "function") chart.chart.resize();
+      }
+    }
+  });
+
+  return true;
+}
+
+function updateChartVisibilityUI() {
+  const visible = getVisiblePanes();
+  const count = Math.max(1, visible.length);
+  const row = $("charts-row");
+  if (row) {
+    row.dataset.visiblePanes = String(count);
+    row.style.setProperty("--chart-cols", String(count));
+    row.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+  }
+
+  $$("#chart-toggle-group button, .chart-vis-btn").forEach((btn) => {
+    const pane = btn.dataset.chartToggle || btn.dataset.chartVis;
+    const norm = (pane === "spot" ? "underlying" : pane);
+    const isVis = visible.includes(norm);
+    btn.classList.toggle("active", isVis);
+    btn.setAttribute("aria-pressed", isVis ? "true" : "false");
+    const indicator = btn.querySelector(".vis-indicator");
+    if (indicator) {
+      indicator.textContent = isVis ? "✓" : "";
+    }
+  });
+}
+
+function saveChartVisibility() {
+  const visible = getVisiblePanes();
+  try {
+    localStorage.setItem("scalper-chart-visibility", JSON.stringify(visible));
+    localStorage.setItem("scalper-visible-ce", String(visible.includes("ce")));
+    localStorage.setItem("scalper-visible-underlying", String(visible.includes("underlying")));
+    localStorage.setItem("scalper-visible-spot", String(visible.includes("underlying")));
+    localStorage.setItem("scalper-visible-pe", String(visible.includes("pe")));
+  } catch (_) {}
+}
+
+function initChartVisibility() {
+  let visiblePanes = ["ce", "underlying", "pe"];
+  try {
+    const raw = localStorage.getItem("scalper-chart-visibility");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        visiblePanes = parsed.map((p) => (p === "spot" ? "underlying" : p));
+      }
+    } else {
+      const visCE = localStorage.getItem("scalper-visible-ce");
+      const visUnder = localStorage.getItem("scalper-visible-underlying") ?? localStorage.getItem("scalper-visible-spot");
+      const visPE = localStorage.getItem("scalper-visible-pe");
+      if (visCE !== null || visUnder !== null || visPE !== null) {
+        const list = [];
+        if (visCE !== "false") list.push("ce");
+        if (visUnder !== "false") list.push("underlying");
+        if (visPE !== "false") list.push("pe");
+        if (list.length > 0) visiblePanes = list;
+      }
+    }
+  } catch (_) {}
+
+  // Enforce at least 1 visible pane
+  if (!visiblePanes || visiblePanes.length === 0) {
+    visiblePanes = ["ce", "underlying", "pe"];
+  }
+
+  const allPanes = ["ce", "underlying", "pe"];
+  for (const pane of allPanes) {
+    const el = document.querySelector(`.pane[data-pane="${pane}"], .pane[data-pane-alias="${pane}"]${pane === "underlying" ? ', .pane[data-pane="spot"]' : ''}`);
+    if (el) {
+      el.classList.toggle("pane-hidden", !visiblePanes.includes(pane));
+    }
+  }
+  updateChartVisibilityUI();
 }
 
 async function refreshSession() {
@@ -4704,10 +4868,27 @@ function bindEvents() {
         setFocusedChart(button.dataset.chart);
         return;
       }
-      const chart = S.charts[button.dataset.chart];
+      const chartKey = button.dataset.chart;
+      const chart = S.charts[chartKey] || (chartKey === "underlying" ? S.charts.spot : null);
       if (!chart) return;
       if (action === "trades") {
         toggleAllChartTrades();
+        return;
+      }
+      if (action === "ma") {
+        const nextState = chart.toggleMA();
+        button.classList.toggle("active", nextState);
+        button.setAttribute("aria-pressed", nextState ? "true" : "false");
+        try {
+          if (chartKey === "spot" || chartKey === "underlying") {
+            localStorage.setItem("scalper-ma-underlying", String(nextState));
+            localStorage.setItem("scalper-ma-spot", String(nextState));
+          } else {
+            localStorage.setItem(`scalper-ma-${chartKey}`, String(nextState));
+          }
+        } catch (_) {}
+        const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
+        toast(nextState ? `Moving Average enabled (${label})` : `Moving Average hidden (${label})`, "ok", 1500);
         return;
       }
       if (action === "sr") {
@@ -5020,6 +5201,29 @@ function bindEvents() {
       return;
     }
     if (S.focusedChart) setFocusedChart(null);
+  });
+
+  $$("#chart-toggle-group button, .chart-vis-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pane = btn.dataset.chartToggle || btn.dataset.chartVis;
+      const norm = (pane === "spot" ? "underlying" : pane);
+      const isVis = isPaneVisible(norm);
+      setPaneVisible(norm, !isVis);
+    });
+  });
+
+  $$(".pane-close-btn[data-chart-hide]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pane = btn.dataset.chartHide;
+      setPaneVisible(pane, false);
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    for (const chart of Object.values(S.charts)) {
+      if (chart && typeof chart.resize === "function") chart.resize();
+    }
   });
 
   initChartQuickOrder();

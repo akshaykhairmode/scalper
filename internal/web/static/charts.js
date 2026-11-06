@@ -301,6 +301,12 @@ function buildStyles(colors) {
           borderRadius: 2,
         },
       },
+      lines: [
+        { style: "solid", smooth: false, size: 1, dashedValue: [2, 2], color: "#e16a2b" },
+        { style: "solid", smooth: false, size: 1, dashedValue: [2, 2], color: "#2196f3" },
+        { style: "solid", smooth: false, size: 1, dashedValue: [2, 2], color: "#9c27b0" },
+        { style: "solid", smooth: false, size: 1, dashedValue: [2, 2], color: "#00b4d8" },
+      ],
       bars: [
         {
           style: "fill",
@@ -1528,7 +1534,7 @@ function patchIndicatorLastValueView(chart) {
         if (!lastResult || !ind.visible) return;
 
         const figures = ind.figures || [];
-        figures.forEach((fig) => {
+        figures.forEach((fig, figIdx) => {
           // If VOL indicator, ONLY draw lastValueMark for live volume on the axis, skip MAs
           if (ind.name === "VOL" && fig.key !== "volume") return;
 
@@ -1555,7 +1561,7 @@ function patchIndicatorLastValueView(chart) {
           const isUp = lastBar && lastBar.close >= lastBar.open;
           let bgColor = fig.key === "volume"
             ? (isUp ? (styles.bars?.[0]?.upColor || "#35c46a") : (styles.bars?.[0]?.downColor || "#ff5d5d"))
-            : "#8292a2";
+            : (styles.lines?.[figIdx]?.color || ind.styles?.lines?.[figIdx]?.color || "#2196f3");
 
           // Solid color on the axis badge
           if (typeof bgColor === "string" && bgColor.startsWith("#") && bgColor.length === 9) {
@@ -1577,7 +1583,7 @@ function patchIndicatorLastValueView(chart) {
 }
 
 export class CandleChart {
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -1585,6 +1591,7 @@ export class CandleChart {
     this.showTrades = showTrades;
     this.showAutoTrendlines = showAutoTrendlines;
     this.showPatterns = showPatterns;
+    this.showMA = Boolean(showMA);
     this.patternConfig = { candlestick: true, geometric: true, harmonic: true, liquidity: true };
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
@@ -1630,6 +1637,26 @@ export class CandleChart {
       return origRemoveOverlay(filter);
     };
 
+    const origCreateIndicator = this.chart.createIndicator.bind(this.chart);
+    this.chart.createIndicator = (value, isStack, paneOptions, callback) => {
+      let indicator = typeof value === "string" ? { name: value } : Object.assign({}, value);
+      if (indicator.name === "MA" && paneOptions && paneOptions.id && !indicator.paneId) {
+        indicator.paneId = paneOptions.id;
+      }
+      return origCreateIndicator(indicator, isStack, paneOptions, callback);
+    };
+
+    const origRemoveIndicator = this.chart.removeIndicator.bind(this.chart);
+    this.chart.removeIndicator = (filter, name) => {
+      if (typeof filter === "string" && typeof name === "string") {
+        return origRemoveIndicator({ paneId: filter, name: name });
+      }
+      if (typeof filter === "string") {
+        return origRemoveIndicator({ name: filter });
+      }
+      return origRemoveIndicator(filter);
+    };
+
     this.chart.setTimezone("Asia/Kolkata");
     this.chart.setSymbol({ ticker: container.id || "CHART", pricePrecision: 2, volumePrecision: 0 });
     this.chart.setPeriod({ span: 1, type: "minute" });
@@ -1649,6 +1676,18 @@ export class CandleChart {
         this.chart.createIndicator("VOL", true, { id: "candle_pane" });
       } catch (e) {
         console.warn("createIndicator VOL:", e);
+      }
+    }
+
+    if (this.showMA) {
+      try {
+        this.chart.createIndicator(
+          { name: "MA", calcParams: [9, 21, 50], paneId: "candle_pane" },
+          true,
+          { id: "candle_pane" }
+        );
+      } catch (e) {
+        console.warn("createIndicator MA:", e);
       }
     }
   }
@@ -1676,6 +1715,29 @@ export class CandleChart {
       if (item) result.push(item);
     }
     return result;
+  }
+
+  toggleMA(forceState) {
+    this.showMA = typeof forceState === "boolean" ? forceState : !this.showMA;
+    if (!this.chart) return this.showMA;
+    if (this.showMA) {
+      try {
+        this.chart.createIndicator(
+          { name: "MA", calcParams: [9, 21, 50], paneId: "candle_pane" },
+          true,
+          { id: "candle_pane" }
+        );
+      } catch (e) {
+        console.warn("createIndicator MA:", e);
+      }
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "candle_pane", name: "MA" });
+      } catch (e) {
+        console.warn("removeIndicator MA:", e);
+      }
+    }
+    return this.showMA;
   }
 
   toggleSR(forceState) {
@@ -2423,6 +2485,10 @@ export class CandleChart {
   }
 
   schedule() {
+    if (this.chart) this.chart.resize();
+  }
+
+  resize() {
     if (this.chart) this.chart.resize();
   }
 

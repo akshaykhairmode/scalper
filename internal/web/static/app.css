@@ -339,6 +339,29 @@ a { color: var(--blue); }
 .tf-group button:hover { color: var(--text); background: var(--panel-2); }
 .tf-group button.active { color: #1a1300; background: var(--accent); }
 
+.chart-toggle-group { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel-2); }
+.chart-toggle-group button {
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line-soft);
+  color: var(--muted);
+  padding: 5px 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: background .12s, color .12s, opacity .12s;
+}
+.chart-toggle-group button:last-child { border-right: 0; }
+.chart-toggle-group button:hover { color: var(--text); background: var(--panel); }
+.chart-toggle-group button.active { color: #1a1300; background: var(--accent); }
+.chart-toggle-group button:not(.active) { opacity: 0.55; }
+.chart-toggle-group button:not(.active):hover { opacity: 0.85; }
+.chart-toggle-group .vis-indicator { font-size: 10px; line-height: 1; font-weight: 700; }
+
 .atm-chip {
   padding: 4px 9px;
   border: 1px solid #3c4560;
@@ -396,11 +419,14 @@ a { color: var(--blue); }
 /* ── Charts ──────────────────────────────────────────────── */
 .charts-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--chart-cols, 3), minmax(0, 1fr));
   gap: 10px;
   min-width: 0;
   min-height: 0;
 }
+.charts-row[data-visible-panes="1"] { grid-template-columns: minmax(0, 1fr); }
+.charts-row[data-visible-panes="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.charts-row[data-visible-panes="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .pane {
   display: flex;
@@ -412,6 +438,7 @@ a { color: var(--blue); }
   min-width: 0;
   min-height: 0;
 }
+.pane.pane-hidden { display: none !important; }
 .pane.focused { border-color: var(--border-strong); box-shadow: inset 0 0 0 1px #33475a55; }
 .pane[data-pane="ce"] .pane-title { color: var(--call); }
 .pane[data-pane="pe"] .pane-title { color: var(--put); }
@@ -474,6 +501,26 @@ a { color: var(--blue); }
 .pane-quote { display: flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
 .pane-ltp { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 700; }
 .pane-change { font-family: var(--mono); font-size: 10px; }
+.pane-close-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted-2);
+  cursor: pointer;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 3px;
+  opacity: 0.5;
+  transition: opacity .12s, color .12s, background .12s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pane-close-btn:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--panel-2);
+}
 
 .chart-frame { position: relative; flex: 1; min-height: 0; }
 .chart-frame .chart-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -1688,6 +1735,11 @@ body[data-theme="light"] .tf-group { background: var(--panel); }
 body[data-theme="light"] .tf-group button { color: var(--muted); border-right-color: var(--line-soft); }
 body[data-theme="light"] .tf-group button:hover { background: var(--surface-hover); color: var(--text); }
 body[data-theme="light"] .tf-group button.active { background: var(--text); color: #ffffff; }
+body[data-theme="light"] .chart-toggle-group { background: var(--panel); }
+body[data-theme="light"] .chart-toggle-group button { color: var(--muted); border-right-color: var(--line-soft); }
+body[data-theme="light"] .chart-toggle-group button:hover { background: var(--surface-hover); color: var(--text); }
+body[data-theme="light"] .chart-toggle-group button.active { background: var(--text); color: #ffffff; }
+body[data-theme="light"] .pane-close-btn:hover { background: var(--surface-hover); color: var(--text); }
 body[data-theme="light"] .atm-chip { border-color: var(--line); background: var(--panel); color: var(--muted); }
 body[data-theme="light"] .atm-chip b { color: var(--accent); font-weight: 700; }
 body[data-theme="light"] .pane-pcr-chip { border-color: var(--line); background: var(--panel-2); color: var(--muted); }
@@ -1803,7 +1855,7 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
 }
 
 @media (min-width: 769px) and (max-width: 1100px) {
-  .charts-row { grid-template-columns: 1fr; }
+  .charts-row { grid-template-columns: 1fr !important; }
   .pane { min-height: 240px; }
 }
 

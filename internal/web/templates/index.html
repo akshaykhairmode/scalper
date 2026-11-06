@@ -64,6 +64,12 @@
 
     <div class="tf-group" id="tf-group" role="group" aria-label="Timeframe"></div>
 
+    <div class="chart-toggle-group" id="chart-toggle-group" role="group" aria-label="Toggle Chart Visibility">
+      <button type="button" class="chart-vis-btn active" data-chart-toggle="ce" data-chart-vis="ce" title="Toggle CALL chart visibility (at least 1 chart must remain visible)" aria-pressed="true"><span class="vis-indicator">✓</span> CE</button>
+      <button type="button" class="chart-vis-btn active" data-chart-toggle="underlying" data-chart-vis="spot" title="Toggle SPOT/UNDERLYING chart visibility (at least 1 chart must remain visible)" aria-pressed="true"><span class="vis-indicator">✓</span> SPOT</button>
+      <button type="button" class="chart-vis-btn active" data-chart-toggle="pe" data-chart-vis="pe" title="Toggle PUT chart visibility (at least 1 chart must remain visible)" aria-pressed="true"><span class="vis-indicator">✓</span> PE</button>
+    </div>
+
     <span class="atm-chip">ATM <b id="atm-value">—</b></span>
     <span class="atm-chip" id="pcr-chip" title="Put/Call Ratio (Open Interest)">PCR <b id="pcr-value">—</b></span>
     <label class="select-field compact product-control">
@@ -123,6 +129,7 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="ce-ltp">—</span>
             <span class="pane-change" id="ce-change">—</span>
+            <button type="button" class="pane-close-btn" data-chart-hide="ce" title="Hide CALL chart" aria-label="Hide CALL chart">✕</button>
           </div>
         </div>
         <div class="chart-frame">
@@ -133,6 +140,7 @@
             <button type="button" data-chart="ce" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="ce" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="ce" data-chart-action="patterns" title="Toggle Patterns (Left-click toggle, Right-click settings)" aria-label="Toggle Pattern Recognition">PTN</button>
+            <button type="button" data-chart="ce" data-chart-action="ma" title="Toggle Moving Average" aria-label="Toggle Moving Average">MA</button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="ce" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="ce" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
@@ -162,7 +170,7 @@
         </section>
       </article>
 
-      <article class="pane" data-pane="spot">
+      <article class="pane" data-pane="underlying" data-pane-alias="spot">
         <div class="pane-head">
           <div class="pane-id">
             <div class="pane-title-row"><span class="pane-title" id="spot-title">UNDERLYING</span></div>
@@ -171,20 +179,22 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="spot-ltp">—</span>
             <span class="pane-change" id="spot-change">—</span>
+            <button type="button" class="pane-close-btn" data-chart-hide="underlying" title="Hide UNDERLYING chart" aria-label="Hide UNDERLYING chart">✕</button>
           </div>
         </div>
         <div class="chart-frame">
           <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
           <div class="chart-tools" aria-label="Underlying chart zoom controls">
-            <button type="button" data-chart="spot" data-chart-action="trades" title="Toggle Executions &amp; Positions" aria-label="Toggle Executions and Positions">TX</button>
-            <button type="button" data-chart="spot" data-chart-action="trendline" title="Draw Trendline" aria-label="Draw Trendline">TL</button>
-            <button type="button" data-chart="spot" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
-            <button type="button" data-chart="spot" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
-            <button type="button" data-chart="spot" data-chart-action="patterns" title="Toggle Patterns (Left-click toggle, Right-click settings)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="spot" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
-            <button type="button" data-chart="spot" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
-            <button type="button" data-chart="spot" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
-            <button type="button" data-chart="spot" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
+            <button type="button" data-chart="underlying" data-chart-action="trades" title="Toggle Executions &amp; Positions" aria-label="Toggle Executions and Positions">TX</button>
+            <button type="button" data-chart="underlying" data-chart-action="trendline" title="Draw Trendline" aria-label="Draw Trendline">TL</button>
+            <button type="button" data-chart="underlying" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
+            <button type="button" data-chart="underlying" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
+            <button type="button" data-chart="underlying" data-chart-action="patterns" title="Toggle Patterns (Left-click toggle, Right-click settings)" aria-label="Toggle Pattern Recognition">PTN</button>
+            <button type="button" data-chart="underlying" data-chart-action="ma" title="Toggle Moving Average" aria-label="Toggle Moving Average">MA</button>
+            <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
+            <button type="button" data-chart="underlying" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
+            <button type="button" data-chart="underlying" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
+            <button type="button" data-chart="underlying" data-chart-action="expand" title="Expand chart" aria-label="Expand chart">⛶</button>
           </div>
           <div class="chart-hint" id="hint-spot">Collecting live candles…</div>
         </div>
@@ -199,6 +209,7 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="pe-ltp">—</span>
             <span class="pane-change" id="pe-change">—</span>
+            <button type="button" class="pane-close-btn" data-chart-hide="pe" title="Hide PUT chart" aria-label="Hide PUT chart">✕</button>
           </div>
         </div>
         <div class="chart-frame">
@@ -209,6 +220,7 @@
             <button type="button" data-chart="pe" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="pe" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="pe" data-chart-action="patterns" title="Toggle Patterns (Left-click toggle, Right-click settings)" aria-label="Toggle Pattern Recognition">PTN</button>
+            <button type="button" data-chart="pe" data-chart-action="ma" title="Toggle Moving Average" aria-label="Toggle Moving Average">MA</button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom in time" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="pe" data-chart-action="out" title="Zoom out time" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="pe" data-chart-action="reset" title="Reset time and price zoom" aria-label="Reset time and price zoom">↺</button>
