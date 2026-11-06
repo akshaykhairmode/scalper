@@ -10,7 +10,7 @@ When you fork this repository, you do **not** need to change code or commit cred
 
 1. **A Linux Server / VM**:
    - Recommended: Oracle Cloud Free Tier (AMD or ARM Ampere), Ubuntu / Debian / Oracle Linux.
-   - Recommended: 1 GB+ RAM (our deployment script automatically provisions a 2 GB swapfile if needed).
+   - Recommended: 1 GB+ RAM (our deployment script automatically audits RAM, disables heavy cloud telemetry like `oracle-cloud-agent`, and provisions a 2 GB swapfile if needed).
    - Ingress Firewall: Ports `22` (SSH), `80` (HTTP), and `443` (HTTPS) open.
 2. **Kotak Neo API Access**:
    - Consumer Key from [Kotak Developer Portal](https://napi.kotaksecurities.com).
@@ -62,8 +62,9 @@ Whenever you push to the `main` branch or manually trigger the workflow:
 3. It compiles a native static Linux binary for your architecture and uploads it to `~/scalper/scalper`.
 4. It ensures `config.yaml` is initialized from `config.example.yaml` on the server (preserving any custom changes you made on the server).
 5. It writes your credentials safely to `/etc/default/scalper` with file permissions `600` (readable only by systemd/root).
-6. It configures the systemd service unit and restarts `scalper`.
-7. It verifies service health via `curl http://127.0.0.1:8080/api/health`.
+6. It audits server resources: detects Oracle Linux/cloud hosts, disables memory-hogging telemetry (`oracle-cloud-agent`), verifies RAM & swap, provisions persistent 2 GB swap if needed, and tunes swappiness.
+7. It configures the systemd service unit and restarts `scalper`.
+8. It verifies service health via `curl http://127.0.0.1:8080/api/health`.
 
 ---
 

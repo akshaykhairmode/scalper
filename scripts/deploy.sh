@@ -299,31 +299,96 @@ if [[ -n "${ENV_PAYLOAD}" ]]; then
     ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "sudo tee /etc/default/${SVC_NAME} >/dev/null && sudo chmod 600 /etc/default/${SVC_NAME}"
 fi
 
-# ── Step 4: Configure systemd Service & Firewall ───────────────────────────
-info "Step 5/5: Configuring systemd service and firewall..."
+# ── Step 5: Configure Host Resources, Firewall & systemd Service ──────────
+info "Step 5/5: Configuring host optimization, memory swap, firewall & service..."
 
 REMOTE_SETUP_SCRIPT=$(cat <<EOF
 set -e
-# 1. Ensure 2GB swapfile is configured on low-memory VMs to prevent OOM freezes
-if ! swapon --show | grep -q '/swapfile'; then
-  sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || true
-  if [[ -f /swapfile ]]; then
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile >/dev/null 2>&1 || true
-    sudo swapon /swapfile >/dev/null 2>&1 || true
-    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+
+# 1. Detect Host OS & Cloud Environment
+IS_ORACLE=0
+if [ -f /etc/os-release ] && grep -qi 'oracle' /etc/os-release; then
+  IS_ORACLE=1
+elif [ -f /etc/oracle-release ]; then
+  IS_ORACLE=1
+elif systemctl list-unit-files 2>/dev/null | grep -q 'oracle-cloud-agent'; then
+  IS_ORACLE=1
+fi
+
+if [ "\${IS_ORACLE}" -eq 1 ]; then
+  echo ">>> [Host Optimization] Oracle Linux / OCI host detected."
+  # Stop and disable resource-heavy background telemetry agent (consumes ~400MB RAM)
+  for svc in oracle-cloud-agent oracle-cloud-agent-updater; do
+    if systemctl list-unit-files 2>/dev/null | grep -q "\${svc}"; then
+      if systemctl is-active --quiet "\${svc}" 2>/dev/null || systemctl is-enabled --quiet "\${svc}" 2>/dev/null; then
+        echo ">>> [Host Optimization] Disabling heavy background agent '\${svc}' to free ~400MB RAM..."
+        sudo systemctl stop "\${svc}" 2>/dev/null || true
+        sudo systemctl disable "\${svc}" 2>/dev/null || true
+      fi
+    fi
+  done
+fi
+
+# Also disable unnecessary high-memory background daemons on low-memory VMs if running
+for bloat in packagekit snapd.seeded; do
+  if systemctl is-active --quiet "\${bloat}" 2>/dev/null; then
+    echo ">>> [Host Optimization] Stopping unused background daemon '\${bloat}'..."
+    sudo systemctl stop "\${bloat}" 2>/dev/null || true
+    sudo systemctl disable "\${bloat}" 2>/dev/null || true
+  fi
+done
+
+# 2. Verify Host Memory & Provision Swap
+TOTAL_MEM_MB=\$(awk '/MemTotal/{print int(\$2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+TOTAL_SWAP_MB=\$(awk '/SwapTotal/{print int(\$2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+echo ">>> [Memory Check] RAM: \${TOTAL_MEM_MB} MB | Existing Swap: \${TOTAL_SWAP_MB} MB"
+
+# If total swap is under 1.5GB (1536MB) on a server with <= 4GB RAM, ensure a 2GB swapfile is provisioned
+if [ "\${TOTAL_SWAP_MB}" -lt 1536 ] && [ "\${TOTAL_MEM_MB}" -lt 4096 ]; then
+  if ! swapon --show 2>/dev/null | grep -q '/swapfile'; then
+    echo ">>> [Memory Check] Low RAM (\${TOTAL_MEM_MB} MB) and insufficient swap (\${TOTAL_SWAP_MB} MB). Provisioning 2GB swapfile..."
+    if [ ! -f /swapfile ]; then
+      sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || true
+    fi
+    if [ -f /swapfile ]; then
+      sudo chmod 600 /swapfile
+      if ! file /swapfile 2>/dev/null | grep -q "swap file"; then
+        sudo mkswap /swapfile >/dev/null 2>&1 || true
+      fi
+      sudo swapon /swapfile >/dev/null 2>&1 || true
+      grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+      echo ">>> [Memory Check] 2GB swapfile successfully active and persisted in /etc/fstab."
+    fi
+  fi
+elif [ -f /swapfile ] && ! swapon --show 2>/dev/null | grep -q '/swapfile'; then
+  echo ">>> [Memory Check] Activating existing /swapfile..."
+  sudo chmod 600 /swapfile
+  sudo swapon /swapfile >/dev/null 2>&1 || true
+fi
+
+# Set optimal swappiness (10) so RAM is utilized first and swapping occurs only under genuine pressure
+if [ -f /proc/sys/vm/swappiness ]; then
+  CURRENT_SWAPPINESS=\$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60)
+  if [ "\${CURRENT_SWAPPINESS}" -gt 20 ]; then
+    sudo sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
+    if [ -d /etc/sysctl.d ]; then
+      echo "vm.swappiness=10" | sudo tee /etc/sysctl.d/99-scalper-swap.conf >/dev/null 2>&1 || true
+    fi
   fi
 fi
 
-# 2. Open firewall port 8080 if firewalld or ufw is active
+echo ">>> [Memory Status]:"
+free -h 2>/dev/null || true
+
+# 3. Open firewall port 8080 if firewalld or ufw is active
 if command -v firewall-cmd >/dev/null 2>&1 && sudo systemctl is-active --quiet firewalld; then
   sudo firewall-cmd --add-port=8080/tcp --permanent >/dev/null 2>&1 || true
   sudo firewall-cmd --reload >/dev/null 2>&1 || true
-elif command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then
+elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
   sudo ufw allow 8080/tcp >/dev/null 2>&1 || true
 fi
 
-# 2. Setup or update systemd service
+# 4. Setup or update systemd service
 SERVICE_FILE="/etc/systemd/system/${SVC_NAME}.service"
 sudo tee "\${SERVICE_FILE}" >/dev/null <<SERVICE_EOF
 [Unit]
@@ -349,7 +414,7 @@ SyslogIdentifier=${SVC_NAME}
 WantedBy=multi-user.target
 SERVICE_EOF
 
-# 3. Reload daemon and start service
+# 5. Reload daemon and start service
 sudo systemctl daemon-reload
 sudo systemctl enable "${SVC_NAME}" >/dev/null 2>&1
 sudo systemctl restart "${SVC_NAME}"
