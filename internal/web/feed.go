@@ -40,7 +40,7 @@ type feedCommand struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.App.ServeMode && s.a != nil && s.a.CurrentSession() == nil {
+	if s.configSnapshot().App.ServeMode && s.a != nil && s.a.CurrentSession() == nil {
 		http.Error(w, "broker authentication required", http.StatusUnauthorized)
 		return
 	}
@@ -278,7 +278,7 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 		}
 		return spot.InstrumentKey, nil
 	case "if":
-		for _, index := range s.cfg.Market.Indices {
+		for _, index := range s.configSnapshot().Market.Indices {
 			if index.IndexSegment == parts[1] && market.IndexQuoteSymbol(index) == parts[2] {
 				return index.IndexSegment + "|" + index.ScripName, nil
 			}

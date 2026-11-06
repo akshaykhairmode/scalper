@@ -207,3 +207,101 @@ func TestCandlesResolvesCanonicalInstrumentsToKotakSymbols(t *testing.T) {
 		t.Fatalf("historical instrument requests = %v", got)
 	}
 }
+
+func TestServiceQuotesAndScripHelpers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{
+			"exchange_token":"12345",
+			"display_symbol":"NIFTY26OCT25000CE",
+			"exchange":"nse_fo",
+			"ltp":"150.25",
+			"ohlc":{"close":"140.0"}
+		}]`)
+	}))
+	defer server.Close()
+
+	option := scrip.Option{
+		InstrumentKey:   scrip.InstrumentKey("nse_fo", "NIFTY", "2026-10-29", 2_500_000, scrip.Call),
+		ExchangeSegment: "nse_fo",
+		PSymbol:         "12345",
+		PTrdSymbol:      "NIFTY26OCT25000CE",
+		Underlying:      "NIFTY",
+		Expiry:          "2026-10-29",
+		StrikePaise:     2_500_000,
+		OptionType:      scrip.Call,
+		LotSize:         25,
+	}
+	spot := scrip.Spot{
+		InstrumentKey:   scrip.SpotKey("nse_cm", "NIFTY"),
+		ExchangeSegment: "nse_cm",
+		Symbol:          "Nifty 50",
+		PSymbol:         "1333",
+	}
+
+	scripts, err := scrip.NewManager(scrip.ManagerConfig{
+		Segments: []string{"nse_cm", "nse_fo"},
+		Underlyings: []scrip.Underlying{{
+			Key: "NIFTY", ScripName: "NIFTY", ExchangeSegment: "nse_fo", SpotSegment: "nse_cm",
+		}},
+		Repository: testScripRepository{options: []scrip.Option{option}, spots: []scrip.Spot{spot}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scripts.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewQuotesClient("test-token", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client.http = server.Client()
+	cfg := config.Default()
+	service, err := NewService(cfg, scripts, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Quotes & Quote
+	quotes, err := service.Quotes(ctx, server.URL, []string{option.InstrumentKey})
+	if err != nil {
+		t.Fatalf("Quotes: %v", err)
+	}
+	if q, ok := quotes[option.InstrumentKey]; !ok || q.LTP != 150.25 {
+		t.Fatalf("Quotes quote = %+v, want LTP 150.25", q)
+	}
+
+	singleQuote, err := service.Quote(ctx, server.URL, option.InstrumentKey)
+	if err != nil {
+		t.Fatalf("Quote: %v", err)
+	}
+	if singleQuote.LTP != 150.25 {
+		t.Fatalf("Quote LTP = %v, want 150.25", singleQuote.LTP)
+	}
+
+	// Option and FindOption
+	if opt, ok := service.Option(option.InstrumentKey); !ok || opt.PSymbol != "12345" {
+		t.Fatalf("service.Option = %+v, %v", opt, ok)
+	}
+	if opt, ok := service.FindOption("nse_fo", "12345"); !ok || opt.InstrumentKey != option.InstrumentKey {
+		t.Fatalf("service.FindOption = %+v, %v", opt, ok)
+	}
+
+	// FindSpot
+	if sp, ok := service.FindSpot("nse_cm", "NIFTY"); !ok || sp.PSymbol != "1333" {
+		t.Fatalf("service.FindSpot = %+v, %v", sp, ok)
+	}
+
+	// ScripStatus
+	st := service.ScripStatus()
+	if !st.Loaded || st.Options != 1 || st.Spots != 1 {
+		t.Fatalf("service.ScripStatus = %+v", st)
+	}
+
+	// IndexQuoteSymbol
+	sym := IndexQuoteSymbol(config.Index{IndexSymbol: "Nifty Midcap Select"})
+	if sym != "NIFTY MID SELECT" {
+		t.Fatalf("IndexQuoteSymbol = %q, want NIFTY MID SELECT", sym)
+	}
+}

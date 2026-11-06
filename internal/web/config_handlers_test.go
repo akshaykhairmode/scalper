@@ -118,6 +118,144 @@ func TestGetConfigSuccess(t *testing.T) {
 	}
 }
 
+func configWithSecretsYAML(t *testing.T) (string, config.Config) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Kotak.MobileNumber = "+919999999999"
+	cfg.Kotak.UCC = "TESTUCC"
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "super-secret"
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
+		t.Fatalf("encode yaml: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("close yaml: %v", err)
+	}
+	return buf.String(), cfg
+}
+
+func TestConfigResponsesRedactSecrets(t *testing.T) {
+	yamlStr, cfg := configWithSecretsYAML(t)
+	tmpPath := writeTempConfigFile(t, yamlStr)
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg, configPath: tmpPath})
+	defer s.Close()
+
+	rec := httptest.NewRecorder()
+	req := newLocalRequest(http.MethodGet, "/api/config")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, secret := range []string{cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Web.BasicAuth.Password} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("config response leaked %q: %s", secret, body)
+		}
+	}
+
+	var resp struct {
+		YAML   string        `json:"yaml"`
+		Config config.Config `json:"config"`
+	}
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(resp.YAML, config.SecretMask) ||
+		resp.Config.Web.BasicAuth.Password != config.SecretMask ||
+		resp.Config.Kotak.MobileNumber != config.SecretMask ||
+		resp.Config.Kotak.UCC != config.SecretMask {
+		t.Fatalf("config response was not masked: %+v\n%s", resp.Config, resp.YAML)
+	}
+
+	settingsRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(settingsRec, newLocalRequest(http.MethodGet, "/settings"))
+	if settingsRec.Code != http.StatusOK {
+		t.Fatalf("settings status = %d", settingsRec.Code)
+	}
+	for _, secret := range []string{cfg.Kotak.MobileNumber, cfg.Kotak.UCC, cfg.Web.BasicAuth.Password} {
+		if strings.Contains(settingsRec.Body.String(), secret) {
+			t.Fatalf("settings page leaked %q", secret)
+		}
+	}
+}
+
+func TestSaveConfigPreservesMaskedSecrets(t *testing.T) {
+	yamlStr, cfg := configWithSecretsYAML(t)
+	tmpPath := writeTempConfigFile(t, yamlStr)
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg, configPath: tmpPath})
+	defer s.Close()
+
+	getRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(getRec, newLocalRequest(http.MethodGet, "/api/config"))
+	var getResp struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	edited := strings.Replace(getResp.YAML, "default_product: MIS", "default_product: NRML", 1)
+	if edited == getResp.YAML {
+		edited = strings.Replace(getResp.YAML, `default_product: "MIS"`, `default_product: "NRML"`, 1)
+	}
+
+	payload, _ := json.Marshal(map[string]any{"yaml": edited})
+	rec := httptest.NewRecorder()
+	req := newLocalRequest(http.MethodPost, "/api/config", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, cfg.Web.BasicAuth.Password) ||
+		strings.Contains(body, cfg.Kotak.MobileNumber) || strings.Contains(body, cfg.Kotak.UCC) {
+		t.Fatalf("save response leaked a secret: %s", body)
+	}
+
+	saved, err := os.ReadFile(tmpPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	savedCfg, err := config.LoadBytes(saved, tmpPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if savedCfg.Web.BasicAuth.Password != cfg.Web.BasicAuth.Password ||
+		savedCfg.Kotak.MobileNumber != cfg.Kotak.MobileNumber ||
+		savedCfg.Kotak.UCC != cfg.Kotak.UCC {
+		t.Fatalf("masked secrets were not preserved: %+v", savedCfg)
+	}
+	if savedCfg.Trading.DefaultProduct != "NRML" {
+		t.Fatalf("expected edited value to be saved, got %q", savedCfg.Trading.DefaultProduct)
+	}
+}
+
+func TestSaveConfigAcceptsNewSecret(t *testing.T) {
+	yamlStr, cfg := configWithSecretsYAML(t)
+	tmpPath := writeTempConfigFile(t, yamlStr)
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg, configPath: tmpPath})
+	defer s.Close()
+
+	edited := strings.Replace(yamlStr, "password: super-secret", "password: brand-new-secret", 1)
+	payload, _ := json.Marshal(map[string]any{"yaml": edited})
+	rec := httptest.NewRecorder()
+	req := newLocalRequest(http.MethodPost, "/api/config", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	saved, err := os.ReadFile(tmpPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if !strings.Contains(string(saved), "brand-new-secret") {
+		t.Fatalf("new secret was not saved:\n%s", saved)
+	}
+}
+
 func TestGetConfigFallbackWhenFileMissing(t *testing.T) {
 	nonExistentPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 	s := newTestServer(t, serverOpts{db: fakeDB{}, configPath: nonExistentPath})
@@ -418,7 +556,13 @@ func TestConfigAuthProtectionInServeMode(t *testing.T) {
 	// 4. Authenticated request with session cookie must succeed
 	rec4 := httptest.NewRecorder()
 	req4 := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	token := makeServeToken("admin", "strongpass", time.Now().Add(2*time.Hour))
+	token, err := newServeSessionID()
+	if err != nil {
+		t.Fatalf("create serve session: %v", err)
+	}
+	s.serveSessionsMu.Lock()
+	s.serveSessions[token] = time.Now().Add(2 * time.Hour)
+	s.serveSessionsMu.Unlock()
 	req4.AddCookie(&http.Cookie{Name: "scalper_serve_session", Value: token})
 	s.Handler().ServeHTTP(rec4, req4)
 	if rec4.Code != http.StatusOK {

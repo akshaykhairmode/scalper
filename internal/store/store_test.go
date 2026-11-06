@@ -11,6 +11,7 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/errs"
 	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
 func openTest(t *testing.T) *Store {
@@ -256,5 +257,130 @@ func TestCandlesWriteReadAndAggregate(t *testing.T) {
 	}
 	if c.Volume != 150 {
 		t.Errorf("Volume = %d, want 150", c.Volume)
+	}
+}
+
+func TestScripSnapshotAndSyncAudit(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	options := []scrip.Option{
+		{
+			InstrumentKey:   "nse_fo|NIFTY|2026-11-26|24000|CE",
+			ExchangeSegment: "nse_fo",
+			PSymbol:         "12345",
+			PTrdSymbol:      "NIFTY26NOV24000CE",
+			Underlying:      "NIFTY",
+			Expiry:          "2026-11-26",
+			StrikePaise:     2400000,
+			OptionType:      scrip.Call,
+			LotSize:         25,
+		},
+		{
+			InstrumentKey:   "nse_fo|NIFTY|2026-11-26|24000|PE",
+			ExchangeSegment: "nse_fo",
+			PSymbol:         "12346",
+			PTrdSymbol:      "NIFTY26NOV24000PE",
+			Underlying:      "NIFTY",
+			Expiry:          "2026-11-26",
+			StrikePaise:     2400000,
+			OptionType:      scrip.Put,
+			LotSize:         25,
+		},
+	}
+	spots := []scrip.Spot{
+		{
+			InstrumentKey:   "nse_cm|Nifty 50",
+			ExchangeSegment: "nse_cm",
+			Symbol:          "Nifty 50",
+			DisplayName:     "NIFTY 50",
+			PSymbol:         "26000",
+		},
+	}
+	syncs := []scrip.SyncRecord{
+		{
+			Segment:  "nse_fo",
+			FileURL:  "https://example.com/nse_fo.csv",
+			Rows:     2,
+			SyncedAt: time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC),
+			Status:   "ok",
+		},
+	}
+
+	if err := s.ReplaceScripSnapshot(ctx, options, spots, syncs); err != nil {
+		t.Fatalf("ReplaceScripSnapshot failed: %v", err)
+	}
+
+	optCount, spotCount, err := s.CountInstruments(ctx)
+	if err != nil {
+		t.Fatalf("CountInstruments: %v", err)
+	}
+	if optCount != 2 || spotCount != 1 {
+		t.Fatalf("CountInstruments = %d options, %d spots; want 2 options, 1 spot", optCount, spotCount)
+	}
+
+	loadedOpts, loadedSpots, err := s.LoadScripSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("LoadScripSnapshot: %v", err)
+	}
+	if len(loadedOpts) != 2 {
+		t.Fatalf("loadedOpts len = %d, want 2", len(loadedOpts))
+	}
+	if loadedOpts[0].InstrumentKey != options[0].InstrumentKey {
+		t.Errorf("loaded option[0] key = %s, want %s", loadedOpts[0].InstrumentKey, options[0].InstrumentKey)
+	}
+	if len(loadedSpots) != 1 {
+		t.Fatalf("loadedSpots len = %d, want 1", len(loadedSpots))
+	}
+	if loadedSpots[0].Symbol != spots[0].Symbol {
+		t.Errorf("loaded spot symbol = %s, want %s", loadedSpots[0].Symbol, spots[0].Symbol)
+	}
+
+	recentSyncs, err := s.LatestScripSync(ctx, 10)
+	if err != nil {
+		t.Fatalf("LatestScripSync: %v", err)
+	}
+	if len(recentSyncs) != 1 {
+		t.Fatalf("recentSyncs len = %d, want 1", len(recentSyncs))
+	}
+	if recentSyncs[0].Segment != "nse_fo" || recentSyncs[0].Status != "ok" {
+		t.Errorf("recentSyncs[0] = %+v", recentSyncs[0])
+	}
+
+	// Test validation error handling on ReplaceScripSnapshot
+	dupOptions := append(options, options[0])
+	if err := s.ReplaceScripSnapshot(ctx, dupOptions, spots, syncs); err == nil {
+		t.Fatal("expected error on duplicate option key, got nil")
+	}
+
+	badSyncs := []scrip.SyncRecord{{Segment: "", Status: "ok"}}
+	if err := s.ReplaceScripSnapshot(ctx, options, spots, badSyncs); err == nil {
+		t.Fatal("expected error on empty sync segment, got nil")
+	}
+}
+
+func TestCandleSyncTracking(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	syncedAt, ok, err := s.CandleSyncAt(ctx, "test_inst", "5m", "2026-11-06")
+	if err != nil {
+		t.Fatalf("CandleSyncAt initial: %v", err)
+	}
+	if ok || syncedAt != 0 {
+		t.Fatalf("CandleSyncAt initial want !ok and 0, got ok=%v, %d", ok, syncedAt)
+	}
+
+	now := int64(1700000000)
+	if err := s.MarkCandlesSynced(ctx, "test_inst", "5m", "2026-11-06", now); err != nil {
+		t.Fatalf("MarkCandlesSynced: %v", err)
+	}
+
+	syncedAt, ok, err = s.CandleSyncAt(ctx, "test_inst", "5m", "2026-11-06")
+	if err != nil {
+		t.Fatalf("CandleSyncAt after sync: %v", err)
+	}
+	if !ok || syncedAt != now {
+		t.Fatalf("CandleSyncAt = %d (ok=%v), want %d", syncedAt, ok, now)
 	}
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -197,7 +198,7 @@ func (s *Server) decodeLiveOrder(w http.ResponseWriter, r *http.Request) (liveOr
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid broker order request: "+err.Error(), err)
 		return req, false
 	}
-	if s.cfg.Trading.ConfirmLiveOrders && !req.Confirm {
+	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
 		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
 		return req, false
 	}
@@ -212,6 +213,10 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if err := s.checkOrderRisk(r.Context(), session, req.Order); err != nil {
+		s.writeRiskError(w, r, err)
+		return
+	}
 	raw, err := s.kotak.PlaceOrder(r.Context(), session, req.Order)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
@@ -220,6 +225,53 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 	s.books.expire(bookPositions, bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusCreated, raw)
 }
+
+// enrichModifyOrder fills in the contract identity that Kotak's modify
+// endpoint does not require but the risk checks do.
+func (s *Server) enrichModifyOrder(ctx context.Context, session kotakapi.Session, id string, o *kotakapi.Order) error {
+	if strings.TrimSpace(o.ExchangeSegment) != "" && strings.TrimSpace(o.TradingSymbol) != "" {
+		return nil
+	}
+	raw, err := s.kotak.Order(ctx, session, id)
+	if err != nil {
+		return err
+	}
+	rows, err := decodeBookRows(raw)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return errors.New("existing order was not found")
+	}
+	row := rows[0]
+	if strings.TrimSpace(o.ExchangeSegment) == "" {
+		o.ExchangeSegment = stringField(row, "exchange_segment", "exchangeSegment", "exSeg")
+	}
+	if strings.TrimSpace(o.TradingSymbol) == "" {
+		o.TradingSymbol = stringField(row, "trading_symbol", "tradingSymbol", "trdSym", "symbol")
+	}
+	if strings.TrimSpace(o.TransactionType) == "" {
+		o.TransactionType = stringField(row, "transaction_type", "transactionType", "trnsTp", "buy_sell")
+	}
+	if strings.TrimSpace(o.Product) == "" {
+		o.Product = stringField(row, "product", "prod")
+	}
+	if strings.TrimSpace(o.OrderType) == "" {
+		o.OrderType = stringField(row, "order_type", "orderType", "ordTp")
+	}
+	if o.Quantity <= 0 {
+		if qty, ok := numberField(row, "quantity", "qty", "order_qty"); ok {
+			o.Quantity = int64(qty)
+		}
+	}
+	if o.Price <= 0 {
+		if price, ok := numberField(row, "price", "prc"); ok {
+			o.Price = price
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request) {
 	req, ok := s.decodeLiveOrder(w, r)
 	if !ok {
@@ -228,6 +280,14 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 	id := strings.TrimSpace(r.PathValue("id"))
 	session, ok := s.brokerSession(w, r)
 	if !ok {
+		return
+	}
+	if err := s.enrichModifyOrder(r.Context(), session, id, &req.Order); err != nil {
+		s.writeRouteError(w, r, http.StatusBadGateway, "could not load the existing order for risk checks", err)
+		return
+	}
+	if err := s.checkOrderRisk(r.Context(), session, req.Order); err != nil {
+		s.writeRiskError(w, r, err)
 		return
 	}
 	raw, err := s.kotak.ModifyOrder(r.Context(), session, id, req.Order)
@@ -246,7 +306,7 @@ func (s *Server) handleBrokerCancelOrder(w http.ResponseWriter, r *http.Request)
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid cancel request: "+err.Error(), err)
 		return
 	}
-	if s.cfg.Trading.ConfirmLiveOrders && !req.Confirm {
+	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
 		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
 		return
 	}

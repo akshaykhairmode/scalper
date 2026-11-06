@@ -2174,6 +2174,7 @@ function activeSpotInstrument() {
 }
 
 async function loadCharts(forceRefresh = false) {
+  if (!S.session?.authenticated) return;
   const loadID = ++S.chartLoadID;
   if (forceRefresh) {
     S.historicalCache.clear();
@@ -5260,6 +5261,7 @@ function updateLotInput(type, value) {
 async function switchIndex(key) {
   if (!key) return;
   try { localStorage.setItem("scalper-last-index", key); } catch (_) {}
+  if (!S.session?.authenticated) return;
   const requestID = ++S.chainRequestID;
   S.activeIndex = key;
   S.expiry = "";
@@ -5302,6 +5304,7 @@ async function switchIndex(key) {
 async function switchExpiry(date) {
   if (!date) return;
   try { localStorage.setItem(`scalper-last-expiry-${S.activeIndex}`, date); } catch (_) {}
+  if (!S.session?.authenticated) return;
   const requestID = ++S.chainRequestID;
   S.expiry = date;
   S.chain = [];

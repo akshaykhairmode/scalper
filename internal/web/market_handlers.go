@@ -149,7 +149,7 @@ type candleFetchResult struct {
 }
 
 func (s *Server) isTimeframeAllowed(timeframe string) bool {
-	for _, configured := range s.cfg.Charts.Timeframes {
+	for _, configured := range s.configSnapshot().Charts.Timeframes {
 		if timeframe == configured {
 			return true
 		}
@@ -193,8 +193,9 @@ func (s *Server) fetchInstrumentCandles(
 			s.log.Warn("read historical candle sync marker", "event", "candle_sync_read_failed", "error", syncErr,
 				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
 		}
+		session := s.configSnapshot().Trading.Session
 		if !forceRefresh && len(cached) > 0 && syncErr == nil && synced && !candleRefreshDue(
-			localNow, s.cfg.Trading.Session.Open, s.cfg.Trading.Session.Close, syncedAt) {
+			localNow, session.Open, session.Close, syncedAt) {
 			return candleFetchResult{Candles: cached, Source: "sqlite"}
 		}
 	}
@@ -276,7 +277,7 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	location := s.cfg.Location()
+	location := s.configSnapshot().Location()
 	localNow := now.In(location)
 	sessionDate := localNow.Format("2006-01-02")
 	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1"
@@ -318,7 +319,7 @@ func (s *Server) handleCandlesBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	location := s.cfg.Location()
+	location := s.configSnapshot().Location()
 	localNow := now.In(location)
 	sessionDate := localNow.Format("2006-01-02")
 	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1"
@@ -427,6 +428,9 @@ func (s *Server) writeRouteError(w http.ResponseWriter, r *http.Request, status 
 
 // decodeRequest decodes one bounded JSON value and rejects unknown fields or trailing data.
 func decodeRequest(w http.ResponseWriter, r *http.Request, target any) error {
+	if !requireJSONContentType(r) {
+		return errors.New("Content-Type must be application/json")
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()

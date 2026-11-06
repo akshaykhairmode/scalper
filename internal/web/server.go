@@ -5,10 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -124,18 +122,21 @@ type Server struct {
 	orderFeed   *orderfeed.Client
 	consumerKey string
 	books       *booksCache
+	risk        *riskState
 
 	feedMu      sync.RWMutex
 	feedClients map[*feedClient]struct{}
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
 
-	indicesMu       sync.Mutex
-	indicesRaw      json.RawMessage
-	indicesAt       time.Time
-	serveMode       bool
-	serveSessionsMu sync.RWMutex
-	serveSessions   map[string]time.Time
+	indicesMu           sync.Mutex
+	indicesRaw          json.RawMessage
+	indicesAt           time.Time
+	serveMode           bool
+	serveSessionsMu     sync.RWMutex
+	serveSessions       map[string]time.Time
+	serveUnlockMu       sync.Mutex
+	serveUnlockFailures map[string]serveUnlockFailure
 
 	configPath string
 	configMu   sync.RWMutex
@@ -260,31 +261,33 @@ func New(opts Options) (*Server, error) {
 	}
 	feedCtx, feedCancel := context.WithCancel(context.Background())
 	s := &Server{
-		log:           opts.Logger,
-		cfg:           opts.Config,
-		mpin:          strings.TrimSpace(opts.MPIN),
-		db:            opts.DB,
-		candleStore:   opts.CandleStore,
-		logDegraded:   opts.LogDegraded,
-		tokenPresent:  opts.TokenPresent,
-		started:       opts.Started,
-		now:           opts.Now,
-		tmpl:          tmpl,
-		settingsTmpl:  settingsTmpl,
-		bootstrap:     bootstrap,
-		a:             authServer,
-		market:        opts.Market,
-		hsm:           opts.HSM,
-		kotak:         opts.Kotak,
-		orderFeed:     opts.OrderFeed,
-		consumerKey:   strings.TrimSpace(opts.ConsumerKey),
-		books:         newBooksCache(),
-		feedClients:   make(map[*feedClient]struct{}),
-		feedCtx:       feedCtx,
-		feedCancel:    feedCancel,
-		serveMode:     opts.ServeMode || opts.Config.App.ServeMode,
-		serveSessions: make(map[string]time.Time),
-		configPath:    cfgPath,
+		log:                 opts.Logger,
+		cfg:                 opts.Config,
+		mpin:                strings.TrimSpace(opts.MPIN),
+		db:                  opts.DB,
+		candleStore:         opts.CandleStore,
+		logDegraded:         opts.LogDegraded,
+		tokenPresent:        opts.TokenPresent,
+		started:             opts.Started,
+		now:                 opts.Now,
+		tmpl:                tmpl,
+		settingsTmpl:        settingsTmpl,
+		bootstrap:           bootstrap,
+		a:                   authServer,
+		market:              opts.Market,
+		hsm:                 opts.HSM,
+		kotak:               opts.Kotak,
+		orderFeed:           opts.OrderFeed,
+		consumerKey:         strings.TrimSpace(opts.ConsumerKey),
+		books:               newBooksCache(),
+		risk:                newRiskState(),
+		feedClients:         make(map[*feedClient]struct{}),
+		feedCtx:             feedCtx,
+		feedCancel:          feedCancel,
+		serveMode:           opts.ServeMode || opts.Config.App.ServeMode,
+		serveSessions:       make(map[string]time.Time),
+		serveUnlockFailures: make(map[string]serveUnlockFailure),
+		configPath:          cfgPath,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -366,11 +369,8 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
 
 	var h http.Handler = mux
-	if opts.Config.App.ServeMode {
-		ba := opts.Config.Web.BasicAuth
-		if strings.TrimSpace(ba.Username) != "" {
-			h = s.serveAuthMiddleware(ba.Username, ba.Password, h)
-		}
+	if s.serveMode {
+		h = s.serveAuthMiddleware(h)
 	} else {
 		h = localOnly(s.log, h)
 	}
@@ -394,6 +394,14 @@ func New(opts Options) (*Server, error) {
 
 // Handler returns the complete middleware chain.
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// configSnapshot returns the active configuration under the same lock used by
+// runtime updates so request handlers never race with config saves.
+func (s *Server) configSnapshot() config.Config {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.cfg
+}
 
 // Close stops the server's feed event forwarding and WebSocket clients.
 func (s *Server) Close() {
@@ -430,6 +438,7 @@ type pageData struct {
 	MPINConfigured bool
 	ServeMode      bool
 	BasicAuth      bool
+	ServeLocked    bool
 	Bootstrap      template.JS
 }
 
@@ -449,13 +458,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if s.tokenPresent != nil {
 		token = s.tokenPresent()
 	}
-	underlyings := make([]pageUnderlying, 0, len(s.cfg.Market.Indices)+len(s.cfg.Market.Commodities))
-	for _, idx := range s.cfg.Market.Indices {
+	s.configMu.RLock()
+	cfg := s.cfg
+	bootstrap := s.bootstrap
+	s.configMu.RUnlock()
+
+	underlyings := make([]pageUnderlying, 0, len(cfg.Market.Indices)+len(cfg.Market.Commodities))
+	for _, idx := range cfg.Market.Indices {
 		underlyings = append(underlyings, pageUnderlying{
 			Key: idx.Key, Label: underlyingLabel(idx.DisplayName, idx.ExchangeSegment),
 		})
 	}
-	for _, commodity := range s.cfg.Market.Commodities {
+	for _, commodity := range cfg.Market.Commodities {
 		underlyings = append(underlyings, pageUnderlying{
 			Key: commodity.Key, Label: underlyingLabel(commodity.DisplayName, commodity.ExchangeSegment),
 		})
@@ -467,14 +481,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Commit:         version.Commit,
 		Underlyings:    underlyings,
 		Uptime:         s.now().Sub(s.started).Round(time.Second).String(),
-		Now:            s.now().In(s.cfg.Location()).Format("15:04:05 IST"),
+		Now:            s.now().In(cfg.Location()).Format("15:04:05 IST"),
 		TokenPresent:   token,
 		LogDegraded:    s.loggingDegraded(),
 		DBOK:           dbOK,
 		MPINConfigured: s.mpin != "",
 		ServeMode:      s.serveMode,
-		BasicAuth:      strings.TrimSpace(s.cfg.Web.BasicAuth.Username) != "",
-		Bootstrap:      s.bootstrap,
+		BasicAuth:      strings.TrimSpace(cfg.Web.BasicAuth.Username) != "",
+		ServeLocked:    s.serveMode && strings.TrimSpace(cfg.Web.BasicAuth.Username) != "" && !s.isServeAuthenticated(r),
+		Bootstrap:      bootstrap,
 	}
 	var buf strings.Builder
 	if err := s.tmpl.ExecuteTemplate(&buf, "index.html", data); err != nil {
@@ -581,128 +596,21 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.a.CancelAllLogins()
 	s.a.SessionManager().RevokeAll()
+	s.revokeCurrentServeSession(r)
+	s.clearServeSessionCookie(w, r)
 	if s.hsm != nil {
 		s.hsm.Stop()
 	}
 	if s.orderFeed != nil {
 		s.orderFeed.Stop()
 	}
+	s.risk.reset()
 	clearAuthFlowCookie(w)
 	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
 	if err := writeJSON(w, http.StatusOK, map[string]any{"success": true}); err != nil {
 		s.log.Warn("write logout response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
 	}
-}
-
-// handleServeUnlock validates serve mode username and password.
-func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		_ = writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request body"})
-		return
-	}
-	ba := s.cfg.Web.BasicAuth
-	if strings.TrimSpace(ba.Username) == "" {
-		_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-	wantUser := sha256.Sum256([]byte(ba.Username))
-	wantPass := sha256.Sum256([]byte(ba.Password))
-	gotUser := sha256.Sum256([]byte(req.Username))
-	gotPass := sha256.Sum256([]byte(req.Password))
-	if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) != 1 ||
-		subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) != 1 {
-		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid username or password"})
-		return
-	}
-
-	exp := time.Now().Add(24 * time.Hour)
-	token := makeServeToken(req.Username, req.Password, exp)
-
-	s.serveSessionsMu.Lock()
-	s.serveSessions[token] = exp
-	s.serveSessionsMu.Unlock()
-
-	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- dynamically enabled for HTTPS and relaxed for local HTTP
-		Name:     "scalper_serve_session",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   isSecure,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  exp,
-	})
-	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
-}
-
-func makeServeToken(username, password string, expiresAt time.Time) string {
-	expStr := strconv.FormatInt(expiresAt.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write([]byte(expStr + ":" + username))
-	sig := hex.EncodeToString(mac.Sum(nil))
-	return expStr + "." + sig
-}
-
-func verifyServeToken(token, username, password string) bool {
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return false
-	}
-	expUnix, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return false
-	}
-	if time.Now().Unix() > expUnix {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write([]byte(parts[0] + ":" + username))
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expectedSig)) == 1
-}
-
-func (s *Server) serveAuthMiddleware(username, password string, next http.Handler) http.Handler {
-	wantUser := sha256.Sum256([]byte(username))
-	wantPass := sha256.Sum256([]byte(password))
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 1. Allow homepage HTML and unlock endpoint without prior authentication
-		if r.URL.Path == "/" || r.URL.Path == "/api/auth/serve-unlock" || strings.HasPrefix(r.URL.Path, "/static/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// 2. Check session cookie
-		if cookie, err := r.Cookie("scalper_serve_session"); err == nil && cookie.Value != "" {
-			s.serveSessionsMu.RLock()
-			exp, found := s.serveSessions[cookie.Value]
-			s.serveSessionsMu.RUnlock()
-			if (found && time.Now().Before(exp)) || verifyServeToken(cookie.Value, username, password) {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// 3. Check HTTP Basic Auth header
-		if u, p, ok := r.BasicAuth(); ok {
-			gotUser := sha256.Sum256([]byte(u))
-			gotPass := sha256.Sum256([]byte(p))
-			if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) == 1 &&
-				subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) == 1 {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// 4. Unauthorized - DO NOT send WWW-Authenticate header to prevent native browser dialog
-		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Terminal locked. Please authenticate."})
-	})
 }
 
 func tailLogFile(logPath string, maxLines int) ([]string, error) {
@@ -743,7 +651,7 @@ func tailLogFile(logPath string, maxLines int) ([]string, error) {
 }
 
 func (s *Server) handleLogsAPI(w http.ResponseWriter, r *http.Request) {
-	logPath := s.cfg.Logging.File
+	logPath := s.configSnapshot().Logging.File
 	if logPath == "" {
 		_ = writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
@@ -1026,6 +934,10 @@ func (s *Server) handleLogsView(w http.ResponseWriter, _ *http.Request) {
 
 // handleTotpLogin handles TOTP-based login.
 func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONContentType(r) {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
 	var req struct {
 		TOTP string `json:"totp"`
 	}
@@ -1055,6 +967,10 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleMPINLogin handles MPIN-based login.
 func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONContentType(r) {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
 	var req struct {
 		MPIN string `json:"mpin"`
 	}
@@ -1077,8 +993,9 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 		writeAuthError(w, err)
 		return
 	}
-	if s.hsm != nil && s.cfg.Market.DataMode == "websocket" {
-		if err := s.hsm.Start(s.cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
+	cfg := s.configSnapshot()
+	if s.hsm != nil && cfg.Market.DataMode == "websocket" {
+		if err := s.hsm.Start(cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
 			s.log.Error("start Kotak HSM feed", "event", "hsm_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
@@ -1120,26 +1037,27 @@ func authFlowID(w http.ResponseWriter, r *http.Request, create bool) (string, er
 		return "", err
 	}
 	value := hex.EncodeToString(id[:])
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure is set dynamically for HTTPS
 		Name:     authFlowCookieName,
 		Value:    value,
 		Path:     "/api/auth",
 		HttpOnly: true,
+		Secure:   secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int((5 * time.Minute).Seconds()),
-	}) // #nosec G124 -- localhost-only app serves over HTTP
+	})
 	return value, nil
 }
 
 func clearAuthFlowCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124
 		Name:     authFlowCookieName,
 		Value:    "",
 		Path:     "/api/auth",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
-	}) // #nosec G124 -- localhost-only app serves over HTTP
+	})
 }
 
 func writeAuthError(w http.ResponseWriter, err error) {
@@ -1225,7 +1143,7 @@ func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {
 			sessionDetail = fmt.Sprintf("session active via %s (expires in %dm)", sess.LoginMethod, sess.ExpiresIn)
 		}
 	}
-	uccMasked := s.cfg.Kotak.UCC
+	uccMasked := s.configSnapshot().Kotak.UCC
 	if len(uccMasked) > 2 {
 		uccMasked = uccMasked[:2] + strings.Repeat("*", len(uccMasked)-2)
 	}

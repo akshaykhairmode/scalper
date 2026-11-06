@@ -451,7 +451,7 @@
   </div>
 
   <!-- Serve mode lock modal -->
-  {{if and .ServeMode .BasicAuth}}
+  {{if .ServeLocked}}
   <div class="modal-backdrop" id="serve-auth-modal" style="display:grid; place-items:center; z-index:99999;">
     <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="serve-auth-title">
       <div class="modal-head">
@@ -462,7 +462,7 @@
       </div>
       <form id="serve-auth-form" novalidate style="margin-top:16px;">
         <p class="modal-copy">
-          Enter your terminal username and password to unlock. On page refresh, you will be prompted again.
+          Enter your terminal username and password to unlock the terminal.
         </p>
         <label class="field">
           <span>Username</span>

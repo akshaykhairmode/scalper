@@ -774,9 +774,10 @@
         return;
       }
 
-      // Success
-      savedYAML = yamlToSend;
-      currentYAML = yamlToSend;
+      // Success. Prefer the server's redacted YAML so newly entered secrets are
+      // replaced by the mask instead of remaining visible in the editor.
+      savedYAML = data.yaml || yamlToSend;
+      currentYAML = savedYAML;
       yamlEditor.value = currentYAML;
       markDirty(false);
 
@@ -787,6 +788,9 @@
 
       const backupMsg = data.backup ? ` (Backup created at ${data.backup})` : '';
       showToast('success', `Configuration saved successfully!${backupMsg}`);
+      if (Array.isArray(data.restart_required) && data.restart_required.length) {
+        showToast('warn', `Restart required to apply: ${data.restart_required.join(', ')}`, 8000);
+      }
     } catch (err) {
       showToast('error', `Failed to save configuration: ${err.message}`);
     } finally {

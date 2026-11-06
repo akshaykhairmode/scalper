@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -45,12 +46,33 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 		var buf bytes.Buffer
 		enc := yaml.NewEncoder(&buf)
 		enc.SetIndent(2)
-		_ = enc.Encode(&currentCfg)
-		_ = enc.Close()
-		rawYAML = buf.String()
+		if err := enc.Encode(&currentCfg); err != nil {
+			s.log.Error("encode fallback settings yaml", "event", "config_encode_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+			rawYAML = ""
+		} else if err := enc.Close(); err != nil {
+			s.log.Error("close fallback settings yaml", "event", "config_encode_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+			rawYAML = ""
+		} else {
+			rawYAML = buf.String()
+		}
 	}
 
-	jsonBytes, _ := json.Marshal(currentCfg)
+	redactedYAML, err := config.RedactYAMLSecrets([]byte(rawYAML))
+	if err != nil {
+		s.log.Warn("redact settings yaml", "event", "config_redact_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		redactedYAML = []byte("# Could not parse config.yaml. Secrets were hidden; edit the file directly.\n")
+	}
+
+	jsonBytes, err := json.Marshal(config.RedactSecrets(currentCfg))
+	if err != nil {
+		s.log.Error("encode settings config", "event", "config_encode_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		_ = writeJSONError(w, http.StatusInternalServerError, "render failed", logging.RequestID(r.Context()))
+		return
+	}
 
 	page := settingsPageData{
 		Title:       "Scalper — Settings & Configuration",
@@ -59,7 +81,7 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 		ConfigPath:  cfgPath,
 		ServeMode:   s.serveMode,
 		Now:         s.now().In(currentCfg.Location()).Format("15:04:05 IST"),
-		InitialYAML: rawYAML,
+		InitialYAML: string(redactedYAML),
 		InitialJSON: template.JS(jsonBytes), // #nosec G203
 	}
 
@@ -91,35 +113,57 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			var buf bytes.Buffer
 			enc := yaml.NewEncoder(&buf)
 			enc.SetIndent(2)
-			_ = enc.Encode(&currentCfg)
-			_ = enc.Close()
+			if err := enc.Encode(&currentCfg); err != nil {
+				s.log.Error("encode fallback config", "event", "config_encode_failed", "error", err,
+					"request_id", logging.RequestID(r.Context()))
+				_ = writeJSONError(w, http.StatusInternalServerError, "failed to read configuration", logging.RequestID(r.Context()))
+				return
+			}
+			if err := enc.Close(); err != nil {
+				s.log.Error("close fallback config", "event", "config_encode_failed", "error", err,
+					"request_id", logging.RequestID(r.Context()))
+				_ = writeJSONError(w, http.StatusInternalServerError, "failed to read configuration", logging.RequestID(r.Context()))
+				return
+			}
 			data = buf.Bytes()
 		} else {
 			s.log.Error("read config file", "event", "config_read_failed", "path", cfgPath, "error", err,
 				"request_id", logging.RequestID(r.Context()))
-			_ = writeJSONError(w, http.StatusInternalServerError, "failed to read configuration file: "+err.Error(), logging.RequestID(r.Context()))
+			_ = writeJSONError(w, http.StatusInternalServerError, "failed to read configuration", logging.RequestID(r.Context()))
 			return
 		}
 	}
 
+	redactedYAML, redactErr := config.RedactYAMLSecrets(data)
+	if redactErr != nil {
+		s.log.Warn("redact config yaml", "event", "config_redact_failed", "path", cfgPath, "error", redactErr,
+			"request_id", logging.RequestID(r.Context()))
+	}
+
 	parsedCfg, err := config.LoadBytes(data, cfgPath)
 	if err != nil {
-		_ = writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"ok":    true,
 			"path":  cfgPath,
-			"yaml":  string(data),
 			"error": err.Error(),
-		})
+		}
+		if redactErr == nil {
+			resp["yaml"] = string(redactedYAML)
+		}
+		_ = writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	_ = writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"ok":       true,
 		"path":     cfgPath,
-		"yaml":     string(data),
-		"config":   parsedCfg,
+		"config":   config.RedactSecrets(parsedCfg),
 		"warnings": parsedCfg.Warnings(),
-	})
+	}
+	if redactErr == nil {
+		resp["yaml"] = string(redactedYAML)
+	}
+	_ = writeJSON(w, http.StatusOK, resp)
 }
 
 type updateConfigRequest struct {
@@ -128,6 +172,13 @@ type updateConfigRequest struct {
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONContentType(r) {
+		_ = writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{
+			"ok":    false,
+			"error": "Content-Type must be application/json",
+		})
+		return
+	}
 	// Restrict payload size defensively to 1MB
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -155,8 +206,25 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	cfgPath := s.configPath
 	s.configMu.RUnlock()
 
+	// Masked values returned by GET /api/config mean "keep the stored secret".
+	// Restore them before validation so the mask itself is never persisted.
+	currentYAML, readErr := os.ReadFile(cfgPath) // #nosec G304
+	if readErr != nil && !os.IsNotExist(readErr) {
+		s.log.Warn("read config before update", "event", "config_read_failed", "path", cfgPath,
+			"error", readErr, "request_id", logging.RequestID(r.Context()))
+	}
+	restoredYAML, err := config.RestoreYAMLSecrets([]byte(req.YAML), currentYAML)
+	if err != nil {
+		_ = writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":      false,
+			"error":   "invalid YAML configuration",
+			"message": "invalid YAML configuration",
+		})
+		return
+	}
+
 	// 1. Strict YAML syntax and unknown fields check using config.LoadBytes
-	newCfg, err := config.LoadBytes([]byte(req.YAML), cfgPath)
+	newCfg, err := config.LoadBytes(restoredYAML, cfgPath)
 	if err != nil {
 		var ce *errs.ConfigError
 		field := ""
@@ -202,7 +270,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			"ok":       true,
 			"valid":    true,
 			"message":  "Configuration is valid",
-			"config":   newCfg,
+			"config":   config.RedactSecrets(newCfg),
 			"warnings": newCfg.Warnings(),
 		})
 		return
@@ -227,7 +295,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	// 4b. Write temp file and atomically rename
 	tmpPath := cleanPath + ".tmp"
-	if werr := os.WriteFile(tmpPath, []byte(req.YAML), 0o600); werr != nil { // #nosec G304 G703
+	if werr := os.WriteFile(tmpPath, restoredYAML, 0o600); werr != nil { // #nosec G304 G703
 		s.log.Error("write temp config failed", "event", "config_write_failed", "tmp", tmpPath, "error", werr,
 			"request_id", logging.RequestID(r.Context()))
 		_ = writeJSONError(w, http.StatusInternalServerError, "failed to write temporary config: "+werr.Error(), logging.RequestID(r.Context()))
@@ -243,19 +311,57 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4c. Update runtime active server configuration
+	oldCfg := s.cfg
 	s.cfg = newCfg
 	if boot, berr := newBootstrap(newCfg, s.mpin != ""); berr == nil {
 		s.bootstrap = boot
 	}
+	if oldCfg.Web.BasicAuth != newCfg.Web.BasicAuth {
+		s.revokeAllServeSessions()
+	}
+	restartRequired := restartRequiredFields(oldCfg, newCfg)
 
 	s.log.Info("configuration updated", "event", "config_saved", "path", cleanPath, "backup", backupPath,
 		"request_id", logging.RequestID(r.Context()))
 
-	_ = writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"message":  "Configuration saved successfully",
-		"backup":   backupPath,
-		"config":   newCfg,
-		"warnings": newCfg.Warnings(),
-	})
+	resp := map[string]any{
+		"ok":               true,
+		"message":          "Configuration saved successfully",
+		"backup":           backupPath,
+		"config":           config.RedactSecrets(newCfg),
+		"warnings":         newCfg.Warnings(),
+		"restart_required": restartRequired,
+	}
+	if redactedYAML, rerr := config.RedactYAMLSecrets(restoredYAML); rerr == nil {
+		resp["yaml"] = string(redactedYAML)
+	} else {
+		s.log.Warn("redact saved config yaml", "event", "config_redact_failed", "path", cleanPath,
+			"error", rerr, "request_id", logging.RequestID(r.Context()))
+	}
+	_ = writeJSON(w, http.StatusOK, resp)
+}
+
+// restartRequiredFields reports saved changes that the running process cannot
+// apply without a restart. Auth and trading settings are applied live.
+func restartRequiredFields(oldCfg, newCfg config.Config) []string {
+	var fields []string
+	if oldCfg.App.Listen != newCfg.App.Listen {
+		fields = append(fields, "app.listen")
+	}
+	if oldCfg.App.DBPath != newCfg.App.DBPath {
+		fields = append(fields, "app.db_path")
+	}
+	if !reflect.DeepEqual(oldCfg.Logging, newCfg.Logging) {
+		fields = append(fields, "logging")
+	}
+	if !reflect.DeepEqual(oldCfg.Market, newCfg.Market) {
+		fields = append(fields, "market")
+	}
+	if !reflect.DeepEqual(oldCfg.Scrip, newCfg.Scrip) {
+		fields = append(fields, "scrip")
+	}
+	if oldCfg.Web.OpenBrowser != newCfg.Web.OpenBrowser {
+		fields = append(fields, "web.open_browser")
+	}
+	return fields
 }

@@ -380,6 +380,7 @@ func TestKotakLoginRequiresFlowAndConsumerKey(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 
 	mpinReq := localRequest(http.MethodPost, "/api/auth/mpin")
+	mpinReq.Header.Set("Content-Type", "application/json")
 	mpinReq.Body = io.NopCloser(strings.NewReader(`{"mpin":"123456"}`))
 	mpinRec := do(t, s, mpinReq)
 	if mpinRec.Code != http.StatusConflict {
@@ -387,6 +388,7 @@ func TestKotakLoginRequiresFlowAndConsumerKey(t *testing.T) {
 	}
 
 	totpReq := localRequest(http.MethodPost, "/api/auth/totp")
+	totpReq.Header.Set("Content-Type", "application/json")
 	totpReq.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
 	totpRec := do(t, s, totpReq)
 	if totpRec.Code != http.StatusServiceUnavailable {
@@ -965,6 +967,7 @@ func TestServeUnlockEndpoint(t *testing.T) {
 	// Invalid password
 	bodyWrong := strings.NewReader(`{"username":"testuser","password":"wrong"}`)
 	reqWrong := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock", bodyWrong)
+	reqWrong.Header.Set("Content-Type", "application/json")
 	reqWrong.SetBasicAuth("testuser", "testpass123")
 	recWrong := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recWrong, reqWrong)
@@ -975,6 +978,7 @@ func TestServeUnlockEndpoint(t *testing.T) {
 	// Valid credentials
 	bodyOK := strings.NewReader(`{"username":"testuser","password":"testpass123"}`)
 	reqOK := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock", bodyOK)
+	reqOK.Header.Set("Content-Type", "application/json")
 	reqOK.SetBasicAuth("testuser", "testpass123")
 	recOK := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recOK, reqOK)
@@ -1003,6 +1007,137 @@ func TestServeUnlockEndpoint(t *testing.T) {
 	s.Handler().ServeHTTP(recCookie, reqCookie)
 	if recCookie.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK with session cookie, got %d", recCookie.Code)
+	}
+}
+
+func TestServeUnlockRateLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "testuser"
+	cfg.Web.BasicAuth.Password = "testpass123"
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+	defer s.Close()
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock",
+			strings.NewReader(`{"username":"testuser","password":"wrong"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	valid := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock",
+		strings.NewReader(`{"username":"testuser","password":"testpass123"}`))
+	valid.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, valid)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked-out attempt status = %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on 429")
+	}
+}
+
+func TestServeLogoutRevokesSession(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "testuser"
+	cfg.Web.BasicAuth.Password = "testpass123"
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+	defer s.Close()
+
+	unlock := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock",
+		strings.NewReader(`{"username":"testuser","password":"testpass123"}`))
+	unlock.Header.Set("Content-Type", "application/json")
+	unlockRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(unlockRec, unlock)
+	if unlockRec.Code != http.StatusOK {
+		t.Fatalf("unlock status = %d: %s", unlockRec.Code, unlockRec.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range unlockRec.Result().Cookies() {
+		if cookie.Name == serveSessionCookie {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("unlock did not set a serve session cookie")
+	}
+
+	authed := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	authed.AddCookie(sessionCookie)
+	authedRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(authedRec, authed)
+	if authedRec.Code != http.StatusOK {
+		t.Fatalf("session request status = %d", authedRec.Code)
+	}
+
+	logout := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	logout.AddCookie(sessionCookie)
+	logoutRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(logoutRec, logout)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d", logoutRec.Code)
+	}
+
+	reused := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	reused.AddCookie(sessionCookie)
+	reusedRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(reusedRec, reused)
+	if reusedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session request status = %d, want 401", reusedRec.Code)
+	}
+}
+
+func TestServeOriginAndJSONContentTypeProtection(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "strongpass"
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
+	defer s.Close()
+
+	cross := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock",
+		strings.NewReader(`{"username":"admin","password":"strongpass"}`))
+	cross.Header.Set("Content-Type", "application/json")
+	cross.Header.Set("Origin", "https://evil.example")
+	crossRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(crossRec, cross)
+	if crossRec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", crossRec.Code)
+	}
+
+	noType := httptest.NewRequest(http.MethodPost, "/api/auth/serve-unlock",
+		strings.NewReader(`{"username":"admin","password":"strongpass"}`))
+	noTypeRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(noTypeRec, noType)
+	if noTypeRec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("missing content-type status = %d, want 415", noTypeRec.Code)
+	}
+}
+
+func TestAuthFlowCookieSecureBehindTLSProxy(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	defer s.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/totp", strings.NewReader(`{"totp":"123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	_, err := authFlowID(rec, req, true)
+	if err != nil {
+		t.Fatalf("authFlowID: %v", err)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authFlowCookieName {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+	if !cookies[0].Secure {
+		t.Fatal("auth flow cookie must be Secure behind an HTTPS proxy")
 	}
 }
 

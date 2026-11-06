@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -176,6 +177,9 @@ func (s *Server) feedClientCount() int {
 
 // fetchBook performs exactly one Kotak call for the requested report.
 func (s *Server) fetchBook(ctx context.Context, kind string, session kotakapi.Session) (json.RawMessage, error) {
+	if s.kotak == nil {
+		return nil, errors.New("broker API is not configured")
+	}
 	switch kind {
 	case bookPositions:
 		raw, err := s.kotak.Positions(ctx, session)
