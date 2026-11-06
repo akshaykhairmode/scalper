@@ -1819,6 +1819,16 @@ body[data-theme="light"] .risk-flag.good { border-color: #86efac; background: va
 body[data-theme="light"] .footer .dot-sep { color: #94a3b8; }
 body[data-theme="light"] .footer-uptime { color: #64748b; }
 
+.trade-buttons-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pro-tools-toggle {
+  display: none;
+}
+
 /* ── PWA & Mobile Navigation Controls ─────────────────────── */
 .mobile-nav {
   display: none;
@@ -1945,7 +1955,10 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     display: none;
   }
   #logs-button {
-    display: none;
+    display: none !important;
+  }
+  #settings-button {
+    display: none !important;
   }
   #status-button {
     min-height: 36px;
@@ -2021,62 +2034,48 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   }
 
   .atm-chip {
-    min-height: 44px;
-    padding: 4px 8px;
-    font-size: 11px;
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
+    display: none !important;
   }
   #pcr-chip {
-    min-height: 44px;
-    padding: 4px 8px;
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
+    display: none !important;
   }
-
+  .chart-toggle-group {
+    display: none !important;
+  }
   .product-control {
-    display: none;
+    display: none !important;
   }
 
   #strike-search-button {
-    min-height: 44px;
-    padding: 0 12px;
-    font-size: 12px;
-    font-weight: 600;
-    flex-shrink: 0;
-  }
-  #strike-search-button kbd {
-    display: none;
+    display: none !important;
   }
   #sound-toggle {
-    min-height: 44px;
-    padding: 0 10px;
-    flex-shrink: 0;
+    display: none !important;
   }
   #refresh-button {
-    min-height: 44px;
-    padding: 0 10px;
-    flex-shrink: 0;
+    display: none !important;
   }
   #fullscreen-button {
-    display: none;
+    display: none !important;
   }
 
-  /* Mobile View Switcher */
+  /* Mobile View Switcher - Anchored at Bottom for One-Handed Reach */
   .mobile-nav {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
+    gap: 6px;
+    padding: 6px 10px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 8px));
     background: var(--panel);
-    border-bottom: 1px solid var(--line);
+    border-top: 1px solid var(--line);
+    border-bottom: none;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     flex: 0 0 auto;
-    z-index: 20;
+    z-index: 25;
+    order: 99;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.35);
   }
   .mobile-nav::-webkit-scrollbar {
     display: none;
@@ -2087,8 +2086,8 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-height: 44px;
-    padding: 8px 12px;
+    min-height: 48px;
+    padding: 8px 10px;
     border-radius: var(--radius-sm);
     background: var(--bg-2);
     border: 1px solid var(--line);
@@ -2097,7 +2096,7 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     font-weight: 750;
     letter-spacing: 0.04em;
     cursor: pointer;
-    flex: 1 0 auto;
+    flex: 1 1 0;
     text-align: center;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
@@ -2245,6 +2244,33 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     font-size: 12px;
   }
 
+  .pro-tools-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 34px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition: all 0.15s ease;
+  }
+  .pro-tools-toggle:hover,
+  .pro-tools-toggle.active {
+    background: var(--accent);
+    color: #1a1300;
+    border-color: var(--accent);
+  }
+  .pro-tools-toggle .tools-icon {
+    font-size: 13px;
+  }
+
   .chart-frame {
     flex: 1 1 auto;
     min-height: 220px;
@@ -2256,18 +2282,41 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     height: 100%;
   }
 
+  /* One-Handed Mode (Default): Clean unobstructed chart */
   .chart-tools {
-    top: 6px;
-    right: 6px;
-    gap: 3px;
+    display: none !important;
   }
-  .chart-tools button {
-    min-width: 40px;
-    min-height: 40px;
+
+  /* Scientific / Pro Mode: Floating indicator & tools ribbon */
+  .pane.pro-tools-open .chart-tools {
+    display: flex !important;
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 10;
+    gap: 5px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: rgba(14, 20, 27, 0.94);
+    border: 1px solid var(--line);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(10px);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .pane.pro-tools-open .chart-tools::-webkit-scrollbar {
+    display: none;
+  }
+  .pane.pro-tools-open .chart-tools button {
+    min-width: 38px;
+    min-height: 38px;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 750;
     border-radius: 6px;
-    background: rgba(11, 14, 20, 0.85);
+    flex-shrink: 0;
+    background: var(--panel-2);
   }
   .chart-tools button[data-chart-action="expand"] {
     display: none;
@@ -2277,8 +2326,8 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   .leg-orderpad {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 8px 10px;
+    gap: 6px;
+    padding: 6px 10px;
     border-top: 1px solid var(--line);
     background: var(--bg-2);
     flex: 0 0 auto;
@@ -2289,17 +2338,19 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     justify-content: space-between;
     align-items: center;
     width: 100%;
-    font-size: 11px;
+    font-size: 10.5px;
+    color: var(--muted);
+    padding: 0 2px;
   }
   .leg-margin-val {
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 700;
   }
 
   .leg-order-actions {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
   }
 
@@ -2308,56 +2359,57 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     align-items: center;
     gap: 4px;
     width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 4px;
   }
   .unit-toggle {
-    min-width: 62px;
-    min-height: 44px;
-    font-size: 12px;
+    min-width: 58px;
+    min-height: 38px;
+    font-size: 11px;
     font-weight: 800;
-    border-radius: 6px;
+    border-radius: 5px;
   }
   button[data-qty-step] {
-    min-width: 46px;
-    min-height: 44px;
+    min-width: 44px;
+    min-height: 38px;
     font-size: 20px;
     font-weight: 700;
-    border-radius: 6px;
+    border-radius: 5px;
     display: grid;
     place-items: center;
   }
   input[data-lots] {
     flex: 1 1 auto;
-    min-height: 44px;
+    min-height: 38px;
     font-size: 17px;
     font-weight: 800;
     text-align: center;
-    border-radius: 6px;
+    border-radius: 5px;
   }
 
-  .leg-order-actions .trade {
+  /* One-handed side-by-side Buy and Sell buttons */
+  .trade-buttons-row {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .leg-orderpad .trade.buy,
+  .leg-orderpad .trade.sell {
     min-height: 48px;
     font-size: 14px;
     font-weight: 800;
     letter-spacing: 0.05em;
     border-radius: 8px;
-    flex: 1 1 0;
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  /* Side-by-side Buy and Sell buttons */
-  .leg-order-actions > div:not(.lot-control) {
-    display: flex;
-    gap: 8px;
-    width: 100%;
-  }
-  /* If trade buttons are direct children */
-  .leg-orderpad .trade.buy,
-  .leg-orderpad .trade.sell {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 1 1 120px;
+    width: 100%;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* Bottom Panel / Positions on mobile */
@@ -2485,19 +2537,9 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     font-weight: 800;
   }
 
-  /* Footer on mobile */
+  /* Footer on mobile - hidden for maximum chart and one-handed reach */
   .footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 10px;
-    font-size: 9.5px;
-    min-height: 24px;
-    flex: 0 0 auto;
-  }
-  .footer .dot-sep:nth-of-type(n+3),
-  .footer span:nth-of-type(n+4) {
-    display: none;
+    display: none !important;
   }
 
   /* PWA Install Banner */

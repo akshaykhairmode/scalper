@@ -130,6 +130,7 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="ce-ltp">—</span>
             <span class="pane-change" id="ce-change">—</span>
+            <button type="button" class="pro-tools-toggle" data-chart="ce" title="Toggle technical indicators &amp; tools" aria-label="Toggle technical tools" aria-expanded="false"><span class="tools-icon">📐</span><span class="tools-label">Tools</span></button>
             <button type="button" class="pane-close-btn" data-chart-hide="ce" title="Hide CALL chart" aria-label="Hide CALL chart">✕</button>
           </div>
         </div>
@@ -165,8 +166,10 @@
               <input id="call-lots" data-lots="CE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Call quantity">
               <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call quantity">+</button>
             </div>
-            <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
-            <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
+            <div class="trade-buttons-row">
+              <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
+            </div>
           </div>
         </section>
       </article>
@@ -180,6 +183,7 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="spot-ltp">—</span>
             <span class="pane-change" id="spot-change">—</span>
+            <button type="button" class="pro-tools-toggle" data-chart="underlying" title="Toggle technical indicators &amp; tools" aria-label="Toggle technical tools" aria-expanded="false"><span class="tools-icon">📐</span><span class="tools-label">Tools</span></button>
             <button type="button" class="pane-close-btn" data-chart-hide="underlying" title="Hide UNDERLYING chart" aria-label="Hide UNDERLYING chart">✕</button>
           </div>
         </div>
@@ -210,6 +214,7 @@
           <div class="pane-quote">
             <span class="pane-ltp" id="pe-ltp">—</span>
             <span class="pane-change" id="pe-change">—</span>
+            <button type="button" class="pro-tools-toggle" data-chart="pe" title="Toggle technical indicators &amp; tools" aria-label="Toggle technical tools" aria-expanded="false"><span class="tools-icon">📐</span><span class="tools-label">Tools</span></button>
             <button type="button" class="pane-close-btn" data-chart-hide="pe" title="Hide PUT chart" aria-label="Hide PUT chart">✕</button>
           </div>
         </div>
@@ -245,8 +250,10 @@
               <input id="put-lots" data-lots="PE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Put quantity">
               <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put quantity">+</button>
             </div>
-            <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
-            <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>
+            <div class="trade-buttons-row">
+              <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>
+            </div>
           </div>
         </section>
       </article>

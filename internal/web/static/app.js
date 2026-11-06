@@ -5221,6 +5221,21 @@ function bindEvents() {
     });
   });
 
+  $$(".pro-tools-toggle").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pane = btn.closest(".pane");
+      if (!pane) return;
+      const isOpen = pane.classList.toggle("pro-tools-open");
+      btn.classList.toggle("active", isOpen);
+      btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      const label = btn.querySelector(".tools-label");
+      if (label) {
+        label.textContent = isOpen ? "Hide" : "Tools";
+      }
+    });
+  });
+
   window.addEventListener("resize", () => {
     for (const chart of Object.values(S.charts)) {
       if (chart && typeof chart.resize === "function") chart.resize();
