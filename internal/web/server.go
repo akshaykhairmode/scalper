@@ -574,11 +574,13 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 	s.serveSessions[token] = time.Now().Add(24 * time.Hour)
 	s.serveSessionsMu.Unlock()
 
-	http.SetCookie(w, &http.Cookie{
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- dynamically enabled for HTTPS and relaxed for local HTTP
 		Name:     "scalper_serve_session",
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isSecure,
 		SameSite: http.SameSiteStrictMode,
 	})
 	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
@@ -1041,28 +1043,6 @@ func localOnly(log *slog.Logger, next http.Handler) http.Handler {
 				}
 				return
 			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// basicAuth wraps next with HTTP Basic Authentication using a constant-time
-// comparison to prevent timing attacks.
-func basicAuth(username, password string, next http.Handler) http.Handler {
-	// Pre-hash credentials so we can compare hashes in constant time.
-	wantUser := sha256.Sum256([]byte(username))
-	wantPass := sha256.Sum256([]byte(password))
-	realm := `Basic realm="Scalper Terminal", charset="UTF-8"`
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, p, ok := r.BasicAuth()
-		gotUser := sha256.Sum256([]byte(u))
-		gotPass := sha256.Sum256([]byte(p))
-		if !ok ||
-			subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) != 1 ||
-			subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", realm)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
 		}
 		next.ServeHTTP(w, r)
 	})
