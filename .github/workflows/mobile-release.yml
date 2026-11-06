@@ -165,6 +165,8 @@ jobs:
         working-directory: mobile/ios/App
         run: |
           if [ -d "App.xcworkspace" ]; then
+            echo "Listing workspace schemes:"
+            xcodebuild -workspace App.xcworkspace -list || true
             echo "Building with Xcode Workspace (CocoaPods)..."
             xcodebuild \
               -workspace App.xcworkspace \
@@ -178,6 +180,8 @@ jobs:
               COMPILER_INDEX_STORE_ENABLE=NO \
               build
           else
+            echo "Listing project schemes:"
+            xcodebuild -project App.xcodeproj -list || true
             echo "Building with Xcode Project..."
             xcodebuild \
               -project App.xcodeproj \
