@@ -72,7 +72,7 @@ Whenever you push to the `main` branch or manually trigger the workflow:
 You don't have to wait for a git commit to deploy. You can trigger it at any time from GitHub:
 1. Go to your repository on GitHub.
 2. Click the **Actions** tab.
-3. In the left sidebar, click **Deploy to Server**.
+3. In the left sidebar, click **CI/CD**.
 4. Click **Run workflow** → select branch `main` → click **Run workflow**.
 
 ---

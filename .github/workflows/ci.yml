@@ -1,10 +1,11 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -191,3 +192,87 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.release-version.outputs.version }}
+
+  deploy:
+    name: deploy to server
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    needs: [test, cross-build, lint, vuln]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify Deployment Configuration
+        id: config-check
+        run: |
+          TARGET_HOST="${{ secrets.SERVER_HOST || secrets.SERVER_IP }}"
+          TARGET_KEY="${{ secrets.SSH_PRIVATE_KEY || secrets.SSH_KEY }}"
+
+          # If neither is set, handle gracefully on push vs explicitly on manual trigger
+          if [ -z "$TARGET_HOST" ] && [ -z "$TARGET_KEY" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::error title=Missing Secrets::Neither SERVER_HOST nor SSH_PRIVATE_KEY secret is configured. Please configure them in Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
+            echo "::notice title=Deployment Skipped::Neither SERVER_HOST nor SSH_PRIVATE_KEY secret is configured. Add them to Settings -> Secrets and variables -> Actions to enable automated server deployment."
+            echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$TARGET_HOST" ]; then
+            echo "::error title=Missing SERVER_HOST::SERVER_HOST secret is not configured in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          if [ -z "$TARGET_KEY" ]; then
+            echo "::error title=Missing SSH_PRIVATE_KEY::SSH_PRIVATE_KEY secret is not configured in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          # Pre-flight credential checks
+          if [ -z "${{ secrets.KOTAK_CONSUMER_KEY }}" ]; then
+            echo "::warning title=Kotak Key Missing::KOTAK_CONSUMER_KEY secret is not set. Kotak login and live trading will be disabled on the remote server."
+          fi
+          if [ -z "${{ secrets.KOTAK_MOBILE_NUMBER || secrets.KOTAK_MOBILE }}" ]; then
+            echo "::warning title=Kotak Mobile Missing::KOTAK_MOBILE_NUMBER secret is not set; server will rely on config.yaml."
+          fi
+          if [ -z "${{ secrets.KOTAK_UCC }}" ]; then
+            echo "::warning title=Kotak UCC Missing::KOTAK_UCC secret is not set; server will rely on config.yaml."
+          fi
+
+          AUTH_USER="${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || '' }}"
+          AUTH_PASS="${{ secrets.SERVE_AUTH_PASSWORD || '' }}"
+          if [ -n "$AUTH_USER" ] && [ -z "$AUTH_PASS" ]; then
+            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_USERNAME is configured but SERVE_AUTH_PASSWORD is missing. Both must be set to protect the terminal."
+            exit 1
+          fi
+          if [ -z "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
+            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_PASSWORD is configured but SERVE_AUTH_USERNAME is missing. Both must be set to protect the terminal."
+            exit 1
+          fi
+
+          echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Remote Server
+        if: steps.config-check.outputs.can_deploy == 'true'
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.SERVER_IP }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY || secrets.SSH_KEY }}
+          SSH_USER: ${{ secrets.SSH_USER || vars.SSH_USER || 'opc' }}
+          SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '' }}
+          SERVICE_NAME: ${{ vars.SERVICE_NAME || 'scalper' }}
+          KOTAK_CONSUMER_KEY: ${{ secrets.KOTAK_CONSUMER_KEY }}
+          KOTAK_MPIN: ${{ secrets.KOTAK_MPIN }}
+          KOTAK_MOBILE_NUMBER: ${{ secrets.KOTAK_MOBILE_NUMBER || secrets.KOTAK_MOBILE }}
+          KOTAK_UCC: ${{ secrets.KOTAK_UCC }}
+          KOTAK_NEO_FIN_KEY: ${{ secrets.KOTAK_NEO_FIN_KEY || vars.KOTAK_NEO_FIN_KEY || 'neotradeapi' }}
+          SERVE_AUTH_USERNAME: ${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || 'trader' }}
+          SERVE_AUTH_PASSWORD: ${{ secrets.SERVE_AUTH_PASSWORD }}
+        run: |
+          chmod +x ./scripts/deploy.sh
+          ./scripts/deploy.sh

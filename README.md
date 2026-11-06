@@ -147,7 +147,7 @@ Anyone can **fork** this repository, configure their server and Kotak credential
 
 4. **Deploy**:
    - **Automatic**: Any push or PR merge to your `main` branch will test, build, and deploy to your server.
-   - **Manual**: Go to the **Actions** tab → Select **Deploy to Server** in the left sidebar → Click **Run workflow** → Click **Run workflow**.
+   - **Manual**: Go to the **Actions** tab → Select **CI/CD** in the left sidebar → Click **Run workflow** → Click **Run workflow**.
 
 ---
 
