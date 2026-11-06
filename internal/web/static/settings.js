@@ -53,6 +53,7 @@
     setupFormInputs();
     setupModals();
     setupActions();
+    setupDevices();
 
     // Check embedded initial data first for instantaneous render
     const initialConfigEl = document.getElementById('initial-config-data');
@@ -142,6 +143,128 @@
       yamlEditor.value = currentYAML;
       updateLineNumbers();
       yamlEditor.focus();
+    }
+
+    if (panelId === 'panel-devices') {
+      loadSettingsDevices();
+    }
+  }
+
+  function setupDevices() {
+    document.getElementById('settings-register-device-btn')?.addEventListener('click', registerSettingsDevice);
+  }
+
+  function bufferToBase64Url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let str = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      str += String.fromCharCode(bytes[i]);
+    }
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function base64UrlToBuffer(base64Url) {
+    if (!base64Url) return new ArrayBuffer(0);
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = base64.length % 4;
+    const padded = pad ? base64 + '='.repeat(4 - pad) : base64;
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  async function loadSettingsDevices() {
+    const tbody = document.getElementById('settings-devices-tbody');
+    if (!tbody) return;
+    try {
+      const res = await fetch('/api/devices');
+      const data = await res.json().catch(() => ({}));
+      const devices = data.devices || [];
+      if (devices.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted, #888); text-align:center; padding:16px;">No biometric devices enrolled yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = devices.map(d => {
+        const lastUsed = d.last_used_at ? new Date(d.last_used_at).toLocaleDateString('en-IN', {
+          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) : '—';
+        return `
+          <tr>
+            <td><strong>📱 ${d.device_name || 'Passkey Device'}</strong></td>
+            <td>${lastUsed}</td>
+            <td>${d.sign_count || 0}</td>
+            <td style="text-align:right;">
+              <button type="button" class="btn danger small btn-revoke-setting-dev" data-id="${d.id}">Revoke</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      tbody.querySelectorAll('.btn-revoke-setting-dev').forEach(b => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          b.textContent = 'Revoking...';
+          await fetch(`/api/devices/${encodeURIComponent(b.dataset.id)}`, { method: 'DELETE' });
+          showToast('Device revoked', 'info');
+          loadSettingsDevices();
+        });
+      });
+    } catch (err) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#ef4444; text-align:center; padding:16px;">Error loading devices</td></tr>';
+    }
+  }
+
+  async function registerSettingsDevice() {
+    if (!window.PublicKeyCredential) {
+      showToast('WebAuthn not supported by this browser', 'error');
+      return;
+    }
+    const btn = document.getElementById('settings-register-device-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Enrolling...'; }
+    try {
+      const beginRes = await fetch('/api/auth/webauthn/register/begin', { method: 'POST' });
+      const data = await beginRes.json();
+      if (!data.ok) throw new Error(data.error || 'Failed to begin registration');
+      const opts = data.options || data;
+      const publicKey = {
+        challenge: base64UrlToBuffer(opts.challenge),
+        rp: opts.rp,
+        user: {
+          id: base64UrlToBuffer(opts.user.id),
+          name: opts.user.name,
+          displayName: opts.user.displayName,
+        },
+        pubKeyCredParams: opts.pubKeyCredParams,
+        authenticatorSelection: opts.authenticatorSelection || { userVerification: 'preferred' },
+        timeout: opts.timeout || 60000,
+        attestation: opts.attestation || 'none',
+      };
+      const cred = await navigator.credentials.create({ publicKey });
+      if (!cred) throw new Error('Cancelled');
+      const finRes = await fetch('/api/auth/webauthn/register/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceName: window.navigator?.userAgentData?.platform || 'Desktop Browser',
+          id: cred.id,
+          rawId: bufferToBase64Url(cred.rawId),
+          type: cred.type,
+          response: {
+            clientDataJSON: bufferToBase64Url(cred.response.clientDataJSON),
+            attestationObject: bufferToBase64Url(cred.response.attestationObject),
+          },
+        }),
+      });
+      const finData = await finRes.json();
+      if (!finData.ok) throw new Error(finData.error || 'Verification failed');
+      showToast('Device registered successfully!', 'success');
+      loadSettingsDevices();
+    } catch (err) {
+      showToast(err.message || 'Registration failed', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '⚡ Register This Device'; }
     }
   }
 

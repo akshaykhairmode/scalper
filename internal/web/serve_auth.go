@@ -123,9 +123,21 @@ func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Homepage, static assets and the unlock endpoint are reachable before
+		// Homepage, static assets, unlock endpoint, biometric login and device discovery are reachable before
 		// authentication. The homepage contains no account data.
-		if r.URL.Path == "/" || r.URL.Path == "/api/auth/serve-unlock" || strings.HasPrefix(r.URL.Path, "/static/") {
+		if r.URL.Path == "/" ||
+			r.URL.Path == "/api/auth/serve-unlock" ||
+			strings.HasPrefix(r.URL.Path, "/static/") ||
+			r.URL.Path == "/api/auth/webauthn/login/begin" ||
+			r.URL.Path == "/api/auth/webauthn/login/finish" ||
+			(r.URL.Path == "/api/devices" && r.Method == http.MethodGet) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Device enrollment using a temporary pairing token
+		if (r.URL.Path == "/api/auth/webauthn/register/begin" || r.URL.Path == "/api/auth/webauthn/register/finish") &&
+			s.validPairToken(extractPairToken(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}

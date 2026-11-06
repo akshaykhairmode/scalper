@@ -1,0 +1,510 @@
+package web
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/akshaykhairmode/scalper/internal/store"
+	"github.com/akshaykhairmode/scalper/internal/webauthn"
+)
+
+type mockDeviceStore struct {
+	mu      sync.Mutex
+	devices map[string]store.Device
+}
+
+func newMockDeviceStore() *mockDeviceStore {
+	return &mockDeviceStore{devices: make(map[string]store.Device)}
+}
+
+func (m *mockDeviceStore) SaveDevice(_ context.Context, dev store.Device) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.devices[dev.ID] = dev
+	return nil
+}
+
+func (m *mockDeviceStore) GetDevice(_ context.Context, id string) (*store.Device, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.devices[id]
+	if !ok {
+		return nil, nil
+	}
+	return &d, nil
+}
+
+func (m *mockDeviceStore) ListDevices(_ context.Context) ([]store.Device, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var list []store.Device
+	for _, d := range m.devices {
+		list = append(list, d)
+	}
+	return list, nil
+}
+
+func (m *mockDeviceStore) UpdateDeviceUsage(_ context.Context, id string, signCount uint32, lastUsedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.devices[id]
+	if !ok {
+		return errors.New("device not found")
+	}
+	d.SignCount = signCount
+	d.LastUsedAt = lastUsedAt
+	m.devices[id] = d
+	return nil
+}
+
+func (m *mockDeviceStore) DeleteDevice(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.devices, id)
+	return nil
+}
+
+func (m *mockDeviceStore) CountDevices(_ context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.devices), nil
+}
+
+func authCookie(s *Server) *http.Cookie {
+	token := "valid-test-serve-token-12345"
+	s.serveSessionsMu.Lock()
+	s.serveSessions[token] = time.Now().Add(24 * time.Hour)
+	s.serveSessionsMu.Unlock()
+	return &http.Cookie{
+		Name:  serveSessionCookie,
+		Value: token,
+		Path:  "/",
+	}
+}
+
+func TestDeviceManagementEndpoints(t *testing.T) {
+	cfg := testConfig()
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{
+		cfg:         &cfg,
+		deviceStore: devStore,
+	})
+	defer s.Close()
+
+	// 1. GET /api/devices when unauthenticated -> returns count 0, devices []
+	req := localRequest(http.MethodGet, "/api/devices")
+	rec := do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&res)
+	if res["count"].(float64) != 0 || res["has_devices"].(bool) != false {
+		t.Errorf("unexpected unauthenticated response: %v", res)
+	}
+
+	// 2. POST /api/devices/pair-token when unauthenticated -> 401
+	rec = do(t, s, localRequest(http.MethodPost, "/api/devices/pair-token"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+
+	// 3. POST /api/devices/pair-token when authenticated -> 200 with token and URL
+	req = localRequest(http.MethodPost, "/api/devices/pair-token")
+	req.AddCookie(authCookie(s))
+	rec = do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var pairRes struct {
+		OK        bool   `json:"ok"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+		URL       string `json:"url"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&pairRes)
+	if !pairRes.OK || pairRes.Token == "" || pairRes.URL == "" {
+		t.Errorf("invalid pair token response: %+v", pairRes)
+	}
+
+	// 4. DELETE /api/devices/{id} when unauthenticated -> 401
+	rec = do(t, s, localRequest(http.MethodDelete, "/api/devices/test-dev"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+
+	// Add a dummy device to the store
+	_ = devStore.SaveDevice(context.Background(), store.Device{
+		ID:         "dev-1",
+		DeviceName: "MacBook Pro",
+		PublicKey:  "pubkey",
+		Algorithm:  -7,
+		SignCount:  1,
+	})
+
+	// 5. GET /api/devices when authenticated -> returns device list
+	req = localRequest(http.MethodGet, "/api/devices")
+	req.AddCookie(authCookie(s))
+	rec = do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var listRes struct {
+		OK      bool           `json:"ok"`
+		Count   int            `json:"count"`
+		Devices []store.Device `json:"devices"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&listRes)
+	if !listRes.OK || listRes.Count != 1 || len(listRes.Devices) != 1 {
+		t.Fatalf("unexpected authenticated device list: %+v", listRes)
+	}
+	if listRes.Devices[0].DeviceName != "MacBook Pro" {
+		t.Errorf("device name = %q, want MacBook Pro", listRes.Devices[0].DeviceName)
+	}
+
+	// 6. DELETE /api/devices/{id} when authenticated -> 200
+	req = localRequest(http.MethodDelete, "/api/devices/dev-1")
+	req.AddCookie(authCookie(s))
+	rec = do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	cnt, _ := devStore.CountDevices(context.Background())
+	if cnt != 0 {
+		t.Errorf("device not deleted from store, count = %d", cnt)
+	}
+}
+
+func makeTestAttestation(privKey *ecdsa.PrivateKey, rpID string, credID []byte) (string, string) {
+	rpHash := sha256.Sum256([]byte(rpID))
+	authData := make([]byte, 37)
+	copy(authData[0:32], rpHash[:])
+	authData[32] = 0x01 | 0x04 | 0x40 // UP | UV | AT
+	binary.BigEndian.PutUint32(authData[33:37], 0)
+
+	aaguid := make([]byte, 16)
+	authData = append(authData, aaguid...)
+
+	var credLenBytes [2]byte
+	binary.BigEndian.PutUint16(credLenBytes[:], uint16(len(credID)))
+	authData = append(authData, credLenBytes[:]...)
+	authData = append(authData, credID...)
+
+	//nolint:staticcheck // Extracting coordinates for synthesizing test authenticator data
+	xBytes := privKey.PublicKey.X.Bytes()
+	//nolint:staticcheck // Extracting coordinates for synthesizing test authenticator data
+	yBytes := privKey.PublicKey.Y.Bytes()
+	if len(xBytes) < 32 {
+		pad := make([]byte, 32-len(xBytes))
+		xBytes = append(pad, xBytes...)
+	}
+	if len(yBytes) < 32 {
+		pad := make([]byte, 32-len(yBytes))
+		yBytes = append(pad, yBytes...)
+	}
+
+	coseMap := map[any]any{
+		int64(1):  int64(2),
+		int64(3):  int64(-7),
+		int64(-1): int64(1),
+		int64(-2): xBytes,
+		int64(-3): yBytes,
+	}
+	coseBytes, _ := encodeTestCBOR(coseMap)
+	authData = append(authData, coseBytes...)
+
+	attObjMap := map[any]any{
+		"fmt":      "none",
+		"attStmt":  map[any]any{},
+		"authData": authData,
+	}
+	attObjBytes, _ := encodeTestCBOR(attObjMap)
+	return base64.RawURLEncoding.EncodeToString(authData), base64.RawURLEncoding.EncodeToString(attObjBytes)
+}
+
+func TestWebAuthnFullRegistrationAndLoginHandlers(t *testing.T) {
+	cfg := testConfig()
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{
+		cfg:         &cfg,
+		deviceStore: devStore,
+	})
+	defer s.Close()
+
+	// 1. BeginRegistration when unauthenticated without pair token -> 401
+	rec := do(t, s, localRequest(http.MethodPost, "/api/auth/webauthn/register/begin"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+
+	// Create pair token
+	pTok, _, err := s.createPairToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. BeginRegistration with pair token header -> 200 OK
+	req := localRequest(http.MethodPost, "/api/auth/webauthn/register/begin")
+	req.Header.Set("X-Pair-Token", pTok)
+	rec = do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with pair token, got %d", rec.Code)
+	}
+
+	var regBegin struct {
+		OK        bool                         `json:"ok"`
+		Challenge string                       `json:"challenge"`
+		Options   webauthn.RegistrationOptions `json:"options"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&regBegin); err != nil {
+		t.Fatal(err)
+	}
+	if !regBegin.OK || regBegin.Challenge == "" {
+		t.Fatalf("invalid regBegin: %+v", regBegin)
+	}
+
+	// 3. FinishRegistration with synthesized authenticator response
+	privKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	credID := []byte("authenticator-credential-98765")
+	_, attObjB64 := makeTestAttestation(privKey, "127.0.0.1", credID)
+
+	clientDataJSON := map[string]any{
+		"type":      "webauthn.create",
+		"challenge": regBegin.Challenge,
+		"origin":    "http://127.0.0.1:8080",
+	}
+	clientDataBytes, _ := json.Marshal(clientDataJSON)
+	cDataB64 := base64.RawURLEncoding.EncodeToString(clientDataBytes)
+
+	finishReqBody, _ := json.Marshal(map[string]any{
+		"deviceName": "iPhone PWA",
+		"pairToken":  pTok,
+		"id":         base64.RawURLEncoding.EncodeToString(credID),
+		"rawId":      base64.RawURLEncoding.EncodeToString(credID),
+		"type":       "public-key",
+		"response": map[string]any{
+			"clientDataJSON":    cDataB64,
+			"attestationObject": attObjB64,
+		},
+	})
+
+	req = localRequestWithBody(http.MethodPost, "/api/auth/webauthn/register/finish", finishReqBody)
+	req.Header.Set("X-Pair-Token", pTok)
+	rec = do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("FinishRegistration failed: %d body: %s", rec.Code, rec.Body.String())
+	}
+
+	var regFinRes struct {
+		OK     bool         `json:"ok"`
+		Device store.Device `json:"device"`
+		Token  string       `json:"token"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&regFinRes)
+	if !regFinRes.OK || regFinRes.Device.ID == "" || regFinRes.Token == "" {
+		t.Fatalf("unexpected FinishRegistration response: %+v", regFinRes)
+	}
+	// Verify session cookie was set for paired device
+	var foundCookie bool
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == serveSessionCookie && cookie.Value != "" {
+			foundCookie = true
+			break
+		}
+	}
+	if !foundCookie {
+		t.Error("serveSessionCookie was not set on paired device registration")
+	}
+
+	// 4. Login Begin (unauthenticated)
+	rec = do(t, s, localRequest(http.MethodPost, "/api/auth/webauthn/login/begin"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Login begin failed: %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var loginBegin struct {
+		OK        bool                      `json:"ok"`
+		Challenge string                    `json:"challenge"`
+		Options   webauthn.AssertionOptions `json:"options"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&loginBegin)
+	if !loginBegin.OK || loginBegin.Challenge == "" {
+		t.Fatalf("invalid loginBegin: %+v", loginBegin)
+	}
+
+	// 5. Sign Assertion
+	cDataAssertJSON := map[string]any{
+		"type":      "webauthn.get",
+		"challenge": loginBegin.Challenge,
+		"origin":    "http://127.0.0.1:8080",
+	}
+	cDataAssertBytes, _ := json.Marshal(cDataAssertJSON)
+	cDataAssertB64 := base64.RawURLEncoding.EncodeToString(cDataAssertBytes)
+
+	rpHash := sha256.Sum256([]byte("127.0.0.1"))
+	authDataAssert := make([]byte, 37)
+	copy(authDataAssert[0:32], rpHash[:])
+	authDataAssert[32] = 0x01 | 0x04
+	binary.BigEndian.PutUint32(authDataAssert[33:37], 1)
+
+	cDataHash := sha256.Sum256(cDataAssertBytes)
+	signedData := append(authDataAssert, cDataHash[:]...)
+	sigHash := sha256.Sum256(signedData)
+	sigBytes, _ := ecdsa.SignASN1(rand.Reader, privKey, sigHash[:])
+
+	loginFinBody, _ := json.Marshal(map[string]any{
+		"id":    base64.RawURLEncoding.EncodeToString(credID),
+		"rawId": base64.RawURLEncoding.EncodeToString(credID),
+		"type":  "public-key",
+		"response": map[string]any{
+			"clientDataJSON":    cDataAssertB64,
+			"authenticatorData": base64.RawURLEncoding.EncodeToString(authDataAssert),
+			"signature":         base64.RawURLEncoding.EncodeToString(sigBytes),
+		},
+	})
+
+	rec = do(t, s, localRequestWithBody(http.MethodPost, "/api/auth/webauthn/login/finish", loginFinBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Login finish failed: %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var loginFinRes struct {
+		OK         bool   `json:"ok"`
+		Token      string `json:"token"`
+		DeviceName string `json:"device_name"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&loginFinRes)
+	if !loginFinRes.OK || loginFinRes.Token == "" {
+		t.Fatalf("unexpected loginFinRes: %+v", loginFinRes)
+	}
+
+	// 6. Test login failure with bad signature
+	badLoginFinBody, _ := json.Marshal(map[string]any{
+		"id":    base64.RawURLEncoding.EncodeToString(credID),
+		"rawId": base64.RawURLEncoding.EncodeToString(credID),
+		"type":  "public-key",
+		"response": map[string]any{
+			"clientDataJSON":    cDataAssertB64,
+			"authenticatorData": base64.RawURLEncoding.EncodeToString(authDataAssert),
+			"signature":         base64.RawURLEncoding.EncodeToString([]byte("invalid")),
+		},
+	})
+	// Put a fresh challenge in s.webauthnChallenges
+	s.storeWebAuthnChallenge(loginBegin.Challenge, false)
+	rec = do(t, s, localRequestWithBody(http.MethodPost, "/api/auth/webauthn/login/finish", badLoginFinBody))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for bad signature, got %d", rec.Code)
+	}
+}
+
+func TestNilDeviceStoreGracefulErrors(t *testing.T) {
+	s := newTestServer(t, serverOpts{deviceStore: nil})
+	defer s.Close()
+
+	rec := do(t, s, localRequest(http.MethodGet, "/api/devices"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+
+	rec = do(t, s, localRequest(http.MethodPost, "/api/auth/webauthn/register/begin"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+
+	rec = do(t, s, localRequest(http.MethodPost, "/api/auth/webauthn/login/begin"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+func encodeTestCBOR(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeTestCBORItem(&buf, v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func encodeTestCBORItem(buf *bytes.Buffer, v any) error {
+	switch val := v.(type) {
+	case int64:
+		if val >= 0 {
+			if val < 24 {
+				buf.WriteByte(byte(val))
+			} else {
+				buf.WriteByte(24)
+				buf.WriteByte(byte(val))
+			}
+		} else {
+			n := -1 - val
+			if n < 24 {
+				buf.WriteByte(byte(0x20 | n))
+			} else {
+				buf.WriteByte(byte(0x20 | 24))
+				buf.WriteByte(byte(n))
+			}
+		}
+		return nil
+	case []byte:
+		l := len(val)
+		if l < 24 {
+			buf.WriteByte(byte(0x40 | l))
+		} else if l <= 0xff {
+			buf.WriteByte(byte(0x40 | 24))
+			buf.WriteByte(byte(l))
+		} else {
+			buf.WriteByte(byte(0x40 | 25))
+			var b [2]byte
+			binary.BigEndian.PutUint16(b[:], uint16(l))
+			buf.Write(b[:])
+		}
+		buf.Write(val)
+		return nil
+	case string:
+		l := len(val)
+		if l < 24 {
+			buf.WriteByte(byte(0x60 | l))
+		} else {
+			buf.WriteByte(byte(0x60 | 24))
+			buf.WriteByte(byte(l))
+		}
+		buf.WriteString(val)
+		return nil
+	case map[any]any:
+		l := len(val)
+		if l < 24 {
+			buf.WriteByte(byte(0xa0 | l))
+		} else {
+			buf.WriteByte(byte(0xa0 | 24))
+			buf.WriteByte(byte(l))
+		}
+		for k, elem := range val {
+			if err := encodeTestCBORItem(buf, k); err != nil {
+				return err
+			}
+			if err := encodeTestCBORItem(buf, elem); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("cbor: unsupported encode type %T", v)
+	}
+}

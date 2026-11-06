@@ -1,4 +1,5 @@
 import { CandleChart } from "./charts.js";
+import { generateQRCodeSVG } from "./qrcode.js";
 
 const $ = (id) => document.getElementById(id);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -687,6 +688,17 @@ function init() {
 
   const serveAuthModal = $("serve-auth-modal");
   const isTerminalLocked = serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none";
+  updateBiometricButtons();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const pairToken = urlParams.get("pair_token");
+  if (pairToken) {
+    setTimeout(() => {
+      toast("Pairing link detected. Registering biometric passkey...", "ok", 4000);
+      handleRegisterDevice("Mobile Device", pairToken);
+    }, 300);
+  }
+
   if (!isTerminalLocked) {
     startTerminalSession();
   }
@@ -4478,6 +4490,7 @@ function isNewerVersion(latest, current) {
 
 function openLogin() {
   totpAccepted = false;
+  updateBiometricButtons();
   $("totp-input").value = "";
   $("totp-input").disabled = false;
   $("totp-hint").textContent = "Invalid code? Sync your device time and try again.";
@@ -5102,6 +5115,311 @@ function bindEvents() {
     if (cancelAllBtn) { onCancelAllOpenOrders(); return; }
   });
 
+  // ── WebAuthn / Passkey & Device Binding ──────────────────────
+  function bufferToBase64Url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let str = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      str += String.fromCharCode(bytes[i]);
+    }
+    return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function base64UrlToBuffer(base64Url) {
+    if (!base64Url) return new ArrayBuffer(0);
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = base64.length % 4;
+    const padded = pad ? base64 + "=".repeat(4 - pad) : base64;
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  async function checkBiometricUnlockAvailable() {
+    if (!window.PublicKeyCredential) return false;
+    try {
+      const res = await fetch("/api/devices");
+      if (!res.ok) return false;
+      const data = await res.json();
+      return !!(data.has_devices || (data.count && data.count > 0));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function updateBiometricButtons() {
+    const available = await checkBiometricUnlockAvailable();
+    const serveContainer = $("biometric-unlock-serve-container");
+    const tradeContainer = $("biometric-unlock-trade-container");
+    if (serveContainer) serveContainer.hidden = !available;
+    if (tradeContainer) tradeContainer.hidden = !available;
+  }
+
+  async function handleBiometricUnlock() {
+    if (!window.PublicKeyCredential) {
+      toast("Biometric unlock not supported in this browser.", "warn");
+      return;
+    }
+
+    const serveBtn = $("biometric-unlock-serve-btn");
+    const tradeBtn = $("biometric-unlock-trade-btn");
+    if (serveBtn) { serveBtn.disabled = true; serveBtn.textContent = "Scanning Biometrics..."; }
+    if (tradeBtn) { tradeBtn.disabled = true; tradeBtn.textContent = "Scanning Biometrics..."; }
+
+    try {
+      const beginRes = await fetch("/api/auth/webauthn/login/begin", { method: "POST" });
+      const data = await beginRes.json().catch(() => ({}));
+      if (!beginRes.ok || !data.ok) {
+        throw new Error(data.error || "Failed to initiate biometric unlock");
+      }
+
+      const opts = data.options || data;
+      const publicKey = {
+        challenge: base64UrlToBuffer(opts.challenge),
+        timeout: opts.timeout || 60000,
+        rpId: opts.rpId || undefined,
+        userVerification: opts.userVerification || "preferred",
+        allowCredentials: (opts.allowCredentials || []).map((c) => ({
+          type: c.type || "public-key",
+          id: base64UrlToBuffer(c.id),
+          transports: c.transports,
+        })),
+      };
+
+      const assertion = await navigator.credentials.get({ publicKey });
+      if (!assertion) throw new Error("Biometric authentication cancelled");
+
+      const finishBody = {
+        id: assertion.id,
+        rawId: bufferToBase64Url(assertion.rawId),
+        type: assertion.type,
+        response: {
+          clientDataJSON: bufferToBase64Url(assertion.response.clientDataJSON),
+          authenticatorData: bufferToBase64Url(assertion.response.authenticatorData),
+          signature: bufferToBase64Url(assertion.response.signature),
+          userHandle: assertion.response.userHandle ? bufferToBase64Url(assertion.response.userHandle) : null,
+        },
+      };
+
+      const finRes = await fetch("/api/auth/webauthn/login/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(finishBody),
+      });
+      const finData = await finRes.json().catch(() => ({}));
+      if (!finRes.ok || !finData.ok) {
+        throw new Error(finData.error || "Biometric verification failed");
+      }
+
+      const serveModal = $("serve-auth-modal");
+      if (serveModal) {
+        serveModal.style.display = "none";
+        serveModal.hidden = true;
+      }
+      closeLogin();
+      toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
+      startTerminalSession();
+    } catch (err) {
+      console.warn("biometric unlock error:", err);
+      toast(err.message || "Biometric authentication failed", "warn");
+    } finally {
+      if (serveBtn) { serveBtn.disabled = false; serveBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>"; }
+      if (tradeBtn) { tradeBtn.disabled = false; tradeBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>"; }
+    }
+  }
+
+  async function handleRegisterDevice(deviceName = "", pairToken = "") {
+    if (!window.PublicKeyCredential) {
+      toast("WebAuthn is not supported by this browser.", "warn");
+      return;
+    }
+
+    const registerBtn = $("register-device-button");
+    const pairEnrollBtn = $("pair-register-this-btn");
+    if (registerBtn) { registerBtn.disabled = true; registerBtn.textContent = "Enrolling..."; }
+    if (pairEnrollBtn) { pairEnrollBtn.disabled = true; pairEnrollBtn.textContent = "Enrolling..."; }
+
+    try {
+      const beginUrl = "/api/auth/webauthn/register/begin" + (pairToken ? `?pair_token=${encodeURIComponent(pairToken)}` : "");
+      const headers = { "Content-Type": "application/json" };
+      if (pairToken) headers["X-Pair-Token"] = pairToken;
+
+      const beginRes = await fetch(beginUrl, { method: "POST", headers });
+      const data = await beginRes.json().catch(() => ({}));
+      if (!beginRes.ok || !data.ok) {
+        throw new Error(data.error || "Failed to initiate registration");
+      }
+
+      const opts = data.options || data;
+      const publicKey = {
+        challenge: base64UrlToBuffer(opts.challenge),
+        rp: opts.rp,
+        user: {
+          id: base64UrlToBuffer(opts.user.id),
+          name: opts.user.name,
+          displayName: opts.user.displayName,
+        },
+        pubKeyCredParams: opts.pubKeyCredParams,
+        authenticatorSelection: opts.authenticatorSelection || { userVerification: "preferred" },
+        timeout: opts.timeout || 60000,
+        attestation: opts.attestation || "none",
+      };
+
+      const cred = await navigator.credentials.create({ publicKey });
+      if (!cred) throw new Error("Registration was cancelled");
+
+      const finishBody = {
+        deviceName: deviceName || (window.navigator?.userAgentData?.platform || "My Device"),
+        pairToken: pairToken || "",
+        id: cred.id,
+        rawId: bufferToBase64Url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufferToBase64Url(cred.response.clientDataJSON),
+          attestationObject: bufferToBase64Url(cred.response.attestationObject),
+        },
+      };
+
+      const finRes = await fetch("/api/auth/webauthn/register/finish", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(finishBody),
+      });
+      const finData = await finRes.json().catch(() => ({}));
+      if (!finRes.ok || !finData.ok) {
+        throw new Error(finData.error || "Failed to verify registration");
+      }
+
+      toast(`Device "${finData.device?.device_name || "Passkey"}" registered!`, "ok");
+      await updateBiometricButtons();
+      await loadDevicesList();
+
+      if (pairToken) {
+        const serveModal = $("serve-auth-modal");
+        if (serveModal) {
+          serveModal.style.display = "none";
+          serveModal.hidden = true;
+        }
+        startTerminalSession();
+        const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+        window.history.replaceState({ path: cleanUrl }, "", cleanUrl);
+      }
+    } catch (err) {
+      console.warn("device registration error:", err);
+      toast(err.message || "Device registration failed", "warn");
+    } finally {
+      if (registerBtn) { registerBtn.disabled = false; registerBtn.textContent = "Register Device"; }
+      if (pairEnrollBtn) { pairEnrollBtn.disabled = false; pairEnrollBtn.textContent = "⚡ Register This Device"; }
+    }
+  }
+
+  async function openPairModal() {
+    const modal = $("pair-modal");
+    if (!modal) return;
+    modal.hidden = false;
+
+    const qrContainer = $("pair-qr-svg");
+    const urlInput = $("pair-url-input");
+    if (qrContainer) qrContainer.innerHTML = "<span style='color:#333;font-size:12px;'>Generating QR code...</span>";
+    if (urlInput) urlInput.value = "Generating...";
+
+    try {
+      const res = await fetch("/api/devices/pair-token", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok && data.url) {
+        if (urlInput) urlInput.value = data.url;
+        if (qrContainer) {
+          qrContainer.innerHTML = generateQRCodeSVG(data.url, 220);
+        }
+      } else {
+        if (qrContainer) qrContainer.innerHTML = "<span style='color:#c00;font-size:12px;'>Failed to generate pairing token</span>";
+      }
+    } catch (e) {
+      if (qrContainer) qrContainer.innerHTML = "<span style='color:#c00;font-size:12px;'>Error generating pairing token</span>";
+    }
+
+    await loadDevicesList();
+  }
+
+  function closePairModal() {
+    const modal = $("pair-modal");
+    if (modal) modal.hidden = true;
+  }
+
+  async function loadDevicesList() {
+    const tbody = $("devices-list-body");
+    const tableWrap = $("devices-table-wrap");
+    const noDevMsg = $("no-devices-msg");
+    if (!tbody) return;
+
+    try {
+      const res = await fetch("/api/devices");
+      const data = await res.json().catch(() => ({}));
+      const devices = data.devices || [];
+
+      if (devices.length === 0) {
+        if (tableWrap) tableWrap.hidden = true;
+        if (noDevMsg) noDevMsg.hidden = false;
+        tbody.innerHTML = "";
+        return;
+      }
+
+      if (noDevMsg) noDevMsg.hidden = true;
+      if (tableWrap) tableWrap.hidden = false;
+
+      tbody.innerHTML = devices.map((d) => {
+        const lastUsed = d.last_used_at ? new Date(d.last_used_at).toLocaleDateString("en-IN", {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+        }) : "—";
+        return `
+          <tr>
+            <td style="padding:6px 4px;">
+              <div class="device-name-cell">
+                <span>📱</span>
+                <strong>${esc(d.device_name || "Passkey Device")}</strong>
+              </div>
+            </td>
+            <td style="padding:6px 4px; color:var(--text-muted, #888); font-size:11.5px;">${esc(lastUsed)}</td>
+            <td style="padding:6px 4px; text-align:right;">
+              <button type="button" class="btn-revoke-device" data-device-id="${esc(d.id)}">Revoke</button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      tbody.querySelectorAll(".btn-revoke-device").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.deviceId;
+          if (!id) return;
+          btn.disabled = true;
+          btn.textContent = "Revoking...";
+          await handleRevokeDevice(id);
+        });
+      });
+    } catch (err) {
+      console.warn("failed to load devices:", err);
+    }
+  }
+
+  async function handleRevokeDevice(id) {
+    try {
+      const res = await fetch(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        toast("Device revoked successfully", "ok");
+        await loadDevicesList();
+        await updateBiometricButtons();
+      } else {
+        toast(data.error || "Failed to revoke device", "warn");
+      }
+    } catch (err) {
+      toast("Error revoking device", "warn");
+    }
+  }
+
   const serveAuthModal = $("serve-auth-modal");
   const serveAuthForm = $("serve-auth-form");
   const serveAuthUser = $("serve-auth-user");
@@ -5196,6 +5514,31 @@ function bindEvents() {
   $("status-modal")?.addEventListener("click", (event) => {
     if (event.target === $("status-modal")) closeStatusModal();
   });
+
+  // WebAuthn / Passkey & Device Binding events
+  $("pair-device-button")?.addEventListener("click", openPairModal);
+  $("register-device-button")?.addEventListener("click", () => handleRegisterDevice());
+  $("pair-register-this-btn")?.addEventListener("click", () => handleRegisterDevice());
+  $("pair-close")?.addEventListener("click", closePairModal);
+  $("pair-modal-close-btn")?.addEventListener("click", closePairModal);
+  $("pair-modal")?.addEventListener("click", (event) => {
+    if (event.target === $("pair-modal")) closePairModal();
+  });
+  $("copy-pair-url-btn")?.addEventListener("click", async () => {
+    const input = $("pair-url-input");
+    if (input && input.value) {
+      try {
+        await navigator.clipboard.writeText(input.value);
+        toast("Pairing link copied to clipboard!", "ok");
+      } catch {
+        input.select();
+        document.execCommand("copy");
+        toast("Pairing link copied!", "ok");
+      }
+    }
+  });
+  $("biometric-unlock-serve-btn")?.addEventListener("click", handleBiometricUnlock);
+  $("biometric-unlock-trade-btn")?.addEventListener("click", handleBiometricUnlock);
 
   // Pattern popover & filters
   const patternPopover = $("pattern-popover");

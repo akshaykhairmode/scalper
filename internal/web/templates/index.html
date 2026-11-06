@@ -42,6 +42,8 @@
       <span class="feed-badge connecting feed-badge-interactive" id="feed-badge" role="button" tabindex="0" title="Market feed status (click for system status)"><i></i><span id="feed-label">connecting</span></span>
       <span class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" role="button" tabindex="0" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></span>
       <button type="button" class="ghost small" id="status-button" title="System & Network Status">Status</button>
+      <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
+      <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
       <a href="/logs" target="_blank" rel="noopener noreferrer" class="ghost small button" id="logs-button" title="View Live Server Logs (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Logs</a>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">LIVE</span>
@@ -462,6 +464,64 @@
     </div>
   </div>
 
+  <!-- Pair Mobile Device modal -->
+  <div class="modal-backdrop" id="pair-modal" hidden>
+    <div class="modal pair-modal" role="dialog" aria-modal="true" aria-labelledby="pair-title" style="max-width:500px; width:92vw;">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">PASSKEYS &amp; DEVICE BINDING</span>
+          <h2 id="pair-title">Pair Mobile Device</h2>
+        </div>
+        <button type="button" class="icon-button" id="pair-close" aria-label="Close pair modal">×</button>
+      </div>
+
+      <div class="pair-modal-content" style="padding:16px 0;">
+        <p class="modal-copy" style="margin-bottom:12px;">
+          Scan this QR code from your phone camera, mobile PWA, or Capacitor app to instantly pair your device and enable biometric unlock.
+        </p>
+
+        <div class="pair-qr-wrapper" style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:16px; background:rgba(255,255,255,0.03); border:1px solid var(--border, #333); border-radius:8px; margin-bottom:16px;">
+          <div id="pair-qr-svg" style="background:#ffffff; padding:12px; border-radius:6px; display:inline-flex;"></div>
+          <p id="pair-qr-expiry" style="margin-top:10px; font-size:12px; color:var(--text-muted, #888);">Pairing link expires in 10 minutes</p>
+        </div>
+
+        <label class="field" style="margin-bottom:16px;">
+          <span>Pairing Link</span>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="pair-url-input" readonly style="font-family:monospace; font-size:12px;" />
+            <button type="button" class="ghost small" id="copy-pair-url-btn">Copy</button>
+          </div>
+        </label>
+
+        <div class="pair-devices-section" style="border-top:1px solid var(--border, #333); padding-top:16px; margin-top:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="font-size:14px; margin:0; text-transform:uppercase; letter-spacing:0.5px;">Registered Devices</h3>
+            <button type="button" class="accent small" id="pair-register-this-btn">⚡ Register This Device</button>
+          </div>
+          <div id="devices-list-container">
+            <p id="no-devices-msg" style="font-size:13px; color:var(--text-muted, #888); margin:8px 0;">No devices enrolled yet.</p>
+            <div id="devices-table-wrap" hidden style="max-height:180px; overflow-y:auto;">
+              <table style="width:100%; font-size:13px; border-collapse:collapse;" id="devices-table">
+                <thead>
+                  <tr style="text-align:left; border-bottom:1px solid var(--border, #333); color:var(--text-muted, #888);">
+                    <th style="padding:6px 4px;">Device</th>
+                    <th style="padding:6px 4px;">Last Used</th>
+                    <th style="padding:6px 4px; text-align:right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="devices-list-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex; justify-content:flex-end; border-top:1px solid var(--border, #333); padding-top:12px;">
+        <button type="button" class="primary small" id="pair-modal-close-btn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Serve mode lock modal -->
   {{if .ServeLocked}}
   <div class="modal-backdrop" id="serve-auth-modal" style="display:grid; place-items:center; z-index:99999;">
@@ -473,6 +533,16 @@
         </div>
       </div>
       <form id="serve-auth-form" novalidate style="margin-top:16px;">
+        <div id="biometric-unlock-serve-container" style="margin-bottom: 16px;" hidden>
+          <button type="button" class="primary" id="biometric-unlock-serve-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer;">
+            <span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>
+          </button>
+          <div class="auth-divider" style="display:flex; align-items:center; margin:16px 0; color:var(--text-muted, #888); font-size:12px;">
+            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
+            <span style="padding:0 8px;">OR USE PASSWORD</span>
+            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
+          </div>
+        </div>
         <p class="modal-copy">
           Enter your terminal username and password to unlock the terminal.
         </p>
@@ -524,6 +594,16 @@
       </div>
 
       <form id="login-form" novalidate>
+        <div id="biometric-unlock-trade-container" style="margin-bottom: 16px;" hidden>
+          <button type="button" class="primary" id="biometric-unlock-trade-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer;">
+            <span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>
+          </button>
+          <div class="auth-divider" style="display:flex; align-items:center; margin:16px 0; color:var(--text-muted, #888); font-size:12px;">
+            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
+            <span style="padding:0 8px;">OR TOTP LOGIN</span>
+            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
+          </div>
+        </div>
         <p class="modal-copy">
           Enter your authenticator code{{if not .MPINConfigured}} and MPIN{{end}} to open the trading session.
           Credentials are held in memory only and never written to disk.

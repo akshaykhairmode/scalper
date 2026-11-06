@@ -93,6 +93,7 @@ type Options struct {
 	BracketStore  bracket.ActiveStore
 	BracketEngine *bracket.Engine
 	SessionStore  auth.SessionStore
+	DeviceStore   DeviceStore
 	LogDegraded   func() bool
 	TokenPresent  func() bool
 	Started       time.Time
@@ -144,6 +145,11 @@ type Server struct {
 
 	configPath string
 	configMu   sync.RWMutex
+
+	deviceStore          DeviceStore
+	webauthnChallengesMu sync.Mutex
+	webauthnChallenges   map[string]webauthnStoredChallenge
+	webauthnPairTokens   map[string]time.Time
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -274,12 +280,21 @@ func New(opts Options) (*Server, error) {
 		authServer = auth.NewServerWithAuthenticator(opts.Logger, opts.AuthClient, authOpts...)
 	}
 	feedCtx, feedCancel := context.WithCancel(context.Background())
+	devStore := opts.DeviceStore
+	if devStore == nil {
+		if ds, ok := opts.DB.(DeviceStore); ok {
+			devStore = ds
+		}
+	}
 	s := &Server{
 		log:                 opts.Logger,
 		cfg:                 opts.Config,
 		mpin:                strings.TrimSpace(opts.MPIN),
 		db:                  opts.DB,
 		candleStore:         opts.CandleStore,
+		deviceStore:         devStore,
+		webauthnChallenges:  make(map[string]webauthnStoredChallenge),
+		webauthnPairTokens:  make(map[string]time.Time),
 		logDegraded:         opts.LogDegraded,
 		tokenPresent:        opts.TokenPresent,
 		started:             opts.Started,
@@ -415,6 +430,13 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/mpin", s.handleMPINLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/auth/serve-unlock", s.handleServeUnlock)
+	mux.HandleFunc("POST /api/auth/webauthn/register/begin", s.handleWebAuthnRegisterBegin)
+	mux.HandleFunc("POST /api/auth/webauthn/register/finish", s.handleWebAuthnRegisterFinish)
+	mux.HandleFunc("POST /api/auth/webauthn/login/begin", s.handleWebAuthnLoginBegin)
+	mux.HandleFunc("POST /api/auth/webauthn/login/finish", s.handleWebAuthnLoginFinish)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
+	mux.HandleFunc("POST /api/devices/pair-token", s.handleCreatePairToken)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/version/check", s.handleVersionCheck)

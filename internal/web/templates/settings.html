@@ -46,6 +46,10 @@
         <span class="tab-icon">📝</span>
         <span class="tab-title">Logging</span>
       </button>
+      <button type="button" class="tab-btn" role="tab" id="tab-devices" aria-selected="false" aria-controls="panel-devices">
+        <span class="tab-icon">📱</span>
+        <span class="tab-title">Passkeys &amp; Devices</span>
+      </button>
       <button type="button" class="tab-btn" role="tab" id="tab-yaml" aria-selected="false" aria-controls="panel-yaml">
         <span class="tab-icon">⚙️</span>
         <span class="tab-title">Raw YAML / Advanced</span>
@@ -506,7 +510,39 @@
         </div>
       </section>
 
-      <!-- TAB 4: Raw YAML Editor / Advanced -->
+      <!-- TAB 4: Passkeys & Devices -->
+      <section class="tab-panel" id="panel-devices" role="tabpanel" aria-labelledby="tab-devices">
+        <div class="card">
+          <div class="card-header">
+            <h2>Biometric Devices &amp; Passkeys</h2>
+            <p class="card-description">
+              Manage registered devices with Touch ID, Face ID, Windows Hello, or Android Fingerprint authentication.
+            </p>
+          </div>
+          <div class="card-body">
+            <div style="display:flex; gap:12px; margin-bottom:20px;">
+              <button type="button" class="btn primary" id="settings-register-device-btn">⚡ Register This Device</button>
+            </div>
+            <div id="settings-devices-container">
+              <table class="config-table" id="settings-devices-table" style="width:100%;">
+                <thead>
+                  <tr>
+                    <th>Device Name</th>
+                    <th>Last Used</th>
+                    <th>Sign Count</th>
+                    <th style="text-align:right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="settings-devices-tbody">
+                  <tr><td colspan="4" style="color:var(--text-muted, #888); text-align:center; padding:16px;">Loading devices...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: Raw YAML Editor / Advanced -->
       <section class="tab-panel" id="panel-yaml" role="tabpanel" aria-labelledby="tab-yaml">
         <div class="card editor-card">
           <div class="editor-toolbar">

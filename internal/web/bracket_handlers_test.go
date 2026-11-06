@@ -11,6 +11,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 )
 
+//nolint:unparam
 func localRequestWithBody(method, target string, body []byte) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	req.Host = "127.0.0.1:8080"

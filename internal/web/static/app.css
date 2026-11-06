@@ -2748,3 +2748,81 @@ body[data-theme="light"] .pattern-popover {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15);
 }
 
+/* WebAuthn, Biometric Unlock & Device Binding Styles */
+.btn-biometric {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 2px 10px rgba(2, 132, 199, 0.3);
+  transition: all 0.2s ease;
+  font-size: 13px !important;
+}
+.btn-biometric:hover {
+  background: linear-gradient(135deg, #0369a1 0%, #075985 100%) !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.45);
+  transform: translateY(-1px);
+}
+.btn-biometric:active {
+  transform: translateY(0);
+}
+.auth-divider {
+  user-select: none;
+}
+.pair-modal {
+  background: var(--surface-card, #131722);
+  border: 1px solid var(--line, #2a2e39);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+.pair-qr-wrapper {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line-soft, #262b35);
+}
+.devices-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.devices-table th {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--line-soft, #262b35);
+}
+.devices-table td {
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 12.5px;
+}
+.device-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.btn-revoke-device {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-revoke-device:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: #ffffff;
+}
+body[data-theme="light"] .pair-modal {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+body[data-theme="light"] .pair-qr-wrapper {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+body[data-theme="light"] .devices-table td {
+  border-bottom: 1px solid #f1f5f9;
+}
+

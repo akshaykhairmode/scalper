@@ -49,6 +49,7 @@ func testConfig() config.Config {
 type serverOpts struct {
 	db           DBPinger
 	sessionStore auth.SessionStore
+	deviceStore  DeviceStore
 	degraded     bool
 	token        bool
 	mpin         string
@@ -88,6 +89,7 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		Market:       o.marketAPI,
 		DB:           o.db,
 		SessionStore: o.sessionStore,
+		DeviceStore:  o.deviceStore,
 		LogDegraded:  func() bool { return o.degraded },
 		Started:      started,
 		Now:          now,
