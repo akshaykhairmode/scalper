@@ -170,6 +170,9 @@ func (s *Server) forwardOrderFeedEvents() {
 			// fresh status from Kotak, and mark the cache dirty.
 			s.books.expire(bookOrders, bookPositions)
 			s.books.invalidate()
+			if s.bracketEngine != nil {
+				s.bracketEngine.OnOrderEvent(s.feedCtx, event)
+			}
 			s.broadcast(map[string]any{"type": "broker_" + event.Type, "data": event.Data})
 		}
 	}
@@ -228,6 +231,12 @@ func (s *Server) forwardHSMEvents() {
 				s.log.Warn("HSM quote could not be mapped", "event", "hsm_quote_unmapped", "error", err,
 					"instrument", event.Quote.InstrumentKey)
 				continue
+			}
+			if s.bracketEngine != nil {
+				s.bracketEngine.OnTick(s.feedCtx, key, event.Quote.LTP)
+				if event.Quote.InstrumentKey != key {
+					s.bracketEngine.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
+				}
 			}
 			tickData := map[string]any{
 				"key": key, "ltp": event.Quote.LTP,

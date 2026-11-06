@@ -185,6 +185,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		OrderFeed:    orderFeedClient,
 		DB:           st,
 		CandleStore:  st,
+		BracketStore: st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasConsumerKey },
 		ServeMode:    cfg.App.ServeMode,

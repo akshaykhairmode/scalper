@@ -1304,11 +1304,12 @@ async function refreshBooksFromAPI(includePositions = true) {
 let booksInFlight = null;
 
 async function loadBooksFromAPI(includePositions = true) {
-  const [positions, orders, trades, limits] = await Promise.allSettled([
+  const [positions, orders, trades, limits, brackets] = await Promise.allSettled([
     includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
     getJSON("/api/broker/orders"),
     getJSON("/api/broker/trades"),
     getJSON("/api/broker/limits"),
+    getJSON("/api/brackets"),
   ]);
   if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
   if (orders.status === "fulfilled") {
@@ -1316,6 +1317,9 @@ async function loadBooksFromAPI(includePositions = true) {
   }
   if (trades.status === "fulfilled") {
     S.trades = toArray(trades.value).map(normalizeTrade);
+  }
+  if (brackets.status === "fulfilled" && brackets.value) {
+    applyServerBrackets(brackets.value);
   }
   // Keep the last known book on a transient failure (e.g. Kotak rate limiting).
   // Blanking it makes open positions vanish and disables the exit buttons.
@@ -1570,30 +1574,6 @@ function handleTickData(data) {
       if (tgt.instrumentKey === data.key) {
         tgt.ltp = num(data.ltp, tgt.ltp);
         updatedPosition = true;
-
-        if (tgt.status === "IN_POSITION" && tgt.targetPrice > 0) {
-          const isHit = tgt.action === "buy" ? (tgt.ltp >= tgt.targetPrice) : (tgt.ltp <= tgt.targetPrice);
-          if (isHit) {
-            tgt.status = "TARGET_HIT";
-            tgt.exitPrice = tgt.targetPrice;
-            saveAutoTargets();
-            playTradeSound("target");
-            const pnl = (tgt.exitPrice - tgt.entryPrice) * tgt.shares * (tgt.action === "buy" ? 1 : -1);
-            toast(`🎯 Bracket Target Hit! Sold ${tgt.shares} @ ₹${fmt(tgt.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
-
-            if (tgt.exitOrderId) {
-              const oInState = (S.orders || []).find((o) => String(o.id) === String(tgt.exitOrderId));
-              if (oInState) {
-                oInState.status = "TRAD";
-                oInState.filled_quantity = tgt.shares;
-              }
-            }
-            S.charts.ce?.clearTargetPreview?.();
-            S.charts.pe?.clearTargetPreview?.();
-            renderTab();
-            scheduleBooksRefresh(100);
-          }
-        }
       }
     }
   }
@@ -1672,6 +1652,10 @@ function handleSocketEvent(event) {
   if (event.type === "order_feed_status") {
     S.orderFeed = data?.status || "disconnected";
     renderFeed();
+    return;
+  }
+  if (event.type === "bracket_update") {
+    handleBracketUpdate(data);
     return;
   }
   if (event.type === "broker_order" || event.type === "broker_position") {
@@ -3381,7 +3365,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
     toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
 
     if (autoTargetPrice > 0) {
-      registerAutoTarget({
+      const newTarget = {
         id: "tgt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
         orderId,
         symbol: option.symbol,
@@ -3400,6 +3384,23 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         ltp: price,
         status: "PENDING_ENTRY",
         createdAt: Date.now(),
+      };
+      registerAutoTarget(newTarget);
+      postJSON("/api/brackets", {
+        id: newTarget.id,
+        exchange_segment: option.exchangeSegment,
+        trading_symbol: option.symbol,
+        instrument_key: option.instrumentKey,
+        transaction_type: action.toUpperCase(),
+        quantity: qty,
+        product: "MIS",
+        entry_price: price,
+        entry_order_id: orderId,
+        target_price: autoTargetPrice,
+        stoploss_price: 0,
+        trailing_stop: 0,
+      }).catch((err) => {
+        console.warn("failed to register server bracket:", err);
       });
       toast(`🎯 Auto-Target armed: Exit at ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts) once filled.`, "info", 4500);
       renderTab();
@@ -3439,6 +3440,116 @@ function registerAutoTarget(target) {
   saveAutoTargets();
 }
 
+function normalizeBracket(raw) {
+  if (!raw) return null;
+  const id = String(raw.id ?? raw.ID ?? "");
+  if (!id) return null;
+
+  let action = String(raw.action || raw.side || raw.transaction_type || raw.Action || "buy").toLowerCase();
+  if (action === "b") action = "buy";
+  if (action === "s") action = "sell";
+
+  let status = String(raw.status || raw.Status || "PENDING_ENTRY").toUpperCase();
+  if (status === "OPEN" || status === "ACTIVE") status = "IN_POSITION";
+  if (status === "PENDING") status = "PENDING_ENTRY";
+  if (status === "CANCELED") status = "CANCELLED";
+  if (status === "TRIGGERED" || status === "HIT") status = "TARGET_HIT";
+  if (status === "MANUAL_EXIT") status = "EXITED_MANUAL";
+
+  const entryPrice = num(raw.entry_price ?? raw.entryPrice ?? raw.price ?? raw.EntryPrice);
+  const targetPrice = num(raw.target_price ?? raw.targetPrice ?? raw.target ?? raw.TargetPrice);
+  const exitPrice = num(raw.exit_price ?? raw.exitPrice ?? raw.ExitPrice);
+  const shares = Math.abs(num(raw.shares ?? raw.quantity ?? raw.qty ?? raw.Shares));
+  const filledQty = num(raw.filled_qty ?? raw.filledQty ?? raw.filled_quantity ?? raw.FilledQty);
+  const ltp = num(raw.ltp ?? raw.last_price ?? raw.LTP ?? 0);
+
+  return {
+    id,
+    orderId: String(raw.order_id ?? raw.orderId ?? raw.OrderId ?? ""),
+    symbol: raw.symbol || raw.Symbol || "",
+    instrumentKey: raw.instrument_key || raw.instrumentKey || raw.InstrumentKey || "",
+    exchangeSegment: raw.exchange_segment || raw.exchangeSegment || raw.ExchangeSegment || "NSE_FO",
+    underlying: raw.underlying || raw.Underlying || S.activeIndex || "",
+    strike: num(raw.strike ?? raw.Strike),
+    type: String(raw.option_type || raw.type || raw.Type || "").toUpperCase(),
+    action,
+    entryPrice,
+    targetPrice,
+    shares,
+    filledQty,
+    exitOrderId: String(raw.exit_order_id ?? raw.exitOrderId ?? raw.ExitOrderId ?? ""),
+    exitPrice,
+    ltp: ltp > 0 ? ltp : entryPrice,
+    status,
+    createdAt: num(raw.created_at ?? raw.createdAt ?? raw.CreatedAt) || Date.now(),
+  };
+}
+
+function upsertBracket(bracket) {
+  if (!bracket || !bracket.id) return;
+  if (!S.autoTargets) S.autoTargets = [];
+  const idx = S.autoTargets.findIndex((b) => b.id === bracket.id);
+  if (idx !== -1) {
+    const existing = S.autoTargets[idx];
+    if (!bracket.ltp && existing.ltp) bracket.ltp = existing.ltp;
+    S.autoTargets[idx] = { ...existing, ...bracket };
+  } else {
+    S.autoTargets.unshift(bracket);
+  }
+}
+
+function applyServerBrackets(data) {
+  if (!data) return;
+  const list = Array.isArray(data) ? data : (data.brackets || data.data || []);
+  if (!Array.isArray(list)) return;
+
+  const normalized = list.map(normalizeBracket).filter(Boolean);
+  if (!S.autoTargets) S.autoTargets = [];
+
+  for (const b of normalized) {
+    upsertBracket(b);
+  }
+
+  saveAutoTargets();
+  renderTab();
+  updateChartTrades();
+}
+
+async function fetchBrackets() {
+  if (!S.session?.authenticated) return;
+  try {
+    const res = await getJSON("/api/brackets");
+    if (res) applyServerBrackets(res);
+  } catch (_) {}
+}
+
+function handleBracketUpdate(data) {
+  if (!data) return;
+  const items = Array.isArray(data)
+    ? data
+    : Array.isArray(data.brackets)
+      ? data.brackets
+      : [data.bracket || data];
+  for (const item of items) {
+    if (!item) continue;
+    const norm = normalizeBracket(item);
+    if (!norm || !norm.id) continue;
+    upsertBracket(norm);
+    if (norm.status === "TARGET_HIT") {
+      playTradeSound("target");
+      const pnl = (norm.exitPrice - norm.entryPrice) * norm.shares * (norm.action === "buy" ? 1 : -1);
+      toast(`🎯 Bracket Target Hit! Sold ${norm.shares} @ ₹${fmt(norm.exitPrice || norm.targetPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+      S.charts.ce?.clearTargetPreview?.();
+      S.charts.pe?.clearTargetPreview?.();
+    } else if (norm.status === "CANCELLED") {
+      toast(`Bracket ${norm.symbol || norm.id} cancelled.`, "warn", 4000);
+    }
+  }
+  saveAutoTargets();
+  renderTab();
+  updateChartTrades();
+}
+
 function getInstrumentLTP(b) {
   if (b.ltp && Number.isFinite(b.ltp) && b.ltp > 0) return b.ltp;
   const pos = (S.positions || []).find((p) => matchesSameContract(p, b));
@@ -3465,6 +3576,7 @@ function bracketsHTML() {
   let html = `<div class="open-orders-bar">
     <span class="open-orders-title">${activeBrackets.length} Active Bracket${activeBrackets.length === 1 ? "" : "s"} (${brackets.length} Total Today)</span>
     <div style="display:flex;gap:8px;align-items:center;">
+      <button type="button" class="ghost small" id="btn-refresh-brackets" title="Refresh brackets from server">Refresh</button>
       ${hasFinished ? `<button type="button" class="ghost small" id="btn-clear-brackets" title="Remove completed and cancelled brackets from the list">Clear Finished</button>` : ""}
     </div>
   </div>
@@ -3512,7 +3624,7 @@ function bracketsHTML() {
     if (b.status === "IN_POSITION") {
       actionBtn = `<button type="button" class="btn-exit-bracket danger small" data-exit-bracket="${esc(b.id)}" title="Cancel resting target and exit immediately at market">EXIT (MKT)</button>`;
     } else if (b.status === "PENDING_ENTRY") {
-      actionBtn = `<button type="button" class="btn-cancel-order danger small ghost" data-cancel-bracket="${esc(b.id)}" title="Cancel pending entry limit order">Cancel</button>`;
+      actionBtn = `<button type="button" class="btn-cancel-bracket danger small ghost" data-cancel-bracket="${esc(b.id)}" title="Cancel pending entry limit order">Cancel</button>`;
     }
 
     const sideLabel = b.action === "buy" ? "BUY" : "SELL";
@@ -3551,53 +3663,23 @@ async function onExitBracket(bracketId) {
     return;
   }
 
-  const exitSide = bracket.action === "buy" ? "S" : "B";
   const ok = await confirmAction({
     title: "Exit Bracket Position",
-    body: `Exit <b>${bracket.shares}</b> shares of <b>${esc(bracket.symbol)}</b> at Market now?<br><span class="muted">Any resting target limit order on Kotak Neo will be automatically cancelled.</span>`,
+    body: `Exit <b>${bracket.shares}</b> shares of <b>${esc(bracket.symbol)}</b> at Market now?<br><span class="muted">Any resting target limit order will be automatically cancelled.</span>`,
     okLabel: "Exit at Market",
     danger: true,
   });
   if (!ok) return;
 
-  // 1. Cancel resting target limit order if it exists
-  if (bracket.exitOrderId && bracket.exitOrderId !== "—") {
-    try {
-      toast(`Cancelling resting target order ${bracket.exitOrderId}…`, "info", 2000);
-      await cancelBrokerOrder(bracket.exitOrderId);
-    } catch (e) {
-      console.warn("Target cancel failed (may already be filled/cancelled):", e);
-    }
-  }
-
-  // 2. Place immediate market exit order
   try {
-    toast(`Exiting ${bracket.shares} shares @ Market…`, "info", 2000);
-    const lot = lotSize(bracket.type);
-    await postOrder({
-      instrument_key: bracket.instrumentKey,
-      exchange_segment: bracket.exchangeSegment,
-      symbol: bracket.symbol,
-      underlying: bracket.underlying || S.activeIndex,
-      strike: bracket.strike,
-      option_type: bracket.type,
-      side: exitSide,
-      buy_sell: exitSide,
-      quantity: bracket.shares,
-      qty: bracket.shares,
-      price: 0,
-      order_type: "MARKET",
-      product: S.product || "NRML",
-      intent: "EXIT",
-      mode: tradingMode(),
-      lot_size: lot,
-    });
+    toast("Exiting bracket position @ Market…", "info", 2000);
+    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/exit`, { confirm: true });
     lastUiOrderTime = Date.now();
-    playTradeSound(exitSide === "S" ? "sell" : "buy");
+    playTradeSound(bracket.action === "buy" ? "sell" : "buy");
     bracket.status = "EXITED_MANUAL";
     bracket.exitPrice = getInstrumentLTP(bracket);
     saveAutoTargets();
-    toast(`Bracket exited at market.`, "ok", 4000);
+    toast("Bracket exited at market.", "ok", 4000);
     scheduleBooksRefresh(400);
     renderTab();
     updateChartTrades();
@@ -3623,31 +3705,25 @@ async function onCancelBracket(bracketId) {
     return;
   }
 
-  const orderId = bracket.orderId;
-  bracket.status = "CANCELLED";
-  saveAutoTargets();
-
-  if (orderId && orderId !== "—") {
-    const oInState = (S.orders || []).find((o) => String(o.id) === String(orderId));
-    if (oInState) {
-      oInState.status = "CANCELLED";
+  try {
+    toast("Cancelling bracket entry order…", "info", 2000);
+    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/cancel`, { confirm: true });
+    bracket.status = "CANCELLED";
+    saveAutoTargets();
+    if (bracket.orderId && bracket.orderId !== "—") {
+      const oInState = (S.orders || []).find((o) => String(o.id) === String(bracket.orderId));
+      if (oInState) {
+        oInState.status = "CANCELLED";
+      }
     }
-  }
-
-  playTradeSound("reject");
-  toast("Bracket entry order cancelled.", "ok", 3000);
-  renderTab();
-  updateChartTrades();
-
-  // Cancel entry limit order on broker in background
-  if (orderId && orderId !== "—") {
-    try {
-      await cancelBrokerOrder(orderId);
-      scheduleBooksRefresh(300);
-    } catch (e) {
-      console.warn("Entry cancel failed:", e);
-      toast(`Broker order cancel failed: ${e.message}`, "error", 4000);
-    }
+    playTradeSound("reject");
+    toast("Bracket entry order cancelled.", "ok", 3000);
+    scheduleBooksRefresh(400);
+    renderTab();
+    updateChartTrades();
+  } catch (err) {
+    playTradeSound("reject");
+    toast(`Bracket cancel failed: ${err.message}`, "error", 6000);
   }
 }
 
@@ -3710,7 +3786,6 @@ function checkAutoTargets(eventOrder) {
       const previousFilled = target.filledQty || 0;
 
       if (currentFilled > previousFilled) {
-        const qtyToExit = currentFilled - previousFilled;
         target.filledQty = currentFilled;
 
         // Try to capture actual filled entry price from matching trades
@@ -3725,8 +3800,6 @@ function checkAutoTargets(eventOrder) {
         saveAutoTargets();
         renderTab();
         updateChartTrades();
-
-        placeAutoTargetExit(target, qtyToExit);
       }
     } else if (target.status === "IN_POSITION") {
       // Check if exit limit order has filled
@@ -3784,49 +3857,7 @@ function checkAutoTargets(eventOrder) {
   }
 }
 
-async function placeAutoTargetExit(target, qtyToExit) {
-  const exitSide = target.action === "buy" ? "S" : "B";
-  const lot = lotSize(target.type);
-  const payload = {
-    instrument_key: target.instrumentKey,
-    exchange_segment: target.exchangeSegment,
-    symbol: target.symbol,
-    underlying: target.underlying || S.activeIndex,
-    strike: target.strike,
-    option_type: target.type,
-    side: exitSide,
-    buy_sell: exitSide,
-    quantity: qtyToExit,
-    qty: qtyToExit,
-    price: target.targetPrice,
-    order_type: "LIMIT",
-    product: S.product || "NRML",
-    intent: "EXIT",
-    mode: tradingMode(),
-    lot_size: lot,
-  };
-
-  try {
-    toast(`🎯 Bracket In Position! Placing ${exitSide === "S" ? "Sell" : "Buy"} Limit for ${qtyToExit} shares @ ₹${fmt(target.targetPrice)}…`, "info", 3000);
-    const result = await postOrder(payload);
-    lastUiOrderTime = Date.now();
-    playTradeSound("target");
-    const exitId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
-    if (exitId) {
-      target.exitOrderId = exitId;
-    }
-    target.status = "IN_POSITION";
-    saveAutoTargets();
-    toast(`🎯 Target Limit placed! Resting @ ₹${fmt(target.targetPrice)}.`, "ok", 6000);
-    scheduleBooksRefresh(400);
-    renderTab();
-    updateChartTrades();
-    return result;
-  } catch (err) {
-    playTradeSound("reject");
-    toast(`Auto-Target exit placement failed: ${err.message}`, "error", 8000);
-  }
-}
+const syncAutoTargetsWithOrders = checkAutoTargets;
 
 /* ── Chart Quick Limit Order ───────────────────────────── */
 
@@ -4251,17 +4282,12 @@ async function onSquareOffAll() {
   }
 
   try {
-    for (const position of openPositions) {
-      const quantity = Math.abs(num(position.quantity));
-      if (!quantity || !position.instrument_key || !position.exchange_segment) continue;
-      await postOrder({ mode: "live", instrument_key: position.instrument_key, exchange_segment: position.exchange_segment,
-        symbol: position.symbol, side: position.quantity > 0 ? "S" : "B", quantity, product: position.product || S.product,
-        order_type: "MARKET", price: 0 });
-    }
+    const res = await postJSON("/api/broker/square-off-all", { confirm: true });
     lastUiOrderTime = Date.now();
     playTradeSound("sell");
-    toast("Live square-off orders submitted.", "ok");
-    scheduleBooksRefresh(500);
+    const count = res?.closed_positions ?? openPositions.length;
+    toast(`Live square-off completed (${count} position${count === 1 ? "" : "s"} closed).`, "ok");
+    scheduleBooksRefresh(400);
   } catch (err) {
     playTradeSound("reject");
     toast(`Square off failed: ${err.message}`, "error", 6000);
@@ -4992,6 +5018,9 @@ function bindEvents() {
     const button = event.target.closest("button[data-tab]");
     if (!button) return;
     S.tab = button.dataset.tab;
+    if (S.tab === "brackets") {
+      fetchBrackets().catch(() => {});
+    }
     renderTab();
   });
 
@@ -5002,6 +5031,12 @@ function bindEvents() {
     if (exitBracket) { onExitBracket(exitBracket.dataset.exitBracket); return; }
     const cancelBracket = event.target.closest("[data-cancel-bracket]");
     if (cancelBracket) { onCancelBracket(cancelBracket.dataset.cancelBracket); return; }
+    const refreshBrackets = event.target.closest("#btn-refresh-brackets");
+    if (refreshBrackets) {
+      toast("Refreshing brackets…", "info", 1500);
+      fetchBrackets().then(() => renderTab()).catch((err) => toast(`Refresh failed: ${err.message}`, "error"));
+      return;
+    }
     const clearBrackets = event.target.closest("#btn-clear-brackets");
     if (clearBrackets) { onClearFinishedBrackets(); return; }
     const cancelBtn = event.target.closest(".btn-cancel-order");

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 )
@@ -326,4 +328,111 @@ func (s *Server) handleBrokerCancelOrder(w http.ResponseWriter, r *http.Request)
 	}
 	s.books.expire(bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
+}
+
+type brokerSquareOffAllResponse struct {
+	Success         bool     `json:"success"`
+	ClosedPositions int      `json:"closed_positions"`
+	Errors          []string `json:"errors"`
+}
+
+func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.brokerSession(w, r)
+	if !ok {
+		return
+	}
+	raw, err := s.getBook(r.Context(), bookPositions, session)
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+		return
+	}
+	rows, err := decodeBookRows(raw)
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusBadGateway, "failed to decode positions: "+err.Error(), err)
+		return
+	}
+
+	defaultProduct := s.configSnapshot().Trading.DefaultProduct
+	if defaultProduct == "" {
+		defaultProduct = "MIS"
+	}
+
+	var orders []kotakapi.Order
+	for _, row := range rows {
+		qty, _ := numberField(row, "quantity", "net_qty", "netQty", "qty", "netqty", "net_quantity")
+		netQty := int64(qty)
+		if netQty == 0 {
+			continue
+		}
+		side := "B"
+		if netQty > 0 {
+			side = "S"
+		}
+		prod := strings.TrimSpace(stringField(row, "product", "prod", "prd"))
+		if prod == "" {
+			prod = defaultProduct
+		}
+		segment := strings.TrimSpace(stringField(row, "exchange_segment", "exchangeSegment", "exSeg"))
+		symbol := strings.TrimSpace(stringField(row, "trading_symbol", "tradingSymbol", "trdSym", "symbol"))
+
+		orders = append(orders, kotakapi.Order{
+			ExchangeSegment: segment,
+			TradingSymbol:   symbol,
+			TransactionType: side,
+			Quantity:        absInt64(netQty),
+			Product:         strings.ToUpper(prod),
+			OrderType:       "MARKET",
+			Price:           0,
+		})
+	}
+
+	type squareOffResult struct {
+		symbol string
+		err    error
+	}
+
+	results := make(chan squareOffResult, len(orders))
+	const maxConcurrent = 5
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+
+	for _, o := range orders {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(order kotakapi.Order) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			_, orderErr := s.kotak.PlaceOrder(r.Context(), session, order)
+			results <- squareOffResult{symbol: order.TradingSymbol, err: orderErr}
+		}(o)
+	}
+
+	wg.Wait()
+	close(results)
+
+	closedCount := 0
+	errList := make([]string, 0)
+	for res := range results {
+		if res.err != nil {
+			errMsg := res.err.Error()
+			if res.symbol != "" {
+				errMsg = fmt.Sprintf("%s: %v", res.symbol, res.err)
+			}
+			errList = append(errList, errMsg)
+			if s.log != nil {
+				s.log.Error("square-off order failed", "symbol", res.symbol, "error", res.err)
+			}
+		} else {
+			closedCount++
+		}
+	}
+
+	s.books.expire(bookPositions, bookOrders, bookLimits)
+
+	s.writeRouteJSON(w, r, http.StatusOK, brokerSquareOffAllResponse{
+		Success:         len(errList) == 0,
+		ClosedPositions: closedCount,
+		Errors:          errList,
+	})
 }

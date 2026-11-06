@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +24,7 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
+	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
@@ -45,6 +50,8 @@ type serverOpts struct {
 	degraded    bool
 	token       bool
 	mpin        string
+	consumerKey string
+	kotak       *kotakapi.Client
 	now         func() time.Time
 	started     time.Time
 	cfg         *config.Config
@@ -72,6 +79,8 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		Logger:      testLogger(),
 		Config:      cfg,
 		ConfigPath:  o.configPath,
+		ConsumerKey: o.consumerKey,
+		Kotak:       o.kotak,
 		MPIN:        o.mpin,
 		AuthClient:  o.authClient,
 		Market:      o.marketAPI,
@@ -1185,4 +1194,176 @@ func TestLogsEndpoints(t *testing.T) {
 	if !strings.Contains(recDL.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatalf("expected Content-Disposition attachment header, got: %s", recDL.Header().Get("Content-Disposition"))
 	}
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestBrokerSquareOffAll(t *testing.T) {
+	t.Run("unauthorized without session", func(t *testing.T) {
+		client := kotakapi.NewClient(nil, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("should not be called")
+		}))
+		s := newTestServer(t, serverOpts{db: fakeDB{}, kotak: client, consumerKey: "ck-123"})
+		defer s.Close()
+
+		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		rec := do(t, s, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+		}
+	})
+
+	t.Run("service unavailable without kotak client", func(t *testing.T) {
+		s := newTestServer(t, serverOpts{db: fakeDB{}})
+		defer s.Close()
+
+		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		rec := do(t, s, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 Service Unavailable, got %d", rec.Code)
+		}
+	})
+
+	t.Run("successful multi-position exit", func(t *testing.T) {
+		var placedOrders []kotakapi.Order
+		var orderMu sync.Mutex
+
+		transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			recorder := httptest.NewRecorder()
+			switch {
+			case strings.Contains(req.URL.Path, "portfolio/v2/positions"):
+				recorder.WriteHeader(http.StatusOK)
+				_, _ = recorder.Write([]byte(`{
+					"stat": "Ok",
+					"data": [
+						{
+							"exchange_segment": "nse_fo",
+							"trading_symbol": "NIFTY26NOV25000CE",
+							"quantity": 100,
+							"product": "MIS"
+						},
+						{
+							"exchange_segment": "nse_fo",
+							"trading_symbol": "BANKNIFTY26NOV52000PE",
+							"quantity": -50,
+							"product": "NRML"
+						},
+						{
+							"exchange_segment": "nse_fo",
+							"trading_symbol": "FINNIFTY26NOV24000CE",
+							"quantity": 0,
+							"product": "MIS"
+						}
+					]
+				}`))
+			case strings.Contains(req.URL.Path, "quick/order/rule/ms/place"):
+				bodyBytes, _ := io.ReadAll(req.Body)
+				values, err := url.ParseQuery(string(bodyBytes))
+				if err == nil {
+					jData := values.Get("jData")
+					var form map[string]any
+					if err := json.Unmarshal([]byte(jData), &form); err == nil {
+						qty, _ := strconv.ParseInt(fmt.Sprint(form["qt"]), 10, 64)
+						orderMu.Lock()
+						placedOrders = append(placedOrders, kotakapi.Order{
+							ExchangeSegment: fmt.Sprint(form["es"]),
+							TradingSymbol:   fmt.Sprint(form["ts"]),
+							TransactionType: fmt.Sprint(form["tt"]),
+							Quantity:        qty,
+							Product:         fmt.Sprint(form["pc"]),
+							OrderType:       fmt.Sprint(form["pt"]),
+						})
+						orderMu.Unlock()
+					}
+				}
+				recorder.WriteHeader(http.StatusOK)
+				_, _ = recorder.Write([]byte(`{"stat":"Ok","nOrdNo":"123456"}`))
+			default:
+				recorder.WriteHeader(http.StatusOK)
+				_, _ = recorder.Write([]byte(`{"stat":"Ok","data":[]}`))
+			}
+			return recorder.Result(), nil
+		})
+
+		client := kotakapi.NewClient(nil, transport)
+		s := newTestServer(t, serverOpts{db: fakeDB{}, kotak: client, consumerKey: "test-consumer-key"})
+		defer s.Close()
+
+		_, err := s.a.SessionManager().NewBrokerSession(auth.TradeSession{
+			Token:   "trade-token",
+			SID:     "trade-sid",
+			BaseURL: "https://cis.kotaksecurities.com",
+		}, auth.LoginMethodMPIN)
+		if err != nil {
+			t.Fatalf("NewBrokerSession: %v", err)
+		}
+
+		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		rec := do(t, s, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Success         bool     `json:"success"`
+			ClosedPositions int      `json:"closed_positions"`
+			Errors          []string `json:"errors"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+
+		if !resp.Success {
+			t.Fatalf("expected success true, got false")
+		}
+		if resp.ClosedPositions != 2 {
+			t.Fatalf("expected closed_positions 2, got %d", resp.ClosedPositions)
+		}
+		if len(resp.Errors) != 0 {
+			t.Fatalf("expected 0 errors, got %v", resp.Errors)
+		}
+
+		orderMu.Lock()
+		defer orderMu.Unlock()
+		if len(placedOrders) != 2 {
+			t.Fatalf("expected 2 placed orders, got %d", len(placedOrders))
+		}
+
+		ordersBySymbol := make(map[string]kotakapi.Order)
+		for _, o := range placedOrders {
+			ordersBySymbol[o.TradingSymbol] = o
+		}
+
+		longExit, ok := ordersBySymbol["NIFTY26NOV25000CE"]
+		if !ok {
+			t.Fatalf("missing exit order for NIFTY26NOV25000CE")
+		}
+		if longExit.TransactionType != "S" {
+			t.Errorf("long position exit should be SELL ('S'), got %s", longExit.TransactionType)
+		}
+		if longExit.Quantity != 100 {
+			t.Errorf("long position exit quantity should be 100, got %d", longExit.Quantity)
+		}
+		if longExit.Product != "MIS" {
+			t.Errorf("long position exit product should be MIS, got %s", longExit.Product)
+		}
+
+		shortExit, ok := ordersBySymbol["BANKNIFTY26NOV52000PE"]
+		if !ok {
+			t.Fatalf("missing exit order for BANKNIFTY26NOV52000PE")
+		}
+		if shortExit.TransactionType != "B" {
+			t.Errorf("short position exit should be BUY ('B'), got %s", shortExit.TransactionType)
+		}
+		if shortExit.Quantity != 50 {
+			t.Errorf("short position exit quantity should be 50, got %d", shortExit.Quantity)
+		}
+		if shortExit.Product != "NRML" {
+			t.Errorf("short position exit product should be NRML, got %s", shortExit.Product)
+		}
+	})
 }

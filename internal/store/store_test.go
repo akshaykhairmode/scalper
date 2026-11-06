@@ -39,14 +39,14 @@ func TestOpenAndSchema(t *testing.T) {
 		t.Fatalf("Ping: %v", err)
 	}
 	v, err := s.SchemaVersion(ctx)
-	if err != nil || v != 2 {
+	if err != nil || v != 3 {
 		t.Fatalf("SchemaVersion = %d, %v", v, err)
 	}
 	if !filepath.IsAbs(s.Path()) {
 		t.Fatalf("path is not absolute: %s", s.Path())
 	}
 	want := []string{
-		"audit_log", "candles", "instruments", "meta", "orders",
+		"audit_log", "brackets", "candles", "instruments", "meta", "orders",
 		"schema_migrations", "scrip_sync", "spot_instruments", "trades",
 	}
 	rows, err := s.db.QueryContext(ctx,
@@ -88,7 +88,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 			t.Fatalf("Open %d: %v", i, err)
 		}
 		v, err := s.SchemaVersion(context.Background())
-		if err != nil || v != 2 {
+		if err != nil || v != 3 {
 			t.Fatalf("version = %d, %v", v, err)
 		}
 		if err := s.Close(); err != nil {
@@ -173,7 +173,7 @@ func TestLoadMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 2 {
+	if len(m) != 3 {
 		t.Fatalf("migrations = %+v", m)
 	}
 	if m[0].version != 1 || m[0].name != "0001_init.sql" || m[0].sql == "" {
@@ -181,6 +181,9 @@ func TestLoadMigrations(t *testing.T) {
 	}
 	if m[1].version != 2 || m[1].name != "0002_spot_psymbol.sql" || m[1].sql == "" {
 		t.Fatalf("second migration = %+v", m[1])
+	}
+	if m[2].version != 3 || m[2].name != "0003_brackets.sql" || m[2].sql == "" {
+		t.Fatalf("third migration = %+v", m[2])
 	}
 }
 
@@ -195,8 +198,8 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 2 {
-		t.Fatalf("version = %d, want 2", v)
+	if v != 3 {
+		t.Fatalf("version = %d, want 3", v)
 	}
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 99`).Scan(&count); err != nil {

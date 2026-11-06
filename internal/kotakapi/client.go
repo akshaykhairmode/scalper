@@ -35,14 +35,23 @@ type Client struct {
 	nextRequest time.Time
 }
 
-// NewClient creates a Kotak API client with an optional structured logger.
-func NewClient(logger ...*slog.Logger) *Client {
+// NewClient creates a Kotak API client with an optional structured logger and optional custom transport.
+func NewClient(logger *slog.Logger, transport ...http.RoundTripper) *Client {
 	log := slog.Default()
-	if len(logger) > 0 && logger[0] != nil {
-		log = logger[0]
+	if logger != nil {
+		log = logger
 	}
-	client := kotakhttp.NewClient(15 * time.Second)
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	var rt http.RoundTripper
+	if len(transport) > 0 && transport[0] != nil {
+		rt = transport[0]
+	} else {
+		rt = kotakhttp.NewClient(15 * time.Second).Transport
+	}
+	client := &http.Client{
+		Timeout:       15 * time.Second,
+		Transport:     rt,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	return &Client{
 		http: client,
 		log:  log,

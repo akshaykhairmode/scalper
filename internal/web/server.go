@@ -31,6 +31,7 @@ import (
 	"github.com/andybalholm/brotli"
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
+	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
@@ -78,23 +79,25 @@ type chainWindowAPI interface {
 
 // Options configures the HTTP server.
 type Options struct {
-	Logger       *slog.Logger
-	Config       config.Config
-	ConsumerKey  string
-	MPIN         string
-	AuthClient   auth.KotakAuthenticator
-	Market       MarketAPI
-	HSM          *market.HSMFeed
-	Kotak        *kotakapi.Client
-	OrderFeed    *orderfeed.Client
-	DB           DBPinger
-	CandleStore  CandleStore
-	LogDegraded  func() bool
-	TokenPresent func() bool
-	Started      time.Time
-	Now          func() time.Time
-	ServeMode    bool
-	ConfigPath   string
+	Logger        *slog.Logger
+	Config        config.Config
+	ConsumerKey   string
+	MPIN          string
+	AuthClient    auth.KotakAuthenticator
+	Market        MarketAPI
+	HSM           *market.HSMFeed
+	Kotak         *kotakapi.Client
+	OrderFeed     *orderfeed.Client
+	DB            DBPinger
+	CandleStore   CandleStore
+	BracketStore  bracket.ActiveStore
+	BracketEngine *bracket.Engine
+	LogDegraded   func() bool
+	TokenPresent  func() bool
+	Started       time.Time
+	Now           func() time.Time
+	ServeMode     bool
+	ConfigPath    string
 }
 
 // Server holds the HTTP handler and its dependencies.
@@ -114,14 +117,15 @@ type Server struct {
 	bootstrap    template.JS
 
 	// Auth is the authentication handler.
-	a           *auth.Server
-	market      MarketAPI
-	hsm         *market.HSMFeed
-	kotak       *kotakapi.Client
-	orderFeed   *orderfeed.Client
-	consumerKey string
-	books       *booksCache
-	risk        *riskState
+	a             *auth.Server
+	market        MarketAPI
+	hsm           *market.HSMFeed
+	kotak         *kotakapi.Client
+	orderFeed     *orderfeed.Client
+	bracketEngine *bracket.Engine
+	consumerKey   string
+	books         *booksCache
+	risk          *riskState
 
 	feedMu      sync.RWMutex
 	feedClients map[*feedClient]struct{}
@@ -289,6 +293,66 @@ func New(opts Options) (*Server, error) {
 		configPath:          cfgPath,
 	}
 
+	if opts.BracketEngine != nil {
+		s.bracketEngine = opts.BracketEngine
+	} else {
+		placeOrder := func(ctx context.Context, o kotakapi.Order) (string, error) {
+			session, ok := s.brokerSessionValue()
+			if !ok {
+				return "", errors.New("kotak session unavailable or not authenticated")
+			}
+			raw, err := s.kotak.PlaceOrder(ctx, session, o)
+			if err != nil {
+				return "", err
+			}
+			s.books.expire(bookOrders, bookPositions, bookLimits)
+			var resp struct {
+				NOrdNo  string `json:"nOrdNo"`
+				OrderID string `json:"order_id"`
+				ID      string `json:"id"`
+			}
+			_ = json.Unmarshal(raw, &resp)
+			orderID := resp.NOrdNo
+			if orderID == "" {
+				orderID = resp.OrderID
+			}
+			if orderID == "" {
+				orderID = resp.ID
+			}
+			return orderID, nil
+		}
+		cancelOrder := func(ctx context.Context, id string) error {
+			session, ok := s.brokerSessionValue()
+			if !ok {
+				return errors.New("kotak session unavailable or not authenticated")
+			}
+			_, err := s.kotak.CancelOrder(ctx, session, id)
+			if err != nil {
+				return err
+			}
+			s.books.expire(bookOrders, bookPositions, bookLimits)
+			return nil
+		}
+		var bStore bracket.Store
+		if opts.BracketStore != nil {
+			bStore = opts.BracketStore
+		} else if as, ok := opts.DB.(bracket.ActiveStore); ok {
+			bStore = as
+		} else if bs, ok := opts.DB.(bracket.Store); ok {
+			bStore = bs
+		}
+		s.bracketEngine = bracket.NewEngine(bStore, placeOrder, cancelOrder, s.log)
+	}
+
+	if s.bracketEngine != nil {
+		s.bracketEngine.SetOnChange(func(b bracket.Bracket) {
+			s.broadcast(map[string]any{
+				"type": "bracket_update",
+				"data": b,
+			})
+		})
+	}
+
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, fmt.Errorf("web: static assets: %w", err)
@@ -355,8 +419,13 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("DELETE /api/broker/orders/{id}", s.handleBrokerCancelOrder)
 	mux.HandleFunc("GET /api/broker/trades", s.handleBrokerTrades)
 	mux.HandleFunc("GET /api/broker/positions", s.handleBrokerPositions)
+	mux.HandleFunc("POST /api/broker/square-off-all", s.handleBrokerSquareOffAll)
 	mux.HandleFunc("GET /api/broker/holdings", s.handleBrokerHoldings)
 	mux.HandleFunc("GET /api/broker/limits", s.handleBrokerLimits)
+	mux.HandleFunc("GET /api/brackets", s.handleListBrackets)
+	mux.HandleFunc("POST /api/brackets", s.handleCreateBracket)
+	mux.HandleFunc("POST /api/brackets/{id}/cancel", s.handleCancelBracket)
+	mux.HandleFunc("POST /api/brackets/{id}/exit", s.handleExitBracket)
 	mux.HandleFunc("GET /api/candles", s.handleCandles)
 	mux.HandleFunc("GET /api/candles/batch", s.handleCandlesBatch)
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
