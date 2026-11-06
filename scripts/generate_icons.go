@@ -26,11 +26,11 @@ func generateIcon(size int, path string, maskable bool) {
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
 	// Colors
-	bgColor := color.RGBA{R: 0x0b, G: 0x0e, B: 0x14, A: 0xff}       // #0b0e14
-	accentColor := color.RGBA{R: 0xf0, G: 0xb4, B: 0x29, A: 0xff}  // #f0b429 (Amber)
-	textColor := color.RGBA{R: 0x1a, G: 0x13, B: 0x00, A: 0xff}    // #1a1300
-	greenColor := color.RGBA{R: 0x35, G: 0xc4, B: 0x6a, A: 0xff}   // #35c46a
-	redColor := color.RGBA{R: 0xff, G: 0x5d, B: 0x5d, A: 0xff}     // #ff5d5d
+	bgColor := color.RGBA{R: 0x0b, G: 0x0e, B: 0x14, A: 0xff}     // #0b0e14
+	accentColor := color.RGBA{R: 0xf0, G: 0xb4, B: 0x29, A: 0xff} // #f0b429 (Amber)
+	textColor := color.RGBA{R: 0x1a, G: 0x13, B: 0x00, A: 0xff}   // #1a1300
+	greenColor := color.RGBA{R: 0x35, G: 0xc4, B: 0x6a, A: 0xff}  // #35c46a
+	redColor := color.RGBA{R: 0xff, G: 0x5d, B: 0x5d, A: 0xff}    // #ff5d5d
 
 	// Fill background
 	for y := 0; y < size; y++ {

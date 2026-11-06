@@ -20,7 +20,7 @@ all: fmt vet lint test build
 help:
 	@echo "make fmt        gofmt + goimports if available"
 	@echo "make vet        go vet ./..."
-	@echo "make lint       golangci-lint run + deadcode check"
+	@echo "make lint       gofmt check + golangci-lint run + deadcode check"
 	@echo "make deadcode   check unreachable code with deadcode"
 	@echo "make compress   pre-compress static assets with Brotli"
 	@echo "make build      build $(BIN)"
@@ -34,13 +34,18 @@ help:
 	@echo "make deploy     cross-compile and deploy to remote server (SERVER_IP, SSH_KEY)"
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w .
 	@if command -v goimports >/dev/null 2>&1; then goimports -local github.com/akshaykhairmode/scalper -w cmd internal; fi
 
 vet:
 	$(GO) vet ./...
 
 lint:
+	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then \
+		echo "gofmt required for:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; else echo "golangci-lint not installed; skipping"; fi
 	@$(MAKE) deadcode
 
@@ -77,7 +82,7 @@ cover-html: cover
 	$(GO) tool cover -html=coverage.out
 
 check:
-	@unformatted="$$(gofmt -l cmd internal)"; if [ -n "$$unformatted" ]; then echo "gofmt required for: $$unformatted"; exit 1; fi
+	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "gofmt required for: $$unformatted"; exit 1; fi
 	$(GO) vet ./...
 	$(GO) test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
 	./scripts/check-coverage.sh coverage.out $(COVER_MIN)
