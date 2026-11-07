@@ -20,7 +20,7 @@ on:
       server_url:
         description: "Scalper backend URL to embed in mobile bundle"
         required: false
-        default: "https://130.210.18.97.sslip.io"
+        default: ""
   workflow_call:
     inputs:
       version:
@@ -35,7 +35,7 @@ on:
       server_url:
         description: "Backend URL"
         required: false
-        default: "https://130.210.18.97.sslip.io"
+        default: ""
         type: string
 
 permissions:
@@ -180,7 +180,7 @@ jobs:
         working-directory: mobile
         run: |
           npm run bundle
-          npx cap copy ios
+          npx cap sync ios
           cd ios/App
           pod install --repo-update || pod install
 
@@ -201,9 +201,9 @@ jobs:
             cp -Rf App/public App/App/public 2>/dev/null || true
           fi
 
-          build_cmd="xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
+          build_cmd="xcodebuild -workspace App.xcworkspace -scheme App -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
           if [ ! -d "App.xcworkspace" ]; then
-            build_cmd="xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
+            build_cmd="xcodebuild -project App.xcodeproj -scheme App -destination 'generic/platform=iOS Simulator' -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
           fi
 
           echo "Executing: $build_cmd"

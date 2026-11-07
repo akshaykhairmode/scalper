@@ -88,25 +88,14 @@ mobile/
 
 ## 3. Server URL Configuration & Backend Switcher
 
-Scalper Mobile supports two primary connection modes:
+Scalper Mobile uses a **zero-hardcoded-URL** pairing architecture. The native mobile binaries (Android APK and iOS App) do not hardcode any server IP or domain. Instead, the mobile app pairs dynamically with your trading terminal by scanning the QR code displayed on the desktop web interface.
 
-### Mode A: Direct Hosted Server (`server.url`)
-In `mobile/capacitor.config.json`:
-```json
-{
-  "server": {
-    "url": "https://130.210.18.97.sslip.io",
-    "cleartext": true,
-    "allowNavigation": [
-      "130.210.18.97.sslip.io",
-      "*.sslip.io",
-      "10.0.2.2",
-      "localhost"
-    ]
-  }
-}
-```
-When configured, the native WebView connects directly to the live hosted backend. All REST calls and WebSocket streams resolve to `https://130.210.18.97.sslip.io`.
+### Mode A: Dynamic QR Code Pairing (Default & Recommended)
+1. Launch Scalper on your desktop or cloud server.
+2. Open the menu and click **Pair Device** to display the one-time device pairing QR code.
+3. Open the Scalper mobile app and tap **Scan QR Code**.
+4. The mobile camera scans the QR code, securely binds the device with a 1-year cryptographic token, and launches the terminal session immediately.
+5. Future app launches remember the paired server URL automatically. To unpair or switch servers, open the mobile drawer and tap **Switch / Unpair Server**.
 
 ### Mode B: Local Development / Emulator Endpoints
 When testing locally with a running Go server (`./bin/scalper -config config.yaml`):
@@ -116,14 +105,13 @@ When testing locally with a running Go server (`./bin/scalper -config config.yam
 | **Android Emulator** | `http://10.0.2.2:18080` | Android emulator loopback alias to host machine |
 | **iOS Simulator** | `http://localhost:18080` | macOS loopback to local server |
 | **Physical Device (Wi-Fi)** | `http://192.168.x.x:18080` | Host machine's local LAN IP |
-| **Hosted Production** | `https://130.210.18.97.sslip.io` | Live cloud backend |
 
-### Mode C: Offline Asset Fallback & Mobile Gateway
-If `server.url` is omitted or when the device is disconnected, the bundled `mobile/www/index.html` loads automatically. It features:
-1. **Target Backend Selector**: Enter any custom IP or URL.
-2. **Quick Preset Chips**: Switch between Hosted Cloud, Android Emulator, and Localhost with one tap.
-3. **Live Latency Ping**: Tests `/healthz` on the target backend and displays roundtrip response time.
-4. **Offline Terminal Preview**: Allows previewing terminal navigation and strike views even when disconnected.
+### Mode C: Offline Asset Fallback & Pairing Gateway
+The bundled `mobile/www/index.html` provides a self-contained Mobile Pairing Gateway:
+1. **Live Camera Scanner**: Hardware-accelerated camera QR scanner (`BarcodeDetector` + bundled `jsQR` fallback).
+2. **Photo / Image QR Picker**: Upload a screenshot or photo containing a pairing QR code.
+3. **Manual URL Entry**: Option to manually enter a server hostname or IP if camera is unavailable.
+4. **Live Latency Ping**: Tests `/healthz` on the target backend and displays roundtrip response time.
 
 ---
 

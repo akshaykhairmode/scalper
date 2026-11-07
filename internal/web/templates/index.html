@@ -714,7 +714,7 @@
         <div class="strike-search-wrap">
           <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)...">
         </div>
-        <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike">⚡ ATM</button>
+        <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike (Current Spot Price)">⚡ ATM</button>
       </div>
       <span class="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
       <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
@@ -852,6 +852,9 @@
           </a>
           <button type="button" class="drawer-action-btn" id="drawer-theme-btn">
             <i>🌓</i> <span id="drawer-theme-label">Switch Theme</span>
+          </button>
+          <button type="button" class="drawer-action-btn" id="drawer-unpair-btn">
+            <i>🔄</i> <span>Switch / Unpair Server (Scan QR)</span>
           </button>
           <button type="button" class="drawer-action-btn" id="drawer-install-btn" hidden>
             <i>⬇️</i> <span>Install PWA to Home Screen</span>

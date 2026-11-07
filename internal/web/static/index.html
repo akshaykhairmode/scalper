@@ -9,360 +9,652 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Scalper">
-  <title>Scalper · Options Terminal</title>
+  <title>Scalper Mobile · Pair Device</title>
   <link rel="icon" type="image/svg+xml" href="static/icon.svg">
-  <link rel="icon" type="image/png" sizes="192x192" href="static/icon-192.png">
   <link rel="apple-touch-icon" href="static/apple-touch-icon.png">
-  <link rel="stylesheet" href="static/app.css">
   <style>
     :root {
       --safe-top: env(safe-area-inset-top, 0px);
       --safe-bottom: env(safe-area-inset-bottom, 0px);
       --safe-left: env(safe-area-inset-left, 0px);
       --safe-right: env(safe-area-inset-right, 0px);
+      --accent: #f59e0b;
+      --accent-glow: rgba(245, 158, 11, 0.25);
+      --bg: #090d14;
+      --card-bg: #111827;
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #f3f4f6;
+      --text-muted: #94a3b8;
     }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body {
       margin: 0;
       padding-top: var(--safe-top);
       padding-bottom: var(--safe-bottom);
       padding-left: var(--safe-left);
       padding-right: var(--safe-right);
-      background-color: #0b0e14;
-      color: #e1e7ef;
+      background-color: var(--bg);
+      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      overflow-x: hidden;
       min-height: 100vh;
-      box-sizing: border-box;
-    }
-    .mobile-gateway {
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 24px 16px;
-      max-width: 480px;
-      margin: 0 auto;
-      text-align: center;
-      min-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 48px);
+      overflow-x: hidden;
     }
-    .gateway-brand {
+    .pairing-container {
+      width: 100%;
+      max-width: 440px;
+      padding: 24px 20px;
       display: flex;
+      flex-direction: column;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 20px;
+      text-align: center;
     }
-    .gateway-logo {
-      width: 48px;
-      height: 48px;
-      border-radius: 10px;
-      background: linear-gradient(135deg, #1f2937, #111827);
-      border: 1px solid #374151;
+    .brand-logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #1f293d, #0f172a);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      box-shadow: 0 8px 24px var(--accent-glow);
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 32px;
+      font-weight: 900;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 6px 0;
+      font-size: 24px;
       font-weight: 800;
-      font-size: 24px;
-      color: #60a5fa;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      letter-spacing: -0.02em;
     }
-    .gateway-title {
-      font-size: 24px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      margin: 0;
-    }
-    .gateway-subtitle {
+    .subtitle {
+      margin: 0 0 24px 0;
       font-size: 13px;
-      color: #9ca3af;
-      text-transform: uppercase;
-      letter-spacing: 1px;
+      color: var(--text-muted);
+      line-height: 1.45;
     }
-    .gateway-card {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 12px;
-      padding: 20px;
+    .pairing-card {
       width: 100%;
-      box-sizing: border-box;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
       margin-bottom: 16px;
       text-align: left;
     }
-    .gateway-card label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: #9ca3af;
-      margin-bottom: 6px;
-      text-transform: uppercase;
+    .steps-list {
+      margin: 0 0 20px 0;
+      padding: 0 0 0 18px;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
     }
-    .gateway-input-group {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .gateway-input {
-      flex: 1;
-      background: #0b0e14;
-      border: 1px solid #374151;
-      border-radius: 6px;
-      padding: 10px 12px;
-      color: #fff;
-      font-size: 14px;
-      font-family: monospace;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .gateway-input:focus {
-      border-color: #3b82f6;
-    }
-    .gateway-presets {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 16px;
-    }
-    .preset-chip {
-      background: #1f2937;
-      border: 1px solid #374151;
-      border-radius: 4px;
-      color: #d1d5db;
-      font-size: 11px;
-      padding: 4px 8px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .preset-chip:hover, .preset-chip:active {
-      background: #2563eb;
-      color: #fff;
-      border-color: #3b82f6;
-    }
-    .gateway-btn {
+    .steps-list li { margin-bottom: 6px; }
+    .steps-list strong { color: var(--text); }
+    .btn-primary {
       width: 100%;
-      padding: 12px;
-      border-radius: 6px;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
+      height: 52px;
       border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      color: #0b0e14;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 6px 20px rgba(245, 158, 11, 0.35);
+      transition: transform 0.1s ease, filter 0.15s ease;
+    }
+    .btn-primary:active { transform: scale(0.98); filter: brightness(0.95); }
+    .btn-secondary {
+      width: 100%;
+      height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: opacity 0.2s, background-color 0.2s;
-      margin-bottom: 8px;
+      margin-top: 10px;
+      transition: background 0.15s ease;
     }
-    .btn-primary {
-      background: #2563eb;
-      color: #fff;
+    .btn-secondary:active { background: rgba(255, 255, 255, 0.1); }
+    .paired-box {
+      width: 100%;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 16px;
+      text-align: left;
     }
-    .btn-primary:active {
-      background: #1d4ed8;
-    }
-    .btn-secondary {
-      background: #1f2937;
-      color: #d1d5db;
-      border: 1px solid #374151;
-    }
-    .btn-secondary:active {
-      background: #374151;
-    }
-    .status-indicator {
+    .paired-header {
       display: flex;
       align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .paired-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #34d399;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .paired-url {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 13px;
+      color: #fff;
+      word-break: break-all;
+      margin-bottom: 12px;
+    }
+    .paired-actions {
+      display: flex;
       gap: 8px;
+    }
+    .paired-actions button {
+      flex: 1;
+      height: 38px;
+      border-radius: 8px;
       font-size: 12px;
-      color: #9ca3af;
-      margin-top: 8px;
+      font-weight: 700;
+      cursor: pointer;
     }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #ef4444;
-    }
-    .status-dot.online {
+    .btn-launch {
       background: #10b981;
+      border: none;
+      color: #000;
     }
-    .status-dot.checking {
-      background: #f59e0b;
-      animation: pulse 1s infinite alternate;
+    .btn-unpair {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--text-muted);
     }
-    @keyframes pulse {
-      from { opacity: 0.4; }
-      to { opacity: 1; }
+    .manual-toggle {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-decoration: underline;
+      cursor: pointer;
+      margin-top: 14px;
+      padding: 4px;
     }
-    .terminal-shell {
-      display: none;
+    .manual-section {
       width: 100%;
+      margin-top: 12px;
+      display: none;
     }
+    .manual-section input {
+      width: 100%;
+      height: 44px;
+      background: #090d14;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      padding: 0 12px;
+      color: #fff;
+      font-family: monospace;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .manual-section input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    /* Fullscreen Camera Scanner Modal */
+    .scanner-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: #000;
+      display: none;
+      flex-direction: column;
+    }
+    .scanner-header {
+      position: absolute;
+      top: max(16px, var(--safe-top));
+      left: 16px;
+      right: 16px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .scanner-header-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 6px 14px;
+      border-radius: 20px;
+      backdrop-filter: blur(8px);
+    }
+    .scanner-close-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(8px);
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+    }
+    .scanner-viewport {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #scanner-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .scanner-reticle {
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      border: 2px solid rgba(245, 158, 11, 0.7);
+      border-radius: 20px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.65), 0 0 20px var(--accent-glow);
+      pointer-events: none;
+    }
+    .reticle-corner {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border-color: #f59e0b;
+      border-style: solid;
+      pointer-events: none;
+    }
+    .corner-tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 18px; }
+    .corner-tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 18px; }
+    .corner-bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 18px; }
+    .corner-br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 18px; }
+    .scan-laser {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #f59e0b;
+      box-shadow: 0 0 10px #f59e0b;
+      animation: scanLaser 2s ease-in-out infinite alternate;
+    }
+    @keyframes scanLaser {
+      0% { top: 10px; opacity: 0.2; }
+      50% { opacity: 1; }
+      100% { top: 248px; opacity: 0.2; }
+    }
+    .scanner-footer {
+      position: absolute;
+      bottom: max(24px, var(--safe-bottom));
+      left: 20px;
+      right: 20px;
+      z-index: 10;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 13px;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 10px;
+      border-radius: 12px;
+      backdrop-filter: blur(8px);
+    }
+    #scanner-canvas { display: none; }
+    #file-picker { display: none; }
   </style>
+  <script src="jsqr.js"></script>
+  <script src="static/jsqr.js"></script>
 </head>
-<body data-mode="mobile-app">
-  <div class="mobile-gateway" id="gateway-view">
-    <div class="gateway-brand">
-      <div class="gateway-logo">S</div>
-      <div>
-        <h1 class="gateway-title">Scalper</h1>
-        <div class="gateway-subtitle">Mobile Options Terminal</div>
+<body>
+  <div class="pairing-container">
+    <div class="brand-logo">⚡</div>
+    <h1>Scalper Mobile</h1>
+    <p class="subtitle">Connect your mobile device to your Scalper trading terminal</p>
+
+    <!-- Previously Paired Server Card (if exists) -->
+    <div id="paired-card" class="paired-box" style="display: none;">
+      <div class="paired-header">
+        <span class="paired-title">● Paired Terminal</span>
+        <span id="ping-status" style="font-size: 11px; color: var(--text-muted);">Checking…</span>
+      </div>
+      <div id="paired-url-text" class="paired-url"></div>
+      <div class="paired-actions">
+        <button type="button" class="btn-launch" id="btn-launch-terminal">⚡ Launch Terminal</button>
+        <button type="button" class="btn-unpair" id="btn-unpair-terminal">Unpair / Scan New</button>
       </div>
     </div>
 
-    <div class="gateway-card">
-      <label for="server-url">Target Backend Server</label>
-      <div class="gateway-input-group">
-        <input type="url" id="server-url" class="gateway-input" placeholder="https://..." value="https://130.210.18.97.sslip.io" spellcheck="false" autocomplete="off" autocapitalize="none">
-      </div>
+    <div class="pairing-card">
+      <ol class="steps-list">
+        <li>Open Scalper on your computer/browser.</li>
+        <li>Click <strong>Pair Device</strong> in the menu to display the pairing QR code.</li>
+        <li>Tap the button below and point your camera at the QR code.</li>
+      </ol>
 
-      <label>Quick Presets</label>
-      <div class="gateway-presets">
-        <button type="button" class="preset-chip" onclick="setPreset('https://130.210.18.97.sslip.io')">Hosted Cloud (sslip.io)</button>
-        <button type="button" class="preset-chip" onclick="setPreset('http://10.0.2.2:18080')">Android Emulator (10.0.2.2)</button>
-        <button type="button" class="preset-chip" onclick="setPreset('http://localhost:18080')">Local / iOS Sim</button>
-        <button type="button" class="preset-chip" onclick="setPreset('http://192.168.1.100:18080')">LAN Wi-Fi</button>
-      </div>
-
-      <button type="button" class="gateway-btn btn-primary" id="btn-connect" onclick="connectToServer()">
-        <span>Connect to Terminal</span>
+      <button type="button" class="btn-primary" id="btn-open-scanner">
+        <span>📷</span>
+        <span>Scan QR Code</span>
       </button>
 
-      <button type="button" class="gateway-btn btn-secondary" id="btn-ping" onclick="pingServer()">
-        <span>Test Connection (Ping)</span>
+      <button type="button" class="btn-secondary" id="btn-pick-image">
+        <span>🖼️</span>
+        <span>Upload QR Image / Photo</span>
       </button>
 
-      <div class="status-indicator">
-        <span class="status-dot checking" id="status-dot"></span>
-        <span id="status-text">Probing backend connectivity…</span>
+      <input type="file" id="file-picker" accept="image/*">
+
+      <div style="text-align: center;">
+        <button type="button" class="manual-toggle" id="manual-toggle">Enter URL manually</button>
+      </div>
+
+      <div class="manual-section" id="manual-section">
+        <input type="url" id="manual-server-input" placeholder="https://your-scalper-server.com" autocomplete="off" autocapitalize="none">
+        <button type="button" class="btn-primary" id="btn-manual-connect" style="height: 44px; font-size: 14px;">Connect</button>
       </div>
     </div>
-
-    <button type="button" class="gateway-btn btn-secondary" onclick="launchOfflineShell()">
-      <span>Offline Terminal Preview</span>
-    </button>
   </div>
 
-  <!-- Embedded Offline Terminal Shell -->
-  <div class="terminal-shell" id="offline-terminal">
-    <header class="topbar">
-      <div class="brand">
-        <button type="button" class="mark" onclick="showGateway()">S</button>
-        <span class="name">Scalper</span>
-        <span class="tag">Mobile Offline</span>
-      </div>
-      <div class="spot-strip" id="spot-strip" aria-label="Underlying prices">
-        <span class="spot-chip" data-index="NIFTY"><span class="spot-name">NIFTY</span><span class="spot-price">24,350.00</span><span class="spot-change">+45.20</span></span>
-        <span class="spot-chip" data-index="BANKNIFTY"><span class="spot-name">BANKNIFTY</span><span class="spot-price">51,800.00</span><span class="spot-change">-110.40</span></span>
-      </div>
-      <div class="topbar-right">
-        <span class="metric"><span class="metric-label">MARGIN</span><span class="metric-value">₹2,50,000</span></span>
-        <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value">+₹4,250</span></span>
-        <button type="button" class="ghost small" onclick="showGateway()">Switch Server</button>
-      </div>
-    </header>
-
-    <nav class="toolbar" aria-label="Chain controls">
-      <label class="select-field">
-        <span>UNDERLYING</span>
-        <select id="index-select">
-          <option value="NIFTY">NIFTY</option>
-          <option value="BANKNIFTY">BANKNIFTY</option>
-          <option value="FINNIFTY">FINNIFTY</option>
-        </select>
-      </label>
-      <div class="tf-group" role="group">
-        <button class="active">1m</button>
-        <button>3m</button>
-        <button>5m</button>
-        <button>15m</button>
-      </div>
-      <span class="atm-chip">ATM <b>24350</b></span>
-      <span class="atm-chip">PCR <b>0.94</b></span>
-    </nav>
-
-    <nav class="mobile-nav" id="mobile-nav" aria-label="Mobile view switcher">
-      <button type="button" class="mobile-nav-btn active"><span class="m-nav-pill m-nav-ce"></span>CALL</button>
-      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-spot"></span>SPOT</button>
-      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-pe"></span>PUT</button>
-      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-chain"></span>CHAIN</button>
-      <button type="button" class="mobile-nav-btn"><span class="m-nav-pill m-nav-pos"></span>POSITIONS</button>
-    </nav>
-
-    <div style="padding: 20px; text-align: center; color: #9ca3af;">
-      <p>Running in offline terminal shell. Use <strong>Switch Server</strong> above to connect to your live trading backend.</p>
+  <!-- Camera Scanner Modal Overlay -->
+  <div class="scanner-overlay" id="scanner-overlay">
+    <div class="scanner-header">
+      <span class="scanner-header-title">Align QR code inside box</span>
+      <button type="button" class="scanner-close-btn" id="btn-close-scanner" aria-label="Close scanner">✕</button>
     </div>
+    <div class="scanner-viewport">
+      <video id="scanner-video" playsinline autoplay muted></video>
+      <div class="scanner-reticle">
+        <div class="reticle-corner corner-tl"></div>
+        <div class="reticle-corner corner-tr"></div>
+        <div class="reticle-corner corner-bl"></div>
+        <div class="reticle-corner corner-br"></div>
+        <div class="scan-laser"></div>
+      </div>
+    </div>
+    <div class="scanner-footer" id="scanner-status">
+      Point your camera at the Pair Device QR code on your terminal
+    </div>
+    <canvas id="scanner-canvas"></canvas>
   </div>
 
   <script>
-    const DEFAULT_SERVER = "https://130.210.18.97.sslip.io";
-    const serverInput = document.getElementById("server-url");
-    const statusDot = document.getElementById("status-dot");
-    const statusText = document.getElementById("status-text");
+    const STORAGE_KEY = "scalper_server_url";
+    let videoStream = null;
+    let scanning = false;
+    let barcodeDetector = null;
 
-    // Load saved server URL from localStorage
-    const savedUrl = localStorage.getItem("scalper_server_url");
-    if (savedUrl) {
-      serverInput.value = savedUrl;
-    }
-
-    function setPreset(url) {
-      serverInput.value = url;
-      pingServer();
-    }
-
-    async function pingServer() {
-      const url = serverInput.value.trim().replace(/\/$/, "");
-      if (!url) return;
-      statusDot.className = "status-dot checking";
-      statusText.textContent = "Checking " + url + "…";
-      const start = performance.now();
+    // Check BarcodeDetector support
+    if ("BarcodeDetector" in window) {
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 4000);
-        const resp = await fetch(url + "/healthz", {
-          signal: controller.signal,
-          mode: "cors"
-        }).catch(() => null);
-        clearTimeout(timeout);
-        const latency = Math.round(performance.now() - start);
-        if (resp && resp.ok) {
-          statusDot.className = "status-dot online";
-          statusText.textContent = "Online (" + latency + "ms latency)";
-          return true;
-        } else {
-          statusDot.className = "status-dot";
-          statusText.textContent = "Server responded with status " + (resp ? resp.status : "unreachable");
-          return false;
-        }
-      } catch (err) {
-        statusDot.className = "status-dot";
-        statusText.textContent = "Connection failed: " + err.message;
-        return false;
+        barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+      } catch (_) {
+        barcodeDetector = null;
       }
     }
 
-    function connectToServer() {
-      const url = serverInput.value.trim().replace(/\/$/, "");
-      if (!url) return;
-      localStorage.setItem("scalper_server_url", url);
-      // Redirect Capacitor webview to the target backend
-      window.location.href = url;
+    const pairedCard = document.getElementById("paired-card");
+    const pairedUrlText = document.getElementById("paired-url-text");
+    const pingStatus = document.getElementById("ping-status");
+    const btnLaunch = document.getElementById("btn-launch-terminal");
+    const btnUnpair = document.getElementById("btn-unpair-terminal");
+    const btnOpenScanner = document.getElementById("btn-open-scanner");
+    const btnPickImage = document.getElementById("btn-pick-image");
+    const filePicker = document.getElementById("file-picker");
+    const manualToggle = document.getElementById("manual-toggle");
+    const manualSection = document.getElementById("manual-section");
+    const manualInput = document.getElementById("manual-server-input");
+    const btnManualConnect = document.getElementById("btn-manual-connect");
+
+    const scannerOverlay = document.getElementById("scanner-overlay");
+    const scannerVideo = document.getElementById("scanner-video");
+    const scannerClose = document.getElementById("btn-close-scanner");
+    const scannerStatus = document.getElementById("scanner-status");
+    const scannerCanvas = document.getElementById("scanner-canvas");
+
+    function getSavedServer() {
+      try {
+        return localStorage.getItem(STORAGE_KEY) || "";
+      } catch (_) {
+        return "";
+      }
     }
 
-    function launchOfflineShell() {
-      document.getElementById("gateway-view").style.display = "none";
-      document.getElementById("offline-terminal").style.display = "block";
+    function saveServer(url) {
+      try {
+        localStorage.setItem(STORAGE_KEY, url);
+      } catch (_) {}
     }
 
-    function showGateway() {
-      document.getElementById("offline-terminal").style.display = "none";
-      document.getElementById("gateway-view").style.display = "flex";
-      pingServer();
+    function clearServer() {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (_) {}
     }
 
-    // Auto-ping on load
-    window.addEventListener("DOMContentLoaded", () => {
-      pingServer();
+    function initPairedState() {
+      const saved = getSavedServer();
+      if (saved) {
+        pairedUrlText.textContent = saved;
+        pairedCard.style.display = "block";
+        checkServerHealth(saved);
+      } else {
+        pairedCard.style.display = "none";
+      }
+    }
+
+    async function checkServerHealth(url) {
+      pingStatus.textContent = "Checking…";
+      pingStatus.style.color = "var(--text-muted)";
+      try {
+        const base = url.replace(/\/$/, "");
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        const resp = await fetch(base + "/healthz", { signal: controller.signal, mode: "cors" }).catch(() => null);
+        clearTimeout(timeout);
+        if (resp && resp.ok) {
+          pingStatus.textContent = "Online";
+          pingStatus.style.color = "#34d399";
+        } else {
+          pingStatus.textContent = "Offline / Standby";
+          pingStatus.style.color = "#f87171";
+        }
+      } catch (_) {
+        pingStatus.textContent = "Unreachable";
+        pingStatus.style.color = "#f87171";
+      }
+    }
+
+    function onPairSuccess(scannedUrl) {
+      if (!scannedUrl) return;
+      try {
+        if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
+      } catch (_) {}
+
+      // Normalize URL
+      let target = scannedUrl.trim();
+      if (!target.startsWith("http://") && !target.startsWith("https://")) {
+        target = "https://" + target;
+      }
+
+      // Extract origin to save as server base
+      try {
+        const parsed = new URL(target);
+        saveServer(parsed.origin);
+      } catch (_) {
+        saveServer(target);
+      }
+
+      stopScanner();
+      scannerStatus.textContent = "Paired! Connecting…";
+
+      // Redirect immediately to the scanned pairing URL
+      window.location.href = target;
+    }
+
+    async function startScanner() {
+      scannerOverlay.style.display = "flex";
+      scannerStatus.textContent = "Starting camera…";
+      scanning = true;
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        videoStream = stream;
+        scannerVideo.srcObject = stream;
+        await scannerVideo.play();
+        scannerStatus.textContent = "Point your camera at the QR code on your terminal";
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        console.warn("Camera access failed", err);
+        scannerStatus.textContent = "Camera access denied. Please grant camera permission or upload an image.";
+      }
+    }
+
+    function stopScanner() {
+      scanning = false;
+      if (videoStream) {
+        videoStream.getTracks().forEach((t) => t.stop());
+        videoStream = null;
+      }
+      scannerOverlay.style.display = "none";
+    }
+
+    async function scanFrame() {
+      if (!scanning) return;
+      if (scannerVideo.readyState >= scannerVideo.HAVE_CURRENT_DATA) {
+        // 1. Try native BarcodeDetector if available
+        if (barcodeDetector) {
+          try {
+            const codes = await barcodeDetector.detect(scannerVideo);
+            if (codes && codes.length > 0) {
+              const raw = codes[0].rawValue;
+              if (raw && (raw.startsWith("http://") || raw.startsWith("https://") || raw.includes("pair_token="))) {
+                onPairSuccess(raw);
+                return;
+              }
+            }
+          } catch (_) {}
+        }
+
+        // 2. Fallback to bundled jsQR
+        if (typeof window.jsQR === "function") {
+          const w = scannerVideo.videoWidth;
+          const h = scannerVideo.videoHeight;
+          if (w > 0 && h > 0) {
+            scannerCanvas.width = w;
+            scannerCanvas.height = h;
+            const ctx = scannerCanvas.getContext("2d", { willReadFrequently: true });
+            ctx.drawImage(scannerVideo, 0, 0, w, h);
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const code = window.jsQR(imgData.data, imgData.width, imgData.height, {
+              inversionAttempts: "dontInvert"
+            });
+            if (code && code.data) {
+              const raw = code.data;
+              if (raw.startsWith("http://") || raw.startsWith("https://") || raw.includes("pair_token=")) {
+                onPairSuccess(raw);
+                return;
+              }
+            }
+          }
+        }
+      }
+      if (scanning) {
+        requestAnimationFrame(scanFrame);
+      }
+    }
+
+    // Image file picker QR decode
+    filePicker.addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const img = new Image();
+      img.onload = async () => {
+        // Try BarcodeDetector
+        if (barcodeDetector) {
+          try {
+            const codes = await barcodeDetector.detect(img);
+            if (codes && codes.length > 0) {
+              onPairSuccess(codes[0].rawValue);
+              return;
+            }
+          } catch (_) {}
+        }
+        // Try jsQR
+        if (typeof window.jsQR === "function") {
+          scannerCanvas.width = img.width;
+          scannerCanvas.height = img.height;
+          const ctx = scannerCanvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(img, 0, 0, img.width, img.height);
+          const data = ctx.getImageData(0, 0, img.width, img.height);
+          const code = window.jsQR(data.data, data.width, data.height);
+          if (code && code.data) {
+            onPairSuccess(code.data);
+            return;
+          }
+        }
+        alert("No valid QR code found in this image. Please try again.");
+      };
+      img.src = URL.createObjectURL(file);
     });
+
+    btnOpenScanner.addEventListener("click", startScanner);
+    scannerClose.addEventListener("click", stopScanner);
+    btnPickImage.addEventListener("click", () => filePicker.click());
+
+    manualToggle.addEventListener("click", () => {
+      manualSection.style.display = manualSection.style.display === "block" ? "none" : "block";
+    });
+
+    btnManualConnect.addEventListener("click", () => {
+      const val = manualInput.value.trim();
+      if (!val) return;
+      onPairSuccess(val);
+    });
+
+    btnLaunch.addEventListener("click", () => {
+      const saved = getSavedServer();
+      if (saved) window.location.href = saved;
+    });
+
+    btnUnpair.addEventListener("click", () => {
+      clearServer();
+      initPairedState();
+    });
+
+    initPairedState();
   </script>
 </body>
 </html>

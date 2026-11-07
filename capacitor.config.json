@@ -4,15 +4,10 @@
   "webDir": "mobile/www",
   "bundledWebRuntime": false,
   "server": {
-    "url": "https://130.210.18.97.sslip.io",
     "cleartext": true,
     "androidScheme": "https",
     "allowNavigation": [
-      "130.210.18.97.sslip.io",
-      "*.sslip.io",
-      "10.0.2.2",
-      "localhost",
-      "127.0.0.1"
+      "*"
     ]
   },
   "plugins": {
