@@ -10,6 +10,7 @@
 		33D416972B57B26400D2D725 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D416962B57B26400D2D725 /* AppDelegate.swift */; };
 		33D4169B2B57B26400D2D725 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33D4169A2B57B26400D2D725 /* Assets.xcassets */; };
 		33D416A32B57B26400D2D725 /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 33D416A22B57B26400D2D725 /* capacitor.config.json */; };
+		33D416A92B57B26400D2D725 /* public in Resources */ = {isa = PBXBuildFile; fileRef = 33D416AA2B57B26400D2D725 /* public */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,7 +18,8 @@
 		33D416962B57B26400D2D725 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		33D4169A2B57B26400D2D725 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		33D4169F2B57B26400D2D725 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		33D416A22B57B26400D2D725 /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; name = capacitor.config.json; path = App/capacitor.config.json; sourceTree = "<group>"; };
+		33D416A22B57B26400D2D725 /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
+		33D416AA2B57B26400D2D725 /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +56,7 @@
 				33D4169A2B57B26400D2D725 /* Assets.xcassets */,
 				33D4169F2B57B26400D2D725 /* Info.plist */,
 				33D416A22B57B26400D2D725 /* capacitor.config.json */,
+				33D416AA2B57B26400D2D725 /* public */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -118,6 +121,7 @@
 			files = (
 				33D4169B2B57B26400D2D725 /* Assets.xcassets in Resources */,
 				33D416A32B57B26400D2D725 /* capacitor.config.json in Resources */,
+				33D416A92B57B26400D2D725 /* public in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
