@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -752,4 +753,211 @@ func TestEngineConcurrentAccessRaceFree(_ *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestCancelOnInPositionFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(nil, nil, nil, testLogger())
+
+	b, err := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		Status:          StatusInPosition,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancelling an IN_POSITION bracket must fail
+	if err := engine.Cancel(ctx, b.ID); err == nil {
+		t.Fatal("expected error cancelling active IN_POSITION bracket, got nil")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("expected status to stay IN_POSITION, got %s", got.Status)
+	}
+}
+
+func TestDirectionalPriceValidation(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(nil, nil, nil, testLogger())
+
+	// BUY: Target <= Entry must fail
+	_, err := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		TargetPrice:     95, // inverted
+		StopLossPrice:   90,
+	})
+	if err == nil || !strings.Contains(err.Error(), "target price must be greater than entry price for BUY") {
+		t.Fatalf("expected target validation error for BUY, got %v", err)
+	}
+
+	// BUY: StopLoss >= Entry must fail
+	_, err = engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		TargetPrice:     110,
+		StopLossPrice:   105, // inverted
+	})
+	if err == nil || !strings.Contains(err.Error(), "stoploss price must be less than entry price for BUY") {
+		t.Fatalf("expected stoploss validation error for BUY, got %v", err)
+	}
+
+	// SELL: Target >= Entry must fail
+	_, err = engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "SELL",
+		Quantity:        10,
+		EntryPrice:      100,
+		TargetPrice:     105, // inverted
+		StopLossPrice:   110,
+	})
+	if err == nil || !strings.Contains(err.Error(), "target price must be less than entry price for SELL") {
+		t.Fatalf("expected target validation error for SELL, got %v", err)
+	}
+}
+
+func TestExitFailedStatusOnBrokerError(t *testing.T) {
+	ctx := context.Background()
+	placeCallCount := 0
+	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) {
+		placeCallCount++
+		return "", errors.New("502 Bad Gateway: broker down")
+	}
+
+	engine := NewEngine(nil, placeOrder, nil, testLogger())
+
+	b, _ := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		TargetPrice:     110,
+		StopLossPrice:   90,
+		Status:          StatusInPosition,
+	})
+
+	// Manual exit with failing broker must return error and set StatusExitFailed
+	err := engine.Exit(ctx, b.ID)
+	if err == nil {
+		t.Fatal("expected Exit error, got nil")
+	}
+
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitFailed {
+		t.Fatalf("expected status %s, got %s", StatusExitFailed, got.Status)
+	}
+	if placeCallCount < 3 {
+		t.Fatalf("expected at least 3 attempts (including retries), got %d", placeCallCount)
+	}
+}
+
+func TestExitOrderCancellation(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(nil, nil, nil, testLogger())
+
+	b, _ := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		ExitOrderID:     "exit-ord-123",
+		Status:          StatusSLHit,
+	})
+
+	// Broker sends rejection/cancellation report for exit order
+	engine.OnOrderEvent(ctx, orderfeed.Event{
+		Type: "order",
+		Data: json.RawMessage(`{"order_id":"exit-ord-123","status":"REJ"}`),
+	})
+
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitFailed {
+		t.Fatalf("expected status %s on broker reject, got %s", StatusExitFailed, got.Status)
+	}
+}
+
+func TestFastFillOrderEventPrecedesHTTP(t *testing.T) {
+	ctx := context.Background()
+	var engine *Engine
+	placeOrder := func(_ context.Context, o kotakapi.Order) (string, error) {
+		// Simulate fast WebSocket fill arriving BEFORE placeOrder returns
+		engine.OnOrderEvent(ctx, orderfeed.Event{
+			Type: "order",
+			Data: json.RawMessage(fmt.Sprintf(`{"tag":"%s","order_id":"kotak-ord-999","status":"TRAD","avg_price":102.5}`, o.Tag)),
+		})
+		return "kotak-ord-999", nil
+	}
+
+	engine = NewEngine(nil, placeOrder, nil, testLogger())
+
+	b, err := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		TargetPrice:     110,
+		StopLossPrice:   90,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("expected status IN_POSITION from early fill, got %s", got.Status)
+	}
+	if got.EntryPrice != 102.5 {
+		t.Fatalf("expected EntryPrice 102.5 from early fill, got %f", got.EntryPrice)
+	}
+}
+
+func TestDisarmManualSquareOff(t *testing.T) {
+	ctx := context.Background()
+	orderPlaced := false
+	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) {
+		orderPlaced = true
+		return "ord-err", nil
+	}
+	engine := NewEngine(nil, placeOrder, nil, testLogger())
+
+	b, _ := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		Status:          StatusInPosition,
+	})
+
+	if err := engine.Disarm(ctx, b.ID); err != nil {
+		t.Fatalf("Disarm failed: %v", err)
+	}
+
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitedManual {
+		t.Fatalf("expected EXITED_MANUAL, got %s", got.Status)
+	}
+	if orderPlaced {
+		t.Fatal("Disarm should not place any order")
+	}
 }

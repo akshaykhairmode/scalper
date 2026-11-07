@@ -79,7 +79,7 @@ func (s *Server) checkOrderRisk(ctx context.Context, session kotakapi.Session, o
 		}
 	}
 
-	needPositions := cfg.MaxOpenLotsPerIndex > 0 || cfg.MaxDailyLossINR > 0
+	needPositions := cfg.MaxOpenLotsPerIndex > 0 || cfg.MaxDailyLossINR > 0 || cfg.MaxExitOrdersPerSecond > 0
 	var positions []brokerPosition
 	reduces := false
 	if needPositions {
@@ -117,7 +117,7 @@ func (s *Server) checkOrderRisk(ctx context.Context, session kotakapi.Session, o
 	}
 
 	if s.risk != nil {
-		if err := s.risk.reserve(session.SID, strings.ToUpper(o.TransactionType), cfg, time.Now()); err != nil {
+		if err := s.risk.reserve(session.SID, strings.ToUpper(o.TransactionType), cfg, time.Now(), reduces); err != nil {
 			return err
 		}
 	}
@@ -201,7 +201,7 @@ func (s *Server) checkOrderMargin(ctx context.Context, session kotakapi.Session,
 	return nil
 }
 
-func (r *riskState) reserve(sessionID, side string, cfg config.Risk, now time.Time) error {
+func (r *riskState) reserve(sessionID, side string, cfg config.Risk, now time.Time, isExitOpt ...bool) error {
 	if cfg.MaxOrdersPerMinute <= 0 && cfg.MaxExitOrdersPerSecond <= 0 {
 		return nil
 	}
@@ -221,6 +221,9 @@ func (r *riskState) reserve(sessionID, side string, cfg config.Risk, now time.Ti
 		return fmt.Errorf("order blocked: max_orders_per_minute=%d reached", cfg.MaxOrdersPerMinute)
 	}
 	isExit := side == "S" || side == "SELL"
+	if len(isExitOpt) > 0 {
+		isExit = isExitOpt[0]
+	}
 	if isExit && cfg.MaxExitOrdersPerSecond > 0 && len(exits) >= cfg.MaxExitOrdersPerSecond {
 		return fmt.Errorf("order blocked: max_exit_orders_per_second=%d reached", cfg.MaxExitOrdersPerSecond)
 	}

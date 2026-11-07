@@ -492,6 +492,104 @@ func decodeCandleNumber(raw json.RawMessage) (float64, error) {
 	return value, nil
 }
 
+type rawKotakDepthLevel struct {
+	Price      json.RawMessage `json:"price"`
+	Quantity   json.RawMessage `json:"quantity"`
+	Qty        json.RawMessage `json:"qty"`
+	Orders     json.RawMessage `json:"orders"`
+	NoOfOrders json.RawMessage `json:"no_of_orders"`
+}
+
+type rawKotakQuoteRow struct {
+	ExchangeToken   json.RawMessage `json:"exchange_token"`
+	PSymbol         json.RawMessage `json:"p_symbol"`
+	PSymbolCamel    json.RawMessage `json:"pSymbol"`
+	DisplaySymbol   json.RawMessage `json:"display_symbol"`
+	Symbol          json.RawMessage `json:"symbol"`
+	Exchange        json.RawMessage `json:"exchange"`
+	ExchangeSegment json.RawMessage `json:"exchange_segment"`
+	LstupTime       json.RawMessage `json:"lstup_time"`
+	Timestamp       json.RawMessage `json:"timestamp"`
+	LTP             json.RawMessage `json:"ltp"`
+	LastPrice       json.RawMessage `json:"last_price"`
+	Change          json.RawMessage `json:"change"`
+	PerChange       json.RawMessage `json:"per_change"`
+	ChangePct       json.RawMessage `json:"change_pct"`
+	LastVolume      json.RawMessage `json:"last_volume"`
+	Volume          json.RawMessage `json:"volume"`
+	OI              json.RawMessage `json:"oi"`
+	OpenInterest    json.RawMessage `json:"open_interest"`
+	OpenInt         json.RawMessage `json:"open_int"`
+	Close           json.RawMessage `json:"close"`
+	PreviousClose   json.RawMessage `json:"previous_close"`
+	OHLC            *struct {
+		Close         json.RawMessage `json:"close"`
+		PreviousClose json.RawMessage `json:"previous_close"`
+	} `json:"ohlc"`
+	Depth *struct {
+		Buy  []rawKotakDepthLevel `json:"buy"`
+		Sell []rawKotakDepthLevel `json:"sell"`
+	} `json:"depth"`
+}
+
+func parseRawFloat(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	s := strings.TrimSpace(string(raw))
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	if s == "" || s == "null" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
+}
+
+func parseRawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	s := strings.TrimSpace(string(raw))
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return strings.TrimSpace(s[1 : len(s)-1])
+	}
+	if s == "null" {
+		return ""
+	}
+	return s
+}
+
+func firstRawString(fields ...json.RawMessage) string {
+	for _, f := range fields {
+		if s := parseRawString(f); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstRawFloat(fields ...json.RawMessage) (float64, bool) {
+	for _, f := range fields {
+		if val, ok := parseRawFloat(f); ok {
+			return val, true
+		}
+	}
+	return 0, false
+}
+
+func firstRawInt(fields ...json.RawMessage) int64 {
+	val, _ := firstRawFloat(fields...)
+	if val > math.MaxInt64 || val < math.MinInt64 {
+		return 0
+	}
+	return int64(val)
+}
+
 func decodeQuotes(raw []byte) ([]Quote, error) {
 	var payload json.RawMessage
 	if err := json.Unmarshal(raw, &payload); err != nil {
@@ -509,13 +607,13 @@ func decodeQuotes(raw []byte) ([]Quote, error) {
 		}
 		payload = wrapper.Data
 	}
-	var rows []map[string]json.RawMessage
+	var rows []rawKotakQuoteRow
 	if err := json.Unmarshal(payload, &rows); err != nil {
 		return nil, fmt.Errorf("quotes data is not an array: %w", err)
 	}
 	quotes := make([]Quote, 0, len(rows))
-	for i, row := range rows {
-		quote, err := decodeQuote(row)
+	for i := range rows {
+		quote, err := decodeRawQuoteRow(&rows[i])
 		if err != nil {
 			return nil, fmt.Errorf("quote %d: %w", i, err)
 		}
@@ -524,48 +622,52 @@ func decodeQuotes(raw []byte) ([]Quote, error) {
 	return quotes, nil
 }
 
-func decodeQuote(row map[string]json.RawMessage) (Quote, error) {
+func decodeRawQuoteRow(row *rawKotakQuoteRow) (Quote, error) {
 	var quote Quote
-	quote.ExchangeToken = stringField(row, "exchange_token", "p_symbol", "pSymbol")
-	quote.DisplaySymbol = stringField(row, "display_symbol", "symbol")
-	quote.Exchange = stringField(row, "exchange", "exchange_segment")
-	quote.UpdatedAt = intField(row, "lstup_time", "timestamp")
-	quote.LTP, _ = floatField(row, "ltp", "last_price")
-	quote.Change, _ = floatField(row, "change")
-	quote.ChangePct, _ = floatField(row, "per_change", "change_pct")
-	quote.Volume = intField(row, "last_volume", "volume")
-	quote.OI = intField(row, "oi", "open_interest", "open_int")
-
-	var ohlc map[string]json.RawMessage
-	if raw := row["ohlc"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &ohlc); err != nil {
-			return Quote{}, fmt.Errorf("decode OHLC: %w", err)
+	quote.ExchangeToken = firstRawString(row.ExchangeToken, row.PSymbol, row.PSymbolCamel)
+	quote.DisplaySymbol = firstRawString(row.DisplaySymbol, row.Symbol)
+	quote.Exchange = firstRawString(row.Exchange, row.ExchangeSegment)
+	quote.UpdatedAt = firstRawInt(row.LstupTime, row.Timestamp)
+	if len(row.LTP) > 0 || len(row.LastPrice) > 0 {
+		ltp, ok := firstRawFloat(row.LTP, row.LastPrice)
+		if !ok {
+			return Quote{}, errors.New("last traded price is invalid")
 		}
-		quote.PreviousClose, _ = floatField(ohlc, "close", "previous_close")
+		quote.LTP = ltp
+	}
+	quote.Change, _ = firstRawFloat(row.Change)
+	quote.ChangePct, _ = firstRawFloat(row.PerChange, row.ChangePct)
+	quote.Volume = firstRawInt(row.LastVolume, row.Volume)
+	quote.OI = firstRawInt(row.OI, row.OpenInterest, row.OpenInt)
+
+	if row.OHLC != nil {
+		quote.PreviousClose, _ = firstRawFloat(row.OHLC.Close, row.OHLC.PreviousClose)
 	}
 	if quote.PreviousClose == 0 {
-		quote.PreviousClose, _ = floatField(row, "close", "previous_close")
+		quote.PreviousClose, _ = firstRawFloat(row.Close, row.PreviousClose)
 	}
 
-	var depth map[string][]map[string]json.RawMessage
-	if raw := row["depth"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &depth); err != nil {
-			return Quote{}, fmt.Errorf("decode depth: %w", err)
-		}
-		for _, b := range depth["buy"] {
-			p, _ := floatField(b, "price")
-			q := intField(b, "quantity", "qty")
-			o := intField(b, "orders", "no_of_orders")
-			if p > 0 || q > 0 {
-				quote.Bids = append(quote.Bids, DepthLevel{Price: p, Quantity: q, Orders: o})
+	if row.Depth != nil {
+		if len(row.Depth.Buy) > 0 {
+			quote.Bids = make([]DepthLevel, 0, len(row.Depth.Buy))
+			for _, b := range row.Depth.Buy {
+				p, _ := parseRawFloat(b.Price)
+				q := firstRawInt(b.Quantity, b.Qty)
+				o := firstRawInt(b.Orders, b.NoOfOrders)
+				if p > 0 || q > 0 {
+					quote.Bids = append(quote.Bids, DepthLevel{Price: p, Quantity: q, Orders: o})
+				}
 			}
 		}
-		for _, s := range depth["sell"] {
-			p, _ := floatField(s, "price")
-			q := intField(s, "quantity", "qty")
-			o := intField(s, "orders", "no_of_orders")
-			if p > 0 || q > 0 {
-				quote.Asks = append(quote.Asks, DepthLevel{Price: p, Quantity: q, Orders: o})
+		if len(row.Depth.Sell) > 0 {
+			quote.Asks = make([]DepthLevel, 0, len(row.Depth.Sell))
+			for _, s := range row.Depth.Sell {
+				p, _ := parseRawFloat(s.Price)
+				q := firstRawInt(s.Quantity, s.Qty)
+				o := firstRawInt(s.Orders, s.NoOfOrders)
+				if p > 0 || q > 0 {
+					quote.Asks = append(quote.Asks, DepthLevel{Price: p, Quantity: q, Orders: o})
+				}
 			}
 		}
 		if len(quote.Bids) > 0 {
@@ -579,52 +681,6 @@ func decodeQuote(row map[string]json.RawMessage) (Quote, error) {
 		return Quote{}, errors.New("last traded price is invalid")
 	}
 	return quote, nil
-}
-
-func stringField(row map[string]json.RawMessage, keys ...string) string {
-	for _, key := range keys {
-		raw := row[key]
-		if len(raw) == 0 {
-			continue
-		}
-		var value string
-		if json.Unmarshal(raw, &value) == nil {
-			return strings.TrimSpace(value)
-		}
-		var number json.Number
-		if json.Unmarshal(raw, &number) == nil {
-			return number.String()
-		}
-	}
-	return ""
-}
-
-func floatField(row map[string]json.RawMessage, keys ...string) (float64, bool) {
-	for _, key := range keys {
-		raw := row[key]
-		if len(raw) == 0 {
-			continue
-		}
-		var value json.Number
-		if err := json.Unmarshal(raw, &value); err == nil {
-			n, err := value.Float64()
-			return n, err == nil && !math.IsNaN(n) && !math.IsInf(n, 0)
-		}
-		var text string
-		if json.Unmarshal(raw, &text) == nil {
-			n, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
-			return n, err == nil && !math.IsNaN(n) && !math.IsInf(n, 0)
-		}
-	}
-	return 0, false
-}
-
-func intField(row map[string]json.RawMessage, keys ...string) int64 {
-	n, ok := floatField(row, keys...)
-	if !ok || n > math.MaxInt64 || n < math.MinInt64 {
-		return 0
-	}
-	return int64(n)
 }
 
 func normalizeSymbol(symbol string) string {

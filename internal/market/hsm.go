@@ -63,11 +63,8 @@ func (f *HSMFeed) Start(user, auth, feedURL string) error {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(auth) == "" {
 		return errors.New("SFeed user and auth values are required")
 	}
+	f.Stop()
 	f.mu.Lock()
-	if f.cancel != nil {
-		f.mu.Unlock()
-		return errors.New("HSM feed is already started")
-	}
 	f.user, f.auth = strings.TrimSpace(user), strings.TrimSpace(auth)
 	f.feedURL = strings.TrimSpace(feedURL)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
+	"github.com/akshaykhairmode/scalper/internal/kotakhttp"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 )
 
@@ -32,6 +33,15 @@ type Engine struct {
 	onChange           func(b Bracket)
 	activeInPos        atomic.Int64
 	activeByInstrument map[string]map[string]*Bracket
+	asyncExecution     bool
+	unmatchedOrders    map[string]parsedOrder
+}
+
+// SetAsync configures whether OnTick executes triggers in asynchronous background goroutines.
+func (e *Engine) SetAsync(async bool) {
+	e.mu.Lock()
+	e.asyncExecution = async
+	e.mu.Unlock()
 }
 
 // NewEngine creates a new bracket and OCO engine.
@@ -51,6 +61,7 @@ func NewEngine(
 		log:                log,
 		brackets:           make(map[string]*Bracket),
 		activeByInstrument: make(map[string]map[string]*Bracket),
+		unmatchedOrders:    make(map[string]parsedOrder),
 	}
 
 	if store != nil {
@@ -173,6 +184,29 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 	b.TransactionType = tt
 
+	// Validate target and stoploss directional price sanity
+	if b.TransactionType == "BUY" {
+		if b.TargetPrice > 0 && b.EntryPrice > 0 && b.TargetPrice <= b.EntryPrice {
+			return nil, errors.New("bracket: target price must be greater than entry price for BUY")
+		}
+		if b.StopLossPrice > 0 && b.EntryPrice > 0 && b.StopLossPrice >= b.EntryPrice {
+			return nil, errors.New("bracket: stoploss price must be less than entry price for BUY")
+		}
+		if b.TargetPrice > 0 && b.StopLossPrice > 0 && b.TargetPrice <= b.StopLossPrice {
+			return nil, errors.New("bracket: target price must be greater than stoploss price for BUY")
+		}
+	} else if b.TransactionType == "SELL" {
+		if b.TargetPrice > 0 && b.EntryPrice > 0 && b.TargetPrice >= b.EntryPrice {
+			return nil, errors.New("bracket: target price must be less than entry price for SELL")
+		}
+		if b.StopLossPrice > 0 && b.EntryPrice > 0 && b.StopLossPrice <= b.EntryPrice {
+			return nil, errors.New("bracket: stoploss price must be greater than entry price for SELL")
+		}
+		if b.TargetPrice > 0 && b.StopLossPrice > 0 && b.TargetPrice >= b.StopLossPrice {
+			return nil, errors.New("bracket: target price must be less than stoploss price for SELL")
+		}
+	}
+
 	prod := strings.ToUpper(strings.TrimSpace(b.Product))
 	if prod == "" {
 		prod = "MIS"
@@ -192,6 +226,12 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 	b.UpdatedAt = now
 
+	// Pre-register bracket in memory so fast WebSocket fill events arriving in 10-20ms will match
+	e.mu.Lock()
+	bracketCopy := b
+	e.brackets[b.ID] = &bracketCopy
+	e.mu.Unlock()
+
 	// If entry order has not yet been placed and bracket is in PENDING_ENTRY, submit it
 	if b.Status == StatusPendingEntry && b.EntryOrderID == "" && e.placeOrder != nil {
 		orderType := "L"
@@ -199,6 +239,7 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 			orderType = "MKT"
 		}
 		o := kotakapi.Order{
+			Tag:             b.ID,
 			ExchangeSegment: b.ExchangeSegment,
 			TradingSymbol:   b.TradingSymbol,
 			TransactionType: b.TransactionType,
@@ -210,18 +251,38 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 		}
 		orderID, err := e.placeOrder(ctx, o)
 		if err != nil {
+			e.mu.Lock()
+			delete(e.brackets, b.ID)
+			e.mu.Unlock()
 			return nil, fmt.Errorf("bracket: place entry order: %w", err)
 		}
-		b.EntryOrderID = orderID
-	}
 
-	e.mu.Lock()
-	bracketCopy := b
-	e.brackets[b.ID] = &bracketCopy
-	if bracketCopy.Status == StatusInPosition {
-		e.indexActiveInPosition(&bracketCopy)
+		e.mu.Lock()
+		b.EntryOrderID = orderID
+		if curr, ok := e.brackets[b.ID]; ok {
+			curr.EntryOrderID = orderID
+			// Check if fill arrived over WebSocket while HTTP placeOrder was returning
+			if unmatched, found := e.unmatchedOrders[orderID]; found {
+				delete(e.unmatchedOrders, orderID)
+				if isFilledStatus(unmatched.Status) {
+					curr.Status = StatusInPosition
+					if unmatched.FilledPrice > 0 {
+						curr.EntryPrice = unmatched.FilledPrice
+					}
+					curr.UpdatedAt = time.Now()
+					e.indexActiveInPosition(curr)
+				}
+			}
+			bracketCopy = *curr
+		}
+		e.mu.Unlock()
+	} else {
+		e.mu.Lock()
+		if bracketCopy.Status == StatusInPosition {
+			e.indexActiveInPosition(&bracketCopy)
+		}
+		e.mu.Unlock()
 	}
-	e.mu.Unlock()
 
 	if e.store != nil {
 		if err := e.store.CreateBracket(ctx, bracketCopy); err != nil {
@@ -233,7 +294,7 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	return &bracketCopy, nil
 }
 
-// Cancel cancels a pending or in-position bracket, cancelling any resting orders.
+// Cancel cancels a pending bracket, cancelling any resting entry order.
 func (e *Engine) Cancel(ctx context.Context, id string) error {
 	e.mu.Lock()
 	b, ok := e.brackets[id]
@@ -241,20 +302,17 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 		e.mu.Unlock()
 		return errors.New("bracket not found")
 	}
-	if b.Status != StatusPendingEntry && b.Status != StatusInPosition {
+	if b.Status == StatusInPosition {
+		e.mu.Unlock()
+		return errors.New("cannot cancel active in-position bracket; use exit to square off")
+	}
+	if b.Status != StatusPendingEntry {
 		currStatus := b.Status
 		e.mu.Unlock()
 		return fmt.Errorf("bracket %s cannot be cancelled in status %s", id, currStatus)
 	}
 
-	orderToCancel := ""
-	switch b.Status {
-	case StatusPendingEntry:
-		orderToCancel = b.EntryOrderID
-	case StatusInPosition:
-		orderToCancel = b.ExitOrderID
-	}
-
+	orderToCancel := b.EntryOrderID
 	e.unindexActiveInPosition(b)
 	b.Status = StatusCancelled
 	b.UpdatedAt = time.Now()
@@ -277,6 +335,32 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 	return nil
 }
 
+// Disarm marks an active or pending bracket as externally squared off/cancelled
+// without placing duplicate market exit orders.
+func (e *Engine) Disarm(ctx context.Context, id string) error {
+	e.mu.Lock()
+	b, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return errors.New("bracket not found")
+	}
+	e.unindexActiveInPosition(b)
+	if b.Status == StatusPendingEntry {
+		b.Status = StatusCancelled
+	} else {
+		b.Status = StatusExitedManual
+	}
+	b.UpdatedAt = time.Now()
+	bracketCopy := *b
+	e.mu.Unlock()
+
+	if e.store != nil {
+		_ = e.store.UpdateBracket(ctx, bracketCopy)
+	}
+	e.notify(bracketCopy)
+	return nil
+}
+
 // Exit squares off a bracket manually by cancelling resting orders and placing a market exit order.
 func (e *Engine) Exit(ctx context.Context, id string) error {
 	e.mu.Lock()
@@ -285,7 +369,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		e.mu.Unlock()
 		return errors.New("bracket not found")
 	}
-	if b.Status != StatusPendingEntry && b.Status != StatusInPosition {
+	if b.Status != StatusPendingEntry && b.Status != StatusInPosition && b.Status != StatusExitFailed {
 		currStatus := b.Status
 		e.mu.Unlock()
 		return fmt.Errorf("bracket %s cannot be exited in status %s", id, currStatus)
@@ -309,7 +393,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		return nil
 	}
 
-	// In position: cancel resting exit order if any, and execute market exit
+	// In position or failed exit: cancel resting exit order if any, and execute market exit
 	e.unindexActiveInPosition(b)
 	restingOrder := b.ExitOrderID
 	b.Status = StatusExitedManual
@@ -320,6 +404,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		exitSide = "BUY"
 	}
 	exitOrder := kotakapi.Order{
+		Tag:             "exit_" + b.ID,
 		ExchangeSegment: b.ExchangeSegment,
 		TradingSymbol:   b.TradingSymbol,
 		TransactionType: exitSide,
@@ -331,28 +416,63 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	bracketCopy := *b
 	e.mu.Unlock()
 
+	ctx = kotakhttp.WithPriority(ctx)
+
 	if restingOrder != "" && e.cancelOrder != nil {
 		_ = e.cancelOrder(ctx, restingOrder)
 	}
 
+	var exitErr error
+	var orderID string
 	if e.placeOrder != nil {
-		orderID, err := e.placeOrder(ctx, exitOrder)
-		if err != nil {
-			e.log.Error("failed to place exit order on manual exit", "id", id, "error", err)
-		} else {
-			e.mu.Lock()
-			if curr, ok := e.brackets[id]; ok {
-				curr.ExitOrderID = orderID
-				bracketCopy = *curr
+	exitRetryLoop:
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					exitErr = ctx.Err()
+					break exitRetryLoop
+				case <-time.After(50 * time.Millisecond):
+				}
 			}
-			e.mu.Unlock()
+			orderID, exitErr = e.placeOrder(ctx, exitOrder)
+			if exitErr == nil && orderID != "" {
+				break exitRetryLoop
+			}
 		}
 	}
+
+	e.mu.Lock()
+	if curr, ok := e.brackets[id]; ok {
+		if exitErr != nil {
+			e.log.Error("CRITICAL: failed to place exit order on manual exit", "id", id, "error", exitErr)
+			curr.Status = StatusExitFailed
+			curr.UpdatedAt = time.Now()
+			e.indexActiveInPosition(curr) // re-index so user or engine can retry exit
+			bracketCopy = *curr
+		} else {
+			curr.ExitOrderID = orderID
+			if unmatched, found := e.unmatchedOrders[orderID]; found {
+				delete(e.unmatchedOrders, orderID)
+				if isFilledStatus(unmatched.Status) {
+					curr.Status = StatusExitedManual
+					if unmatched.FilledPrice > 0 {
+						curr.ExitPrice = unmatched.FilledPrice
+					}
+				}
+			}
+			bracketCopy = *curr
+		}
+	}
+	e.mu.Unlock()
 
 	if e.store != nil {
 		_ = e.store.UpdateBracket(ctx, bracketCopy)
 	}
 	e.notify(bracketCopy)
+	if exitErr != nil {
+		return fmt.Errorf("failed to execute market exit order: %w", exitErr)
+	}
 	return nil
 }
 
@@ -403,6 +523,7 @@ func (e *Engine) OnOrderEvent(ctx context.Context, event orderfeed.Event) {
 
 type parsedOrder struct {
 	OrderID     string
+	Tag         string
 	Status      string
 	FilledPrice float64
 }
@@ -438,13 +559,23 @@ func extractParsedOrder(m map[string]any) (parsedOrder, bool) {
 	for _, k := range []string{"order_id", "nOrdNo", "nordno", "ordId", "ordid", "broker_order_id", "client_order_id", "id"} {
 		if v, ok := m[k]; ok && v != nil {
 			str := fmt.Sprint(v)
-			if str != "" && str != "—" {
+			if str != "" && str != "—" && str != "<nil>" {
 				po.OrderID = str
 				break
 			}
 		}
 	}
-	if po.OrderID == "" {
+	// Check tag / correlation ID fields
+	for _, k := range []string{"tag", "client_order_id", "guiOrdId", "gui_order_id", "tag_id"} {
+		if v, ok := m[k]; ok && v != nil {
+			str := strings.TrimSpace(fmt.Sprint(v))
+			if str != "" && str != "—" && str != "<nil>" {
+				po.Tag = str
+				break
+			}
+		}
+	}
+	if po.OrderID == "" && po.Tag == "" {
 		return po, false
 	}
 
@@ -501,8 +632,11 @@ func isCancelledStatus(status string) bool {
 func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	e.mu.Lock()
 	var updated *Bracket
+	matched := false
 	for _, b := range e.brackets {
-		if b.EntryOrderID == ord.OrderID && b.Status == StatusPendingEntry {
+		isEntryMatch := (b.EntryOrderID == ord.OrderID && ord.OrderID != "") || (ord.Tag != "" && ord.Tag == b.ID)
+		if isEntryMatch && (b.Status == StatusPendingEntry || b.Status == "") {
+			matched = true
 			if isFilledStatus(ord.Status) {
 				b.Status = StatusInPosition
 				if ord.FilledPrice > 0 {
@@ -520,7 +654,11 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 				updated = &cp
 				break
 			}
-		} else if b.ExitOrderID == ord.OrderID && ord.OrderID != "" {
+		}
+
+		isExitMatch := (b.ExitOrderID == ord.OrderID && ord.OrderID != "") || (ord.Tag != "" && ord.Tag == "exit_"+b.ID)
+		if isExitMatch {
+			matched = true
 			if isFilledStatus(ord.Status) {
 				e.unindexActiveInPosition(b)
 				if ord.FilledPrice > 0 {
@@ -534,6 +672,27 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 				b.UpdatedAt = time.Now()
 				cp := *b
 				updated = &cp
+				break
+			} else if isCancelledStatus(ord.Status) {
+				e.log.Error("CRITICAL: exit order was rejected or cancelled by broker",
+					"bracket_id", b.ID, "order_id", ord.OrderID, "status", ord.Status)
+				b.Status = StatusExitFailed
+				b.UpdatedAt = time.Now()
+				e.indexActiveInPosition(b) // re-index to enable manual exit or retry
+				cp := *b
+				updated = &cp
+				break
+			}
+		}
+	}
+	if !matched && ord.OrderID != "" {
+		if e.unmatchedOrders == nil {
+			e.unmatchedOrders = make(map[string]parsedOrder)
+		}
+		e.unmatchedOrders[ord.OrderID] = ord
+		if len(e.unmatchedOrders) > 200 {
+			for k := range e.unmatchedOrders {
+				delete(e.unmatchedOrders, k)
 				break
 			}
 		}
@@ -550,6 +709,19 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	}
 }
 
+type tickTrigger struct {
+	bracketID    string
+	exitSide     string
+	exitQuantity int64
+	segment      string
+	symbol       string
+	product      string
+	restingOrder string
+	newStatus    string
+	exitPrice    float64
+	pnl          float64
+}
+
 // OnTick evaluates current market price against active IN_POSITION brackets, triggering target or stoploss exits.
 func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) {
 	if instrumentKey == "" || ltp <= 0 {
@@ -557,19 +729,6 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 	}
 	if e.activeInPos.Load() == 0 {
 		return
-	}
-
-	type tickTrigger struct {
-		bracketID    string
-		exitSide     string
-		exitQuantity int64
-		segment      string
-		symbol       string
-		product      string
-		restingOrder string
-		newStatus    string
-		exitPrice    float64
-		pnl          float64
 	}
 
 	var triggers []tickTrigger
@@ -582,7 +741,7 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 	}
 
 	for _, b := range activeMap {
-		if b.Status != StatusInPosition {
+		if b.Status != StatusInPosition && b.Status != StatusExitFailed {
 			continue
 		}
 
@@ -590,18 +749,27 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 
 		// Dynamic trailing stop adjustment
 		if b.TrailingStop > 0 {
+			trailed := false
 			if isLong {
 				trailSL := ltp - b.TrailingStop
 				if trailSL > b.StopLossPrice {
 					b.StopLossPrice = trailSL
 					b.UpdatedAt = time.Now()
+					trailed = true
 				}
 			} else {
 				trailSL := ltp + b.TrailingStop
 				if b.StopLossPrice == 0 || trailSL < b.StopLossPrice {
 					b.StopLossPrice = trailSL
 					b.UpdatedAt = time.Now()
+					trailed = true
 				}
+			}
+			if trailed && e.store != nil {
+				cp := *b
+				go func(br Bracket) {
+					_ = e.store.UpdateBracket(context.Background(), br)
+				}(cp)
 			}
 		}
 
@@ -657,53 +825,98 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 			e.unindexActiveInPosition(b)
 		}
 	}
+	isAsync := e.asyncExecution
 	e.mu.Unlock()
 
-	// Outside lock: cancel resting orders, place market exits, update store & notify
 	for _, trg := range triggers {
-		if trg.restingOrder != "" && e.cancelOrder != nil {
-			if err := e.cancelOrder(ctx, trg.restingOrder); err != nil {
-				e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)
-			}
+		if isAsync {
+			trgCopy := trg
+			go e.processTriggerExit(ctx, trgCopy)
+		} else {
+			e.processTriggerExit(ctx, trg)
 		}
-
-		var placedOrderID string
-		if e.placeOrder != nil {
-			exitOrder := kotakapi.Order{
-				ExchangeSegment: trg.segment,
-				TradingSymbol:   trg.symbol,
-				TransactionType: trg.exitSide,
-				Product:         trg.product,
-				OrderType:       "MKT",
-				Quantity:        trg.exitQuantity,
-				Validity:        "GFD",
-			}
-			orderID, err := e.placeOrder(ctx, exitOrder)
-			if err != nil {
-				e.log.Error("failed to execute market exit on bracket trigger", "bracket_id", trg.bracketID, "error", err)
-			} else {
-				placedOrderID = orderID
-			}
-		}
-
-		e.mu.Lock()
-		var notified Bracket
-		if curr, ok := e.brackets[trg.bracketID]; ok {
-			if placedOrderID != "" {
-				curr.ExitOrderID = placedOrderID
-			}
-			notified = *curr
-		}
-		e.mu.Unlock()
-
-		if e.store != nil {
-			if err := e.store.UpdateBracket(ctx, notified); err != nil {
-				e.log.Error("failed to persist bracket exit in store", "bracket_id", trg.bracketID, "error", err)
-			}
-		}
-
-		e.notify(notified)
 	}
+}
+
+func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = kotakhttp.WithPriority(ctx)
+	if trg.restingOrder != "" && e.cancelOrder != nil {
+		if err := e.cancelOrder(ctx, trg.restingOrder); err != nil {
+			e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)
+		}
+	}
+
+	var placedOrderID string
+	var placeErr error
+	if e.placeOrder != nil {
+		exitOrder := kotakapi.Order{
+			Tag:             "exit_" + trg.bracketID,
+			ExchangeSegment: trg.segment,
+			TradingSymbol:   trg.symbol,
+			TransactionType: trg.exitSide,
+			Product:         trg.product,
+			OrderType:       "MKT",
+			Quantity:        trg.exitQuantity,
+			Validity:        "GFD",
+		}
+	triggerRetryLoop:
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					placeErr = ctx.Err()
+					break triggerRetryLoop
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+			placedOrderID, placeErr = e.placeOrder(ctx, exitOrder)
+			if placeErr == nil && placedOrderID != "" {
+				break triggerRetryLoop
+			}
+		}
+	}
+
+	e.mu.Lock()
+	var notified Bracket
+	if curr, ok := e.brackets[trg.bracketID]; ok {
+		if placeErr != nil {
+			e.log.Error("CRITICAL: market exit order failed; transitioning to EXIT_FAILED",
+				"bracket_id", trg.bracketID, "error", placeErr)
+			curr.Status = StatusExitFailed
+			curr.UpdatedAt = time.Now()
+			e.indexActiveInPosition(curr) // re-index to allow retry or manual square-off
+		} else {
+			curr.Status = trg.newStatus
+			curr.ExitOrderID = placedOrderID
+			curr.UpdatedAt = time.Now()
+			if unmatched, found := e.unmatchedOrders[placedOrderID]; found {
+				delete(e.unmatchedOrders, placedOrderID)
+				if isFilledStatus(unmatched.Status) {
+					if unmatched.FilledPrice > 0 {
+						curr.ExitPrice = unmatched.FilledPrice
+						if curr.TransactionType == "BUY" {
+							curr.PnL = (curr.ExitPrice - curr.EntryPrice) * float64(curr.Quantity)
+						} else {
+							curr.PnL = (curr.EntryPrice - curr.ExitPrice) * float64(curr.Quantity)
+						}
+					}
+				}
+			}
+		}
+		notified = *curr
+	}
+	e.mu.Unlock()
+
+	if e.store != nil {
+		if err := e.store.UpdateBracket(ctx, notified); err != nil {
+			e.log.Error("failed to persist bracket exit in store", "bracket_id", trg.bracketID, "error", err)
+		}
+	}
+
+	e.notify(notified)
 }
 
 func generateID() string {

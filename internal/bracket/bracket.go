@@ -14,6 +14,7 @@ const (
 	StatusSLHit        = "SL_HIT"
 	StatusCancelled    = "CANCELLED"
 	StatusExitedManual = "EXITED_MANUAL"
+	StatusExitFailed   = "EXIT_FAILED"
 )
 
 // Bracket represents a bracket and OCO order configuration and current execution state.

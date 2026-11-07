@@ -37,15 +37,17 @@ type Status struct {
 }
 
 type snapshot struct {
-	options     []Option
-	spots       []Spot
-	byKey       map[string]Option
-	byPSymbol   map[string]Option
-	byTrdSymbol map[string]Option
-	spotByKey   map[string]Spot
-	spotByFeed  map[string]Spot
-	syncedAt    time.Time
-	source      string
+	options             []Option
+	spots               []Spot
+	byKey               map[string]Option
+	byPSymbol           map[string]Option
+	byTrdSymbol         map[string]Option
+	byUnderlyingExpiry  map[string][]Option
+	optionsByUnderlying map[string][]Option
+	spotByKey           map[string]Spot
+	spotByFeed          map[string]Spot
+	syncedAt            time.Time
+	source              string
 }
 
 // Manager owns the parsed snapshot and performs refresh/cache/persist.
@@ -280,20 +282,25 @@ func (m *Manager) Refresh(ctx context.Context, baseURL string) error {
 
 func (m *Manager) apply(options []Option, spots []Spot, syncedAt time.Time, source string) {
 	snap := &snapshot{
-		options:     append([]Option(nil), options...),
-		spots:       append([]Spot(nil), spots...),
-		byKey:       make(map[string]Option, len(options)),
-		byPSymbol:   make(map[string]Option, len(options)),
-		byTrdSymbol: make(map[string]Option, len(options)),
-		spotByKey:   make(map[string]Spot, len(spots)),
-		spotByFeed:  make(map[string]Spot, len(spots)),
-		syncedAt:    syncedAt,
-		source:      source,
+		options:             append([]Option(nil), options...),
+		spots:               append([]Spot(nil), spots...),
+		byKey:               make(map[string]Option, len(options)),
+		byPSymbol:           make(map[string]Option, len(options)),
+		byTrdSymbol:         make(map[string]Option, len(options)),
+		byUnderlyingExpiry:  make(map[string][]Option),
+		optionsByUnderlying: make(map[string][]Option),
+		spotByKey:           make(map[string]Spot, len(spots)),
+		spotByFeed:          make(map[string]Spot, len(spots)),
+		syncedAt:            syncedAt,
+		source:              source,
 	}
 	for _, opt := range snap.options {
 		snap.byKey[opt.InstrumentKey] = opt
 		snap.byPSymbol[opt.ExchangeSegment+"|"+opt.PSymbol] = opt
 		snap.byTrdSymbol[opt.ExchangeSegment+"|"+opt.PTrdSymbol] = opt
+		ueKey := opt.Underlying + "|" + opt.Expiry
+		snap.byUnderlyingExpiry[ueKey] = append(snap.byUnderlyingExpiry[ueKey], opt)
+		snap.optionsByUnderlying[opt.Underlying] = append(snap.optionsByUnderlying[opt.Underlying], opt)
 	}
 	for _, spot := range snap.spots {
 		snap.spotByKey[spot.InstrumentKey] = spot
@@ -368,12 +375,12 @@ func (m *Manager) Options(underlying, expiry string) []Option {
 	if m.snap == nil {
 		return nil
 	}
-	out := make([]Option, 0, 64)
-	for _, opt := range m.snap.options {
-		if opt.Underlying == underlying && opt.Expiry == expiry {
-			out = append(out, opt)
-		}
+	opts := m.snap.byUnderlyingExpiry[underlying+"|"+expiry]
+	if len(opts) == 0 {
+		return nil
 	}
+	out := make([]Option, len(opts))
+	copy(out, opts)
 	return out
 }
 
@@ -389,7 +396,14 @@ func (m *Manager) AllOptions() []Option {
 
 // Expiries returns the grouped expiry list for one underlying.
 func (m *Manager) Expiries(underlying string) []ExpiryInfo {
-	return BuildExpiries(m.AllOptions(), underlying, m.now())
+	m.mu.RLock()
+	if m.snap == nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	opts := m.snap.optionsByUnderlying[underlying]
+	m.mu.RUnlock()
+	return BuildExpiries(opts, underlying, m.now())
 }
 
 // NearestExpiry returns the first non-expired expiry for an underlying.

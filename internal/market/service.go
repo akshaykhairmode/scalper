@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -610,9 +611,5 @@ func (s *Service) ScripStatus() scrip.Status {
 }
 
 func sortStrikeRows(strikes []int64) {
-	for i := 1; i < len(strikes); i++ {
-		for j := i; j > 0 && strikes[j] < strikes[j-1]; j-- {
-			strikes[j], strikes[j-1] = strikes[j-1], strikes[j]
-		}
-	}
+	slices.Sort(strikes)
 }

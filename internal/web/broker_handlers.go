@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 )
 
@@ -425,6 +426,16 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 			}
 		} else {
 			closedCount++
+		}
+	}
+
+	if s.bracketEngine != nil {
+		if active, err := s.bracketEngine.List(500); err == nil {
+			for _, b := range active {
+				if b.Status == bracket.StatusInPosition || b.Status == bracket.StatusPendingEntry || b.Status == bracket.StatusExitFailed {
+					_ = s.bracketEngine.Disarm(r.Context(), b.ID)
+				}
+			}
 		}
 	}
 

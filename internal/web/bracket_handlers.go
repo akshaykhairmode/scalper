@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
+	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 )
 
 type bracketListResponse struct {
@@ -35,6 +36,30 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket payload: "+err.Error(), err)
 		return
 	}
+
+	// If the bracket needs an entry order placed (EntryOrderID is empty), enforce risk controls
+	if (b.Status == "" || b.Status == bracket.StatusPendingEntry) && b.EntryOrderID == "" {
+		session, _ := s.brokerSessionValue()
+
+		entryOrder := kotakapi.Order{
+			ExchangeSegment: b.ExchangeSegment,
+			TradingSymbol:   b.TradingSymbol,
+			TransactionType: b.TransactionType,
+			Product:         b.Product,
+			OrderType:       "L",
+			Quantity:        b.Quantity,
+			Price:           b.EntryPrice,
+			Validity:        "GFD",
+		}
+		if b.EntryPrice <= 0 {
+			entryOrder.OrderType = "MKT"
+		}
+		if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
+			s.writeRiskError(w, r, err)
+			return
+		}
+	}
+
 	created, err := s.bracketEngine.Create(r.Context(), b)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)

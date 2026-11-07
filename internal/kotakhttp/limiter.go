@@ -36,7 +36,27 @@ func newBucket(capacity, perSecond float64) *bucket {
 	}
 }
 
+type priorityKey struct{}
+
+// WithPriority marks a context as high-priority (e.g. emergency exit or stop-loss)
+// so the rate limiter bypasses token exhaustion queues.
+func WithPriority(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, priorityKey{}, true)
+}
+
+func isPriority(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	p, _ := ctx.Value(priorityKey{}).(bool)
+	return p
+}
+
 func (b *bucket) take(ctx context.Context) error {
+	priority := isPriority(ctx)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -47,7 +67,7 @@ func (b *bucket) take(ctx context.Context) error {
 			b.tokens = math.Min(b.capacity, b.tokens+elapsed*b.rate)
 			b.last = now
 		}
-		if b.tokens >= 1 {
+		if priority || b.tokens >= 1 {
 			b.tokens--
 			b.mu.Unlock()
 			return nil

@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/bracket"
+	"github.com/akshaykhairmode/scalper/internal/config"
+	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 )
 
 //nolint:unparam
@@ -22,6 +25,11 @@ func localRequestWithBody(method, target string, body []byte) *http.Request {
 func TestBracketHandlers(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	defer s.Close()
+
+	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+		return "ord-exit-ok", nil
+	}, nil, testLogger())
+	s.bracketEngine = engine
 
 	// 1. List brackets initially (empty)
 	rec := do(t, s, localRequest(http.MethodGet, "/api/brackets"))
@@ -114,5 +122,41 @@ func TestBracketHandlers(t *testing.T) {
 	b2, ok := s.bracketEngine.Get("test-bracket-2")
 	if !ok || b2.Status != bracket.StatusExitedManual {
 		t.Fatalf("expected status EXITED_MANUAL, got %+v", b2)
+	}
+}
+
+func TestBracketCreateEnforcesRiskLimits(t *testing.T) {
+	s := riskTestServer(t, func(c *config.Config) {
+		c.Trading.Risk.MaxLotsPerOrder = 1
+	})
+	defer s.Close()
+	_, _ = s.a.SessionManager().NewBrokerSession(auth.TradeSession{
+		Token:   "trade-token",
+		SID:     "trade-sid",
+		BaseURL: "https://cis.kotaksecurities.com",
+	}, auth.LoginMethodTOTP)
+
+	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+		return "ord-1", nil
+	}, nil, testLogger())
+	s.bracketEngine = engine
+
+	// Create a bracket violating max_lots_per_order (lot size is 75, quantity is 150 = 2 lots)
+	bReq := bracket.Bracket{
+		ExchangeSegment: "nse_fo",
+		TradingSymbol:   "NIFTY26NOV25000CE",
+		InstrumentKey:   "nse_fo|NIFTY|2026-11-26|25000|CE",
+		TransactionType: "BUY",
+		Quantity:        150,
+		EntryPrice:      100,
+		TargetPrice:     110,
+		StopLossPrice:   90,
+	}
+	body, _ := json.Marshal(bReq)
+	req := localRequestWithBody(http.MethodPost, "/api/brackets", body)
+
+	rec := do(t, s, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict risk block status, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 }

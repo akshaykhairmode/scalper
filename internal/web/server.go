@@ -345,6 +345,9 @@ func New(opts Options) (*Server, error) {
 			if orderID == "" {
 				orderID = resp.ID
 			}
+			if orderID == "" {
+				return "", fmt.Errorf("kotak: order placement succeeded but order ID missing from response: %s", string(raw))
+			}
 			return orderID, nil
 		}
 		cancelOrder := func(ctx context.Context, id string) error {
@@ -371,6 +374,7 @@ func New(opts Options) (*Server, error) {
 	}
 
 	if s.bracketEngine != nil {
+		s.bracketEngine.SetAsync(true)
 		s.bracketEngine.SetOnChange(func(b bracket.Bracket) {
 			s.broadcast(map[string]any{
 				"type": "bracket_update",

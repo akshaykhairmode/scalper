@@ -105,6 +105,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		s.feedMu.Lock()
 		delete(s.feedClients, client)
+		close(client.send)
 		s.feedMu.Unlock()
 		if cerr := conn.Close(); cerr != nil && s.log != nil {
 			s.log.Debug("failed to close feed client connection", "error", cerr)

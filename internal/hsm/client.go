@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,6 +24,11 @@ const (
 	maxSFeedTokens    = 3000
 	sfeedPingInterval = 20 * time.Second
 )
+
+type sfeedMetadata struct {
+	dividers       map[int8]int
+	tradingSymbols map[string]string
+}
 
 //nolint:revive // HSM distinguishes this feed client from other market clients.
 type HSMClient struct {
@@ -39,6 +45,7 @@ type HSMClient struct {
 	connected      bool
 	dividers       map[int8]int
 	tradingSymbols map[string]string
+	metadata       atomic.Pointer[sfeedMetadata]
 	subs           map[string]struct{}
 	ackPending     bool
 	pendingQuotes  map[string]*Quote
@@ -61,7 +68,7 @@ func NewHSMClientWithLogger(endpoint string, quoteCh chan<- *Quote, logger *slog
 	if strings.TrimSpace(endpoint) == "" {
 		endpoint = DefaultURL
 	}
-	return &HSMClient{
+	client := &HSMClient{
 		url:            endpoint,
 		logger:         logger,
 		quoteCh:        quoteCh,
@@ -75,6 +82,23 @@ func NewHSMClientWithLogger(endpoint string, quoteCh chan<- *Quote, logger *slog
 		doneCh:         make(chan error, 1),
 		subscribeAckCh: make(chan struct{}, 1),
 	}
+	client.updateMetadataSnapshotLocked()
+	return client
+}
+
+func (c *HSMClient) updateMetadataSnapshotLocked() {
+	dividersCopy := make(map[int8]int, len(c.dividers))
+	for k, v := range c.dividers {
+		dividersCopy[k] = v
+	}
+	symbolsCopy := make(map[string]string, len(c.tradingSymbols))
+	for k, v := range c.tradingSymbols {
+		symbolsCopy[k] = v
+	}
+	c.metadata.Store(&sfeedMetadata{
+		dividers:       dividersCopy,
+		tradingSymbols: symbolsCopy,
+	})
 }
 
 // Connect authenticates the client and starts its read loop.
@@ -274,6 +298,7 @@ func (c *HSMClient) handleTextMessage(data []byte) error {
 				c.tradingSymbols[key] = symbol
 			}
 		}
+		c.updateMetadataSnapshotLocked()
 		hasPendingAck := c.ackPending
 		c.ackPending = false
 		pending := c.takePendingQuotesLocked()
@@ -312,6 +337,7 @@ func (c *HSMClient) handleTextMessage(data []byte) error {
 	}
 	c.mu.Lock()
 	c.dividers = dividers
+	c.updateMetadataSnapshotLocked()
 	c.connected = true
 	c.mu.Unlock()
 	c.connectedOnce.Do(func() { close(c.connectedCh) })
@@ -350,16 +376,13 @@ func (c *HSMClient) handleBinaryMessage(data []byte) error {
 	if err != nil {
 		return err
 	}
-	c.mu.RLock()
-	dividers := make(map[int8]int, len(c.dividers))
-	for id, divider := range c.dividers {
-		dividers[id] = divider
+	meta := c.metadata.Load()
+	var dividers map[int8]int
+	var symbols map[string]string
+	if meta != nil {
+		dividers = meta.dividers
+		symbols = meta.tradingSymbols
 	}
-	symbols := make(map[string]string, len(c.tradingSymbols))
-	for key, symbol := range c.tradingSymbols {
-		symbols[key] = symbol
-	}
-	c.mu.RUnlock()
 	for _, packet := range packets {
 		quote, err := decodeSFeedPacket(packet, dividers, symbols)
 		if err != nil {
