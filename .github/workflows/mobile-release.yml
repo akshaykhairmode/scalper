@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "GitHub Release tag to attach binaries to (optional, e.g. v1.0.0)"
+        required: false
+        type: string
       build_type:
         description: "Android build type (release or debug)"
         required: true
@@ -19,6 +23,10 @@ on:
         default: "https://130.210.18.97.sslip.io"
   workflow_call:
     inputs:
+      version:
+        description: "Release tag (e.g. v1.0.0)"
+        required: false
+        type: string
       build_type:
         description: "Android build type"
         required: false
@@ -126,12 +134,25 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Determine release tag
+        id: release-info
+        run: |
+          target_tag="${{ inputs.version || inputs.release_tag }}"
+          if [ -z "$target_tag" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            target_tag="${{ github.ref_name }}"
+          fi
+          echo "tag=$target_tag" >> "$GITHUB_OUTPUT"
+          if [ -n "$target_tag" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Attach APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.release-info.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ steps.release-info.outputs.tag }}
           files: |
             scalper-android.apk
             scalper-android.apk.sha256
@@ -180,9 +201,9 @@ jobs:
             cp -Rf App/public App/App/public 2>/dev/null || true
           fi
 
-          build_cmd="xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
+          build_cmd="xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
           if [ ! -d "App.xcworkspace" ]; then
-            build_cmd="xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
+            build_cmd="xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_STYLE=Manual COMPILER_INDEX_STORE_ENABLE=NO build"
           fi
 
           echo "Executing: $build_cmd"
@@ -194,3 +215,67 @@ jobs:
             exit 1
           fi
           echo "iOS build validation succeeded!"
+
+      - name: Package iOS binaries
+        run: |
+          set -euo pipefail
+          app_path="$(find mobile/ios/App/DerivedData/Build/Products -type d -name 'App.app' 2>/dev/null | head -n 1)"
+          if [ -z "$app_path" ]; then
+            app_path="$(find ~/Library/Developer/Xcode/DerivedData -type d -name 'App.app' 2>/dev/null | head -n 1)"
+          fi
+          if [ -z "$app_path" ]; then
+            echo "::error::Could not find compiled App.app bundle"
+            exit 1
+          fi
+          echo "Found compiled iOS app: $app_path"
+
+          # 1. Simulator zip (ready to drag-and-drop into iOS Simulator)
+          (cd "$(dirname "$app_path")" && zip -r -q "$GITHUB_WORKSPACE/scalper-ios-simulator.zip" "App.app")
+
+          # 2. Unsigned .ipa package (standard Payload/ structure for sideloading / AltStore / TrollStore)
+          mkdir -p /tmp/payload_pack/Payload
+          cp -Rf "$app_path" /tmp/payload_pack/Payload/App.app
+          (cd /tmp/payload_pack && zip -r -q "$GITHUB_WORKSPACE/scalper-ios-unsigned.ipa" Payload)
+          rm -rf /tmp/payload_pack
+
+          sha256sum scalper-ios-simulator.zip > scalper-ios-simulator.zip.sha256
+          sha256sum scalper-ios-unsigned.ipa > scalper-ios-unsigned.ipa.sha256
+          echo "iOS binaries packaged:"
+          ls -lh scalper-ios*
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalper-ios
+          path: |
+            scalper-ios-simulator.zip
+            scalper-ios-simulator.zip.sha256
+            scalper-ios-unsigned.ipa
+            scalper-ios-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Determine release tag
+        id: release-info
+        run: |
+          target_tag="${{ inputs.version || inputs.release_tag }}"
+          if [ -z "$target_tag" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            target_tag="${{ github.ref_name }}"
+          fi
+          echo "tag=$target_tag" >> "$GITHUB_OUTPUT"
+          if [ -n "$target_tag" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach iOS binaries to GitHub Release
+        if: steps.release-info.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-info.outputs.tag }}
+          files: |
+            scalper-ios-simulator.zip
+            scalper-ios-simulator.zip.sha256
+            scalper-ios-unsigned.ipa
+            scalper-ios-unsigned.ipa.sha256

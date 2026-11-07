@@ -221,6 +221,7 @@ jobs:
       contents: write
     uses: ./.github/workflows/mobile-release.yml
     with:
+      version: ${{ needs.release-version.outputs.version }}
       build_type: "release"
       server_url: "https://130.210.18.97.sslip.io"
 
