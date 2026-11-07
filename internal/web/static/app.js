@@ -2779,6 +2779,13 @@ function renderOrderPad() {
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
       button.disabled = false;
     });
+
+    const currentLotCount = isShares ? Math.round(S.qty[type] / Math.max(1, lot)) : Math.round(S.qty[type]);
+    for (const btn of $$(`.lot-preset-btn[data-lot-preset="${type}"]`)) {
+      const active = num(btn.dataset.lots) === currentLotCount;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
   }
 }
 
@@ -2916,6 +2923,26 @@ function renderTab() {
   if (mobilePosBadge) {
     mobilePosBadge.textContent = String(openPositionsCount);
     mobilePosBadge.hidden = openPositionsCount === 0;
+  }
+
+  const mobilePanicPill = $("mobile-panic-pill");
+  if (mobilePanicPill) {
+    if (openPositionsCount > 0) {
+      mobilePanicPill.hidden = false;
+      const countEl = $("mobile-panic-count");
+      if (countEl) countEl.textContent = `${openPositionsCount} ${openPositionsCount === 1 ? "Pos" : "Positions"}`;
+      const pnlEl = $("mobile-panic-pnl");
+      if (pnlEl) {
+        let totalPnl = 0;
+        for (const p of S.positions) {
+          if (Math.abs(num(p.quantity)) > 0) totalPnl += num(p.pnl || p.unrealised || 0);
+        }
+        pnlEl.textContent = `${totalPnl >= 0 ? "+" : ""}₹${fmt(totalPnl, 0)}`;
+        pnlEl.className = `panic-pill-pnl ${totalPnl >= 0 ? "up" : "down"}`;
+      }
+    } else {
+      mobilePanicPill.hidden = true;
+    }
   }
 
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
@@ -5100,6 +5127,74 @@ function bindEvents() {
   for (const button of $$(".unit-toggle")) {
     button.addEventListener("click", () => toggleQuantityUnit(button.dataset.unitToggle));
   }
+  for (const button of $$(".lot-preset-btn")) {
+    button.addEventListener("click", () => {
+      const type = button.dataset.lotPreset;
+      const lotsCount = num(button.dataset.lots, 1);
+      const lot = Math.max(1, lotSize(type) || 1);
+      S.qty[type] = S.unit[type] === "SHARES" ? lotsCount * lot : lotsCount;
+      renderOrderPad();
+    });
+  }
+
+  $("mobile-panic-exit-btn")?.addEventListener("click", onSquareOffAll);
+
+  function openMobileDrawer() {
+    const backdrop = $("mobile-drawer-backdrop");
+    if (!backdrop) return;
+    backdrop.hidden = false;
+    const modeBadge = $("drawer-mode-badge");
+    if (modeBadge) modeBadge.textContent = tradingMode().toUpperCase();
+    const sessionStatus = $("drawer-session-status");
+    if (sessionStatus) sessionStatus.textContent = S.session?.authenticated ? "Active" : "Signed Out";
+    const authBtn = $("drawer-auth-btn");
+    if (authBtn) authBtn.textContent = S.session?.authenticated ? "Sign Out" : "Sign In";
+    const themeLabel = $("drawer-theme-label");
+    if (themeLabel) themeLabel.textContent = `Switch to ${document.body.dataset.theme === "light" ? "Dark" : "Light"} Theme`;
+    const installBtn = $("drawer-install-btn");
+    if (installBtn && deferredInstallPrompt) installBtn.hidden = false;
+  }
+
+  function closeMobileDrawer() {
+    const backdrop = $("mobile-drawer-backdrop");
+    if (backdrop) backdrop.hidden = true;
+  }
+
+  $("mobile-menu-btn")?.addEventListener("click", openMobileDrawer);
+  $("mobile-drawer-close")?.addEventListener("click", closeMobileDrawer);
+  $("mobile-drawer-backdrop")?.addEventListener("click", (e) => {
+    if (e.target.id === "mobile-drawer-backdrop") closeMobileDrawer();
+  });
+
+  $("drawer-status-btn")?.addEventListener("click", () => {
+    closeMobileDrawer();
+    openStatusModal();
+  });
+  $("drawer-pair-btn")?.addEventListener("click", () => {
+    closeMobileDrawer();
+    openPairModal();
+  });
+  $("drawer-register-btn")?.addEventListener("click", () => {
+    closeMobileDrawer();
+    handleRegisterDevice();
+  });
+  $("drawer-theme-btn")?.addEventListener("click", () => {
+    setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    const themeLabel = $("drawer-theme-label");
+    if (themeLabel) themeLabel.textContent = `Switch to ${document.body.dataset.theme === "light" ? "Dark" : "Light"} Theme`;
+  });
+  $("drawer-auth-btn")?.addEventListener("click", () => {
+    closeMobileDrawer();
+    if (S.session?.authenticated) logout();
+    else openLogin();
+  });
+  $("drawer-install-btn")?.addEventListener("click", () => {
+    closeMobileDrawer();
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      deferredInstallPrompt.userChoice.then(() => { deferredInstallPrompt = null; });
+    }
+  });
   for (const input of $$("[data-lots]")) {
     input.addEventListener("change", () => updateLotInput(input.dataset.lots, input.value));
     input.addEventListener("keydown", (event) => {

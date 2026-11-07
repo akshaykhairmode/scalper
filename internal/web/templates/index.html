@@ -54,6 +54,7 @@
         <span class="session-chip-time" id="session-countdown">03:00:00</span>
       </span>
       <button type="button" class="ghost" id="auth-button">Login</button>
+      <button type="button" class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Open mobile menu" title="Menu &amp; Settings">⚙</button>
     </div>
   </header>
 
@@ -126,6 +127,17 @@
     </div>
   </div>
 
+  <!-- Mobile Floating Panic Square-Off Pill (Concept 1) -->
+  <div class="mobile-panic-pill" id="mobile-panic-pill" hidden>
+    <div class="panic-pill-info">
+      <span class="panic-pill-dot"></span>
+      <span class="panic-pill-count" id="mobile-panic-count">0 Pos</span>
+      <span class="panic-pill-sep">·</span>
+      <span class="panic-pill-pnl" id="mobile-panic-pnl">—</span>
+    </div>
+    <button type="button" class="panic-pill-exit-btn" id="mobile-panic-exit-btn" title="Emergency 1-tap square off all open positions">EXIT ALL ✕</button>
+  </div>
+
   <main class="terminal bottom-collapsed" data-mobile-view="ce">
     <section class="charts-row" id="charts-row" aria-label="Charts">
       <article class="pane" data-pane="ce">
@@ -167,6 +179,12 @@
             </span>
           </div>
           <div class="leg-order-actions">
+            <div class="lot-presets-row" id="call-lot-presets" role="group" aria-label="Quick lot selector">
+              <button type="button" class="lot-preset-btn active" data-lot-preset="CE" data-lots="1">1x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="CE" data-lots="2">2x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="CE" data-lots="4">4x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="CE" data-lots="10">10x</button>
+            </div>
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="CE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
               <button type="button" data-qty-step="CE" data-step="-1" aria-label="Decrease call quantity">−</button>
@@ -251,6 +269,12 @@
             </span>
           </div>
           <div class="leg-order-actions">
+            <div class="lot-presets-row" id="put-lot-presets" role="group" aria-label="Quick lot selector">
+              <button type="button" class="lot-preset-btn active" data-lot-preset="PE" data-lots="1">1x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="PE" data-lots="2">2x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="PE" data-lots="4">4x</button>
+              <button type="button" class="lot-preset-btn" data-lot-preset="PE" data-lots="10">10x</button>
+            </div>
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="PE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
               <button type="button" data-qty-step="PE" data-step="-1" aria-label="Decrease put quantity">−</button>
@@ -775,6 +799,64 @@
         <span>Liquidity &amp; Setups (Wyckoff / QML)</span>
       </label>
     </div>
+  </div>
+
+  <!-- Mobile Slide-Out Drawer (Concept 1) -->
+  <div class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" hidden>
+    <aside class="mobile-drawer" id="mobile-drawer" role="dialog" aria-modal="true" aria-label="Mobile Navigation Menu">
+      <div class="mobile-drawer-head">
+        <div class="mobile-drawer-brand">
+          <span class="mark">S</span>
+          <div>
+            <strong>Scalper</strong>
+            <span>NEO terminal · v{{.Version}}</span>
+          </div>
+        </div>
+        <button type="button" class="icon-button" id="mobile-drawer-close" aria-label="Close menu">×</button>
+      </div>
+      <div class="mobile-drawer-body">
+        <div class="mobile-drawer-section">
+          <span class="mobile-drawer-section-title">Trading Mode &amp; Account</span>
+          <div class="mobile-drawer-row">
+            <span>Mode</span>
+            <span class="badge live" id="drawer-mode-badge">{{.Mode}}</span>
+          </div>
+          <div class="mobile-drawer-row">
+            <span>Kotak Session</span>
+            <span id="drawer-session-status">Active</span>
+          </div>
+        </div>
+
+        <div class="mobile-drawer-section">
+          <span class="mobile-drawer-section-title">Quick Actions</span>
+          <button type="button" class="drawer-action-btn" id="drawer-status-btn">
+            <i>📊</i> <span>System Status &amp; Connectivity</span>
+          </button>
+          <button type="button" class="drawer-action-btn" id="drawer-pair-btn">
+            <i>📱</i> <span>Pair Mobile Device (QR Code)</span>
+          </button>
+          <button type="button" class="drawer-action-btn" id="drawer-register-btn">
+            <i>🔐</i> <span>Biometrics / Passkey (Touch/Face ID)</span>
+          </button>
+          <a href="/settings" target="_blank" rel="noopener noreferrer" class="drawer-action-btn" id="drawer-settings-btn">
+            <i>⚙️</i> <span>Settings</span>
+          </a>
+          <a href="/logs" target="_blank" rel="noopener noreferrer" class="drawer-action-btn" id="drawer-logs-btn">
+            <i>📜</i> <span>Live Server Logs</span>
+          </a>
+          <button type="button" class="drawer-action-btn" id="drawer-theme-btn">
+            <i>🌓</i> <span id="drawer-theme-label">Switch Theme</span>
+          </button>
+          <button type="button" class="drawer-action-btn" id="drawer-install-btn" hidden>
+            <i>⬇️</i> <span>Install PWA to Home Screen</span>
+          </button>
+        </div>
+
+        <div class="mobile-drawer-footer">
+          <button type="button" class="drawer-logout-btn" id="drawer-auth-btn">Sign Out</button>
+        </div>
+      </div>
+    </aside>
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>

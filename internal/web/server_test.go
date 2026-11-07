@@ -262,7 +262,12 @@ func TestIndexPage(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready", "manifest.webmanifest", "theme-color", "apple-mobile-web-app-capable", "mobile-nav", "install-banner"} {
+	for _, want := range []string{
+		"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready",
+		"manifest.webmanifest", "theme-color", "apple-mobile-web-app-capable",
+		"mobile-nav", "install-banner", "mobile-menu-btn", "mobile-panic-pill",
+		"mobile-drawer", "lot-presets-row",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
