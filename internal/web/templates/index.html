@@ -580,6 +580,10 @@
           <input id="serve-auth-pass" name="password" type="password" autocomplete="current-password"
                  placeholder="Password" required>
         </label>
+        <label class="field checkbox-field" style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; cursor:pointer;">
+          <input type="checkbox" id="serve-auth-remember" name="remember_device" checked style="width:16px; height:16px; accent-color:var(--accent, #f59e0b);">
+          <span>Remember this device (Device Binding)</span>
+        </label>
         <p class="form-error" id="serve-auth-error" role="alert" hidden></p>
         <div class="modal-actions" style="margin-top:16px;">
           <button type="submit" class="primary" id="serve-auth-submit">Unlock Terminal</button>
@@ -695,28 +699,30 @@
       <div class="modal-head">
         <div>
           <span class="eyebrow">OPTION CHAIN · / TO SEARCH</span>
-          <h2 id="strike-title">Choose a strike</h2>
+          <h2 id="strike-title">Option Chain</h2>
         </div>
-        <button type="button" class="icon-button" id="strike-close" aria-label="Close strike search">×</button>
+        <button type="button" class="icon-button" id="strike-close" aria-label="Close option chain">✕</button>
       </div>
-      <label class="strike-target">
-        <span>Apply strike to</span>
-        <select id="strike-target-select" aria-label="Apply searched strike to">
-          <option value="CE">CALL</option>
-          <option value="PE">PUT</option>
-        </select>
-      </label>
-      <label class="strike-search">
-        <span class="sr-only">Search strike price</span>
-        <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Type a strike, e.g. 22500">
-        <span>Enter loads and selects an exact strike · choose CALL or PUT</span>
-      </label>
+      <div class="strike-controls-row">
+        <label class="strike-target-wrap" for="strike-target-select">
+          <span class="sr-only">Target</span>
+          <select id="strike-target-select" aria-label="Apply searched strike to">
+            <option value="CE">CALL</option>
+            <option value="PE">PUT</option>
+          </select>
+        </label>
+        <div class="strike-search-wrap">
+          <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)...">
+        </div>
+        <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike">⚡ ATM</button>
+      </div>
+      <span class="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
       <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
       <button type="button" class="chain-more" id="load-more-above" hidden>Load more above</button>
       <div class="chain-head" role="row">
-        <span class="col-ce">CALL</span>
+        <span class="col-ce">CALL (LTP / VOL)</span>
         <span class="col-strike">STRIKE</span>
-        <span class="col-pe">PUT</span>
+        <span class="col-pe">PUT (LTP / VOL)</span>
       </div>
       <div class="chain-body" id="chain-body" role="table" tabindex="0">
         <div class="empty-state">Waiting for the option chain…</div>
@@ -858,6 +864,27 @@
       </div>
     </aside>
   </div>
+
+  <!-- Concept 1 Bottom Navigation Bar (4 Tab Dock) -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav" aria-label="Mobile primary navigation">
+    <button type="button" class="mobile-bnav-btn active" id="mb-nav-terminal" data-bnav="terminal">
+      <span class="bnav-icon">⚡</span>
+      <span class="bnav-label">Terminal</span>
+    </button>
+    <button type="button" class="mobile-bnav-btn" id="mb-nav-chain" data-bnav="chain">
+      <span class="bnav-icon">⛓</span>
+      <span class="bnav-label">Chain</span>
+    </button>
+    <button type="button" class="mobile-bnav-btn" id="mb-nav-positions" data-bnav="positions">
+      <span class="bnav-icon">💼</span>
+      <span class="bnav-label">Positions</span>
+      <span class="bnav-badge" id="mobile-bottom-pos-badge" hidden>0</span>
+    </button>
+    <button type="button" class="mobile-bnav-btn" id="mb-nav-orders" data-bnav="orders">
+      <span class="bnav-icon">📋</span>
+      <span class="bnav-label">Orders</span>
+    </button>
+  </nav>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 

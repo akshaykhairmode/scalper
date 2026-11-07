@@ -120,19 +120,13 @@ func (s *Server) validPairToken(token string) bool {
 	return ok && now.Before(exp)
 }
 
-func (s *Server) consumePairToken(token string) bool {
+func (s *Server) consumePairToken(token string) {
 	if strings.TrimSpace(token) == "" {
-		return false
+		return
 	}
 	s.webauthnChallengesMu.Lock()
 	defer s.webauthnChallengesMu.Unlock()
-	exp, ok := s.webauthnPairTokens[token]
-	if !ok || time.Now().After(exp) {
-		delete(s.webauthnPairTokens, token)
-		return false
-	}
 	delete(s.webauthnPairTokens, token)
-	return true
 }
 
 func extractPairToken(r *http.Request) string {
@@ -306,26 +300,12 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.setDeviceBindingCookie(w, r, dev.ID)
+
 	var sessionToken string
 	if sc.Pairing || isPairing {
 		s.consumePairToken(pairToken)
-		tok, err := newServeSessionID()
-		if err == nil {
-			sessionToken = tok
-			exp := time.Now().Add(24 * time.Hour)
-			s.serveSessionsMu.Lock()
-			s.serveSessions[tok] = exp
-			s.serveSessionsMu.Unlock()
-			http.SetCookie(w, &http.Cookie{ // #nosec G124
-				Name:     serveSessionCookie,
-				Value:    tok,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   secureRequest(r),
-				SameSite: http.SameSiteStrictMode,
-				Expires:  exp,
-			})
-		}
+		sessionToken = s.issueServeSession(w, r)
 	}
 
 	s.log.Info("registered webauthn device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
@@ -470,28 +450,14 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 	now := time.Now()
 	_ = s.deviceStore.UpdateDeviceUsage(r.Context(), dev.ID, result.SignCount, now)
 
-	// Issue serve session cookie and token
-	token, err := newServeSessionID()
-	if err != nil {
-		s.log.Error("create serve session failed", "error", err, "request_id", logging.RequestID(r.Context()))
+	s.setDeviceBindingCookie(w, r, dev.ID)
+
+	token := s.issueServeSession(w, r)
+	if token == "" {
+		s.log.Error("create serve session failed", "request_id", logging.RequestID(r.Context()))
 		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Failed to create session"})
 		return
 	}
-
-	exp := time.Now().Add(24 * time.Hour)
-	s.serveSessionsMu.Lock()
-	s.serveSessions[token] = exp
-	s.serveSessionsMu.Unlock()
-
-	http.SetCookie(w, &http.Cookie{ // #nosec G124
-		Name:     serveSessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
-		Expires:  exp,
-	})
 
 	s.clearUnlockFailures(serveUnlockKey(r))
 	s.log.Info("biometric login succeeded", "device_name", dev.DeviceName, "request_id", logging.RequestID(r.Context()))
@@ -534,11 +500,29 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var currentDevID string
+	if cookie, err := r.Cookie(deviceBindingCookie); err == nil {
+		currentDevID = cookie.Value
+	}
+
+	type deviceItem struct {
+		store.Device
+		IsCurrent bool `json:"is_current"`
+	}
+	items := make([]deviceItem, len(devices))
+	for i, d := range devices {
+		items[i] = deviceItem{
+			Device:    d,
+			IsCurrent: d.ID == currentDevID,
+		}
+	}
+
 	_ = writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"devices":     devices,
-		"count":       len(devices),
-		"has_devices": len(devices) > 0,
+		"ok":                true,
+		"devices":           items,
+		"count":             len(items),
+		"has_devices":       len(items) > 0,
+		"current_device_id": currentDevID,
 	})
 }
 
@@ -568,8 +552,99 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cookie, err := r.Cookie(deviceBindingCookie); err == nil && cookie.Value == id {
+		s.clearDeviceBindingCookie(w, r)
+	}
+
 	s.log.Info("deleted webauthn device", "id", id, "request_id", logging.RequestID(r.Context()))
 	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+}
+
+// POST /api/devices/bind
+func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
+	if s.deviceStore == nil {
+		_ = writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "Device storage unavailable"})
+		return
+	}
+
+	pairToken := extractPairToken(r)
+	isPairing := s.validPairToken(pairToken)
+	if !s.isServeAuthenticated(r) && !isPairing {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Authentication or pairing token required"})
+		return
+	}
+
+	var req struct {
+		DeviceName string `json:"deviceName"`
+		DevNameAlt string `json:"device_name"`
+		PairToken  string `json:"pairToken"`
+		PairTokAlt string `json:"pair_token"`
+	}
+	if requireJSONContentType(r) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.PairToken != "" && s.validPairToken(req.PairToken) {
+		isPairing = true
+		pairToken = req.PairToken
+	} else if req.PairTokAlt != "" && s.validPairToken(req.PairTokAlt) {
+		isPairing = true
+		pairToken = req.PairTokAlt
+	}
+
+	deviceName := strings.TrimSpace(req.DeviceName)
+	if deviceName == "" {
+		deviceName = strings.TrimSpace(req.DevNameAlt)
+	}
+	if deviceName == "" {
+		ua := r.UserAgent()
+		switch {
+		case strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad"):
+			deviceName = "Apple Device (Mobile)"
+		case strings.Contains(ua, "Android"):
+			deviceName = "Android Device"
+		case strings.Contains(ua, "Macintosh"):
+			deviceName = "Mac Browser"
+		case strings.Contains(ua, "Windows"):
+			deviceName = "Windows PC"
+		default:
+			deviceName = "Bound Device"
+		}
+	}
+
+	rawID, err := newServeSessionID()
+	if err != nil {
+		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Failed to create device ID"})
+		return
+	}
+	devID := "dev-" + rawID[:16]
+	now := time.Now()
+	dev := store.Device{
+		ID:         devID,
+		DeviceName: deviceName,
+		PublicKey:  "bound-device",
+		Algorithm:  0,
+		SignCount:  1,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+	if err := s.deviceStore.SaveDevice(r.Context(), dev); err != nil {
+		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Failed to save device"})
+		return
+	}
+
+	s.setDeviceBindingCookie(w, r, devID)
+	if isPairing {
+		s.consumePairToken(pairToken)
+	}
+	sessionToken := s.issueServeSession(w, r)
+
+	s.log.Info("bound device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
+	_ = writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"device": dev,
+		"token":  sessionToken,
+	})
 }
 
 // POST /api/devices/pair-token

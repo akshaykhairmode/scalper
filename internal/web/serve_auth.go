@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -15,9 +16,14 @@ import (
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/logging"
+	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
-const serveSessionCookie = "scalper_serve_session"
+const (
+	serveSessionCookie   = "scalper_serve_session"
+	deviceBindingCookie  = "scalper_device_binding"
+	serveSessionDuration = 3 * time.Hour
+)
 
 type serveUnlockFailure struct {
 	Count        int
@@ -31,8 +37,10 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		RememberDevice bool   `json:"remember_device"`
+		DeviceName     string `json:"device_name"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -68,27 +76,49 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearUnlockFailures(key)
 
-	token, err := newServeSessionID()
-	if err != nil {
-		s.log.Error("create serve session", "event", "serve_session_failed", "error", err,
-			"request_id", logging.RequestID(r.Context()))
+	token := s.issueServeSession(w, r)
+	if token == "" {
+		s.log.Error("create serve session", "event", "serve_session_failed", "request_id", logging.RequestID(r.Context()))
 		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "could not create session"})
 		return
 	}
-	exp := time.Now().Add(24 * time.Hour)
-	s.serveSessionsMu.Lock()
-	s.serveSessions[token] = exp
-	s.serveSessionsMu.Unlock()
 
-	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Secure is set dynamically for HTTPS
-		Name:     serveSessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
-		Expires:  exp,
-	})
+	if req.RememberDevice && s.deviceStore != nil {
+		deviceName := strings.TrimSpace(req.DeviceName)
+		if deviceName == "" {
+			ua := r.UserAgent()
+			switch {
+			case strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad"):
+				deviceName = "Apple Device (Mobile)"
+			case strings.Contains(ua, "Android"):
+				deviceName = "Android Device"
+			case strings.Contains(ua, "Macintosh"):
+				deviceName = "Mac Browser"
+			case strings.Contains(ua, "Windows"):
+				deviceName = "Windows PC"
+			default:
+				deviceName = "Trusted Device"
+			}
+		}
+		rawID, err := newServeSessionID()
+		if err == nil {
+			devID := "dev-" + rawID[:16]
+			now := time.Now()
+			dev := store.Device{
+				ID:         devID,
+				DeviceName: deviceName,
+				PublicKey:  "bound-device",
+				Algorithm:  0,
+				SignCount:  1,
+				CreatedAt:  now,
+				LastUsedAt: now,
+			}
+			if err := s.deviceStore.SaveDevice(r.Context(), dev); err == nil {
+				s.setDeviceBindingCookie(w, r, devID)
+			}
+		}
+	}
+
 	s.log.Info("serve unlock succeeded", "event", "serve_unlock_succeeded", "remote", key,
 		"request_id", logging.RequestID(r.Context()))
 	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -116,6 +146,75 @@ func (s *Server) isServeAuthenticated(r *http.Request) bool {
 	return false
 }
 
+func (s *Server) isDeviceBound(r *http.Request) bool {
+	if s == nil || s.deviceStore == nil || r == nil {
+		return false
+	}
+	var deviceID string
+	if cookie, err := r.Cookie(deviceBindingCookie); err == nil && strings.TrimSpace(cookie.Value) != "" {
+		deviceID = strings.TrimSpace(cookie.Value)
+	} else if hdr := r.Header.Get("X-Device-ID"); strings.TrimSpace(hdr) != "" {
+		deviceID = strings.TrimSpace(hdr)
+	}
+	if deviceID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	dev, err := s.deviceStore.GetDevice(ctx, deviceID)
+	if err != nil || dev == nil {
+		return false
+	}
+	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount+1, time.Now())
+	return true
+}
+
+func (s *Server) setDeviceBindingCookie(w http.ResponseWriter, r *http.Request, deviceID string) {
+	http.SetCookie(w, &http.Cookie{ // #nosec G124
+		Name:     deviceBindingCookie,
+		Value:    deviceID,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   365 * 24 * 3600, // 1 year
+	})
+}
+
+func (s *Server) clearDeviceBindingCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{ // #nosec G124
+		Name:     deviceBindingCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
+func (s *Server) issueServeSession(w http.ResponseWriter, r *http.Request) string {
+	token, err := newServeSessionID()
+	if err != nil {
+		return ""
+	}
+	exp := time.Now().Add(serveSessionDuration)
+	s.serveSessionsMu.Lock()
+	s.serveSessions[token] = exp
+	s.serveSessionsMu.Unlock()
+
+	http.SetCookie(w, &http.Cookie{ // #nosec G124
+		Name:     serveSessionCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+		Expires:  exp,
+	})
+	return token
+}
+
 func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !requestOriginAllowed(r) {
@@ -136,13 +235,14 @@ func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Device enrollment using a temporary pairing token
-		if (r.URL.Path == "/api/auth/webauthn/register/begin" || r.URL.Path == "/api/auth/webauthn/register/finish") &&
+		if (r.URL.Path == "/api/auth/webauthn/register/begin" || r.URL.Path == "/api/auth/webauthn/register/finish" ||
+			r.URL.Path == "/api/devices/bind") &&
 			s.validPairToken(extractPairToken(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if s.isServeAuthenticated(r) {
+		if s.isServeAuthenticated(r) || s.isDeviceBound(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

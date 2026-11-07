@@ -2623,10 +2623,13 @@ function renderChain(preserveScroll = false) {
     const callSelected = S.selected.CE?.strike === row.strike;
     const putSelected = S.selected.PE?.strike === row.strike;
     const active = callSelected || putSelected;
-    return `<div class="chain-row${row.strike === atm ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
-      <button type="button" class="cell-ce${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
-      <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${row.strike === atm ? '<span class="atm-dot">◆</span>' : ""}${fmtStrike(row.strike)}</button>
-      <button type="button" class="cell-pe${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
+    const isATM = row.strike === atm;
+    const callITM = atm ? row.strike < atm : false;
+    const putITM = atm ? row.strike > atm : false;
+    return `<div class="chain-row${isATM ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
+      <button type="button" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
+      <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button>
+      <button type="button" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
     </div>`;
   }).join("");
   const pcr = computePCR();
@@ -2923,6 +2926,11 @@ function renderTab() {
   if (mobilePosBadge) {
     mobilePosBadge.textContent = String(openPositionsCount);
     mobilePosBadge.hidden = openPositionsCount === 0;
+  }
+  const mbBottomPosBadge = $("mobile-bottom-pos-badge");
+  if (mbBottomPosBadge) {
+    mbBottomPosBadge.textContent = String(openPositionsCount);
+    mbBottomPosBadge.hidden = openPositionsCount === 0;
   }
 
   const mobilePanicPill = $("mobile-panic-pill");
@@ -5106,9 +5114,18 @@ function bindEvents() {
   $("chain-body").addEventListener("click", (event) => {
     const cell = event.target.closest("[data-select]");
     if (cell) {
-      selectStrike(num(cell.dataset.strike), cell.dataset.select);
+      const strike = num(cell.dataset.strike);
+      const targetType = cell.dataset.select || S.selected.type;
+      selectStrike(strike, targetType);
       closeStrikeModal();
+      if (window.innerWidth <= 768) {
+        toast(`Selected ${S.activeIndex} ${fmtStrike(strike)} ${targetType}`, "ok", 2000);
+      }
     }
+  });
+
+  $("strike-jump-atm-btn")?.addEventListener("click", () => {
+    scrollATMIntoView();
   });
 
   $("chain-body").addEventListener("keydown", (event) => {
@@ -5361,19 +5378,46 @@ function bindEvents() {
   }
 
   async function handleRegisterDevice(deviceName = "", pairToken = "") {
-    if (!window.isSecureContext) {
-      toast(`WebAuthn / Passkeys require a secure origin (HTTPS or localhost). Current origin: ${window.location.origin}`, "warn", 6000);
-      return;
-    }
-    if (!window.PublicKeyCredential) {
-      toast("WebAuthn is not supported by this browser.", "warn", 5000);
-      return;
-    }
-
     const registerBtn = $("register-device-button");
     const pairEnrollBtn = $("pair-register-this-btn");
     if (registerBtn) { registerBtn.disabled = true; registerBtn.textContent = "Enrolling..."; }
     if (pairEnrollBtn) { pairEnrollBtn.disabled = true; pairEnrollBtn.textContent = "Enrolling..."; }
+
+    if (!window.isSecureContext || !window.PublicKeyCredential) {
+      try {
+        const headers = { "Content-Type": "application/json" };
+        if (pairToken) headers["X-Pair-Token"] = pairToken;
+        const res = await fetch("/api/devices/bind", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            deviceName: deviceName || (window.navigator?.userAgentData?.platform || "My Device"),
+            pairToken: pairToken || "",
+          }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.ok) {
+          toast(`Device "${d.device?.device_name || "Device"}" bound successfully!`, "ok");
+          await loadDevicesList();
+          if (pairToken) {
+            const serveModal = $("serve-auth-modal");
+            if (serveModal) {
+              serveModal.style.display = "none";
+              serveModal.hidden = true;
+            }
+            startTerminalSession();
+          }
+          return;
+        }
+        throw new Error(d.error || "Device binding failed");
+      } catch (err) {
+        toast(err.message || "Device binding failed", "warn");
+      } finally {
+        if (registerBtn) { registerBtn.disabled = false; registerBtn.textContent = "Register Device"; }
+        if (pairEnrollBtn) { pairEnrollBtn.disabled = false; pairEnrollBtn.textContent = "⚡ Register This Device"; }
+      }
+      return;
+    }
 
     try {
       const beginUrl = "/api/auth/webauthn/register/begin" + (pairToken ? `?pair_token=${encodeURIComponent(pairToken)}` : "");
@@ -5579,7 +5623,9 @@ function bindEvents() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             username: serveAuthUser ? serveAuthUser.value.trim() : "",
-            password: serveAuthPass ? serveAuthPass.value : ""
+            password: serveAuthPass ? serveAuthPass.value : "",
+            remember_device: $("serve-auth-remember") ? $("serve-auth-remember").checked : true,
+            device_name: window.navigator?.userAgentData?.platform || (window.innerWidth <= 768 ? "Mobile Device" : "Browser")
           })
         });
         const data = await resp.json().catch(() => ({}));
@@ -6021,6 +6067,14 @@ function updateMarketPhase(reloadOnChange = true) {
 
 /* ── Mobile Navigation & PWA ───────────────────────────── */
 
+function updateMobileBottomNav(activeTab) {
+  for (const btn of $$(".mobile-bnav-btn")) {
+    const isCur = btn.dataset.bnav === activeTab;
+    btn.classList.toggle("active", isCur);
+    btn.setAttribute("aria-pressed", isCur ? "true" : "false");
+  }
+}
+
 function setMobileView(view) {
   if (view === "chain") {
     openStrikeModal();
@@ -6036,6 +6090,16 @@ function setMobileView(view) {
     btn.classList.toggle("active", isActive);
     btn.setAttribute("aria-pressed", isActive ? "true" : "false");
   }
+
+  if (view === "positions") {
+    updateMobileBottomNav("positions");
+  } else if (view === "orders") {
+    updateMobileBottomNav("orders");
+  } else {
+    S.lastActiveContractView = view;
+    updateMobileBottomNav("terminal");
+  }
+
   requestAnimationFrame(() => {
     for (const chart of Object.values(S.charts)) {
       chart.schedule();
@@ -6043,66 +6107,53 @@ function setMobileView(view) {
   });
 }
 
-const MOBILE_VIEWS_CYCLE = ["ce", "spot", "pe", "positions"];
-
-function switchMobileViewRelative(delta) {
-  const current = S.mobileView || "ce";
-  let idx = MOBILE_VIEWS_CYCLE.indexOf(current);
-  if (idx === -1) idx = 0;
-  let nextIdx = idx + delta;
-  if (nextIdx < 0) nextIdx = 0;
-  if (nextIdx >= MOBILE_VIEWS_CYCLE.length) nextIdx = MOBILE_VIEWS_CYCLE.length - 1;
-  setMobileView(MOBILE_VIEWS_CYCLE[nextIdx]);
-}
-
 function initMobileNavigation() {
   const mobileNav = $("mobile-nav");
-  if (!mobileNav) return;
-
-  mobileNav.addEventListener("click", (e) => {
-    const btn = e.target.closest(".mobile-nav-btn");
-    if (!btn) return;
-    const view = btn.dataset.mobileView;
-    if (view) {
-      setMobileView(view);
-    }
-  });
-
-  // Swipe navigation across views on mobile devices
-  let touchStartX = 0;
-  let touchStartY = 0;
-  let touchStartTime = 0;
-
-  document.addEventListener("touchstart", (e) => {
-    if (window.innerWidth > 768) return;
-    if (e.touches.length === 1) {
-      touchStartX = e.touches[0].clientX;
-      touchStartY = e.touches[0].clientY;
-      touchStartTime = Date.now();
-    }
-  }, { passive: true });
-
-  document.addEventListener("touchend", (e) => {
-    if (window.innerWidth > 768) return;
-    if (e.changedTouches.length === 1) {
-      const dx = e.changedTouches[0].clientX - touchStartX;
-      const dy = e.changedTouches[0].clientY - touchStartY;
-      const dt = Date.now() - touchStartTime;
-
-      const target = e.target;
-      if (target.closest("input, select, textarea, .chart-canvas, #chain-body, .tab-content, .modal")) {
-        return;
+  if (mobileNav) {
+    mobileNav.addEventListener("click", (e) => {
+      const btn = e.target.closest(".mobile-nav-btn");
+      if (!btn) return;
+      const view = btn.dataset.mobileView;
+      if (view) {
+        setMobileView(view);
       }
+    });
+  }
 
-      if (Math.abs(dx) > 60 && Math.abs(dy) < 45 && dt < 600) {
-        if (dx < 0) {
-          switchMobileViewRelative(1);
-        } else {
-          switchMobileViewRelative(-1);
+  const bottomNav = $("mobile-bottom-nav");
+  if (bottomNav) {
+    bottomNav.addEventListener("click", (e) => {
+      const btn = e.target.closest(".mobile-bnav-btn");
+      if (!btn) return;
+      const bnav = btn.dataset.bnav;
+      if (bnav === "terminal") {
+        const bottomPanel = $("bottom-panel");
+        if (bottomPanel) {
+          bottomPanel.classList.add("bottom-collapsed");
         }
+        setMobileView(S.lastActiveContractView || "ce");
+        updateMobileBottomNav("terminal");
+      } else if (bnav === "chain") {
+        openStrikeModal();
+      } else if (bnav === "positions") {
+        setMobileView("positions");
+        switchTab("positions");
+        const bottomPanel = $("bottom-panel");
+        if (bottomPanel) {
+          bottomPanel.classList.remove("bottom-collapsed");
+        }
+        updateMobileBottomNav("positions");
+      } else if (bnav === "orders") {
+        setMobileView("orders");
+        switchTab("orders");
+        const bottomPanel = $("bottom-panel");
+        if (bottomPanel) {
+          bottomPanel.classList.remove("bottom-collapsed");
+        }
+        updateMobileBottomNav("orders");
       }
-    }
-  }, { passive: true });
+    });
+  }
 }
 
 let deferredInstallPrompt = null;

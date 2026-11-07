@@ -435,6 +435,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/auth/webauthn/login/begin", s.handleWebAuthnLoginBegin)
 	mux.HandleFunc("POST /api/auth/webauthn/login/finish", s.handleWebAuthnLoginFinish)
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("POST /api/devices/bind", s.handleBindDevice)
 	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
 	mux.HandleFunc("POST /api/devices/pair-token", s.handleCreatePairToken)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
@@ -586,7 +587,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		MPINConfigured: s.mpin != "",
 		ServeMode:      s.serveMode,
 		BasicAuth:      strings.TrimSpace(cfg.Web.BasicAuth.Username) != "",
-		ServeLocked:    s.serveMode && strings.TrimSpace(cfg.Web.BasicAuth.Username) != "" && !s.isServeAuthenticated(r),
+		ServeLocked:    s.serveMode && strings.TrimSpace(cfg.Web.BasicAuth.Username) != "" && !s.isServeAuthenticated(r) && !s.isDeviceBound(r),
 		Bootstrap:      bootstrap,
 	}
 	var buf strings.Builder
@@ -1050,6 +1051,9 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 			s.log.Error("start Kotak order feed", "event", "order_feed_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
+	}
+	if s.serveMode || s.isDeviceBound(r) {
+		s.issueServeSession(w, r)
 	}
 	resp := struct {
 		Success bool              `json:"success"`

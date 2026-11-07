@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -506,5 +507,120 @@ func encodeTestCBORItem(buf *bytes.Buffer, v any) error {
 		return nil
 	default:
 		return fmt.Errorf("cbor: unsupported encode type %T", v)
+	}
+}
+
+func TestDeviceBindingBypassesServeLock(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password123"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{cfg: &cfg, deviceStore: devStore, db: fakeDB{}})
+
+	// 1. Unauthenticated request to /healthz without binding -> 401
+	rec := do(t, s, localRequest(http.MethodGet, "/healthz"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without auth or binding, got %d", rec.Code)
+	}
+
+	// 2. Bind a device
+	now := time.Now()
+	testDev := store.Device{
+		ID:         "dev-test-1234",
+		DeviceName: "iPhone 15 Pro",
+		PublicKey:  "bound-key",
+		Algorithm:  0,
+		SignCount:  1,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+	if err := devStore.SaveDevice(context.Background(), testDev); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+
+	// 3. Request with scalper_device_binding cookie -> 200 OK without basic auth!
+	reqBound := localRequest(http.MethodGet, "/healthz")
+	reqBound.AddCookie(&http.Cookie{Name: "scalper_device_binding", Value: testDev.ID})
+	recBound := do(t, s, reqBound)
+	if recBound.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for bound device, got %d: %s", recBound.Code, recBound.Body.String())
+	}
+
+	// 4. GET / with bound device has ServeLocked = false in template data
+	reqIndex := localRequest(http.MethodGet, "/")
+	reqIndex.AddCookie(&http.Cookie{Name: "scalper_device_binding", Value: testDev.ID})
+	recIndex := do(t, s, reqIndex)
+	if recIndex.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for index, got %d", recIndex.Code)
+	}
+	body := recIndex.Body.String()
+	if strings.Contains(body, `id="serve-auth-modal"`) {
+		t.Errorf("serve-auth-modal should NOT be rendered when device is bound")
+	}
+}
+
+func TestDeviceBindEndpoint(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password123"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{cfg: &cfg, deviceStore: devStore, db: fakeDB{}})
+
+	// 1. Unauthenticated bind without pairing token -> 401
+	unauthBody, _ := json.Marshal(map[string]any{"device_name": "My Phone"})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/devices/bind", unauthBody))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 unauthenticated, got %d", rec.Code)
+	}
+
+	// 2. Generate pairing token
+	token, _, err := s.createPairToken()
+	if err != nil {
+		t.Fatalf("create pair token: %v", err)
+	}
+
+	// 3. Bind using pairing token -> 200 OK, sets deviceBindingCookie and serveSessionCookie
+	bindBody, _ := json.Marshal(map[string]any{
+		"device_name": "My Android Phone",
+		"pair_token":  token,
+	})
+	reqBind := localRequestWithBody(http.MethodPost, "/api/devices/bind", bindBody)
+	reqBind.Header.Set("X-Pair-Token", token)
+	recBind := do(t, s, reqBind)
+	if recBind.Code != http.StatusOK {
+		t.Fatalf("bind device failed, code %d: %s", recBind.Code, recBind.Body.String())
+	}
+
+	var res struct {
+		OK     bool         `json:"ok"`
+		Device store.Device `json:"device"`
+		Token  string       `json:"token"`
+	}
+	if err := json.Unmarshal(recBind.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal bind response: %v", err)
+	}
+	if !res.OK || res.Device.ID == "" || res.Device.DeviceName != "My Android Phone" {
+		t.Fatalf("unexpected bind result: %+v", res)
+	}
+
+	cookies := recBind.Result().Cookies()
+	var hasBindingCookie, hasSessionCookie bool
+	for _, c := range cookies {
+		if c.Name == "scalper_device_binding" && c.Value == res.Device.ID {
+			hasBindingCookie = true
+		}
+		if c.Name == "scalper_serve_session" && c.Value == res.Token {
+			hasSessionCookie = true
+		}
+	}
+	if !hasBindingCookie {
+		t.Errorf("expected scalper_device_binding cookie to be set")
+	}
+	if !hasSessionCookie {
+		t.Errorf("expected scalper_serve_session cookie to be set")
 	}
 }
