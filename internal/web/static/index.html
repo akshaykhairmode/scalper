@@ -522,6 +522,11 @@
       scannerStatus.textContent = "Starting camera…";
       scanning = true;
 
+      // Push history state so Android hardware/gesture back button will close scanner
+      try {
+        history.pushState({ scannerOpen: true }, "");
+      } catch (_) {}
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -542,13 +547,21 @@
       }
     }
 
-    function stopScanner() {
+    function stopScanner(fromBack = false) {
       scanning = false;
       if (videoStream) {
         videoStream.getTracks().forEach((t) => t.stop());
         videoStream = null;
       }
       scannerOverlay.style.display = "none";
+
+      if (!fromBack) {
+        try {
+          if (history.state && history.state.scannerOpen) {
+            history.back();
+          }
+        } catch (_) {}
+      }
     }
 
     async function scanFrame() {
@@ -579,11 +592,11 @@
             ctx.drawImage(scannerVideo, 0, 0, w, h);
             const imgData = ctx.getImageData(0, 0, w, h);
             const code = window.jsQR(imgData.data, imgData.width, imgData.height, {
-              inversionAttempts: "dontInvert"
+              inversionAttempts: "attemptBoth"
             });
             if (code && code.data) {
               const raw = code.data;
-              if (raw.startsWith("http://") || raw.startsWith("https://") || raw.includes("pair_token=")) {
+              if (raw && (raw.startsWith("http://") || raw.startsWith("https://") || raw.includes("pair_token=") || raw.includes("://"))) {
                 onPairSuccess(raw);
                 return;
               }
@@ -619,7 +632,9 @@
           const ctx = scannerCanvas.getContext("2d", { willReadFrequently: true });
           ctx.drawImage(img, 0, 0, img.width, img.height);
           const data = ctx.getImageData(0, 0, img.width, img.height);
-          const code = window.jsQR(data.data, data.width, data.height);
+          const code = window.jsQR(data.data, data.width, data.height, {
+            inversionAttempts: "attemptBoth"
+          });
           if (code && code.data) {
             onPairSuccess(code.data);
             return;
@@ -631,8 +646,43 @@
     });
 
     btnOpenScanner.addEventListener("click", startScanner);
-    scannerClose.addEventListener("click", stopScanner);
+    scannerClose.addEventListener("click", () => stopScanner(false));
     btnPickImage.addEventListener("click", () => filePicker.click());
+
+    // Android Hardware / Gesture Back Button handling
+    window.addEventListener("popstate", () => {
+      if (scanning || scannerOverlay.style.display !== "none") {
+        stopScanner(true);
+      }
+    });
+
+    document.addEventListener("backbutton", (e) => {
+      if (scanning || scannerOverlay.style.display !== "none") {
+        e.preventDefault();
+        e.stopPropagation();
+        stopScanner(false);
+      }
+    });
+
+    if (window.Capacitor?.Plugins?.App) {
+      try {
+        window.Capacitor.Plugins.App.addListener("backButton", ({ canGoBack }) => {
+          if (scanning || scannerOverlay.style.display !== "none") {
+            stopScanner(false);
+          } else if (canGoBack) {
+            window.history.back();
+          } else {
+            window.Capacitor.Plugins.App.exitApp();
+          }
+        });
+      } catch (_) {}
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && (scanning || scannerOverlay.style.display !== "none")) {
+        stopScanner(false);
+      }
+    });
 
     manualToggle.addEventListener("click", () => {
       manualSection.style.display = manualSection.style.display === "block" ? "none" : "block";

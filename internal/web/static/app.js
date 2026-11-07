@@ -910,11 +910,12 @@ function buildCharts() {
   const savedMACE = localStorage.getItem("scalper-ma-ce") === "true";
   const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
   const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
+  const savedDOM = localStorage.getItem("scalper-show-dom") !== "false";
 
   S.showTrades = savedTrades;
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -934,6 +935,10 @@ function buildCharts() {
   $$('button[data-chart-action="patterns"]').forEach((b) => {
     b.classList.toggle("active", savedPatterns);
     b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
+  });
+  $$('button[data-chart-action="dom"]').forEach((b) => {
+    b.classList.toggle("active", savedDOM);
+    b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
   });
   $$('button[data-chart-action="ma"]').forEach((b) => {
     const pane = b.dataset.chart;
@@ -1612,6 +1617,16 @@ function handleTickData(data, { batch = false } = {}) {
   if (data.bids || data.asks) {
     if (!S.depths) S.depths = {};
     S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
+    const depth = S.depths[data.key];
+    if (chartInstrument("CE") === data.key) {
+      S.charts.ce?.setDepth?.(depth);
+    }
+    if (chartInstrument("PE") === data.key) {
+      S.charts.pe?.setDepth?.(depth);
+    }
+    if (activeSpotInstrument() === data.key) {
+      S.charts.spot?.setDepth?.(depth);
+    }
     const ceKey = selectedOption("CE")?.instrumentKey;
     const peKey = selectedOption("PE")?.instrumentKey;
     if (S.tab === "depth" && (data.key === ceKey || data.key === peKey)) {
@@ -2489,6 +2504,19 @@ function renderPaneHeaders() {
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
   renderOptionStrikeSelect("PE", pe);
   renderPanePCR("pe", pe, chainPCR, expiryLabel);
+
+  const ceInst = chartInstrument("CE");
+  if (ceInst && S.depths?.[ceInst]) {
+    S.charts.ce?.setDepth?.(S.depths[ceInst]);
+  }
+  const peInst = chartInstrument("PE");
+  if (peInst && S.depths?.[peInst]) {
+    S.charts.pe?.setDepth?.(S.depths[peInst]);
+  }
+  const spotInst = activeSpotInstrument();
+  if (spotInst && S.depths?.[spotInst]) {
+    S.charts.spot?.setDepth?.(S.depths[spotInst]);
+  }
 
   renderOrderPad();
 }
@@ -4471,9 +4499,6 @@ let versionCheckDone = false;
 
 async function checkVersionUpdate() {
   if (versionCheckDone && S.latestRelease) {
-    if (S.latestRelease.has_update) {
-      showUpdateBanner(S.latestRelease);
-    }
     return;
   }
   versionCheckDone = true;
@@ -4502,30 +4527,11 @@ async function checkVersionUpdate() {
 
     if (data && data.has_update && data.latest_version) {
       S.latestRelease = data;
-      showUpdateBanner(data);
       updateFooterVersion(data);
     }
   } catch (err) {
     console.debug("version check skipped:", err);
   }
-}
-
-function showUpdateBanner(data) {
-  const banner = $("login-update-banner");
-  if (!banner) return;
-  const ver = $("update-banner-version");
-  if (ver) ver.textContent = data.latest_version;
-  const link = $("update-banner-link");
-  if (link && data.release_url) link.href = data.release_url;
-  const copy = $("update-banner-copy");
-  if (copy) {
-    if (data.current_version && data.current_version !== "dev") {
-      copy.innerHTML = `A new release <strong>${esc(data.latest_version)}</strong> is available (running <strong>${esc(data.current_version)}</strong>). <a href="${esc(data.release_url)}" target="_blank" rel="noreferrer">View release</a>`;
-    } else {
-      copy.innerHTML = `A new release <strong>${esc(data.latest_version)}</strong> is available on GitHub. <a href="${esc(data.release_url)}" target="_blank" rel="noreferrer">View release</a>`;
-    }
-  }
-  banner.hidden = false;
 }
 
 function updateFooterVersion(data) {
@@ -4583,10 +4589,6 @@ function openLogin() {
   loginError("");
   const submitBtn = $("login-submit");
   if (submitBtn) submitBtn.textContent = "Continue";
-  checkVersionUpdate();
-  if (S.latestRelease?.has_update) {
-    showUpdateBanner(S.latestRelease);
-  }
   const modal = $("login-modal");
   if (modal) {
     modal.hidden = false;
@@ -5023,9 +5025,7 @@ async function checkBiometricUnlockAvailable() {
 async function updateBiometricButtons() {
   const available = await checkBiometricUnlockAvailable();
   const serveContainer = $("biometric-unlock-serve-container");
-  const tradeContainer = $("biometric-unlock-trade-container");
   if (serveContainer) serveContainer.hidden = !available;
-  if (tradeContainer) tradeContainer.hidden = !available;
 }
 
 async function handleBiometricUnlock() {
@@ -5035,9 +5035,7 @@ async function handleBiometricUnlock() {
   }
 
   const serveBtn = $("biometric-unlock-serve-btn");
-  const tradeBtn = $("biometric-unlock-trade-btn");
   if (serveBtn) { serveBtn.disabled = true; serveBtn.textContent = "Scanning Biometrics..."; }
-  if (tradeBtn) { tradeBtn.disabled = true; tradeBtn.textContent = "Scanning Biometrics..."; }
 
   try {
     const beginRes = await fetch("/api/auth/webauthn/login/begin", { method: "POST" });
@@ -5089,15 +5087,16 @@ async function handleBiometricUnlock() {
       serveModal.style.display = "none";
       serveModal.hidden = true;
     }
-    closeLogin();
     toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
-    startTerminalSession();
+    await startTerminalSession();
+    if (!S.session?.authenticated) {
+      openLogin();
+    }
   } catch (err) {
     console.warn("biometric unlock error:", err);
     toast(err.message || "Biometric authentication failed", "warn");
   } finally {
     if (serveBtn) { serveBtn.disabled = false; serveBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>"; }
-    if (tradeBtn) { tradeBtn.disabled = false; tradeBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>"; }
   }
 }
 
@@ -5419,6 +5418,18 @@ function bindEvents() {
         } catch (_) {}
         const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
         toast(nextState ? `Moving Average enabled (${label})` : `Moving Average hidden (${label})`, "ok", 1500);
+        return;
+      }
+      if (action === "dom") {
+        const nextState = chart.toggleDepth();
+        button.classList.toggle("active", nextState);
+        button.setAttribute("aria-pressed", nextState ? "true" : "false");
+        try {
+          localStorage.setItem("scalper-show-dom", String(nextState));
+        } catch {
+          // ignore
+        }
+        toast(nextState ? "DOM price bars enabled" : "DOM price bars hidden", "ok", 1500);
         return;
       }
       if (action === "sr") {
@@ -5764,7 +5775,6 @@ function bindEvents() {
     }
   });
   $("biometric-unlock-serve-btn")?.addEventListener("click", handleBiometricUnlock);
-  $("biometric-unlock-trade-btn")?.addEventListener("click", handleBiometricUnlock);
 
   // Pattern popover & filters
   const patternPopover = $("pattern-popover");

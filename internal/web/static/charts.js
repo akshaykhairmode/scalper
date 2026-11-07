@@ -574,6 +574,94 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
+    name: "depthLevelBar",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const isBuy = data.side === "BUY" || data.side === "B";
+      const orders = Number(data.orders || 0);
+      const qty = Number(data.quantity || 0);
+      const maxQty = Number(data.maxQty || qty || 1);
+      const width = bounding?.width || 800;
+
+      const baseColor = isBuy ? "#29b360" : "#f05a5a";
+      const fillColor = isBuy ? "rgba(41, 179, 96, 0.22)" : "rgba(240, 90, 90, 0.22)";
+      const barHeight = 15;
+
+      const ratio = Math.max(0.08, Math.min(1.0, qty / (maxQty || 1)));
+      const maxBarWidth = Math.min(220, Math.max(90, width * 0.26));
+      const barWidth = Math.round(ratio * maxBarWidth);
+
+      const x2 = width - 4;
+      const x1 = x2 - barWidth;
+      const yTop = y - barHeight / 2;
+      const yBottom = y + barHeight / 2;
+
+      const figures = [];
+
+      // Horizontal depth bar (filled polygon)
+      figures.push({
+        type: "polygon",
+        attrs: {
+          coordinates: [
+            { x: x1, y: yTop },
+            { x: x2, y: yTop },
+            { x: x2, y: yBottom },
+            { x: x1, y: yBottom },
+          ],
+        },
+        styles: { style: "fill", color: fillColor },
+        ignoreEvent: true,
+      });
+
+      // Accent border line on leading edge
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: x1, y: yTop },
+            { x: x1, y: yBottom },
+          ],
+        },
+        styles: { style: "solid", size: 2.5, color: baseColor },
+        ignoreEvent: true,
+      });
+
+      // Text badge with orders and quantity
+      const orderLabel = orders > 0 ? `${orders} ord · ` : "";
+      const qtyLabel = qty >= 1e5 ? `${(qty / 1e5).toFixed(1)}L` : (qty >= 1e3 ? `${(qty / 1e3).toFixed(1)}K` : String(qty));
+      const label = `${orderLabel}${qtyLabel}`;
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: x2 - 5,
+          y,
+          text: label,
+          align: "right",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#ffffff",
+          size: 9,
+          weight: "bold",
+          family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
     name: "positionLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -1583,7 +1671,7 @@ function patchIndicatorLastValueView(chart) {
 }
 
 export class CandleChart {
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showDepth = true } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -1592,6 +1680,9 @@ export class CandleChart {
     this.showAutoTrendlines = showAutoTrendlines;
     this.showPatterns = showPatterns;
     this.showMA = Boolean(showMA);
+    this.showDepth = Boolean(showDepth);
+    this.depthOverlayIds = [];
+    this.depthData = null;
     this.patternConfig = { candlestick: true, geometric: true, harmonic: true, liquidity: true };
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
@@ -1738,6 +1829,91 @@ export class CandleChart {
       }
     }
     return this.showMA;
+  }
+
+  toggleDepth(forceState) {
+    this.showDepth = typeof forceState === "boolean" ? forceState : !this.showDepth;
+    if (!this.showDepth) {
+      this.clearDepth();
+    } else {
+      this.refreshDepth();
+    }
+    return this.showDepth;
+  }
+
+  clearDepth() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "depth_bars" });
+    } catch (_) {}
+    for (const id of this.depthOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.depthOverlayIds = [];
+  }
+
+  setDepth(depth) {
+    this.depthData = depth || null;
+    this.refreshDepth();
+  }
+
+  refreshDepth() {
+    this.clearDepth();
+    if (!this.showDepth || !this.chart || !this.depthData) return;
+
+    const bids = Array.isArray(this.depthData.bids) ? this.depthData.bids : [];
+    const asks = Array.isArray(this.depthData.asks) ? this.depthData.asks : [];
+    if (!bids.length && !asks.length) return;
+
+    let maxQty = 1;
+    for (const b of bids) {
+      const q = Number(b.quantity || 0);
+      if (q > maxQty) maxQty = q;
+    }
+    for (const a of asks) {
+      const q = Number(a.quantity || 0);
+      if (q > maxQty) maxQty = q;
+    }
+
+    for (const b of bids) {
+      const price = Number(b.price || 0);
+      if (!price || price <= 0) continue;
+      try {
+        const id = this.chart.createOverlay({
+          name: "depthLevelBar",
+          groupId: "depth_bars",
+          points: [{ value: price }],
+          extendData: {
+            side: "BUY",
+            orders: Number(b.orders || 0),
+            quantity: Number(b.quantity || 0),
+            maxQty,
+          },
+        });
+        if (id) this.depthOverlayIds.push(id);
+      } catch (_) {}
+    }
+
+    for (const a of asks) {
+      const price = Number(a.price || 0);
+      if (!price || price <= 0) continue;
+      try {
+        const id = this.chart.createOverlay({
+          name: "depthLevelBar",
+          groupId: "depth_bars",
+          points: [{ value: price }],
+          extendData: {
+            side: "SELL",
+            orders: Number(a.orders || 0),
+            quantity: Number(a.quantity || 0),
+            maxQty,
+          },
+        });
+        if (id) this.depthOverlayIds.push(id);
+      } catch (_) {}
+    }
   }
 
   toggleSR(forceState) {
@@ -1917,6 +2093,7 @@ export class CandleChart {
   }
 
   refreshPatterns() {
+    this.clearDepth();
     this.clearPatterns();
     if (!this.showPatterns || !this.data.length || !this.chart) return;
 
@@ -2500,6 +2677,7 @@ export class CandleChart {
     this.clearPositionOverlay();
     this.clearSRLines();
     this.clearAutoTrendlines();
+    this.clearDepth();
     this.clearPatterns();
     if (this.chart && window.klinecharts) {
       window.klinecharts.dispose(this.chart);

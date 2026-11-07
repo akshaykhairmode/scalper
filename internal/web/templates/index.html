@@ -157,6 +157,7 @@
           <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart"></div>
           <div class="chart-tools" aria-label="CALL chart zoom controls">
             <button type="button" data-chart="ce" data-chart-action="trades" title="Toggle Executions &amp; Positions" aria-label="Toggle Executions and Positions">TX</button>
+            <button type="button" data-chart="ce" data-chart-action="dom" title="Toggle Depth of Market (Buy/Sell order bars)" aria-label="Toggle Depth of Market">DOM</button>
             <button type="button" data-chart="ce" data-chart-action="trendline" title="Draw Trendline" aria-label="Draw Trendline">TL</button>
             <button type="button" data-chart="ce" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="ce" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
@@ -216,6 +217,7 @@
           <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
           <div class="chart-tools" aria-label="Underlying chart zoom controls">
             <button type="button" data-chart="underlying" data-chart-action="trades" title="Toggle Executions &amp; Positions" aria-label="Toggle Executions and Positions">TX</button>
+            <button type="button" data-chart="underlying" data-chart-action="dom" title="Toggle Depth of Market (Buy/Sell order bars)" aria-label="Toggle Depth of Market">DOM</button>
             <button type="button" data-chart="underlying" data-chart-action="trendline" title="Draw Trendline" aria-label="Draw Trendline">TL</button>
             <button type="button" data-chart="underlying" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="underlying" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
@@ -247,6 +249,7 @@
           <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart"></div>
           <div class="chart-tools" aria-label="PUT chart zoom controls">
             <button type="button" data-chart="pe" data-chart-action="trades" title="Toggle Executions &amp; Positions" aria-label="Toggle Executions and Positions">TX</button>
+            <button type="button" data-chart="pe" data-chart-action="dom" title="Toggle Depth of Market (Buy/Sell order bars)" aria-label="Toggle Depth of Market">DOM</button>
             <button type="button" data-chart="pe" data-chart-action="trendline" title="Draw Trendline" aria-label="Draw Trendline">TL</button>
             <button type="button" data-chart="pe" data-chart-action="auto-tl" title="Toggle Auto Trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="pe" data-chart-action="sr" title="Toggle Support &amp; Resistance lines" aria-label="Toggle Support and Resistance lines">SR</button>
@@ -604,34 +607,7 @@
         <button type="button" class="icon-button" id="login-close" aria-label="Close login">×</button>
       </div>
 
-      <div class="modal-update-banner" id="login-update-banner" hidden>
-        <div class="update-banner-icon">🚀</div>
-        <div class="update-banner-body">
-          <div class="update-banner-title">
-            <span>New version available:</span>
-            <strong id="update-banner-version"></strong>
-          </div>
-          <div class="update-banner-copy" id="update-banner-copy">
-            A newer version of Scalper is available.
-            <a id="update-banner-link" href="https://github.com/akshaykhairmode/scalper/releases/latest" target="_blank" rel="noreferrer">View release</a>
-          </div>
-          <div class="update-banner-cmd">
-            <code>curl -fsSL https://raw.githubusercontent.com/akshaykhairmode/scalper/main/install.sh | sh</code>
-          </div>
-        </div>
-      </div>
-
       <form id="login-form" novalidate>
-        <div id="biometric-unlock-trade-container" style="margin-bottom: 16px;" hidden>
-          <button type="button" class="primary" id="biometric-unlock-trade-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer;">
-            <span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>
-          </button>
-          <div class="auth-divider" style="display:flex; align-items:center; margin:16px 0; color:var(--text-muted, #888); font-size:12px;">
-            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
-            <span style="padding:0 8px;">OR TOTP LOGIN</span>
-            <span style="flex:1; height:1px; background:var(--border, #333);"></span>
-          </div>
-        </div>
         <p class="modal-copy">
           Enter your authenticator code{{if not .MPINConfigured}} and MPIN{{end}} to open the trading session.
           Credentials are held in memory only and never written to disk.
