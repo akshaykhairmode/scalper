@@ -137,6 +137,8 @@ type Server struct {
 	indicesMu           sync.Mutex
 	indicesRaw          json.RawMessage
 	indicesAt           time.Time
+	chainCacheMu        sync.Mutex
+	chainCache          map[string]chainCacheEntry
 	serveMode           bool
 	serveSessionsMu     sync.RWMutex
 	serveSessions       map[string]time.Time
@@ -316,6 +318,7 @@ func New(opts Options) (*Server, error) {
 		serveMode:           true,
 		serveSessions:       make(map[string]time.Time),
 		serveUnlockFailures: make(map[string]serveUnlockFailure),
+		chainCache:          make(map[string]chainCacheEntry),
 		configPath:          cfgPath,
 	}
 
@@ -505,6 +508,34 @@ func (s *Server) configSnapshot() config.Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return s.cfg
+}
+
+// isMarketOpen reports whether Indian markets are currently in session according to
+// configured trading hours, weekend rules, and market holidays.
+func (s *Server) isMarketOpen(now time.Time) bool {
+	cfg := s.configSnapshot()
+	loc := cfg.Location()
+	if loc != nil {
+		now = now.In(loc)
+	}
+	weekday := now.Weekday()
+	if weekday == time.Saturday || weekday == time.Sunday {
+		return false
+	}
+	today := now.Format("2006-01-02")
+	for _, holiday := range cfg.Market.Holidays {
+		if holiday == today {
+			return false
+		}
+	}
+	openTime, errOpen := time.Parse("15:04", cfg.Trading.Session.Open)
+	closeTime, errClose := time.Parse("15:04", cfg.Trading.Session.Close)
+	if errOpen != nil || errClose != nil {
+		return true
+	}
+	openAt := time.Date(now.Year(), now.Month(), now.Day(), openTime.Hour(), openTime.Minute(), 0, 0, now.Location())
+	closeAt := time.Date(now.Year(), now.Month(), now.Day(), closeTime.Hour(), closeTime.Minute(), 0, 0, now.Location())
+	return !now.Before(openAt) && now.Before(closeAt)
 }
 
 // Close stops the server's feed event forwarding and WebSocket clients.

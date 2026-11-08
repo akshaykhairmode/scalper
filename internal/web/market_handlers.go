@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -28,6 +29,16 @@ func (s *Server) marketBaseURL() string {
 // upstream quote batch every few seconds.
 const indicesTTL = 3 * time.Second
 
+type chainCacheEntry struct {
+	payload   []byte
+	fetchedAt time.Time
+}
+
+const (
+	chainTTLOpen   = 5 * time.Second
+	chainTTLClosed = 60 * time.Second
+)
+
 func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 	if s.market == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
@@ -47,6 +58,17 @@ func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.market.Indices(r.Context(), s.marketBaseURL())
 	if err != nil {
+		if s.indicesRaw != nil {
+			payload := s.indicesRaw
+			s.indicesMu.Unlock()
+			s.log.Warn("Kotak indices refresh failed; serving cached indices",
+				"event", "indices_refresh_failed",
+				"error", err,
+				"request_id", logging.RequestID(r.Context()))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload)
+			return
+		}
 		s.indicesMu.Unlock()
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
@@ -98,6 +120,11 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "index and expiry are required", nil)
 		return
 	}
+	ttl := chainTTLOpen
+	if !s.isMarketOpen(s.now()) {
+		ttl = chainTTLClosed
+	}
+
 	if countRaw := r.URL.Query().Get("count"); countRaw != "" {
 		count, err := strconv.Atoi(countRaw)
 		if err != nil || count < 1 || count > 20 {
@@ -122,18 +149,78 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			s.writeRouteError(w, r, http.StatusNotImplemented, "selective chain loading is unavailable", nil)
 			return
 		}
+
+		cacheKey := fmt.Sprintf("%s|%s|%.2f|%d|%s", index, expiry, center, count, direction)
+		s.chainCacheMu.Lock()
+		cached, hasCached := s.chainCache[cacheKey]
+		if hasCached && time.Since(cached.fetchedAt) < ttl {
+			payload := cached.payload
+			s.chainCacheMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload)
+			return
+		}
+		s.chainCacheMu.Unlock()
+
 		page, err := windowAPI.ChainWindow(r.Context(), s.marketBaseURL(), index, expiry, center, count, direction)
 		if err != nil {
+			if hasCached {
+				s.log.Warn("Kotak chain quote refresh failed; serving cached chain",
+					"event", "chain_refresh_failed",
+					"error", err,
+					"index", index,
+					"expiry", expiry,
+					"request_id", logging.RequestID(r.Context()))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(cached.payload)
+				return
+			}
 			s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 			return
+		}
+		payload, encodeErr := json.Marshal(page)
+		if encodeErr == nil {
+			s.chainCacheMu.Lock()
+			s.chainCache[cacheKey] = chainCacheEntry{payload: payload, fetchedAt: time.Now()}
+			s.chainCacheMu.Unlock()
 		}
 		s.writeRouteJSON(w, r, http.StatusOK, page)
 		return
 	}
+
+	cacheKey := fmt.Sprintf("%s|%s|full", index, expiry)
+	s.chainCacheMu.Lock()
+	cached, hasCached := s.chainCache[cacheKey]
+	if hasCached && time.Since(cached.fetchedAt) < ttl {
+		payload := cached.payload
+		s.chainCacheMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payload)
+		return
+	}
+	s.chainCacheMu.Unlock()
+
 	rows, err := s.market.Chain(r.Context(), s.marketBaseURL(), index, expiry)
 	if err != nil {
+		if hasCached {
+			s.log.Warn("Kotak full chain refresh failed; serving cached chain",
+				"event", "chain_refresh_failed",
+				"error", err,
+				"index", index,
+				"expiry", expiry,
+				"request_id", logging.RequestID(r.Context()))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(cached.payload)
+			return
+		}
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
+	}
+	payload, encodeErr := json.Marshal(map[string]any{"rows": rows})
+	if encodeErr == nil {
+		s.chainCacheMu.Lock()
+		s.chainCache[cacheKey] = chainCacheEntry{payload: payload, fetchedAt: time.Now()}
+		s.chainCacheMu.Unlock()
 	}
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
 }

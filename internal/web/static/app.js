@@ -1388,6 +1388,7 @@ async function refreshBooksFromAPI(includePositions = true) {
 let booksInFlight = null;
 
 async function loadBooksFromAPI(includePositions = true) {
+  S.lastBooksRefresh = Date.now();
   const [positions, orders, trades, limits, brackets] = await Promise.allSettled([
     includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
     getJSON("/api/broker/orders"),
@@ -1500,12 +1501,15 @@ function toArray(value) {
 let liveTimer = null;
 let underlyingTimer = null;
 let booksRefreshTimer = null;
+let chainPollCounter = 0;
 function startLivePolling() {
   if (!S.session?.authenticated) return;
   if (!liveTimer) {
     // Poll account books regularly when logged in and visible.
+    // Throttle to 60s when market is closed to respect broker rate limits.
     liveTimer = window.setInterval(() => {
       if (document.hidden || !S.session?.authenticated) return;
+      if (!S.marketOpen && Date.now() - (S.lastBooksRefresh || 0) < 60000) return;
       refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
     }, 15000);
   }
@@ -1514,12 +1518,15 @@ function startLivePolling() {
   // up and subscribed without requiring a manual Refresh click.
   if (!underlyingTimer) {
     underlyingTimer = window.setInterval(async () => {
-      if (document.hidden || !S.session?.authenticated) return;
+      if (document.hidden || !S.session?.authenticated || !S.marketOpen) return;
       try {
         applyIndexQuotes(await getJSON("/api/indices"));
         updateFeedSubscriptions();
         renderHeader();
-        if (S.activeIndex && S.expiry) {
+        // Periodically refresh option chain every 60s during open market hours
+        chainPollCounter++;
+        if (chainPollCounter >= 2 && S.activeIndex && S.expiry) {
+          chainPollCounter = 0;
           const center = num(S.spots.get(S.activeIndex)?.ltp);
           const chainRaw = await getJSON(chainURL({ center }));
           acceptChainPage(chainRaw);
@@ -1530,7 +1537,7 @@ function startLivePolling() {
       } catch (error) {
         console.warn("underlying/chain quote refresh failed", error);
       }
-    }, 20000);
+    }, 30000);
   }
 }
 

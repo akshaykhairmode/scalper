@@ -22,12 +22,13 @@ const (
 // this cache, so Kotak sees a fixed number of calls regardless of how many
 // tabs are open or how many order-feed events arrive.
 const (
-	positionsInterval = 5 * time.Second
-	ordersInterval    = 5 * time.Second
-	tradesInterval    = 15 * time.Second
-	limitsInterval    = 120 * time.Second
-	forceMinGap       = 2 * time.Second
-	bookRetryBackoff  = 1 * time.Second
+	positionsInterval      = 5 * time.Second
+	ordersInterval         = 5 * time.Second
+	tradesInterval         = 15 * time.Second
+	limitsInterval         = 120 * time.Second
+	forceMinGap            = 2 * time.Second
+	bookRetryBackoff       = 15 * time.Second
+	bookRetryBackoffClosed = 60 * time.Second
 )
 
 type bookState struct {
@@ -124,7 +125,7 @@ func (c *booksCache) lookup(kind string) (bookState, bool) {
 	return *state, true
 }
 
-func (c *booksCache) store(kind string, raw json.RawMessage, err error) {
+func (c *booksCache) store(kind string, raw json.RawMessage, err error, backoff ...time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state, ok := c.books[kind]
@@ -133,7 +134,11 @@ func (c *booksCache) store(kind string, raw json.RawMessage, err error) {
 	}
 	if err != nil {
 		state.err = err
-		state.nextTry = time.Now().Add(bookRetryBackoff)
+		dur := bookRetryBackoff
+		if len(backoff) > 0 && backoff[0] > 0 {
+			dur = backoff[0]
+		}
+		state.nextTry = time.Now().Add(dur)
 		return
 	}
 	state.raw = raw
@@ -202,7 +207,14 @@ func (s *Server) fetchBook(ctx context.Context, kind string, session kotakapi.Se
 // attempt. It is deliberately longer than the background cadence so normal
 // polling always hits fresh data, while a failed websocket still lets the
 // getter refresh synchronously.
-func staleAfter(kind string) time.Duration {
+func staleAfter(kind string, marketOpen ...bool) time.Duration {
+	open := true
+	if len(marketOpen) > 0 {
+		open = marketOpen[0]
+	}
+	if !open {
+		return 3 * time.Minute
+	}
 	switch kind {
 	case bookPositions, bookOrders:
 		return 3 * positionsInterval
@@ -221,9 +233,12 @@ func (s *Server) getBook(ctx context.Context, kind string, session kotakapi.Sess
 		return s.fetchBook(ctx, kind, session)
 	}
 	cache.reset(sessionKey(session))
+	marketOpen := s.isMarketOpen(s.now())
+	stale := staleAfter(kind, marketOpen)
+
 	if state, ok := cache.lookup(kind); ok {
 		if state.raw != nil {
-			if time.Since(state.fetched) < staleAfter(kind) || time.Now().Before(state.nextTry) {
+			if time.Since(state.fetched) < stale || time.Now().Before(state.nextTry) {
 				return state.raw, nil
 			}
 		} else if state.err != nil && time.Now().Before(state.nextTry) {
@@ -236,20 +251,24 @@ func (s *Server) getBook(ctx context.Context, kind string, session kotakapi.Sess
 	defer mu.Unlock()
 	cached, _ := cache.lookup(kind)
 	if cached.raw != nil {
-		if time.Since(cached.fetched) < staleAfter(kind) || time.Now().Before(cached.nextTry) {
+		if time.Since(cached.fetched) < stale || time.Now().Before(cached.nextTry) {
 			return cached.raw, nil
 		}
 	} else if cached.err != nil && time.Now().Before(cached.nextTry) {
 		return nil, cached.err
 	}
 	raw, err := s.fetchBook(ctx, kind, session)
+	backoff := bookRetryBackoff
+	if !marketOpen {
+		backoff = bookRetryBackoffClosed
+	}
 	if err != nil && cached.raw != nil {
 		// Keep serving the last good book; the cache records the failure so
 		// the next request backs off instead of hammering Kotak.
-		cache.store(kind, nil, err)
+		cache.store(kind, nil, err, backoff)
 		return cached.raw, nil
 	}
-	cache.store(kind, raw, err)
+	cache.store(kind, raw, err, backoff)
 	return raw, err
 }
 
@@ -292,25 +311,46 @@ func (s *Server) runAccountBooks(ctx context.Context) {
 		}
 
 		now := time.Now()
+		marketOpen := s.isMarketOpen(now)
+		pInterval := positionsInterval
+		oInterval := ordersInterval
+		tInterval := tradesInterval
+		lInterval := limitsInterval
+		backoff := bookRetryBackoff
+		if !marketOpen {
+			pInterval = 60 * time.Second
+			oInterval = 60 * time.Second
+			tInterval = 60 * time.Second
+			lInterval = 180 * time.Second
+			backoff = bookRetryBackoffClosed
+		}
+
 		for kind, every := range map[string]time.Duration{
-			bookPositions: positionsInterval,
-			bookOrders:    ordersInterval,
-			bookTrades:    tradesInterval,
-			bookLimits:    limitsInterval,
+			bookPositions: pInterval,
+			bookOrders:    oInterval,
+			bookTrades:    tInterval,
+			bookLimits:    lInterval,
 		} {
 			if now.Sub(last[kind]) < every {
 				continue
 			}
 			mu := s.books.lock(kind)
 			mu.Lock()
-			if state, ok := s.books.lookup(kind); ok && state.fetched.After(last[kind]) {
-				// A handler refreshed this book while we waited.
-				mu.Unlock()
-				continue
+			if state, ok := s.books.lookup(kind); ok {
+				if state.fetched.After(last[kind]) {
+					// A handler refreshed this book while we waited.
+					mu.Unlock()
+					continue
+				}
+				if state.err != nil && now.Before(state.nextTry) {
+					// In backoff period from previous failure.
+					mu.Unlock()
+					continue
+				}
 			}
-			last[kind] = now
 			raw, err := s.fetchBook(ctx, kind, session)
-			s.books.store(kind, raw, err)
+			last[kind] = time.Now()
+			s.books.store(kind, raw, err, backoff)
 			mu.Unlock()
 			if err != nil && s.log != nil {
 				s.log.Warn("Kotak book refresh failed", "event", "broker_book_refresh_failed",
