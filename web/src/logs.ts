@@ -1,6 +1,8 @@
 // Scalper Logs Viewer
 function initLogsViewer(): void {
   let allLines: string[] = [];
+  let isInitialLoad = true;
+  let isUserScrolledUp = false;
   const container = document.getElementById("log-container") as HTMLDivElement | null;
   const filterInput = document.getElementById("filter-input") as HTMLInputElement | null;
   const linesSelect = document.getElementById("lines-select") as HTMLSelectElement | null;
@@ -10,7 +12,32 @@ function initLogsViewer(): void {
   const updatedEl = document.getElementById("last-updated") as HTMLElement | null;
   const pathEl = document.getElementById("log-path") as HTMLElement | null;
 
+  if (container) {
+    container.addEventListener("scroll", () => {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      const atBottom = distanceFromBottom <= 40;
+      isUserScrolledUp = !atBottom;
+
+      // When the user scrolls up to inspect logs, pause auto-scroll and uncheck the toggle
+      if (autoscrollToggle && isUserScrolledUp && autoscrollToggle.checked) {
+        autoscrollToggle.checked = false;
+      }
+    }, { passive: true });
+  }
+
+  if (autoscrollToggle) {
+    autoscrollToggle.addEventListener("change", () => {
+      if (autoscrollToggle.checked && container) {
+        isUserScrolledUp = false;
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }
+
+  let isFetching = false;
   async function fetchLogs(): Promise<void> {
+    if (isFetching) return;
+    isFetching = true;
     try {
       const linesCount = linesSelect ? linesSelect.value : "500";
       const res = await fetch('/api/logs?lines=' + encodeURIComponent(linesCount));
@@ -29,6 +56,8 @@ function initLogsViewer(): void {
           (err?.message || err) + '</div>';
         if (summaryEl) summaryEl.textContent = 'Error loading logs';
       }
+    } finally {
+      isFetching = false;
     }
   }
 
@@ -36,6 +65,10 @@ function initLogsViewer(): void {
     if (!container) return;
     const q = filterInput ? filterInput.value.toLowerCase().trim() : '';
     const filtered = q ? allLines.filter(l => l.toLowerCase().includes(q)) : allLines;
+
+    // Capture current scroll offset and bottom proximity before DOM replacement
+    const prevScrollTop = container.scrollTop;
+    const wasNearBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) <= 40;
 
     if (filtered.length === 0) {
       container.innerHTML = '<div style="color:var(--text-dim); text-align:center; padding:40px;">No matching log lines.</div>';
@@ -54,8 +87,17 @@ function initLogsViewer(): void {
     }
     container.innerHTML = html;
     if (summaryEl) summaryEl.textContent = 'Showing ' + filtered.length + ' of ' + allLines.length + ' lines';
-    if (autoscrollToggle && autoscrollToggle.checked) {
+
+    if (isInitialLoad) {
+      // First load: scroll to bottom so the user sees the newest lines
       container.scrollTop = container.scrollHeight;
+      isInitialLoad = false;
+    } else if (autoscrollToggle && autoscrollToggle.checked && wasNearBottom && !isUserScrolledUp) {
+      // Tail mode: stay at bottom if already at bottom and autoscroll is checked
+      container.scrollTop = container.scrollHeight;
+    } else {
+      // Inspected mode: keep the exact scroll position so lines being read do NOT jump away
+      container.scrollTop = prevScrollTop;
     }
   }
 

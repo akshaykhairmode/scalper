@@ -4398,7 +4398,69 @@ function initChartQuickOrder() {
 
   const widget = $("chart-quick-order");
   if (widget) {
-    widget.addEventListener("pointerdown", (e) => e.stopPropagation());
+    let isDragging = false;
+    let activePointerId = -1;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    widget.addEventListener("pointerdown", (e: PointerEvent) => {
+      e.stopPropagation();
+      if (e.button !== 0 || isDragging) return;
+      const target = e.target as HTMLElement | null;
+      // Do not initiate drag if user clicked interactive controls
+      if (target?.closest("button, input, select, textarea, label, a, .cqo-stepper, .cqo-actions")) {
+        return;
+      }
+
+      isDragging = true;
+      activePointerId = e.pointerId;
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = widget.offsetLeft;
+      startTop = widget.offsetTop;
+      widget.classList.add("is-dragging");
+      try {
+        widget.setPointerCapture(e.pointerId);
+      } catch (_) {}
+      e.preventDefault();
+    });
+
+    widget.addEventListener("pointermove", (e: PointerEvent) => {
+      if (!isDragging || e.pointerId !== activePointerId) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const frame = widget.parentElement;
+      const maxLeft = frame ? frame.clientWidth - widget.offsetWidth : window.innerWidth - widget.offsetWidth;
+      const maxTop = frame ? frame.clientHeight - widget.offsetHeight : window.innerHeight - widget.offsetHeight;
+
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+
+      const newLeft = Math.max(0, Math.min(startLeft + dx, Math.max(0, maxLeft)));
+      const newTop = Math.max(0, Math.min(startTop + dy, Math.max(0, maxTop)));
+
+      widget.style.left = `${Math.round(newLeft)}px`;
+      widget.style.top = `${Math.round(newTop)}px`;
+    });
+
+    const stopDrag = (e: PointerEvent) => {
+      if (!isDragging || (e.pointerId !== undefined && e.pointerId !== activePointerId)) return;
+      isDragging = false;
+      activePointerId = -1;
+      widget.classList.remove("is-dragging");
+      try {
+        if (widget.hasPointerCapture(e.pointerId)) {
+          widget.releasePointerCapture(e.pointerId);
+        }
+      } catch (_) {}
+    };
+
+    widget.addEventListener("pointerup", stopDrag);
+    widget.addEventListener("pointercancel", stopDrag);
+    widget.addEventListener("lostpointercapture", stopDrag);
     widget.addEventListener("click", (e) => e.stopPropagation());
   }
 
@@ -4642,7 +4704,10 @@ function closeChartQuickOrder() {
     S.quickOrder = null;
   }
   const widget = $("chart-quick-order");
-  if (widget) widget.hidden = true;
+  if (widget) {
+    widget.classList.remove("is-dragging");
+    widget.hidden = true;
+  }
 }
 
 async function submitQuickOrder(action) {

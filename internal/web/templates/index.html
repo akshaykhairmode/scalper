@@ -741,9 +741,12 @@
 
   <!-- Chart quick limit order widget -->
   <div id="chart-quick-order" class="chart-quick-order" role="dialog" aria-label="Limit order" hidden>
-    <div class="cqo-header">
-      <span class="cqo-badge">LIMIT</span>
-      <span class="cqo-title" id="cqo-title">NIFTY 23000 CE</span>
+    <div class="cqo-header" id="cqo-header" title="Drag to move card">
+      <div class="cqo-header-left">
+        <span class="cqo-drag-grip" aria-hidden="true" title="Drag to move card">⋮⋮</span>
+        <span class="cqo-badge">LIMIT</span>
+        <span class="cqo-title" id="cqo-title">NIFTY 23000 CE</span>
+      </div>
       <button type="button" class="cqo-close" id="cqo-close" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
     <div class="cqo-row">
