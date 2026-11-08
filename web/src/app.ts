@@ -716,10 +716,12 @@ function init() {
   registerServiceWorker();
   initPWAInstallPrompt();
   updateClock();
+  updateAIWinRateChip();
   window.setInterval(() => {
     updateClock();
     updateMarketPhase();
   }, 1000);
+  window.setInterval(updateAIWinRateChip, 30000);
 
   const serveAuthModal = $("serve-auth-modal");
   const isTerminalLocked = serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none";
@@ -1808,6 +1810,10 @@ function handleSocketEvent(event) {
   }
   if (event.type === "bracket_update") {
     handleBracketUpdate(data);
+    return;
+  }
+  if (event.type === "ai_call_outcome" || event.type === "ai_call_new") {
+    handleAICallEvent(event.type, data);
     return;
   }
   if (event.type === "broker_order" || event.type === "broker_position") {
@@ -3679,6 +3685,10 @@ function validateQuantity(type) {
 }
 
 async function onTrade(action, type) {
+  if (action === "ask") {
+    onAskAI(type);
+    return;
+  }
   const orderMode = tradingMode();
   if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before placing an order.", "warn"); return; }
   const option = selectedOption(type);
@@ -5890,6 +5900,201 @@ function closePairModal() {
   }
 }
 
+async function onAskAI(type: string) {
+  const option = selectedOption(type);
+  if (!option) {
+    toast(`Select a ${type} strike first.`, "warn");
+    return;
+  }
+  if (!option.quoteAvailable || option.ltp <= 0) {
+    toast(`No live quote available for ${type} option.`, "warn");
+    return;
+  }
+
+  const askBtn = $(type === "CE" ? "btn-ask-ce" : "btn-ask-pe") as HTMLButtonElement | null;
+  if (askBtn) {
+    askBtn.disabled = true;
+    askBtn.textContent = "Asking…";
+  }
+
+  try {
+    const payload = {
+      underlying: S.activeIndex || "NIFTY",
+      instrument_key: option.instrumentKey,
+      symbol: option.symbol,
+      strike: String(option.strike),
+      option_type: type,
+      ltp: option.ltp
+    };
+
+    const resp = await postJSON("/api/ai/evaluations/ask", payload);
+    if (!resp || !resp.success) {
+      toast("AI evaluation failed: " + (resp?.error || "unknown response"), "error");
+      return;
+    }
+
+    const action = resp.action || "PASS";
+    const score = resp.score ?? "—";
+    const conf = resp.confidence ? `${Math.round(resp.confidence * 100)}%` : "—";
+    const target = resp.target_price ? `₹${fmt(resp.target_price, 2)} (+${resp.target_pct || 8}%)` : "";
+    const sl = resp.stop_loss_price ? `₹${fmt(resp.stop_loss_price, 2)} (-${resp.stop_loss_pct || 5}%)` : "";
+    const note = resp.agent_analysis || resp.reasoning || "";
+
+    if (action.startsWith("BUY")) {
+      toast(`🎯 JEV: ${action} (Score: ${score}/5, Conf: ${conf}) | Target: ${target}, SL: ${sl}. ${note}`, "success", 8000);
+    } else {
+      toast(`✋ JEV: ${action} (Score: ${score}/5, Conf: ${conf}). ${note}`, "info", 6000);
+    }
+
+    updateAIWinRateChip();
+    if (isAISignalsModalOpen()) {
+      refreshAISignalsModal();
+    }
+  } catch (err: any) {
+    toast("AI Ask failed: " + (err?.message || String(err)), "error");
+  } finally {
+    if (askBtn) {
+      askBtn.disabled = false;
+      askBtn.textContent = "Ask";
+    }
+  }
+}
+
+function isAISignalsModalOpen(): boolean {
+  const modal = $("ai-signals-modal");
+  return Boolean(modal && !modal.hidden && modal.style.display !== "none");
+}
+
+function openAISignalsModal() {
+  const modal = $("ai-signals-modal");
+  if (!modal) return;
+  modal.hidden = false;
+  modal.style.display = "grid";
+  refreshAISignalsModal();
+}
+
+function closeAISignalsModal() {
+  const modal = $("ai-signals-modal");
+  if (modal) {
+    modal.hidden = true;
+    modal.style.display = "none";
+  }
+}
+
+async function updateAIWinRateChip() {
+  try {
+    const res = await getJSON("/api/ai/evaluations/stats");
+    const stats = res?.stats;
+    const chip = $("ai-winrate-chip");
+    if (!chip || !stats) return;
+
+    if (stats.total_calls > 0 && (stats.target_hits + stats.stop_loss_hits) > 0) {
+      const winRate = Number(stats.win_rate_pct).toFixed(1);
+      chip.textContent = `${winRate}%`;
+      chip.style.color = stats.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
+    } else if (stats.total_calls > 0) {
+      chip.textContent = `${stats.pending_calls} active`;
+      chip.style.color = "var(--accent, #f59e0b)";
+    } else {
+      chip.textContent = "--%";
+      chip.style.color = "inherit";
+    }
+  } catch (_) {
+    // ignore
+  }
+}
+
+async function refreshAISignalsModal() {
+  try {
+    const [statsRes, evalsRes] = await Promise.allSettled([
+      getJSON("/api/ai/evaluations/stats"),
+      getJSON("/api/ai/evaluations?limit=50")
+    ]);
+
+    if (statsRes.status === "fulfilled" && statsRes.value?.stats) {
+      const s = statsRes.value.stats;
+      const winRateEl = $("ai-modal-winrate");
+      if (winRateEl) {
+        if (s.target_hits + s.stop_loss_hits > 0) {
+          winRateEl.textContent = `${Number(s.win_rate_pct).toFixed(1)}%`;
+          winRateEl.style.color = s.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
+        } else {
+          winRateEl.textContent = "--%";
+          winRateEl.style.color = "var(--text-muted, #888)";
+        }
+      }
+      if ($("ai-modal-target-hits")) $("ai-modal-target-hits").textContent = String(s.target_hits || 0);
+      if ($("ai-modal-sl-hits")) $("ai-modal-sl-hits").textContent = String(s.stop_loss_hits || 0);
+      if ($("ai-modal-active-calls")) $("ai-modal-active-calls").textContent = String(s.pending_calls || 0);
+      if ($("ai-modal-total-calls")) $("ai-modal-total-calls").textContent = String(s.total_calls || 0);
+
+      const chip = $("ai-winrate-chip");
+      if (chip) {
+        if (s.target_hits + s.stop_loss_hits > 0) {
+          chip.textContent = `${Number(s.win_rate_pct).toFixed(1)}%`;
+          chip.style.color = s.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
+        } else if (s.total_calls > 0) {
+          chip.textContent = `${s.pending_calls} active`;
+        }
+      }
+    }
+
+    if (evalsRes.status === "fulfilled") {
+      const evals = evalsRes.value?.evaluations || [];
+      const tbody = $("ai-calls-tbody");
+      if (!tbody) return;
+
+      if (!evals.length) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI evaluation calls recorded yet. Click "Scan Now" or use "Ask" on any strike.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = evals.map((e: any) => {
+        const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "—";
+        const strikeLabel = `${e.underlying || ""} ${e.instrument_key ? e.instrument_key.split("|")[4] || e.instrument_key : ""}`;
+        let statusBadge = `<span class="ai-status-pill ai-status-pending">PENDING</span>`;
+        if (e.status === "TARGET_HIT") {
+          statusBadge = `<span class="ai-status-pill ai-status-target">TARGET HIT</span>`;
+        } else if (e.status === "SL_HIT") {
+          statusBadge = `<span class="ai-status-pill ai-status-sl">SL HIT</span>`;
+        }
+
+        const pnlStr = e.pnl_pct ? `<span style="font-weight:700; color:${e.pnl_pct >= 0 ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)'}">${e.pnl_pct > 0 ? '+' : ''}${fmt(e.pnl_pct, 2)}%</span>` : "—";
+
+        return `<tr style="border-bottom:1px solid var(--border,#333);">
+          <td style="padding:8px 10px; font-family:var(--mono);">${timeStr}</td>
+          <td style="padding:8px 10px; font-weight:600;">${strikeLabel}</td>
+          <td style="padding:8px 10px; font-weight:700; color:${e.action?.includes('PE') ? 'var(--red,#ef4444)' : 'var(--green,#22c55e)'};">${e.action || "—"}</td>
+          <td style="padding:8px 10px; font-family:var(--mono);">₹${fmt(e.option_ltp, 2)}</td>
+          <td style="padding:8px 10px; font-family:var(--mono); color:var(--green,#22c55e);">₹${fmt(e.target_price, 2)}</td>
+          <td style="padding:8px 10px; font-family:var(--mono); color:var(--red,#ef4444);">₹${fmt(e.stop_loss_price, 2)}</td>
+          <td style="padding:8px 10px; font-family:var(--mono);">${e.exit_price ? '₹' + fmt(e.exit_price, 2) : '—'}</td>
+          <td style="padding:8px 10px; font-family:var(--mono);">${pnlStr}</td>
+          <td style="padding:8px 10px; text-align:center;">${statusBadge}</td>
+        </tr>`;
+      }).join("");
+    }
+  } catch (err: any) {
+    toast("Failed to refresh AI signals: " + (err?.message || String(err)), "error");
+  }
+}
+
+function handleAICallEvent(eventType: string, data: any) {
+  updateAIWinRateChip();
+  if (isAISignalsModalOpen()) {
+    refreshAISignalsModal();
+  }
+  if (eventType === "ai_call_outcome" && data) {
+    if (data.status === "TARGET_HIT") {
+      toast(`🎯 AI Target Hit: ${data.instrument_key || data.underlying} +${fmt(data.pnl_pct, 1)}%!`, "success", 6000);
+    } else if (data.status === "SL_HIT") {
+      toast(`🛑 AI Stop-Loss Hit: ${data.instrument_key || data.underlying} ${fmt(data.pnl_pct, 1)}%`, "warn", 6000);
+    }
+  } else if (eventType === "ai_call_new" && data) {
+    toast(`🤖 New Jev Signal: ${data.action} ${data.underlying} @ ₹${fmt(data.option_ltp, 2)} (Target: ₹${fmt(data.target_price, 2)})`, "info", 5000);
+  }
+}
+
 async function loadDevicesList() {
   const tbody = $("devices-list-body");
   const tableWrap = $("devices-table-wrap");
@@ -6427,6 +6632,44 @@ function bindEvents() {
     }
   });
   $("biometric-unlock-serve-btn")?.addEventListener("click", handleBiometricUnlock);
+
+  // AI Signals & Win Rate Modal events
+  $("ai-signals-button")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    openAISignalsModal();
+  });
+  $("ai-signals-close")?.addEventListener("click", closeAISignalsModal);
+  $("ai-signals-close-btn")?.addEventListener("click", closeAISignalsModal);
+  $("ai-signals-modal")?.addEventListener("click", (event) => {
+    if (event.target === $("ai-signals-modal")) closeAISignalsModal();
+  });
+  $("ai-refresh-stats-btn")?.addEventListener("click", () => {
+    refreshAISignalsModal();
+  });
+  $("ai-scan-now-btn")?.addEventListener("click", async () => {
+    const btn = $("ai-scan-now-btn") as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Scanning…";
+    }
+    try {
+      const underlying = S.activeIndex || "NIFTY";
+      const res = await postJSON(`/api/ai/evaluations/scan?underlying=${encodeURIComponent(underlying)}`, {});
+      if (res && res.success) {
+        toast(res.message || "Scan completed", "success");
+      } else {
+        toast("Scan failed: " + (res?.error || "unknown"), "error");
+      }
+      await refreshAISignalsModal();
+    } catch (err: any) {
+      toast("Scan error: " + (err?.message || String(err)), "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "⚡ Scan Now (Jev)";
+      }
+    }
+  });
 
   // Pattern popover & filters
   const patternPopover = $("pattern-popover");

@@ -43,6 +43,7 @@
       <span class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" role="button" tabindex="0" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></span>
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
+      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span></button>
       <a href="/logs" target="_blank" rel="noopener noreferrer" class="ghost small button" id="logs-button" title="View Live Server Logs (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Logs</a>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">LIVE</span>
@@ -189,8 +190,9 @@
               <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call quantity">+</button>
             </div>
             <div class="trade-buttons-row">
-              <button type="button" class="trade buy" data-action="buy" data-type="CE">BUY CALL</button>
-              <button type="button" class="trade sell" data-action="sell" data-type="CE">SELL CALL</button>
+              <button type="button" class="trade buy" data-action="buy" data-type="CE">Buy</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="CE">Sell</button>
+              <button type="button" class="trade ask" data-action="ask" data-type="CE" id="btn-ask-ce" title="Ask AI for real-time recommendation on this Call strike">Ask</button>
             </div>
           </div>
         </section>
@@ -280,8 +282,9 @@
               <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put quantity">+</button>
             </div>
             <div class="trade-buttons-row">
-              <button type="button" class="trade buy" data-action="buy" data-type="PE">BUY PUT</button>
-              <button type="button" class="trade sell" data-action="sell" data-type="PE">SELL PUT</button>
+              <button type="button" class="trade buy" data-action="buy" data-type="PE">Buy</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="PE">Sell</button>
+              <button type="button" class="trade ask" data-action="ask" data-type="PE" id="btn-ask-pe" title="Ask AI for real-time recommendation on this Put strike">Ask</button>
             </div>
           </div>
         </section>
@@ -571,6 +574,80 @@
 
       <div class="modal-footer" style="display:flex; justify-content:flex-end; border-top:1px solid var(--border, #333); padding-top:12px;">
         <button type="button" class="primary small" id="pair-modal-close-btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Signals & Performance Modal -->
+  <div class="modal-backdrop" id="ai-signals-modal" hidden>
+    <div class="modal ai-signals-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-signals-title" style="max-width:840px; width:95vw;">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">SYSTEM 1 (JEV) &amp; SYSTEM 2 (AGENT)</span>
+          <h2 id="ai-signals-title">🤖 AI Scalp Signals &amp; Win Rate Tracker</h2>
+        </div>
+        <button type="button" class="icon-button" id="ai-signals-close" aria-label="Close AI signals modal">×</button>
+      </div>
+
+      <div class="ai-signals-content" style="padding:16px;">
+        <div class="ai-metrics-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px; margin-bottom:16px;">
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Win Rate</div>
+            <div id="ai-modal-winrate" style="font-size:22px; font-weight:800; color:var(--green,#22c55e); margin-top:4px;">--%</div>
+          </div>
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Target Hits</div>
+            <div id="ai-modal-target-hits" style="font-size:22px; font-weight:800; color:var(--green,#22c55e); margin-top:4px;">0</div>
+          </div>
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">SL Hits</div>
+            <div id="ai-modal-sl-hits" style="font-size:22px; font-weight:800; color:var(--red,#ef4444); margin-top:4px;">0</div>
+          </div>
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Active Calls</div>
+            <div id="ai-modal-active-calls" style="font-size:22px; font-weight:800; color:var(--accent,#f59e0b); margin-top:4px;">0</div>
+          </div>
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Total Calls</div>
+            <div id="ai-modal-total-calls" style="font-size:22px; font-weight:800; margin-top:4px;">0</div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+          <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Recent Jev Setups &amp; Execution Outcomes</h3>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="accent small" id="ai-scan-now-btn">⚡ Scan Now (Jev)</button>
+            <button type="button" class="ghost small" id="ai-refresh-stats-btn">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div class="ai-calls-table-wrap" style="max-height:360px; overflow-y:auto; border:1px solid var(--border,#333); border-radius:6px;">
+          <table style="width:100%; border-collapse:collapse; font-size:12px;" id="ai-calls-table">
+            <thead>
+              <tr style="text-align:left; background:rgba(255,255,255,0.02); border-bottom:1px solid var(--border,#333); color:var(--text-muted,#888);">
+                <th style="padding:8px 10px;">Time</th>
+                <th style="padding:8px 10px;">Setup / Strike</th>
+                <th style="padding:8px 10px;">Action</th>
+                <th style="padding:8px 10px;">Entry</th>
+                <th style="padding:8px 10px;">Target (+8%)</th>
+                <th style="padding:8px 10px;">SL (-5%)</th>
+                <th style="padding:8px 10px;">Exit / LTP</th>
+                <th style="padding:8px 10px;">PnL %</th>
+                <th style="padding:8px 10px; text-align:center;">Status</th>
+              </tr>
+            </thead>
+            <tbody id="ai-calls-tbody">
+              <tr>
+                <td colspan="9" style="text-align:center; padding:20px; color:var(--text-muted,#888);">Loading AI evaluation calls…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border,#333); padding:12px 16px;">
+        <span style="font-size:11px; color:var(--text-muted,#888);">Target / Stop-Loss tracked dynamically on tick feeds in real time.</span>
+        <button type="button" class="primary small" id="ai-signals-close-btn">Close</button>
       </div>
     </div>
   </div>

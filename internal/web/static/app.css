@@ -1108,7 +1108,54 @@ body[data-theme="light"] .cqo-qty-info {
 .trade.buy:hover { background: #123322; }
 .trade.sell { background: #2a1111; border-color: #5a2424; color: #ff8f8f; }
 .trade.sell:hover { background: #371515; }
+.trade.ask {
+  background: #0f1c2e;
+  border-color: #1e3a5f;
+  color: #60a5fa;
+  min-width: 62px;
+}
+.trade.ask:hover:not(:disabled) {
+  background: #182b46;
+  border-color: #2b5284;
+}
 .trade:disabled { opacity: .35; cursor: not-allowed; }
+
+.badge-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  margin-left: 4px;
+}
+
+.ai-status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ai-status-target {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.ai-status-sl {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.ai-status-pending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
 
 .risk-preview {
   margin-top: auto;
@@ -2012,6 +2059,16 @@ body[data-theme="light"] .trade.sell {
 body[data-theme="light"] .trade.sell:hover:not(:disabled) {
   background: #d72433;
   border-color: #bd1a28;
+}
+body[data-theme="light"] .trade.ask {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(29, 78, 216, 0.15);
+}
+body[data-theme="light"] .trade.ask:hover:not(:disabled) {
+  background: #dbeafe;
+  border-color: #93c5fd;
 }
 body[data-theme="light"] .danger,
 body[data-theme="light"] .square-off-button {
@@ -2954,16 +3011,17 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     border-radius: 5px;
   }
 
-  /* One-handed side-by-side Buy and Sell buttons */
+  /* One-handed side-by-side Buy and Sell buttons + Ask button */
   .trade-buttons-row {
     display: grid !important;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr auto;
     gap: 8px;
     width: 100%;
   }
 
   .leg-orderpad .trade.buy,
-  .leg-orderpad .trade.sell {
+  .leg-orderpad .trade.sell,
+  .leg-orderpad .trade.ask {
     min-height: 48px;
     font-size: 14px;
     font-weight: 800;
@@ -2971,6 +3029,12 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     border-radius: 8px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+  }
+
+  .leg-orderpad .trade.ask {
+    padding: 0 16px;
+  }
     justify-content: center;
     width: 100%;
     touch-action: manipulation;

@@ -23,6 +23,10 @@ import (
 const defaultAISettingsYAML = `ai:
   enabled: false             # Master toggle for AI evaluation engine
   shadow_mode: true          # Log evaluations to SQLite without sending broker orders
+  periodic_scan: false       # Automatically query Jev for periodic option setups
+  scan_interval_minutes: 15  # Periodic scan interval (5, 15, 30, 60m)
+  target_pct: 8.0            # Target profit percentage for call tracking (+8%)
+  stop_loss_pct: 5.0         # Stop-loss risk percentage for call tracking (-5%)
   min_confidence: 0.75       # Minimum Noul probability cutoff (0.0 to 1.0)
   min_score: 4               # Minimum setup conviction score (1 to 5)
   eval_cadence_seconds: 15   # Evaluation frequency for active strikes
@@ -39,7 +43,7 @@ const defaultAISettingsYAML = `ai:
     provider: "openrouter"   # openrouter | ollama | gemini | openai | generic
     base_url: "https://openrouter.ai/api/v1" # e.g. http://localhost:11434/v1 for Ollama
     api_key: ""              # Or set AI_AGENT_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY
-    model: "anthropic/claude-3.5-sonnet" # or llama3, gemini-1.5-flash, etc.
+    model: "nvidia/nemotron-3.5-lightning:free" # or meta-llama/llama-3.3-70b-instruct:free, etc.
     timeout_ms: 30000
 `
 
@@ -364,6 +368,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if oldCfg.Web.BasicAuth != newCfg.Web.BasicAuth {
 		s.revokeAllServeSessions()
+	}
+	if s.evaluator != nil {
+		s.evaluator.UpdateConfig(r.Context(), newCfg.AI)
 	}
 	restartRequired := restartRequiredFields(oldCfg, newCfg)
 

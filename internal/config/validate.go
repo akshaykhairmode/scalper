@@ -490,5 +490,14 @@ func (c Config) validateAI() error {
 	if c.AI.EvalCadenceSeconds <= 0 {
 		return fieldErr("ai.eval_cadence_seconds", "must be greater than 0, got %d", c.AI.EvalCadenceSeconds)
 	}
+	if c.AI.PeriodicScan && c.AI.ScanIntervalMinutes <= 0 {
+		return fieldErr("ai.scan_interval_minutes", "must be greater than 0, got %d", c.AI.ScanIntervalMinutes)
+	}
+	if c.AI.TargetPct <= 0 {
+		return fieldErr("ai.target_pct", "must be greater than 0, got %f", c.AI.TargetPct)
+	}
+	if c.AI.StopLossPct <= 0 {
+		return fieldErr("ai.stop_loss_pct", "must be greater than 0, got %f", c.AI.StopLossPct)
+	}
 	return nil
 }

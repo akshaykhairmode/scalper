@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,13 +207,17 @@ type BasicAuth struct {
 
 // AI holds configuration for TypeSafe Jev decision models and generic LLM reasoning agents.
 type AI struct {
-	Enabled            bool        `yaml:"enabled" json:"enabled"`
-	ShadowMode         bool        `yaml:"shadow_mode" json:"shadow_mode"`
-	MinConfidence      float64     `yaml:"min_confidence" json:"min_confidence"`
-	MinScore           int         `yaml:"min_score" json:"min_score"`
-	EvalCadenceSeconds int         `yaml:"eval_cadence_seconds" json:"eval_cadence_seconds"`
-	Jev                JevConfig   `yaml:"jev" json:"jev"`
-	Agent              AgentConfig `yaml:"agent" json:"agent"`
+	Enabled             bool        `yaml:"enabled" json:"enabled"`
+	ShadowMode          bool        `yaml:"shadow_mode" json:"shadow_mode"`
+	PeriodicScan        bool        `yaml:"periodic_scan" json:"periodic_scan"`
+	ScanIntervalMinutes int         `yaml:"scan_interval_minutes" json:"scan_interval_minutes"`
+	TargetPct           float64     `yaml:"target_pct" json:"target_pct"`
+	StopLossPct         float64     `yaml:"stop_loss_pct" json:"stop_loss_pct"`
+	MinConfidence       float64     `yaml:"min_confidence" json:"min_confidence"`
+	MinScore            int         `yaml:"min_score" json:"min_score"`
+	EvalCadenceSeconds  int         `yaml:"eval_cadence_seconds" json:"eval_cadence_seconds"`
+	Jev                 JevConfig   `yaml:"jev" json:"jev"`
+	Agent               AgentConfig `yaml:"agent" json:"agent"`
 }
 
 // JevConfig holds settings for TypeSafe AI Jev decision models (System 1).
@@ -346,11 +351,15 @@ func Default() Config {
 		},
 		Web: Web{OpenBrowser: true},
 		AI: AI{
-			Enabled:            false,
-			ShadowMode:         true,
-			MinConfidence:      0.75,
-			MinScore:           4,
-			EvalCadenceSeconds: 15,
+			Enabled:             false,
+			ShadowMode:          true,
+			PeriodicScan:        true,
+			ScanIntervalMinutes: 15,
+			TargetPct:           8.0,
+			StopLossPct:         5.0,
+			MinConfidence:       0.75,
+			MinScore:            4,
+			EvalCadenceSeconds:  15,
 			Jev: JevConfig{
 				BaseURL:   "https://api.typesafe.ai/v1",
 				Model:     "jev-latest",
@@ -359,7 +368,7 @@ func Default() Config {
 			Agent: AgentConfig{
 				Provider:  "openrouter",
 				BaseURL:   "https://openrouter.ai/api/v1",
-				Model:     "anthropic/claude-3.5-sonnet",
+				Model:     "nvidia/nemotron-3.5-lightning:free",
 				TimeoutMS: 30000,
 			},
 		},
@@ -525,6 +534,14 @@ func (c *Config) applyEnv() {
 	}
 	if v, ok := os.LookupEnv("AI_JEV_MODEL"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Jev.Model = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("AI_PERIODIC_SCAN"); ok {
+		c.AI.PeriodicScan = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := os.LookupEnv("AI_SCAN_INTERVAL_MINUTES"); ok {
+		if val, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && val > 0 {
+			c.AI.ScanIntervalMinutes = val
+		}
 	}
 }
 

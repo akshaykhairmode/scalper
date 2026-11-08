@@ -61,7 +61,7 @@ func NewClient(cfg Config) *Client {
 		case "openai":
 			model = "gpt-4o-mini"
 		default:
-			model = "anthropic/claude-3.5-sonnet"
+			model = "nvidia/nemotron-3.5-lightning:free"
 		}
 	}
 	cfg.Model = model

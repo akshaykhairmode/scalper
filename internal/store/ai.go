@@ -27,18 +27,34 @@ type Playbook struct {
 
 // Evaluation represents a tactical decision made by a System 1 decision model (Jev).
 type Evaluation struct {
-	ID            int64     `json:"id"`
-	Timestamp     time.Time `json:"timestamp"`
-	InstrumentKey string    `json:"instrument_key"`
-	Underlying    string    `json:"underlying"`
-	SpotPrice     float64   `json:"spot_price"`
-	OptionLTP     float64   `json:"option_ltp"`
-	Action        string    `json:"action"` // BUY, SELL, HOLD, EXIT
-	Confidence    float64   `json:"confidence"`
-	Score         int       `json:"score"`
-	DurationMS    int       `json:"duration_ms"`
-	StateSnapshot string    `json:"state_snapshot"`
-	Shadow        bool      `json:"shadow"`
+	ID            int64      `json:"id"`
+	Timestamp     time.Time  `json:"timestamp"`
+	InstrumentKey string     `json:"instrument_key"`
+	Underlying    string     `json:"underlying"`
+	SpotPrice     float64    `json:"spot_price"`
+	OptionLTP     float64    `json:"option_ltp"`
+	Action        string     `json:"action"` // BUY, SELL, HOLD, EXIT, BUY_CE, BUY_PE
+	Confidence    float64    `json:"confidence"`
+	Score         int        `json:"score"`
+	DurationMS    int        `json:"duration_ms"`
+	StateSnapshot string     `json:"state_snapshot"`
+	Shadow        bool       `json:"shadow"`
+	TargetPrice   float64    `json:"target_price"`
+	StopLossPrice float64    `json:"stop_loss_price"`
+	Status        string     `json:"status"` // PENDING, TARGET_HIT, SL_HIT, EXPIRED
+	ExitPrice     float64    `json:"exit_price"`
+	ExitTime      *time.Time `json:"exit_time,omitempty"`
+	PnLPct        float64    `json:"pnl_pct"`
+}
+
+// EvaluationStats holds summary metrics for Jev calls and win rates.
+type EvaluationStats struct {
+	TotalCalls   int     `json:"total_calls"`
+	TargetHits   int     `json:"target_hits"`
+	StopLossHits int     `json:"stop_loss_hits"`
+	PendingCalls int     `json:"pending_calls"`
+	WinRatePct   float64 `json:"win_rate_pct"`
+	AvgPnLPct    float64 `json:"avg_pnl_pct"`
 }
 
 // SavePlaybook persists an AI playbook in the database and returns its assigned ID.
@@ -152,9 +168,9 @@ func (s *Store) GetPlaybookByDate(ctx context.Context, date string) (*Playbook, 
 }
 
 // SaveEvaluation records a Jev decision or shadow evaluation.
-func (s *Store) SaveEvaluation(ctx context.Context, e Evaluation) error {
+func (s *Store) SaveEvaluation(ctx context.Context, e Evaluation) (int64, error) {
 	if s == nil || s.db == nil {
-		return errors.New("store: database not open")
+		return 0, errors.New("store: database not open")
 	}
 	ts := e.Timestamp
 	if ts.IsZero() {
@@ -164,21 +180,133 @@ func (s *Store) SaveEvaluation(ctx context.Context, e Evaluation) error {
 			ts = time.Now()
 		}
 	}
+	status := strings.TrimSpace(e.Status)
+	if status == "" {
+		status = "PENDING"
+	}
 
 	query := `
 		INSERT INTO ai_evaluations (
 			timestamp, instrument_key, underlying, spot_price, option_ltp,
-			action, confidence, score, duration_ms, state_snapshot, shadow
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			action, confidence, score, duration_ms, state_snapshot, shadow,
+			target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := s.db.ExecContext(ctx, query,
+	res, err := s.db.ExecContext(ctx, query,
 		ts, e.InstrumentKey, e.Underlying, e.SpotPrice, e.OptionLTP,
 		e.Action, e.Confidence, e.Score, e.DurationMS, e.StateSnapshot, e.Shadow,
+		e.TargetPrice, e.StopLossPrice, status, e.ExitPrice, e.ExitTime, e.PnLPct,
 	)
 	if err != nil {
-		return fmt.Errorf("store: save evaluation: %w", err)
+		return 0, fmt.Errorf("store: save evaluation: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store: get evaluation id: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateEvaluationOutcome updates the execution outcome of an evaluation.
+func (s *Store) UpdateEvaluationOutcome(ctx context.Context, id int64, status string, exitPrice, pnlPct float64, exitTime time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: database not open")
+	}
+	if exitTime.IsZero() {
+		if s.now != nil {
+			exitTime = s.now()
+		} else {
+			exitTime = time.Now()
+		}
+	}
+
+	query := `
+		UPDATE ai_evaluations
+		SET status = ?, exit_price = ?, pnl_pct = ?, exit_time = ?
+		WHERE id = ?`
+
+	_, err := s.db.ExecContext(ctx, query, status, exitPrice, pnlPct, exitTime, id)
+	if err != nil {
+		return fmt.Errorf("store: update evaluation outcome: %w", err)
 	}
 	return nil
+}
+
+// GetActiveEvaluations returns all evaluations currently in PENDING status.
+func (s *Store) GetActiveEvaluations(ctx context.Context) ([]Evaluation, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("store: database not open")
+	}
+
+	query := `
+		SELECT id, timestamp, instrument_key, underlying, spot_price, option_ltp,
+		       action, confidence, score, duration_ms, state_snapshot, shadow,
+		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
+		FROM ai_evaluations
+		WHERE status = 'PENDING'
+		ORDER BY timestamp DESC`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("store: query active evaluations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var evals []Evaluation
+	for rows.Next() {
+		var e Evaluation
+		var exitTime sql.NullTime
+		if err := rows.Scan(
+			&e.ID, &e.Timestamp, &e.InstrumentKey, &e.Underlying, &e.SpotPrice, &e.OptionLTP,
+			&e.Action, &e.Confidence, &e.Score, &e.DurationMS, &e.StateSnapshot, &e.Shadow,
+			&e.TargetPrice, &e.StopLossPrice, &e.Status, &e.ExitPrice, &exitTime, &e.PnLPct,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan active evaluation: %w", err)
+		}
+		if exitTime.Valid {
+			e.ExitTime = &exitTime.Time
+		}
+		evals = append(evals, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate active evaluations: %w", err)
+	}
+	return evals, nil
+}
+
+// GetEvaluationStats returns aggregate win/loss statistics for AI calls.
+func (s *Store) GetEvaluationStats(ctx context.Context) (EvaluationStats, error) {
+	if s == nil || s.db == nil {
+		return EvaluationStats{}, errors.New("store: database not open")
+	}
+
+	query := `
+		SELECT 
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN status = 'TARGET_HIT' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'SL_HIT' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0),
+			COALESCE(AVG(CASE WHEN status IN ('TARGET_HIT', 'SL_HIT') THEN pnl_pct END), 0.0)
+		FROM ai_evaluations
+		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY')`
+
+	var stats EvaluationStats
+	err := s.db.QueryRowContext(ctx, query).Scan(
+		&stats.TotalCalls,
+		&stats.TargetHits,
+		&stats.StopLossHits,
+		&stats.PendingCalls,
+		&stats.AvgPnLPct,
+	)
+	if err != nil {
+		return stats, fmt.Errorf("store: get evaluation stats: %w", err)
+	}
+
+	closed := stats.TargetHits + stats.StopLossHits
+	if closed > 0 {
+		stats.WinRatePct = float64(stats.TargetHits) / float64(closed) * 100.0
+	}
+	return stats, nil
 }
 
 // ListEvaluations returns the most recent evaluations up to limit.
@@ -192,7 +320,8 @@ func (s *Store) ListEvaluations(ctx context.Context, limit int) ([]Evaluation, e
 
 	query := `
 		SELECT id, timestamp, instrument_key, underlying, spot_price, option_ltp,
-		       action, confidence, score, duration_ms, state_snapshot, shadow
+		       action, confidence, score, duration_ms, state_snapshot, shadow,
+		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
 		FROM ai_evaluations
 		ORDER BY timestamp DESC
 		LIMIT ?`
@@ -206,11 +335,16 @@ func (s *Store) ListEvaluations(ctx context.Context, limit int) ([]Evaluation, e
 	var evals []Evaluation
 	for rows.Next() {
 		var e Evaluation
+		var exitTime sql.NullTime
 		if err := rows.Scan(
 			&e.ID, &e.Timestamp, &e.InstrumentKey, &e.Underlying, &e.SpotPrice, &e.OptionLTP,
 			&e.Action, &e.Confidence, &e.Score, &e.DurationMS, &e.StateSnapshot, &e.Shadow,
+			&e.TargetPrice, &e.StopLossPrice, &e.Status, &e.ExitPrice, &exitTime, &e.PnLPct,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan evaluation: %w", err)
+		}
+		if exitTime.Valid {
+			e.ExitTime = &exitTime.Time
 		}
 		evals = append(evals, e)
 	}

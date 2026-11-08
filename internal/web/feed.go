@@ -262,6 +262,12 @@ func (s *Server) forwardHSMEvents() {
 					s.bracketEngine.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
 				}
 			}
+			if s.evaluator != nil {
+				s.evaluator.OnTick(s.feedCtx, key, event.Quote.LTP)
+				if event.Quote.InstrumentKey != key {
+					s.evaluator.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
+				}
+			}
 			tickData := map[string]any{
 				"key": key, "ltp": event.Quote.LTP,
 				"prev_close": event.Quote.PreviousClose,

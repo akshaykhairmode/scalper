@@ -30,6 +30,9 @@ import (
 
 	"github.com/andybalholm/brotli"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/agent"
+	"github.com/akshaykhairmode/scalper/internal/ai/evaluator"
+	"github.com/akshaykhairmode/scalper/internal/ai/jev"
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/config"
@@ -67,8 +70,11 @@ type AIStore interface {
 	SavePlaybook(ctx context.Context, p store.Playbook) (int64, error)
 	GetLatestPlaybook(ctx context.Context) (*store.Playbook, error)
 	GetPlaybookByDate(ctx context.Context, date string) (*store.Playbook, error)
-	SaveEvaluation(ctx context.Context, e store.Evaluation) error
+	SaveEvaluation(ctx context.Context, e store.Evaluation) (int64, error)
 	ListEvaluations(ctx context.Context, limit int) ([]store.Evaluation, error)
+	GetActiveEvaluations(ctx context.Context) ([]store.Evaluation, error)
+	UpdateEvaluationOutcome(ctx context.Context, id int64, status string, exitPrice, pnlPct float64, exitTime time.Time) error
+	GetEvaluationStats(ctx context.Context) (store.EvaluationStats, error)
 }
 
 // MarketAPI is the market data subset used by the web server.
@@ -138,6 +144,8 @@ type Server struct {
 	orderFeed     *orderfeed.Client
 	bracketEngine *bracket.Engine
 	aiStore       AIStore
+	evaluator     *evaluator.Evaluator
+	agentClient   *agent.Client
 	consumerKey   string
 	books         *booksCache
 	risk          *riskState
@@ -423,6 +431,55 @@ func New(opts Options) (*Server, error) {
 		})
 	}
 
+	var jevClient *jev.Client
+	if opts.Config.AI.Jev.BaseURL != "" {
+		timeout := time.Duration(opts.Config.AI.Jev.TimeoutMS) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 1500 * time.Millisecond
+		}
+		jevClient = jev.NewClient(jev.Config{
+			BaseURL: opts.Config.AI.Jev.BaseURL,
+			APIKey:  opts.Config.AI.Jev.APIKey,
+			Model:   opts.Config.AI.Jev.Model,
+			Timeout: timeout,
+		})
+	}
+
+	if opts.Config.AI.Agent.BaseURL != "" || opts.Config.AI.Agent.APIKey != "" {
+		timeout := time.Duration(opts.Config.AI.Agent.TimeoutMS) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 10 * time.Second
+		}
+		s.agentClient = agent.NewClient(agent.Config{
+			Provider: opts.Config.AI.Agent.Provider,
+			BaseURL:  opts.Config.AI.Agent.BaseURL,
+			APIKey:   opts.Config.AI.Agent.APIKey,
+			Model:    opts.Config.AI.Agent.Model,
+			Timeout:  timeout,
+		})
+	}
+
+	s.evaluator = evaluator.New(evaluator.Options{
+		Config:        opts.Config.AI,
+		Store:         aiSt,
+		JevClient:     jevClient,
+		QuoteProvider: s,
+		Logger:        opts.Logger,
+		OnOutcome: func(eval store.Evaluation) {
+			s.broadcast(map[string]any{
+				"type": "ai_call_outcome",
+				"data": eval,
+			})
+		},
+		OnNewCall: func(eval store.Evaluation) {
+			s.broadcast(map[string]any{
+				"type": "ai_call_new",
+				"data": eval,
+			})
+		},
+	})
+	s.evaluator.Start(s.feedCtx)
+
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, fmt.Errorf("web: static assets: %w", err)
@@ -521,6 +578,9 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/ai/playbook", s.handleGetAIPlaybook)
 	mux.HandleFunc("POST /api/ai/playbook", s.handleSaveAIPlaybook)
 	mux.HandleFunc("GET /api/ai/evaluations", s.handleListAIEvaluations)
+	mux.HandleFunc("GET /api/ai/evaluations/stats", s.handleGetAIEvaluationStats)
+	mux.HandleFunc("POST /api/ai/evaluations/scan", s.handleTriggerAIScan)
+	mux.HandleFunc("POST /api/ai/evaluations/ask", s.handleAskAIEvaluation)
 
 	var h http.Handler = mux
 	h = s.serveAuthMiddleware(h)
@@ -584,6 +644,9 @@ func (s *Server) isMarketOpen(now time.Time) bool {
 
 // Close stops the server's feed event forwarding and WebSocket clients.
 func (s *Server) Close() {
+	if s.evaluator != nil {
+		s.evaluator.Stop()
+	}
 	if s.orderFeed != nil {
 		s.orderFeed.Stop()
 	}

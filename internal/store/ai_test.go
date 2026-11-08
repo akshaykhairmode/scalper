@@ -82,6 +82,7 @@ func TestSaveAndListEvaluations(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 
+	var lastID int64
 	for i := 0; i < 5; i++ {
 		e := Evaluation{
 			Timestamp:     now.Add(time.Duration(i) * time.Second),
@@ -89,16 +90,21 @@ func TestSaveAndListEvaluations(t *testing.T) {
 			Underlying:    "NIFTY",
 			SpotPrice:     24520.0 + float64(i),
 			OptionLTP:     140.0 + float64(i),
-			Action:        "BUY",
+			Action:        "BUY_CE",
 			Confidence:    0.82 + float64(i)*0.01,
 			Score:         4,
 			DurationMS:    180,
 			StateSnapshot: `{"vwap": 138.5}`,
 			Shadow:        true,
+			TargetPrice:   151.2,
+			StopLossPrice: 133.0,
+			Status:        "PENDING",
 		}
-		if err := s.SaveEvaluation(ctx, e); err != nil {
+		id, err := s.SaveEvaluation(ctx, e)
+		if err != nil {
 			t.Fatalf("SaveEvaluation [%d]: %v", i, err)
 		}
+		lastID = id
 	}
 
 	evals, err := s.ListEvaluations(ctx, 3)
@@ -111,5 +117,37 @@ func TestSaveAndListEvaluations(t *testing.T) {
 	// Verify descending order (most recent first)
 	if evals[0].SpotPrice < evals[1].SpotPrice {
 		t.Errorf("expected descending timestamp order, got %f then %f", evals[0].SpotPrice, evals[1].SpotPrice)
+	}
+
+	// Test Active Evaluations
+	active, err := s.GetActiveEvaluations(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveEvaluations: %v", err)
+	}
+	if len(active) != 5 {
+		t.Fatalf("expected 5 active evaluations, got %d", len(active))
+	}
+
+	// Update last evaluation outcome to TARGET_HIT
+	if err := s.UpdateEvaluationOutcome(ctx, lastID, "TARGET_HIT", 152.0, 8.57, time.Now()); err != nil {
+		t.Fatalf("UpdateEvaluationOutcome: %v", err)
+	}
+
+	// Now active count should be 4
+	activeAfter, err := s.GetActiveEvaluations(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveEvaluations after update: %v", err)
+	}
+	if len(activeAfter) != 4 {
+		t.Fatalf("expected 4 active evaluations, got %d", len(activeAfter))
+	}
+
+	// Test stats
+	stats, err := s.GetEvaluationStats(ctx)
+	if err != nil {
+		t.Fatalf("GetEvaluationStats: %v", err)
+	}
+	if stats.TotalCalls != 5 || stats.TargetHits != 1 || stats.PendingCalls != 4 || stats.WinRatePct != 100.0 {
+		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }

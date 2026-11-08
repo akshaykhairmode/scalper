@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/evaluator"
+	"github.com/akshaykhairmode/scalper/internal/ai/jev"
+	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
@@ -43,13 +47,56 @@ func (m *mockAIStore) GetPlaybookByDate(_ context.Context, date string) (*store.
 	return nil, nil
 }
 
-func (m *mockAIStore) SaveEvaluation(_ context.Context, e store.Evaluation) error {
+func (m *mockAIStore) SaveEvaluation(_ context.Context, e store.Evaluation) (int64, error) {
 	e.ID = int64(len(m.evaluations) + 1)
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
 	}
 	m.evaluations = append(m.evaluations, e)
+	return e.ID, nil
+}
+
+func (m *mockAIStore) GetActiveEvaluations(_ context.Context) ([]store.Evaluation, error) {
+	var active []store.Evaluation
+	for _, e := range m.evaluations {
+		if e.Status == "PENDING" {
+			active = append(active, e)
+		}
+	}
+	return active, nil
+}
+
+func (m *mockAIStore) UpdateEvaluationOutcome(_ context.Context, id int64, status string, exitPrice, pnlPct float64, exitTime time.Time) error {
+	for i := range m.evaluations {
+		if m.evaluations[i].ID == id {
+			m.evaluations[i].Status = status
+			m.evaluations[i].ExitPrice = exitPrice
+			m.evaluations[i].PnLPct = pnlPct
+			m.evaluations[i].ExitTime = &exitTime
+			return nil
+		}
+	}
 	return nil
+}
+
+func (m *mockAIStore) GetEvaluationStats(_ context.Context) (store.EvaluationStats, error) {
+	var stats store.EvaluationStats
+	stats.TotalCalls = len(m.evaluations)
+	for _, e := range m.evaluations {
+		switch e.Status {
+		case "TARGET_HIT":
+			stats.TargetHits++
+		case "SL_HIT":
+			stats.StopLossHits++
+		case "PENDING":
+			stats.PendingCalls++
+		}
+	}
+	closed := stats.TargetHits + stats.StopLossHits
+	if closed > 0 {
+		stats.WinRatePct = float64(stats.TargetHits) / float64(closed) * 100.0
+	}
+	return stats, nil
 }
 
 func (m *mockAIStore) ListEvaluations(_ context.Context, limit int) ([]store.Evaluation, error) {
@@ -129,7 +176,7 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	}
 
 	// 5. GET /api/ai/evaluations returns evaluations list
-	_ = mockStore.SaveEvaluation(context.Background(), store.Evaluation{
+	_, _ = mockStore.SaveEvaluation(context.Background(), store.Evaluation{
 		InstrumentKey: "NIFTY24500CE",
 		Underlying:    "NIFTY",
 		SpotPrice:     24520.0,
@@ -151,5 +198,92 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	}
 	if evalResp.Evaluations[0].Action != "BUY" {
 		t.Errorf("action = %q, want BUY", evalResp.Evaluations[0].Action)
+	}
+
+	// 6. GET /api/ai/evaluations/stats returns stats
+	statsRec := do(t, s, localRequest(http.MethodGet, "/api/ai/evaluations/stats"))
+	if statsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", statsRec.Code)
+	}
+	var statsResp evaluationStatsResponse
+	if err := json.NewDecoder(statsRec.Body).Decode(&statsResp); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if statsResp.Stats.TotalCalls != 1 {
+		t.Errorf("total_calls = %d, want 1", statsResp.Stats.TotalCalls)
+	}
+
+	// 7. Verify 503 when evaluator has no valid client
+	s.evaluator = nil
+	nilAskRec := do(t, s, localRequestWithBody(http.MethodPost, "/api/ai/evaluations/ask", []byte(`{
+		"underlying": "NIFTY",
+		"instrument_key": "NIFTY24500CE",
+		"strike": "24500",
+		"option_type": "CE",
+		"ltp": 120.0
+	}`)))
+	if nilAskRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable when evaluator is nil, got %d", nilAskRec.Code)
+	}
+
+	nilScanRec := do(t, s, localRequest(http.MethodPost, "/api/ai/evaluations/scan"))
+	if nilScanRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable when evaluator is nil, got %d", nilScanRec.Code)
+	}
+
+	// 8. Setup mock Jev server and test Ask & Scan
+	mockJevSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answers": map[string]any{
+				"action":        map[string]any{"choice": "BUY"},
+				"breakout_prob": map[string]any{"noul": 0.88},
+				"conviction":    map[string]any{"score": 5},
+			},
+		})
+	}))
+	defer mockJevSrv.Close()
+
+	jevCli := jev.NewClient(jev.Config{
+		BaseURL: mockJevSrv.URL,
+		Model:   "jev-test",
+		Timeout: time.Second,
+	})
+
+	s.evaluator = evaluator.New(evaluator.Options{
+		Config: config.AI{
+			Enabled:       true,
+			TargetPct:     8.0,
+			StopLossPct:   5.0,
+			MinConfidence: 0.75,
+			MinScore:      4,
+		},
+		Store:         mockStore,
+		JevClient:     jevCli,
+		QuoteProvider: s,
+	})
+
+	askRec := do(t, s, localRequestWithBody(http.MethodPost, "/api/ai/evaluations/ask", []byte(`{
+		"underlying": "NIFTY",
+		"instrument_key": "NIFTY24500CE",
+		"strike": "24500",
+		"option_type": "CE",
+		"ltp": 100.0
+	}`)))
+	if askRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from ask endpoint, got %d: %s", askRec.Code, askRec.Body.String())
+	}
+	var askResp askEvaluationResponse
+	if err := json.NewDecoder(askRec.Body).Decode(&askResp); err != nil {
+		t.Fatalf("decode ask response: %v", err)
+	}
+	if !askResp.Success || askResp.Action != "BUY_CE" {
+		t.Errorf("expected BUY_CE action, got %q", askResp.Action)
+	}
+	if askResp.TargetPrice != 108.0 { // 100 * 1.08 = 108
+		t.Errorf("expected target price 108.0, got %f", askResp.TargetPrice)
+	}
+	if askResp.StopLossPrice != 95.0 { // 100 * 0.95 = 95
+		t.Errorf("expected stop loss price 95.0, got %f", askResp.StopLossPrice)
 	}
 }

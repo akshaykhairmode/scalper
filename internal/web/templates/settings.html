@@ -545,6 +545,49 @@
               </label>
             </div>
 
+            <div class="form-group checkbox-group" data-field="ai.periodic_scan" style="grid-column: 1 / -1;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-ai-periodic-scan">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Enable Periodic Background Scanner</strong>
+                  <span class="form-help">Automatically queries Jev at regular intervals to find option setups and track win/loss outcomes against live ticks.</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="form-group" data-field="ai.scan_interval_minutes">
+              <label for="f-ai-scan-interval">Scan Interval</label>
+              <select id="f-ai-scan-interval">
+                <option value="5">Every 5 minutes</option>
+                <option value="15">Every 15 minutes (Default)</option>
+                <option value="30">Every 30 minutes</option>
+                <option value="60">Every 60 minutes</option>
+              </select>
+              <span class="form-help">Cadence for periodic Jev background evaluations.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.target_pct">
+              <label for="f-ai-target-pct">Call Profit Target (+%)</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-target-pct" min="1.0" max="100.0" step="0.5" placeholder="8.0">
+                <span class="unit-suffix">%</span>
+              </div>
+              <span class="form-help">Target profit threshold to record a Target Hit outcome (default +8%).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.stop_loss_pct">
+              <label for="f-ai-stop-loss-pct">Call Stop-Loss (-%)</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-stop-loss-pct" min="0.5" max="50.0" step="0.5" placeholder="5.0">
+                <span class="unit-suffix">%</span>
+              </div>
+              <span class="form-help">Risk stop threshold to record a Stop-Loss Hit outcome (default -5%).</span>
+              <span class="field-error"></span>
+            </div>
+
             <div class="form-group" data-field="ai.min_confidence">
               <label for="f-ai-min-confidence">Min Confidence Cutoff</label>
               <div class="input-unit">
@@ -640,7 +683,7 @@
             <div class="form-group" data-field="ai.agent.model">
               <label for="f-agent-model">Agent Model ID</label>
               <input type="text" id="f-agent-model" placeholder="google/gemini-2.5-flash">
-              <span class="form-help">e.g. <code>google/gemini-2.5-flash</code>, <code>deepseek/deepseek-r1-distill-llama-70b</code>, <code>anthropic/claude-3.5-sonnet</code></span>
+              <span class="form-help">e.g. <code>nvidia/nemotron-3.5-lightning:free</code>, <code>meta-llama/llama-3.3-70b-instruct:free</code>, <code>google/gemini-2.5-flash</code></span>
               <span class="field-error"></span>
             </div>
 

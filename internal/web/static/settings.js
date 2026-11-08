@@ -301,6 +301,10 @@
     const ag = ai.agent || {};
     setChecked("f-ai-enabled", !!ai.enabled);
     setChecked("f-ai-shadow-mode", ai.shadow_mode !== void 0 ? !!ai.shadow_mode : true);
+    setChecked("f-ai-periodic-scan", !!ai.periodic_scan);
+    setVal("f-ai-scan-interval", ai.scan_interval_minutes !== void 0 ? ai.scan_interval_minutes : 15);
+    setVal("f-ai-target-pct", ai.target_pct !== void 0 ? ai.target_pct : 8);
+    setVal("f-ai-stop-loss-pct", ai.stop_loss_pct !== void 0 ? ai.stop_loss_pct : 5);
     setVal("f-ai-min-confidence", ai.min_confidence !== void 0 ? ai.min_confidence : 0.75);
     setVal("f-ai-min-score", ai.min_score !== void 0 ? ai.min_score : 4);
     setVal("f-ai-eval-cadence", ai.eval_cadence_seconds !== void 0 ? ai.eval_cadence_seconds : 15);
@@ -310,7 +314,7 @@
     setVal("f-jev-timeout-ms", jev.timeout_ms || 1500);
     setVal("f-agent-provider", ag.provider || "openrouter");
     setVal("f-agent-base-url", ag.base_url || "https://openrouter.ai/api/v1");
-    setVal("f-agent-model", ag.model || "anthropic/claude-3.5-sonnet");
+    setVal("f-agent-model", ag.model || "nvidia/nemotron-3.5-lightning:free");
     setVal("f-agent-api-key", ag.api_key || "");
     setVal("f-agent-timeout-ms", ag.timeout_ms || 3e4);
   }
@@ -365,6 +369,10 @@
       // AI & Models
       { id: "f-ai-enabled", path: ["ai", "enabled"], type: "bool" },
       { id: "f-ai-shadow-mode", path: ["ai", "shadow_mode"], type: "bool" },
+      { id: "f-ai-periodic-scan", path: ["ai", "periodic_scan"], type: "bool" },
+      { id: "f-ai-scan-interval", path: ["ai", "scan_interval_minutes"], type: "int" },
+      { id: "f-ai-target-pct", path: ["ai", "target_pct"], type: "float" },
+      { id: "f-ai-stop-loss-pct", path: ["ai", "stop_loss_pct"], type: "float" },
       { id: "f-ai-min-confidence", path: ["ai", "min_confidence"], type: "float" },
       { id: "f-ai-min-score", path: ["ai", "min_score"], type: "int" },
       { id: "f-ai-eval-cadence", path: ["ai", "eval_cadence_seconds"], type: "int" },
