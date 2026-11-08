@@ -27,7 +27,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 45 * time.Second
 	}
 
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -84,6 +84,7 @@ type openAIChatRequest struct {
 	Model       string                `json:"model"`
 	Messages    []openAIChatMessage   `json:"messages"`
 	Temperature float64               `json:"temperature"`
+	MaxTokens   int                   `json:"max_tokens,omitempty"`
 	Format      *openAIResponseFormat `json:"response_format,omitempty"`
 }
 
@@ -148,7 +149,7 @@ func (c *Client) GeneratePlaybook(ctx context.Context, m MarketContext) (*store.
 		{Role: "user", Content: string(userPromptBytes)},
 	}
 
-	rawContent, err := c.completeChat(ctx, messages, true)
+	rawContent, err := c.completeChat(ctx, messages, true, 800)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +235,7 @@ func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (Con
 		{Role: "user", Content: userMsg},
 	}
 
-	raw, err := c.completeChat(ctx, messages, true)
+	raw, err := c.completeChat(ctx, messages, true, 300)
 	if err != nil {
 		return ContractDecision{}, err
 	}
@@ -270,14 +271,15 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	messages := []openAIChatMessage{
 		{Role: "user", Content: prompt},
 	}
-	return c.completeChat(ctx, messages, false)
+	return c.completeChat(ctx, messages, false, 150)
 }
 
-func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool) (string, error) {
+func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) (string, error) {
 	reqBody := openAIChatRequest{
 		Model:       c.cfg.Model,
 		Messages:    messages,
 		Temperature: 0.2,
+		MaxTokens:   maxTokens,
 	}
 	if jsonMode {
 		reqBody.Format = &openAIResponseFormat{Type: "json_object"}

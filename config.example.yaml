@@ -162,7 +162,7 @@ ai:
     base_url: "https://openrouter.ai/api/v1"
     api_key: ""              # Powered by OPENROUTER_API_KEY or TYPESAFE_API_KEY
     model: "typesafe/jev-latest" # or jev-latest on TypeSafe
-    timeout_ms: 1500
+    timeout_ms: 5000
 
   # System 2: Strategic Reasoning Agent (Ollama / OpenRouter / Gemini / OpenAI)
   agent:
@@ -170,4 +170,4 @@ ai:
     base_url: "https://openrouter.ai/api/v1" # e.g. http://localhost:11434/v1 for Ollama
     api_key: ""              # Or set AI_AGENT_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY
     model: "nvidia/nemotron-3.5-lightning:free" # or meta-llama/llama-3.3-70b-instruct:free, etc.
-    timeout_ms: 30000
+    timeout_ms: 40000

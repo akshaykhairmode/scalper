@@ -24,7 +24,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 1500 * time.Millisecond
+		timeout = 5000 * time.Millisecond
 	}
 
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -34,12 +34,19 @@ func NewClient(cfg Config) *Client {
 		baseURL = "https://openrouter.ai/api/v1"
 	}
 
-	endpoint := strings.TrimSuffix(baseURL, "/system_one")
-	if !strings.HasSuffix(endpoint, "/systemone") && !strings.HasSuffix(endpoint, "/decisions") {
-		endpoint += "/systemone"
-	}
-
 	isOpenRouter := strings.Contains(baseURL, "openrouter.ai")
+
+	endpoint := baseURL
+	if isOpenRouter {
+		if !strings.HasSuffix(endpoint, "/decisions") {
+			endpoint = "https://openrouter.ai/api/alpha/decisions"
+		}
+	} else {
+		endpoint = strings.TrimSuffix(baseURL, "/system_one")
+		if !strings.HasSuffix(endpoint, "/systemone") && !strings.HasSuffix(endpoint, "/decisions") {
+			endpoint += "/systemone"
+		}
+	}
 
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {

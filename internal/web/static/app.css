@@ -1021,12 +1021,13 @@ body[data-theme="light"] .cqo-qty-info {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 8px 8px;
   border-top: 1px solid var(--line-soft);
   background: var(--surface-toolbar);
+  overflow: hidden;
 }
-.leg-order-info { display: flex; flex-direction: column; min-width: 80px; gap: 2px; }
+.leg-order-info { display: flex; flex-direction: column; min-width: 65px; gap: 2px; flex-shrink: 0; }
 .leg-margin-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; color: var(--muted-2); text-transform: uppercase; }
 .leg-margin-val { display: flex; align-items: baseline; gap: 5px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.2; }
 .leg-margin-val.up { color: var(--green); }
@@ -1039,20 +1040,22 @@ body[data-theme="light"] .cqo-qty-info {
 .leg-orderpad.put .leg-name { color: var(--put); }
 .leg-name { font-size: 10px; font-weight: 800; letter-spacing: .08em; }
 .leg-size { color: var(--muted-2); font-size: 9px; }
-.leg-order-actions { display: flex; align-items: center; gap: 7px; }
+.leg-order-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .lot-control {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 4px;
+  gap: 2px;
+  padding: 2px 3px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
+  flex-shrink: 1;
+  min-width: 0;
 }
-.lot-control > span { color: var(--muted-2); font-size: 8px; font-weight: 700; padding: 0 3px; }
+.lot-control > span { color: var(--muted-2); font-size: 8px; font-weight: 700; padding: 0 2px; }
 .lot-control button {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 0;
   border-radius: 4px;
   background: var(--panel-2);
@@ -1061,13 +1064,13 @@ body[data-theme="light"] .cqo-qty-info {
 .lot-control button:hover { color: var(--text); background: var(--panel-3); }
 .lot-control .unit-toggle {
   width: auto;
-  min-width: 44px;
-  height: 22px;
-  padding: 0 5px;
+  min-width: 38px;
+  height: 20px;
+  padding: 0 4px;
   font-family: var(--mono);
   font-size: 9px;
   font-weight: 800;
-  letter-spacing: .05em;
+  letter-spacing: .04em;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
@@ -1085,7 +1088,7 @@ body[data-theme="light"] .cqo-qty-info {
   color: #fbbf24;
 }
 .lot-control input {
-  width: 44px;
+  width: 36px;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -1099,6 +1102,7 @@ body[data-theme="light"] .cqo-qty-info {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 .leg-orderpad .trade {
   min-width: 26px;
@@ -1106,6 +1110,7 @@ body[data-theme="light"] .cqo-qty-info {
   font-size: 11px;
   font-weight: 800;
   text-align: center;
+  flex-shrink: 0;
 }
 .trade {
   border: 1px solid transparent;

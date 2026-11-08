@@ -89,8 +89,8 @@ func TestJevOpenRouterResolution(t *testing.T) {
 		APIKey:  "test-openrouter-key",
 	})
 
-	if client.endpoint != "https://openrouter.ai/api/v1/systemone" {
-		t.Errorf("endpoint = %q, want https://openrouter.ai/api/v1/systemone", client.endpoint)
+	if client.endpoint != "https://openrouter.ai/api/alpha/decisions" {
+		t.Errorf("endpoint = %q, want https://openrouter.ai/api/alpha/decisions", client.endpoint)
 	}
 	if client.cfg.Model != "typesafe/jev-latest" {
 		t.Errorf("model = %q, want typesafe/jev-latest", client.cfg.Model)
@@ -101,8 +101,8 @@ func TestJevOpenRouterResolution(t *testing.T) {
 		BaseURL: "https://api.typesafe.ai/v1",
 		APIKey:  "sk-or-v1-abcdef123456",
 	})
-	if skClient.endpoint != "https://openrouter.ai/api/v1/systemone" {
-		t.Errorf("endpoint = %q, want https://openrouter.ai/api/v1/systemone", skClient.endpoint)
+	if skClient.endpoint != "https://openrouter.ai/api/alpha/decisions" {
+		t.Errorf("endpoint = %q, want https://openrouter.ai/api/alpha/decisions", skClient.endpoint)
 	}
 	if skClient.cfg.Model != "typesafe/jev-latest" {
 		t.Errorf("model = %q, want typesafe/jev-latest", skClient.cfg.Model)

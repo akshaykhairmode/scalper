@@ -363,13 +363,13 @@ func Default() Config {
 			Jev: JevConfig{
 				BaseURL:   "https://openrouter.ai/api/v1",
 				Model:     "typesafe/jev-latest",
-				TimeoutMS: 1500,
+				TimeoutMS: 5000,
 			},
 			Agent: AgentConfig{
 				Provider:  "openrouter",
 				BaseURL:   "https://openrouter.ai/api/v1",
 				Model:     "nvidia/nemotron-3.5-lightning:free",
-				TimeoutMS: 30000,
+				TimeoutMS: 40000,
 			},
 		},
 	}
@@ -530,6 +530,9 @@ func (c *Config) applyEnv() {
 		}
 		if c.AI.Agent.Provider == "" {
 			c.AI.Agent.Provider = "openrouter"
+		}
+		if c.AI.Agent.TimeoutMS < 40000 {
+			c.AI.Agent.TimeoutMS = 40000
 		}
 	} else if v, ok := os.LookupEnv("GEMINI_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)

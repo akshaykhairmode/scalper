@@ -283,7 +283,14 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			agentCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			agentTimeout := 40 * time.Second
+			s.configMu.RLock()
+			if s.cfg.AI.Agent.TimeoutMS > 0 {
+				agentTimeout = time.Duration(s.cfg.AI.Agent.TimeoutMS) * time.Millisecond
+			}
+			s.configMu.RUnlock()
+
+			agentCtx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 			defer cancel()
 
 			decision, aerr := s.agentClient.EvaluateContract(agentCtx, agent.ContractSetup{
@@ -351,7 +358,7 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 	} else {
 		reasoning = fmt.Sprintf("Conviction score %d/5 with confidence %.0f%%.", eval.Score, eval.Confidence*100)
 		if s.agentClient != nil {
-			agentCtx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			agentCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 			prompt := fmt.Sprintf("Underlying %s spot, evaluating %s strike %s at ₹%.2f. System 1 verdict is %s (score %d/5, confidence %.2f). Give a concise 1-sentence tactical recommendation on entering this scalp setup.",
 				req.Underlying, req.OptionType, req.Strike, req.LTP, eval.Action, eval.Score, eval.Confidence)
