@@ -29,7 +29,9 @@ func NewClient(cfg Config) *Client {
 
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if baseURL == "" {
-		baseURL = "https://api.typesafe.ai/v1"
+		baseURL = "https://openrouter.ai/api/v1"
+	} else if strings.HasPrefix(strings.TrimSpace(cfg.APIKey), "sk-or-") && strings.Contains(baseURL, "typesafe.ai") {
+		baseURL = "https://openrouter.ai/api/v1"
 	}
 
 	endpoint := strings.TrimSuffix(baseURL, "/system_one")

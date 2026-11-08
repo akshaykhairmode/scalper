@@ -31,11 +31,11 @@ const defaultAISettingsYAML = `ai:
   min_score: 4               # Minimum setup conviction score (1 to 5)
   eval_cadence_seconds: 15   # Evaluation frequency for active strikes
 
-  # System 1: Fast Decision Model (TypeSafe AI Jev)
+  # System 1: Fast Decision Model (TypeSafe AI Jev via OpenRouter or TypeSafe)
   jev:
-    base_url: "https://api.typesafe.ai/v1"
-    api_key: ""              # Or set TYPESAFE_API_KEY environment variable
-    model: "jev-latest"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: ""              # Powered by OPENROUTER_API_KEY or TYPESAFE_API_KEY
+    model: "typesafe/jev-latest"
     timeout_ms: 1500
 
   # System 2: Strategic Reasoning Agent (Ollama / OpenRouter / Gemini / OpenAI)

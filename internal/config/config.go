@@ -361,8 +361,8 @@ func Default() Config {
 			MinScore:            4,
 			EvalCadenceSeconds:  15,
 			Jev: JevConfig{
-				BaseURL:   "https://api.typesafe.ai/v1",
-				Model:     "jev-latest",
+				BaseURL:   "https://openrouter.ai/api/v1",
+				Model:     "typesafe/jev-latest",
 				TimeoutMS: 1500,
 			},
 			Agent: AgentConfig{
@@ -506,15 +506,31 @@ func (c *Config) applyEnv() {
 	}
 	if v, ok := os.LookupEnv("TYPESAFE_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Jev.APIKey = strings.TrimSpace(v)
+		if c.AI.Jev.BaseURL == "" || strings.Contains(c.AI.Jev.BaseURL, "openrouter.ai") {
+			c.AI.Jev.BaseURL = "https://api.typesafe.ai/v1"
+		}
 	} else if v, ok := os.LookupEnv("OPENROUTER_API_KEY"); ok && strings.TrimSpace(v) != "" {
-		if strings.Contains(c.AI.Jev.BaseURL, "openrouter.ai") {
-			c.AI.Jev.APIKey = strings.TrimSpace(v)
+		openRouterKey := strings.TrimSpace(v)
+		c.AI.Jev.APIKey = openRouterKey
+		if c.AI.Jev.BaseURL == "" || strings.Contains(c.AI.Jev.BaseURL, "typesafe.ai") {
+			c.AI.Jev.BaseURL = "https://openrouter.ai/api/v1"
+		}
+		if !strings.HasPrefix(c.AI.Jev.Model, "typesafe/") && c.AI.Jev.Model != "" {
+			c.AI.Jev.Model = "typesafe/" + c.AI.Jev.Model
+		} else if c.AI.Jev.Model == "" {
+			c.AI.Jev.Model = "typesafe/jev-latest"
 		}
 	}
 	if v, ok := os.LookupEnv("AI_AGENT_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)
 	} else if v, ok := os.LookupEnv("OPENROUTER_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)
+		if c.AI.Agent.BaseURL == "" || c.AI.Agent.BaseURL == "https://api.openai.com/v1" {
+			c.AI.Agent.BaseURL = "https://openrouter.ai/api/v1"
+		}
+		if c.AI.Agent.Provider == "" {
+			c.AI.Agent.Provider = "openrouter"
+		}
 	} else if v, ok := os.LookupEnv("GEMINI_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)
 	} else if v, ok := os.LookupEnv("OPENAI_API_KEY"); ok && strings.TrimSpace(v) != "" {

@@ -437,3 +437,36 @@ func TestBasicAuthValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenRouterEnvironmentResolution(t *testing.T) {
+	clearScalperEnv(t)
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-mock-key-12345")
+
+	cfg := Default()
+	cfg.applyEnv()
+
+	// Jev should route to OpenRouter
+	if cfg.AI.Jev.APIKey != "sk-or-v1-mock-key-12345" {
+		t.Errorf("Jev.APIKey = %q, want %q", cfg.AI.Jev.APIKey, "sk-or-v1-mock-key-12345")
+	}
+	if cfg.AI.Jev.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("Jev.BaseURL = %q, want https://openrouter.ai/api/v1", cfg.AI.Jev.BaseURL)
+	}
+	if cfg.AI.Jev.Model != "typesafe/jev-latest" {
+		t.Errorf("Jev.Model = %q, want typesafe/jev-latest", cfg.AI.Jev.Model)
+	}
+
+	// Agent should also route to OpenRouter
+	if cfg.AI.Agent.APIKey != "sk-or-v1-mock-key-12345" {
+		t.Errorf("Agent.APIKey = %q, want %q", cfg.AI.Agent.APIKey, "sk-or-v1-mock-key-12345")
+	}
+	if cfg.AI.Agent.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("Agent.BaseURL = %q, want https://openrouter.ai/api/v1", cfg.AI.Agent.BaseURL)
+	}
+	if cfg.AI.Agent.Provider != "openrouter" {
+		t.Errorf("Agent.Provider = %q, want openrouter", cfg.AI.Agent.Provider)
+	}
+	if cfg.AI.Agent.Model != "nvidia/nemotron-3.5-lightning:free" {
+		t.Errorf("Agent.Model = %q, want nvidia/nemotron-3.5-lightning:free", cfg.AI.Agent.Model)
+	}
+}

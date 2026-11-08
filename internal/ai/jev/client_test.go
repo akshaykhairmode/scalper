@@ -95,6 +95,18 @@ func TestJevOpenRouterResolution(t *testing.T) {
 	if client.cfg.Model != "typesafe/jev-latest" {
 		t.Errorf("model = %q, want typesafe/jev-latest", client.cfg.Model)
 	}
+
+	// Auto-redirect to OpenRouter when OpenRouter key is provided even if BaseURL was left as TypeSafe default
+	skClient := NewClient(Config{
+		BaseURL: "https://api.typesafe.ai/v1",
+		APIKey:  "sk-or-v1-abcdef123456",
+	})
+	if skClient.endpoint != "https://openrouter.ai/api/v1/systemone" {
+		t.Errorf("endpoint = %q, want https://openrouter.ai/api/v1/systemone", skClient.endpoint)
+	}
+	if skClient.cfg.Model != "typesafe/jev-latest" {
+		t.Errorf("model = %q, want typesafe/jev-latest", skClient.cfg.Model)
+	}
 }
 
 func TestNilJevClientReturnsError(t *testing.T) {

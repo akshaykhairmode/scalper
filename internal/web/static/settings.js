@@ -308,8 +308,8 @@
     setVal("f-ai-min-confidence", ai.min_confidence !== void 0 ? ai.min_confidence : 0.75);
     setVal("f-ai-min-score", ai.min_score !== void 0 ? ai.min_score : 4);
     setVal("f-ai-eval-cadence", ai.eval_cadence_seconds !== void 0 ? ai.eval_cadence_seconds : 15);
-    setVal("f-jev-base-url", jev.base_url || "https://api.typesafe.ai/v1");
-    setVal("f-jev-model", jev.model || "jev-latest");
+    setVal("f-jev-base-url", jev.base_url || "https://openrouter.ai/api/v1");
+    setVal("f-jev-model", jev.model || "typesafe/jev-latest");
     setVal("f-jev-api-key", jev.api_key || "");
     setVal("f-jev-timeout-ms", jev.timeout_ms || 1500);
     setVal("f-agent-provider", ag.provider || "openrouter");
