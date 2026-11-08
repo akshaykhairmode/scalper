@@ -354,7 +354,7 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 		sessionToken = s.issueServeSession(w, r)
 	}
 
-	s.log.Info("registered webauthn device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("registered webauthn device", "device_name", dev.DeviceName, "id", dev.ID)
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"device": toSafeDeviceItem(dev, true),
@@ -529,7 +529,7 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 	}
 
 	s.clearUnlockFailures(serveUnlockKey(r))
-	s.log.Info("biometric login succeeded", "device_name", dev.DeviceName, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("biometric login succeeded", "device_name", dev.DeviceName)
 
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
@@ -619,7 +619,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		s.clearDeviceBindingCookie(w, r)
 	}
 
-	s.log.Info("deleted webauthn device", "id", id, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("deleted webauthn device", "id", id)
 	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
@@ -710,7 +710,7 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
 	s.setDeviceBindingCookie(w, r, devID)
 	sessionToken := s.issueServeSession(w, r)
 
-	s.log.Info("bound device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("bound device", "device_name", dev.DeviceName, "id", dev.ID)
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"device": toSafeDeviceItem(dev, true),
@@ -727,7 +727,7 @@ func (s *Server) handleCreatePairToken(w http.ResponseWriter, r *http.Request) {
 
 	token, expiresAt, err := s.createPairToken()
 	if err != nil {
-		s.log.Error("create pair token failed", "error", err, "request_id", logging.RequestID(r.Context()))
+		s.logger(r).Error("create pair token failed", "error", err)
 		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Failed to generate pairing token"})
 		return
 	}
@@ -749,8 +749,9 @@ func (s *Server) handleCreatePairToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	pairURL := fmt.Sprintf("%s://%s/?pair_token=%s", scheme, host, token)
+	safeURL := fmt.Sprintf("%s://%s/?pair_token=REDACTED", scheme, host)
 
-	s.log.Info("created device pairing token", "expires_at", expiresAt, "url", pairURL, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("created device pairing token", "expires_at", expiresAt, "url", safeURL)
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"token":      token,

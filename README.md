@@ -128,6 +128,9 @@ export KOTAK_MPIN="your-6-digit-mpin" # Optional
 
 ## Cloud Deployment (Fork & Automated CI/CD)
 
+> [!IMPORTANT]
+> **Single-Tenant Architecture**: Scalper is designed as a personal, dedicated scalping terminal. Each trader must run their own isolated instance (on their own cloud VM or container). Instances are strictly single-user and do not support multi-tenancy or shared broker sessions.
+
 Scalper includes built-in GitHub Actions CI/CD to build and deploy directly to your cloud VM (Oracle Cloud Free Tier, AWS EC2, DigitalOcean, Hetzner, etc.).
 
 Anyone can **fork** this repository, configure their server and Kotak credentials in GitHub Secrets, and have their own private, automated trading server up and running in minutes — **without editing any code or committing secrets into git**.

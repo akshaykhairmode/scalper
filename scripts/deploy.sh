@@ -131,17 +131,14 @@ info "Service Name  : ${SVC_NAME}"
 # ── Pre-flight Credential Validations ──────────────────────────────────────
 AUTH_USER="${SERVE_AUTH_USERNAME:-${SCALPER_SERVE_USERNAME:-}}"
 AUTH_PASS="${SERVE_AUTH_PASSWORD:-${SCALPER_SERVE_PASSWORD:-}}"
-if [[ -n "${AUTH_USER}" && -z "${AUTH_PASS}" ]]; then
-  fatal "SERVE_AUTH_USERNAME is set but SERVE_AUTH_PASSWORD is missing. Both must be provided."
-fi
-if [[ -z "${AUTH_USER}" && -n "${AUTH_PASS}" ]]; then
-  fatal "SERVE_AUTH_PASSWORD is set but SERVE_AUTH_USERNAME is missing. Both must be provided."
-fi
-
-if [[ -n "${AUTH_USER}" ]]; then
-  success "Serve-mode web auth: ENABLED (user: ${AUTH_USER})"
+if [[ -z "${AUTH_USER}" || -z "${AUTH_PASS}" ]]; then
+  if [[ "${INSECURE_NO_AUTH:-0}" == "1" || "${SCALPER_INSECURE_NO_AUTH:-0}" == "1" ]]; then
+    warn "Serve-mode web auth: NOT SET (explicitly bypassed via INSECURE_NO_AUTH=1)"
+  else
+    fatal "SERVE_AUTH_USERNAME and SERVE_AUTH_PASSWORD are required to protect the remote terminal. Set both variables, or pass INSECURE_NO_AUTH=1 to bypass."
+  fi
 else
-  warn "Serve-mode web auth: NOT SET (UI terminal will not prompt for password)"
+  success "Serve-mode web auth: ENABLED (user: ${AUTH_USER})"
 fi
 
 if [[ -n "${KOTAK_CONSUMER_KEY:-}" ]]; then
@@ -276,10 +273,11 @@ ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "chmod +x ${REMOTE_DIR}/scalper
 if [[ -f "${LOCAL_CONFIG}" ]]; then
   info "Uploading ${LOCAL_CONFIG}..."
   scp "${SCP_OPTS[@]}" "${LOCAL_CONFIG}" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/config.yaml"
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "chmod 600 ${REMOTE_DIR}/config.yaml"
 elif [[ -f "config.example.yaml" ]]; then
   info "Ensuring remote config.yaml is present from config.example.yaml..."
   scp "${SCP_OPTS[@]}" "config.example.yaml" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/config.example.yaml"
-  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "test -f ${REMOTE_DIR}/config.yaml || cp ${REMOTE_DIR}/config.example.yaml ${REMOTE_DIR}/config.yaml"
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "test -f ${REMOTE_DIR}/config.yaml || (cp ${REMOTE_DIR}/config.example.yaml ${REMOTE_DIR}/config.yaml && chmod 600 ${REMOTE_DIR}/config.yaml)"
 fi
 
 # Configure remote environment file with credentials if present in environment
@@ -390,16 +388,14 @@ fi
 echo ">>> [Memory Status]:"
 free -h 2>/dev/null || true
 
-# 3. Open firewall ports (80 HTTP, 443 HTTPS, 8080 TCP)
+# 3. Open firewall ports (80 HTTP, 443 HTTPS)
 if command -v firewall-cmd >/dev/null 2>&1 && sudo systemctl is-active --quiet firewalld; then
   sudo firewall-cmd --add-service=http --permanent >/dev/null 2>&1 || true
   sudo firewall-cmd --add-service=https --permanent >/dev/null 2>&1 || true
-  sudo firewall-cmd --add-port=8080/tcp --permanent >/dev/null 2>&1 || true
   sudo firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
   sudo ufw allow 80/tcp >/dev/null 2>&1 || true
   sudo ufw allow 443/tcp >/dev/null 2>&1 || true
-  sudo ufw allow 8080/tcp >/dev/null 2>&1 || true
 fi
 
 # 4. Install Caddy reverse proxy with automatic TLS if not already installed

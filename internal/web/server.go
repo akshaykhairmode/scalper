@@ -505,7 +505,7 @@ func New(opts Options) (*Server, error) {
 	h = s.corsMiddleware(h)
 	h = securityHeaders(h)
 	h = s.accessLog(h)
-	h = requestID(h)
+	h = s.requestLogger(h)
 	h = s.recoverPanic(h)
 	s.handler = h
 	if s.hsm != nil {
@@ -774,7 +774,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.risk.reset()
 	clearAuthFlowCookie(w)
-	s.log.Info("logout", "event", "auth_logout", "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("logout", "event", "auth_logout")
 	if err := writeJSON(w, http.StatusOK, map[string]any{"success": true}); err != nil {
 		s.log.Warn("write logout response", "event", "http_write_failed", "error", err,
 			"request_id", logging.RequestID(r.Context()))
@@ -888,6 +888,16 @@ func (s *Server) checkLoginAllowed(r *http.Request) (retryAfter int, errMsg stri
 
 	// 2. IP-based rate limiting (max 5 attempts per 5 minutes)
 	clientIP := r.RemoteAddr
+	if isLocalOrLoopbackRemote(r) {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				xff = strings.TrimSpace(xff[:idx])
+			}
+			if net.ParseIP(xff) != nil {
+				clientIP = xff
+			}
+		}
+	}
 	if host, _, err := net.SplitHostPort(clientIP); err == nil {
 		clientIP = host
 	}
@@ -1549,14 +1559,31 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 	})
 }
 
-func requestID(next http.Handler) http.Handler {
+func (s *Server) logger(r *http.Request) *slog.Logger {
+	if r == nil {
+		return s.log
+	}
+	return logging.FromContext(r.Context(), s.log)
+}
+
+func (s *Server) requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if !logging.ValidRequestID(id) {
 			id = logging.NewRequestID()
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r.WithContext(logging.WithRequestID(r.Context(), id)))
+		ip := clientIP(r)
+
+		reqLogger := s.log.With(
+			slog.String("client_ip", ip),
+			slog.String("request_id", id),
+		)
+
+		ctx := logging.WithRequestID(r.Context(), id)
+		ctx = logging.WithClientIP(ctx, ip)
+		ctx = logging.WithLogger(ctx, reqLogger)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -1572,15 +1599,14 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		case rec.status >= 400:
 			level = slog.LevelWarn
 		}
-		s.log.Log(r.Context(), level, "http request",
+		s.logger(r).Log(r.Context(), level, "http request",
 			"event", "http_request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"query", logging.RedactQuery(r.URL.RawQuery),
 			"status", rec.status,
 			"bytes", rec.bytes,
-			"duration_ms", s.now().Sub(start).Milliseconds(),
-			"request_id", logging.RequestID(r.Context()))
+			"duration_ms", s.now().Sub(start).Milliseconds())
 	})
 }
 

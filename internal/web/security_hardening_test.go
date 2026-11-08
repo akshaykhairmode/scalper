@@ -254,6 +254,17 @@ func TestServeAuthMiddlewareAllowedOrigins(t *testing.T) {
 	if recCap.Code == http.StatusForbidden {
 		t.Fatalf("capacitor://localhost origin should be allowed, got 403: %s", recCap.Body.String())
 	}
+
+	// 5. Arbitrary untrusted public origin must be rejected with 403 Forbidden
+	reqPublic := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	reqPublic.Host = "scalper.internal:8080"
+	reqPublic.Header.Set("Origin", "https://untrusted-public-site.com")
+	reqPublic.SetBasicAuth("admin", "adminpass")
+	recPublic := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recPublic, reqPublic)
+	if recPublic.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for untrusted public origin, got %d", recPublic.Code)
+	}
 }
 
 func TestEmptyBasicAuthWithEnrolledDevicesRejectsUnauthenticated(t *testing.T) {

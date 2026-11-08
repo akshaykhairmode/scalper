@@ -26,6 +26,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
+	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
@@ -712,6 +713,50 @@ func TestRequestID(t *testing.T) {
 	got := rec.Header().Get("X-Request-ID")
 	if got == "bad id" || len(got) != 24 {
 		t.Fatalf("invalid id not replaced: %q", got)
+	}
+}
+
+func TestRequestLoggerMiddlewareCapturesClientIP(t *testing.T) {
+	var capturedIP string
+	var capturedReqID string
+	var hasContextLogger bool
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedIP = logging.ClientIP(r.Context())
+		capturedReqID = logging.RequestID(r.Context())
+		logFromCtx := logging.FromContext(r.Context(), nil)
+		hasContextLogger = logFromCtx != nil
+		w.WriteHeader(http.StatusOK)
+	})
+
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	wrapped := s.requestLogger(testHandler)
+
+	// Test 1: Direct client IP
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "198.51.100.42:54321"
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if capturedIP != "198.51.100.42" {
+		t.Fatalf("capturedIP = %q, want %q", capturedIP, "198.51.100.42")
+	}
+	if capturedReqID == "" {
+		t.Fatalf("expected non-empty request id")
+	}
+	if !hasContextLogger {
+		t.Fatalf("expected logger in request context")
+	}
+
+	// Test 2: Behind reverse proxy (127.0.0.1) with X-Forwarded-For
+	reqProxy := httptest.NewRequest(http.MethodGet, "/test", nil)
+	reqProxy.RemoteAddr = "127.0.0.1:45678"
+	reqProxy.Header.Set("X-Forwarded-For", "203.0.113.195, 127.0.0.1")
+	recProxy := httptest.NewRecorder()
+	wrapped.ServeHTTP(recProxy, reqProxy)
+
+	if capturedIP != "203.0.113.195" {
+		t.Fatalf("proxy capturedIP = %q, want %q", capturedIP, "203.0.113.195")
 	}
 }
 

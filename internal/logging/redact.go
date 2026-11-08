@@ -170,10 +170,19 @@ func (h *redactHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
 	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	hasIP := false
 	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "client_ip" || a.Key == "remote_ip" {
+			hasIP = true
+		}
 		out.AddAttrs(redactAttr(a))
 		return true
 	})
+	if !hasIP {
+		if ip := ClientIP(ctx); ip != "" {
+			out.AddAttrs(slog.String("client_ip", ip))
+		}
+	}
 	return h.next.Handle(ctx, out)
 }
 

@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
@@ -69,8 +68,7 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) != 1 ||
 		subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) != 1 {
 		s.recordUnlockFailure(key)
-		s.log.Warn("serve unlock failed", "event", "serve_unlock_failed", "remote", key,
-			"request_id", logging.RequestID(r.Context()))
+		s.logger(r).Warn("serve unlock failed", "event", "serve_unlock_failed", "remote", key)
 		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid username or password"})
 		return
 	}
@@ -78,7 +76,7 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 
 	token := s.issueServeSession(w, r)
 	if token == "" {
-		s.log.Error("create serve session", "event", "serve_session_failed", "request_id", logging.RequestID(r.Context()))
+		s.logger(r).Error("create serve session", "event", "serve_session_failed")
 		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "could not create session"})
 		return
 	}
@@ -121,8 +119,7 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.log.Info("serve unlock succeeded", "event", "serve_unlock_succeeded", "remote", key,
-		"request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("serve unlock succeeded", "event", "serve_unlock_succeeded", "remote", key)
 	resp := map[string]any{"ok": true, "token": token}
 	if boundDevID != "" {
 		resp["device_id"] = boundDevID
@@ -195,6 +192,11 @@ func (s *Server) isDeviceBound(r *http.Request) bool {
 	defer cancel()
 	dev, err := s.deviceStore.GetDevice(ctx, deviceID)
 	if err != nil || dev == nil {
+		return false
+	}
+	// Bound devices must be pairing devices (PublicKey starts with "bound-").
+	// WebAuthn authenticators store cryptographic public keys and must assert signatures via login/finish.
+	if !strings.HasPrefix(dev.PublicKey, "bound-") {
 		return false
 	}
 	// Enforce 90-day device lifetime / inactivity expiration
@@ -294,6 +296,20 @@ func (s *Server) handleDeviceUnlock(w http.ResponseWriter, r *http.Request) {
 		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Device not recognized or revoked"})
 		return
 	}
+	if !strings.HasPrefix(dev.PublicKey, "bound-") {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Biometric credentials require WebAuthn assertion; use biometric login"})
+		return
+	}
+
+	// Enforce 90-day device lifetime / inactivity expiration
+	lastActive := dev.LastUsedAt
+	if lastActive.IsZero() {
+		lastActive = dev.CreatedAt
+	}
+	if !lastActive.IsZero() && time.Since(lastActive) > 90*24*time.Hour {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Device binding expired; please re-authenticate"})
+		return
+	}
 
 	now := time.Now()
 	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount, now)
@@ -302,7 +318,7 @@ func (s *Server) handleDeviceUnlock(w http.ResponseWriter, r *http.Request) {
 	token := s.issueServeSession(w, r)
 	s.clearUnlockFailures(serveUnlockKey(r))
 
-	s.log.Info("device unlock succeeded", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
+	s.logger(r).Info("device unlock succeeded", "device_name", dev.DeviceName, "id", dev.ID)
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"token":       token,
@@ -450,7 +466,24 @@ func (s *Server) cleanupUnlockFailuresLocked(now time.Time) {
 	}
 }
 
+func clientIP(r *http.Request) string {
+	return serveUnlockKey(r)
+}
+
 func serveUnlockKey(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	if isLocalOrLoopbackRemote(r) {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				xff = strings.TrimSpace(xff[:idx])
+			}
+			if net.ParseIP(xff) != nil {
+				return xff
+			}
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host

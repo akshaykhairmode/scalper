@@ -400,6 +400,38 @@ func TestRequestID(t *testing.T) {
 	}
 }
 
+func TestContextLoggerAndClientIP(t *testing.T) {
+	//nolint:staticcheck // Verify the helper safely handles a nil context.
+	if ClientIP(nil) != "" {
+		t.Fatal("nil context should return empty IP")
+	}
+	if ClientIP(context.Background()) != "" {
+		t.Fatal("empty context should return empty IP")
+	}
+	ctx := WithClientIP(context.Background(), "192.0.2.1")
+	if got := ClientIP(ctx); got != "192.0.2.1" {
+		t.Fatalf("ClientIP = %q, want %q", got, "192.0.2.1")
+	}
+
+	fallback := slog.Default()
+	if got := FromContext(context.Background(), fallback); got != fallback {
+		t.Fatal("expected fallback logger from empty context")
+	}
+	//nolint:staticcheck // Verify the helper safely handles a nil context.
+	if got := FromContext(nil, fallback); got != fallback {
+		t.Fatal("expected fallback logger from nil context")
+	}
+
+	custom := slog.New(slog.Default().Handler()).With("test", "context")
+	ctxWithLog := WithLogger(ctx, custom)
+	if got := FromContext(ctxWithLog, fallback); got != custom {
+		t.Fatal("expected custom logger from context")
+	}
+	if WithLogger(context.Background(), nil) != context.Background() {
+		t.Fatal("nil logger should return unmodified context")
+	}
+}
+
 func TestLoggerLevelFiltering(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scalper.log")
 	opts := testOptions(path)

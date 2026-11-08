@@ -299,12 +299,8 @@ jobs:
 
           AUTH_USER="${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || '' }}"
           AUTH_PASS="${{ secrets.SERVE_AUTH_PASSWORD || '' }}"
-          if [ -n "$AUTH_USER" ] && [ -z "$AUTH_PASS" ]; then
-            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_USERNAME is configured but SERVE_AUTH_PASSWORD is missing. Both must be set to protect the terminal."
-            exit 1
-          fi
-          if [ -z "$AUTH_USER" ] && [ -n "$AUTH_PASS" ]; then
-            echo "::error title=Invalid Auth Configuration::SERVE_AUTH_PASSWORD is configured but SERVE_AUTH_USERNAME is missing. Both must be set to protect the terminal."
+          if [ -z "$AUTH_USER" ] || [ -z "$AUTH_PASS" ]; then
+            echo "::error title=Missing Auth Configuration::Both SERVE_AUTH_USERNAME and SERVE_AUTH_PASSWORD must be configured in Settings -> Secrets and variables -> Actions to protect the deployed terminal."
             exit 1
           fi
 

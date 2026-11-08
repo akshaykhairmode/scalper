@@ -711,6 +711,54 @@ func TestDeviceUnlockEndpoint(t *testing.T) {
 	if recCookie.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK with binding cookie, got %d: %s", recCookie.Code, recCookie.Body.String())
 	}
+
+	// 7. WebAuthn authenticator (PublicKey != "bound-device") must be rejected by device-unlock
+	webAuthnDev := store.Device{
+		ID:         "webauthn-credential-id-123",
+		DeviceName: "MacBook Touch ID",
+		PublicKey:  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+		Algorithm:  -7,
+		SignCount:  1,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+	if err := devStore.SaveDevice(context.Background(), webAuthnDev); err != nil {
+		t.Fatalf("save webauthn dev: %v", err)
+	}
+	reqWebAuthn := localRequestWithBody(http.MethodPost, "/api/auth/device-unlock", []byte(`{"device_id":"webauthn-credential-id-123"}`))
+	reqWebAuthn.Header.Set("Content-Type", "application/json")
+	recWebAuthn := do(t, s, reqWebAuthn)
+	if recWebAuthn.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for WebAuthn device on device-unlock, got %d: %s", recWebAuthn.Code, recWebAuthn.Body.String())
+	}
+
+	// Verify isDeviceBound rejects WebAuthn devices
+	reqHdrWebAuthn := localRequest(http.MethodGet, "/api/session")
+	reqHdrWebAuthn.Header.Set("X-Device-ID", "webauthn-credential-id-123")
+	recHdrWebAuthn := do(t, s, reqHdrWebAuthn)
+	if recHdrWebAuthn.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for X-Device-ID with WebAuthn credential, got %d", recHdrWebAuthn.Code)
+	}
+
+	// 8. Expired device (> 90 days inactivity) must be rejected
+	expiredDev := store.Device{
+		ID:         "dev-expired-100-days",
+		DeviceName: "Old Android Device",
+		PublicKey:  "bound-device",
+		Algorithm:  0,
+		SignCount:  1,
+		CreatedAt:  now.Add(-100 * 24 * time.Hour),
+		LastUsedAt: now.Add(-95 * 24 * time.Hour),
+	}
+	if err := devStore.SaveDevice(context.Background(), expiredDev); err != nil {
+		t.Fatalf("save expired dev: %v", err)
+	}
+	reqExpired := localRequestWithBody(http.MethodPost, "/api/auth/device-unlock", []byte(`{"device_id":"dev-expired-100-days"}`))
+	reqExpired.Header.Set("Content-Type", "application/json")
+	recExpired := do(t, s, reqExpired)
+	if recExpired.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for expired device, got %d: %s", recExpired.Code, recExpired.Body.String())
+	}
 }
 
 func TestHeaderBasedServeSession(t *testing.T) {
