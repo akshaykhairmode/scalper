@@ -371,29 +371,147 @@ func secureRequest(r *http.Request) bool {
 }
 
 func requestOriginAllowed(r *http.Request) bool {
+	// 1. Requests from Scalper native Android container (Capacitor sets X-Requested-With package ID)
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
+		return true
+	}
+
+	// 2. Allow top-level browser/webview document navigations (e.g. following pairing QR link or terminal launch)
+	if r.Method == http.MethodGet && (strings.EqualFold(r.Header.Get("Sec-Fetch-Mode"), "navigate") ||
+		strings.EqualFold(r.Header.Get("Sec-Fetch-Dest"), "document")) {
+		return true
+	}
+
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" {
+		if origin == "null" {
+			// Android WebView or sandboxed iframe origin; allow for local/loopback or paired clients
+			if isLocalOrLoopbackRemote(r) || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
+				return true
+			}
+		}
+
 		parsed, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-		if parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host) {
-			return true
-		}
-		// Allow mobile Capacitor apps, local/emulator development, and sslip.io origins
-		if parsed.Scheme == "capacitor" || parsed.Hostname() == "localhost" ||
-			parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "10.0.2.2" ||
-			strings.HasSuffix(parsed.Hostname(), ".sslip.io") {
+		if err == nil && isAllowedOriginParsed(r, parsed) {
 			return true
 		}
 	}
+
+	// 3. Reject unapproved cross-site fetch or API requests
 	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
 		return false
 	}
+
 	if origin == "" {
 		return true
 	}
+
 	return false
+}
+
+func isAllowedOriginParsed(r *http.Request, parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+
+	reqHost := r.Host
+	fwdHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if idx := strings.IndexByte(fwdHost, ','); idx >= 0 {
+		fwdHost = strings.TrimSpace(fwdHost[:idx])
+	}
+
+	// Same host comparison (exact or hostname without port)
+	if parsed.Host != "" {
+		if reqHost != "" && strings.EqualFold(parsed.Host, reqHost) {
+			return true
+		}
+		if fwdHost != "" && strings.EqualFold(parsed.Host, fwdHost) {
+			return true
+		}
+		parsedHostname := parsed.Hostname()
+		if reqHost != "" && strings.EqualFold(parsedHostname, stripPort(reqHost)) {
+			return true
+		}
+		if fwdHost != "" && strings.EqualFold(parsedHostname, stripPort(fwdHost)) {
+			return true
+		}
+	}
+
+	// Mobile native app container schemes
+	switch strings.ToLower(parsed.Scheme) {
+	case "capacitor", "ionic", "content", "file":
+		return true
+	}
+
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return false
+	}
+
+	// Local, loopback, Android emulator and private LAN Wi-Fi origins
+	if isPrivateOrLocalHost(hostname) {
+		return true
+	}
+
+	// Common dynamic DNS and developer tunnels
+	if isAllowedDomainSuffix(hostname) {
+		return true
+	}
+
+	return false
+}
+
+func stripPort(host string) string {
+	h, _, err := net.SplitHostPort(host)
+	if err == nil {
+		return h
+	}
+	return host
+}
+
+func isPrivateOrLocalHost(hostname string) bool {
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "10.0.2.2" || hostname == "10.0.3.2" {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+	}
+	return false
+}
+
+func isAllowedDomainSuffix(hostname string) bool {
+	h := strings.ToLower(hostname)
+	suffixes := []string{
+		".sslip.io",
+		".nip.io",
+		".ts.net",
+		".tailscale.net",
+		".loca.lt",
+		".ngrok-free.app",
+		".ngrok.io",
+	}
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(h, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLocalOrLoopbackRemote(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate()
+	}
+	return host == "localhost" || host == "127.0.0.1"
 }
 
 func requireJSONContentType(r *http.Request) bool {

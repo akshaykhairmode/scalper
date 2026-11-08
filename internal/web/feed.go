@@ -19,24 +19,21 @@ var feedUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
+		if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
+			return true
+		}
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin == "" {
 			return true
+		}
+		if origin == "null" {
+			return isLocalOrLoopbackRemote(r) || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal")
 		}
 		parsed, err := url.Parse(origin)
 		if err != nil {
 			return false
 		}
-		if parsed.Host == r.Host {
-			return true
-		}
-		// Allow Capacitor, localhost, 127.0.0.1, Android emulator, and sslip.io origins
-		if parsed.Scheme == "capacitor" || parsed.Hostname() == "localhost" ||
-			parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "10.0.2.2" ||
-			strings.HasSuffix(parsed.Hostname(), ".sslip.io") {
-			return true
-		}
-		return false
+		return isAllowedOriginParsed(r, parsed)
 	},
 }
 

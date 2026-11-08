@@ -181,7 +181,19 @@ npx cap run ios
 
 ---
 
-## 6. Building Release APKs
+## 6. Building Release APKs & Production Signing
+
+### Generating a Release Signing Keystore
+To ensure Android and Google Play Protect do not flag your APK as an untrusted debug binary, generate a formal release keystore:
+
+```bash
+keytool -genkeypair -v -keystore mobile/android/app/scalper-release.jks \
+  -alias scalper \
+  -keypass scalperpassword \
+  -storepass scalperpassword \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=Scalper Terminal,OU=Trading,O=Scalper,L=Mumbai,ST=Maharashtra,C=IN"
+```
 
 ### Command-Line Build (Gradle)
 To build a release APK locally using the Gradle wrapper:
@@ -192,7 +204,7 @@ chmod +x gradlew
 ./gradlew assembleRelease
 ```
 
-The compiled APK will be located at:
+The compiled APK will be signed with `scalper-release.jks` (or fallback to your environment keystore) at:
 ```
 mobile/android/app/build/outputs/apk/release/app-release.apk
 ```
@@ -205,6 +217,14 @@ Output:
 ```
 mobile/android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### Avoiding "Remove Security Temporarily" / Play Protect Warning
+When sideloading APK files directly (via browser or WhatsApp/Telegram), Android has two layers of security:
+1. **"Install Unknown Apps / Allow from this source"**: This is an Android OS security barrier that prompts whenever an app is sideloaded outside an official app store.
+2. **"Blocked by Play Protect / Unrecognized app"**: Google Play Protect flags any APK signed with a debug certificate (`CN=Android Debug`). Signing with a proper Release Keystore (v2+v3 signature) avoids the debug flag.
+3. **To eliminate all installation security prompts completely**:
+   - **Option A (Google Play Internal Testing Track)**: Upload the signed release AAB/APK to Google Play Console under **Internal Testing**. Whitelisted email addresses can install directly via Play Store link with zero warnings or security prompts.
+   - **Option B (Google Play Protect Developer Whitelist Appeal)**: Submit your release certificate fingerprint (SHA-256) to [Google Play Protect Appeals](https://support.google.com/googleplay/android-developer/contact/protectappeals) so Google marks your self-distributed app as trusted.
 
 ---
 

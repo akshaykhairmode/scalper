@@ -92,11 +92,36 @@ jobs:
           npm run bundle
           npx cap sync android
 
-      - name: Ensure Android debug keystore
+      - name: Setup Android signing keystore
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
             keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "Decoding production release keystore from secrets..."
+            echo "$SIGNING_KEYSTORE_BASE64" | base64 --decode > mobile/android/app/scalper-release.jks
+            echo "RELEASE_STORE_FILE=scalper-release.jks" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "Generating dedicated Scalper release signing keystore..."
+            keytool -genkeypair -v -keystore mobile/android/app/scalper-release.jks \
+              -alias scalper \
+              -keypass scalperpassword \
+              -storepass scalperpassword \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Scalper Terminal,OU=Trading,O=Scalper,L=Mumbai,ST=Maharashtra,C=IN"
+            echo "RELEASE_STORE_FILE=scalper-release.jks" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=scalperpassword" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=scalper" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=scalperpassword" >> $GITHUB_ENV
           fi
 
       - name: Build Android APK with Gradle

@@ -611,17 +611,28 @@ func TestHealthComprehensiveDetails(t *testing.T) {
 func TestOriginProtection(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	cases := []struct {
-		name         string
-		host         string
-		origin       string
-		secFetchSite string
-		want         int
+		name          string
+		host          string
+		origin        string
+		fwdHost       string
+		requestedWith string
+		secFetchMode  string
+		secFetchSite  string
+		want          int
 	}{
 		{name: "ipv4 same origin", host: "127.0.0.1:8080", origin: "http://127.0.0.1:8080", want: http.StatusOK},
 		{name: "no origin header", host: "127.0.0.1:8080", want: http.StatusOK},
 		{name: "remote origin mismatch", host: "127.0.0.1:8080", origin: "http://evil.test", want: http.StatusForbidden},
 		{name: "cross-site fetch", host: "127.0.0.1:8080", secFetchSite: "cross-site", want: http.StatusForbidden},
 		{name: "invalid origin", host: "127.0.0.1:8080", origin: "://bad", want: http.StatusForbidden},
+		{name: "scalper android native app container", host: "127.0.0.1:8080", requestedWith: "com.scalper.terminal", secFetchSite: "cross-site", want: http.StatusOK},
+		{name: "capacitor android https localhost origin", host: "127.0.0.1:8080", origin: "https://localhost", secFetchSite: "cross-site", want: http.StatusOK},
+		{name: "capacitor scheme origin", host: "127.0.0.1:8080", origin: "capacitor://localhost", secFetchSite: "cross-site", want: http.StatusOK},
+		{name: "top-level navigation from external link", host: "127.0.0.1:8080", secFetchMode: "navigate", secFetchSite: "cross-site", want: http.StatusOK},
+		{name: "private lan wifi origin", host: "192.168.1.100:18080", origin: "http://192.168.1.100:18080", want: http.StatusOK},
+		{name: "private lan mobile origin connecting to lan host", host: "192.168.1.50:18080", origin: "http://192.168.1.100:18080", secFetchSite: "cross-site", want: http.StatusOK},
+		{name: "reverse proxy forwarded host match", host: "127.0.0.1:18080", fwdHost: "scalper.myterminal.com", origin: "https://scalper.myterminal.com", want: http.StatusOK},
+		{name: "tailscale network origin", host: "100.64.0.1:18080", origin: "https://scalper.tailscale.net", want: http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -629,6 +640,15 @@ func TestOriginProtection(t *testing.T) {
 			req.Host = tc.host
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.fwdHost != "" {
+				req.Header.Set("X-Forwarded-Host", tc.fwdHost)
+			}
+			if tc.requestedWith != "" {
+				req.Header.Set("X-Requested-With", tc.requestedWith)
+			}
+			if tc.secFetchMode != "" {
+				req.Header.Set("Sec-Fetch-Mode", tc.secFetchMode)
 			}
 			if tc.secFetchSite != "" {
 				req.Header.Set("Sec-Fetch-Site", tc.secFetchSite)
@@ -1565,7 +1585,7 @@ func TestCORSAndPreflight(t *testing.T) {
 	req := localRequest(http.MethodOptions, "/api/session")
 	req.Header.Set("Origin", "capacitor://localhost")
 	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "Content-Type, X-Request-ID")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type, X-Request-ID, X-Device-ID, X-Requested-With")
 	rec := do(t, s, req)
 
 	if rec.Code != http.StatusNoContent {
@@ -1603,6 +1623,8 @@ func TestCORSAndPreflight(t *testing.T) {
 		{"http://localhost:3000", true},
 		{"https://130.210.18.97.sslip.io", true},
 		{"http://10.0.2.2:8080", true},
+		{"http://192.168.1.100:18080", true},
+		{"https://scalper.tailscale.net", true},
 		{"https://malicious-site.com", false},
 	}
 	for _, tc := range checkOriginCases {

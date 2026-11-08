@@ -21,14 +21,21 @@ android {
             keyAlias "androiddebugkey"
             keyPassword "android"
         }
+        release {
+            def keystoreFile = System.getenv("RELEASE_STORE_FILE") ? file(System.getenv("RELEASE_STORE_FILE")) : (file("scalper-release.jks").exists() ? file("scalper-release.jks") : file("${System.getProperty('user.home')}/.android/debug.keystore"))
+            storeFile keystoreFile
+            storePassword System.getenv("RELEASE_STORE_PASSWORD") ?: "scalperpassword"
+            keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: (keystoreFile.name.contains("debug") ? "androiddebugkey" : "scalper")
+            keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: (keystoreFile.name.contains("debug") ? "android" : "scalperpassword")
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
     }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            if (file("${System.getProperty('user.home')}/.android/debug.keystore").exists()) {
-                signingConfig signingConfigs.debug
-            }
+            signingConfig signingConfigs.release
         }
         debug {
             applicationIdSuffix ""

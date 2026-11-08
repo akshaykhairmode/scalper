@@ -477,7 +477,7 @@
         const timeout = setTimeout(() => controller.abort(), 3500);
         const resp = await fetch(base + "/healthz", { signal: controller.signal, mode: "cors" }).catch(() => null);
         clearTimeout(timeout);
-        if (resp && resp.ok) {
+        if (resp && (resp.ok || resp.status === 401)) {
           pingStatus.textContent = "Online";
           pingStatus.style.color = "#34d399";
         } else {
