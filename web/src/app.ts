@@ -2963,13 +2963,6 @@ function renderOrderPad() {
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
       button.disabled = false;
     });
-
-    const currentLotCount = isShares ? Math.round(S.qty[type] / Math.max(1, lot)) : Math.round(S.qty[type]);
-    for (const btn of $$(`.lot-preset-btn[data-lot-preset="${type}"]`)) {
-      const active = num(btn.dataset.lots) === currentLotCount;
-      btn.classList.toggle("active", active);
-      btn.setAttribute("aria-pressed", active ? "true" : "false");
-    }
   }
 }
 
@@ -6167,15 +6160,6 @@ function bindEvents() {
       if (!type) return;
       if (!S.orderValidity) S.orderValidity = { CE: "DAY", PE: "DAY" };
       S.orderValidity[type] = S.orderValidity[type] === "IOC" ? "DAY" : "IOC";
-      renderOrderPad();
-    });
-  }
-  for (const button of $$(".lot-preset-btn")) {
-    button.addEventListener("click", () => {
-      const type = button.dataset.lotPreset;
-      const lotsCount = num(button.dataset.lots, 1);
-      const lot = Math.max(1, lotSize(type) || 1);
-      S.qty[type] = S.unit[type] === "SHARES" ? lotsCount * lot : lotsCount;
       renderOrderPad();
     });
   }

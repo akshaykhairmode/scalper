@@ -281,7 +281,7 @@ func TestIndexPage(t *testing.T) {
 		"Scalper", "NIFTY", "BANKNIFTY", "SENSEX", "present", "ready",
 		"manifest.webmanifest", "theme-color", "apple-mobile-web-app-capable",
 		"mobile-nav", "install-banner", "mobile-menu-btn", "mobile-panic-pill",
-		"mobile-drawer", "lot-presets-row",
+		"mobile-drawer", "lot-control",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)

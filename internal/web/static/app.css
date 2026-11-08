@@ -2116,28 +2116,6 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
 .mobile-drawer-backdrop {
   display: none;
 }
-.lot-presets-row {
-  display: none !important;
-}
-.lot-preset-btn {
-  flex: 1 1 0;
-  min-height: 28px;
-  padding: 2px 6px;
-  font-size: 11px;
-  font-weight: 750;
-  border-radius: 4px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.lot-preset-btn:hover,
-.lot-preset-btn.active {
-  background: var(--accent);
-  color: #1a1300;
-  border-color: var(--accent);
-}
 
 /* ── Mobile Responsive Terminal (< 768px) ─────────────────── */
 @media (max-width: 768px) {
@@ -2910,14 +2888,6 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   }
 
   /* Order Pad Mobile Layout */
-  .lot-presets-row {
-    display: flex !important;
-    align-items: center;
-    gap: 4px;
-    width: 100%;
-    margin-bottom: 4px;
-  }
-
   .leg-orderpad {
     display: flex;
     flex-direction: column;
