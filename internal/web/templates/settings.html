@@ -46,6 +46,10 @@
         <span class="tab-icon">📝</span>
         <span class="tab-title">Logging</span>
       </button>
+      <button type="button" class="tab-btn" role="tab" id="tab-ai" aria-selected="false" aria-controls="panel-ai">
+        <span class="tab-icon">🤖</span>
+        <span class="tab-title">AI &amp; Models</span>
+      </button>
       <button type="button" class="tab-btn" role="tab" id="tab-devices" aria-selected="false" aria-controls="panel-devices">
         <span class="tab-icon">📱</span>
         <span class="tab-title">Passkeys &amp; Devices</span>
@@ -510,7 +514,164 @@
         </div>
       </section>
 
-      <!-- TAB 4: Passkeys & Devices -->
+      <!-- TAB 4: AI & Models -->
+      <section class="tab-panel" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai">
+        <!-- Card 1: AI Evaluation Engine -->
+        <div class="card">
+          <div class="card-header">
+            <h2>AI Evaluation Engine</h2>
+            <p class="card-desc">Master switch and guardrails for automated/semi-automated market regime and setup evaluation.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group checkbox-group" data-field="ai.enabled" style="grid-column: 1 / -1;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-ai-enabled">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Enable AI Evaluation Engine</strong>
+                  <span class="form-help">Activates background market analysis and setup evaluation worker.</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="ai.shadow_mode" style="grid-column: 1 / -1;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-ai-shadow-mode" checked>
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Shadow Mode (Simulation Only)</strong>
+                  <span class="form-help">Evaluates setups and logs decisions to SQLite without placing live broker orders. Uncheck only for autonomous live execution.</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="form-group" data-field="ai.min_confidence">
+              <label for="f-ai-min-confidence">Min Confidence Cutoff</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-min-confidence" min="0.0" max="1.0" step="0.05" placeholder="0.75">
+                <span class="unit-suffix">prob</span>
+              </div>
+              <span class="form-help">Minimum Noul probability required to accept a signal (0.0 to 1.0).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.min_score">
+              <label for="f-ai-min-score">Min Conviction Score</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-min-score" min="1" max="5" step="1" placeholder="4">
+                <span class="unit-suffix">1-5</span>
+              </div>
+              <span class="form-help">Setup quality score threshold (1 = weak, 5 = textbook setup).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.eval_cadence_seconds">
+              <label for="f-ai-eval-cadence">Evaluation Cadence</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-eval-cadence" min="5" max="300" step="5" placeholder="15">
+                <span class="unit-suffix">sec</span>
+              </div>
+              <span class="form-help">Frequency of running Jev tactical evaluations on active ATM strikes.</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: System 1: Fast Decision Model (TypeSafe AI Jev) -->
+        <div class="card">
+          <div class="card-header">
+            <h2>System 1: Decision Model (TypeSafe AI Jev)</h2>
+            <p class="card-desc">Sub-second bounded decision model evaluating orderbook microprice, tick velocity, and pattern state.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="ai.jev.base_url" style="grid-column: 1 / -1;">
+              <label for="f-jev-base-url">Jev Endpoint Base URL</label>
+              <input type="text" id="f-jev-base-url" placeholder="https://openrouter.ai/api/v1 or https://api.typesafe.ai/v1">
+              <span class="form-help">Set to OpenRouter or TypeSafe native endpoint.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.jev.model">
+              <label for="f-jev-model">Jev Model ID</label>
+              <input type="text" id="f-jev-model" placeholder="typesafe/jev-latest">
+              <span class="form-help">e.g. <code>typesafe/jev-latest</code> on OpenRouter, or <code>jev-latest</code> on TypeSafe.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.jev.timeout_ms">
+              <label for="f-jev-timeout-ms">HTTP Timeout</label>
+              <div class="input-unit">
+                <input type="number" id="f-jev-timeout-ms" min="100" max="10000" step="100" placeholder="1500">
+                <span class="unit-suffix">ms</span>
+              </div>
+              <span class="form-help">Must be fast (1000–2000ms recommended for scalping).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.jev.api_key" style="grid-column: 1 / -1;">
+              <label for="f-jev-api-key">Jev API Key</label>
+              <input type="password" id="f-jev-api-key" placeholder="sk-or-v1-... or set OPENROUTER_API_KEY env">
+              <span class="form-help">Leave masked to retain current key, or type a new key to update.</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: System 2: Strategic Reasoning Agent -->
+        <div class="card">
+          <div class="card-header">
+            <h2>System 2: Reasoning Agent (Macro &amp; Playbook)</h2>
+            <p class="card-desc">Deep reasoning LLM compiling pre-market briefings, regime shifts, and risk constraints.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="ai.agent.provider">
+              <label for="f-agent-provider">Provider</label>
+              <select id="f-agent-provider">
+                <option value="openrouter">OpenRouter (Unified multi-model API)</option>
+                <option value="gemini">Google Gemini (Direct API / AI Studio)</option>
+                <option value="ollama">Ollama (Local offline LLM)</option>
+                <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
+                <option value="generic">Generic OpenAI-Compatible</option>
+              </select>
+              <span class="form-help">Target LLM provider engine.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.agent.model">
+              <label for="f-agent-model">Agent Model ID</label>
+              <input type="text" id="f-agent-model" placeholder="google/gemini-2.5-flash">
+              <span class="form-help">e.g. <code>google/gemini-2.5-flash</code>, <code>deepseek/deepseek-r1-distill-llama-70b</code>, <code>anthropic/claude-3.5-sonnet</code></span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.agent.base_url" style="grid-column: 1 / -1;">
+              <label for="f-agent-base-url">Agent Endpoint Base URL</label>
+              <input type="text" id="f-agent-base-url" placeholder="https://openrouter.ai/api/v1">
+              <span class="form-help">Leave empty to use provider default, or http://localhost:11434/v1 for Ollama.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.agent.timeout_ms">
+              <label for="f-agent-timeout-ms">HTTP Timeout</label>
+              <div class="input-unit">
+                <input type="number" id="f-agent-timeout-ms" min="5000" max="120000" step="5000" placeholder="30000">
+                <span class="unit-suffix">ms</span>
+              </div>
+              <span class="form-help">Timeout for deep macro briefings (default 30000ms).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.agent.api_key" style="grid-column: 1 / -1;">
+              <label for="f-agent-api-key">Agent API Key</label>
+              <input type="password" id="f-agent-api-key" placeholder="sk-or-v1-... or set AI_AGENT_API_KEY env">
+              <span class="form-help">Leave masked to retain current key, or type a new key to update.</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: Passkeys & Devices -->
       <section class="tab-panel" id="panel-devices" role="tabpanel" aria-labelledby="tab-devices">
         <div class="card">
           <div class="card-header">

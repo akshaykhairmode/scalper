@@ -20,6 +20,29 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/version"
 )
 
+const defaultAISettingsYAML = `ai:
+  enabled: false             # Master toggle for AI evaluation engine
+  shadow_mode: true          # Log evaluations to SQLite without sending broker orders
+  min_confidence: 0.75       # Minimum Noul probability cutoff (0.0 to 1.0)
+  min_score: 4               # Minimum setup conviction score (1 to 5)
+  eval_cadence_seconds: 15   # Evaluation frequency for active strikes
+
+  # System 1: Fast Decision Model (TypeSafe AI Jev)
+  jev:
+    base_url: "https://api.typesafe.ai/v1"
+    api_key: ""              # Or set TYPESAFE_API_KEY environment variable
+    model: "jev-latest"
+    timeout_ms: 1500
+
+  # System 2: Strategic Reasoning Agent (Ollama / OpenRouter / Gemini / OpenAI)
+  agent:
+    provider: "openrouter"   # openrouter | ollama | gemini | openai | generic
+    base_url: "https://openrouter.ai/api/v1" # e.g. http://localhost:11434/v1 for Ollama
+    api_key: ""              # Or set AI_AGENT_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY
+    model: "anthropic/claude-3.5-sonnet" # or llama3, gemini-1.5-flash, etc.
+    timeout_ms: 30000
+`
+
 type settingsPageData struct {
 	Title       string
 	Version     string
@@ -60,6 +83,13 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 		} else {
 			rawYAML = buf.String()
 		}
+	}
+
+	if rawYAML != "" && !strings.Contains(rawYAML, "ai:") {
+		if !strings.HasSuffix(rawYAML, "\n") {
+			rawYAML += "\n"
+		}
+		rawYAML += "\n" + defaultAISettingsYAML
 	}
 
 	redactedYAML, err := config.RedactYAMLSecrets([]byte(rawYAML))
@@ -138,6 +168,13 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			_ = writeJSONError(w, http.StatusInternalServerError, "failed to read configuration", logging.RequestID(r.Context()))
 			return
 		}
+	}
+
+	if len(data) > 0 && !strings.Contains(string(data), "ai:") {
+		if !bytes.HasSuffix(data, []byte("\n")) {
+			data = append(data, '\n')
+		}
+		data = append(data, []byte("\n"+defaultAISettingsYAML)...)
 	}
 
 	redactedYAML, redactErr := config.RedactYAMLSecrets(data)

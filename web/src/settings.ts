@@ -335,6 +335,28 @@
     setVal('f-retention-days', lg.retention_days || 14);
     setVal('f-tick-sample', lg.tick_sample_seconds !== undefined ? lg.tick_sample_seconds : 1);
     setChecked('f-log-redact', true);
+
+    // AI
+    const ai = cfg.ai || {};
+    const jev = ai.jev || {};
+    const ag = ai.agent || {};
+
+    setChecked('f-ai-enabled', !!ai.enabled);
+    setChecked('f-ai-shadow-mode', ai.shadow_mode !== undefined ? !!ai.shadow_mode : true);
+    setVal('f-ai-min-confidence', ai.min_confidence !== undefined ? ai.min_confidence : 0.75);
+    setVal('f-ai-min-score', ai.min_score !== undefined ? ai.min_score : 4);
+    setVal('f-ai-eval-cadence', ai.eval_cadence_seconds !== undefined ? ai.eval_cadence_seconds : 15);
+
+    setVal('f-jev-base-url', jev.base_url || 'https://api.typesafe.ai/v1');
+    setVal('f-jev-model', jev.model || 'jev-latest');
+    setVal('f-jev-api-key', jev.api_key || '');
+    setVal('f-jev-timeout-ms', jev.timeout_ms || 1500);
+
+    setVal('f-agent-provider', ag.provider || 'openrouter');
+    setVal('f-agent-base-url', ag.base_url || 'https://openrouter.ai/api/v1');
+    setVal('f-agent-model', ag.model || 'anthropic/claude-3.5-sonnet');
+    setVal('f-agent-api-key', ag.api_key || '');
+    setVal('f-agent-timeout-ms', ag.timeout_ms || 30000);
   }
 
   function setVal(id, val) {
@@ -389,14 +411,30 @@
       { id: 'f-max-size-mb', path: ['logging', 'max_size_mb'], type: 'int' },
       { id: 'f-max-backups', path: ['logging', 'max_backups'], type: 'int' },
       { id: 'f-retention-days', path: ['logging', 'retention_days'], type: 'int' },
-      { id: 'f-tick-sample', path: ['logging', 'tick_sample_seconds'], type: 'int' }
+      { id: 'f-tick-sample', path: ['logging', 'tick_sample_seconds'], type: 'int' },
+
+      // AI & Models
+      { id: 'f-ai-enabled', path: ['ai', 'enabled'], type: 'bool' },
+      { id: 'f-ai-shadow-mode', path: ['ai', 'shadow_mode'], type: 'bool' },
+      { id: 'f-ai-min-confidence', path: ['ai', 'min_confidence'], type: 'float' },
+      { id: 'f-ai-min-score', path: ['ai', 'min_score'], type: 'int' },
+      { id: 'f-ai-eval-cadence', path: ['ai', 'eval_cadence_seconds'], type: 'int' },
+      { id: 'f-jev-base-url', path: ['ai', 'jev', 'base_url'], type: 'string' },
+      { id: 'f-jev-model', path: ['ai', 'jev', 'model'], type: 'string' },
+      { id: 'f-jev-api-key', path: ['ai', 'jev', 'api_key'], type: 'string' },
+      { id: 'f-jev-timeout-ms', path: ['ai', 'jev', 'timeout_ms'], type: 'int' },
+      { id: 'f-agent-provider', path: ['ai', 'agent', 'provider'], type: 'string' },
+      { id: 'f-agent-base-url', path: ['ai', 'agent', 'base_url'], type: 'string' },
+      { id: 'f-agent-model', path: ['ai', 'agent', 'model'], type: 'string' },
+      { id: 'f-agent-api-key', path: ['ai', 'agent', 'api_key'], type: 'string' },
+      { id: 'f-agent-timeout-ms', path: ['ai', 'agent', 'timeout_ms'], type: 'int' }
     ];
 
     map.forEach(item => {
       const el: any = document.getElementById(item.id);
       if (!el) return;
 
-      const eventName = el.type === 'checkbox' ? 'change' : 'input';
+      const eventName = el.type === 'checkbox' ? 'change' : (el.tagName === 'SELECT' ? 'change' : 'input');
       el.addEventListener(eventName, () => {
         let val;
         if (item.type === 'bool') {
@@ -404,6 +442,9 @@
         } else if (item.type === 'int') {
           val = parseInt(el.value, 10);
           if (isNaN(val)) val = 0;
+        } else if (item.type === 'float') {
+          val = parseFloat(el.value);
+          if (isNaN(val)) val = 0.0;
         } else {
           val = el.value.trim();
         }
@@ -1089,28 +1130,60 @@
 
   function insertYamlField(yaml, path, formattedVal) {
     const lines = yaml.split('\n');
-    const parentKey = path[0];
-    const key = path[path.length - 1];
 
-    let parentIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith(parentKey + ':')) {
-        parentIdx = i;
+    // Find deepest existing ancestor in path
+    let deepestDepth = 0;
+    let insertLineIdx = -1;
+    let currentIndent = 0;
+
+    for (let depth = path.length - 1; depth >= 1; depth--) {
+      const subPath = path.slice(0, depth);
+      const idx = findFieldLine(lines, subPath);
+      if (idx !== -1) {
+        deepestDepth = depth;
+        insertLineIdx = idx;
+        const line = lines[idx];
+        currentIndent = line.search(/\S/);
         break;
       }
     }
 
-    const indent = '  '.repeat(path.length - 1);
-    const newLine = `${indent}${key}: ${formattedVal}`;
+    if (insertLineIdx !== -1) {
+      let targetIdx = insertLineIdx + 1;
+      while (targetIdx < lines.length) {
+        const line = lines[targetIdx];
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          const indent = line.search(/\S/);
+          if (indent <= currentIndent) {
+            break;
+          }
+        }
+        targetIdx++;
+      }
 
-    if (parentIdx !== -1) {
-      lines.splice(parentIdx + 1, 0, newLine);
+      const newLines: string[] = [];
+      let indentLevel = currentIndent + 2;
+      for (let d = deepestDepth; d < path.length - 1; d++) {
+        newLines.push(`${' '.repeat(indentLevel)}${path[d]}:`);
+        indentLevel += 2;
+      }
+      newLines.push(`${' '.repeat(indentLevel)}${path[path.length - 1]}: ${formattedVal}`);
+
+      lines.splice(targetIdx, 0, ...newLines);
       return lines.join('\n');
     }
 
     // Root insert
-    lines.push(`${parentKey}:`);
-    lines.push(newLine);
+    const newLines: string[] = [];
+    let indentLevel = 0;
+    for (let d = 0; d < path.length - 1; d++) {
+      newLines.push(`${' '.repeat(indentLevel)}${path[d]}:`);
+      indentLevel += 2;
+    }
+    newLines.push(`${' '.repeat(indentLevel)}${path[path.length - 1]}: ${formattedVal}`);
+
+    lines.push(...newLines);
     return lines.join('\n');
   }
 
