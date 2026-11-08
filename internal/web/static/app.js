@@ -8061,14 +8061,17 @@ function initChartTooltips() {
   };
   const targets = $$(".chart-tools button, .pro-tools-toggle, .pane-close-btn");
   targets.forEach((btn) => {
-    btn.addEventListener("pointerenter", () => {
+    let touchTimer = null;
+    btn.addEventListener("pointerenter", (e) => {
+      if (e.pointerType === "touch") return;
       pendingBtn = btn;
       clearTimeout(showTimer);
       showTimer = setTimeout(() => {
         if (pendingBtn === btn) showTooltip(btn);
       }, 80);
     });
-    btn.addEventListener("pointerleave", () => {
+    btn.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "touch") return;
       if (pendingBtn === btn) {
         pendingBtn = null;
         clearTimeout(showTimer);
@@ -8077,9 +8080,25 @@ function initChartTooltips() {
         hideTooltip();
       }
     });
+    btn.addEventListener("touchstart", () => {
+      touchTimer = setTimeout(() => {
+        showTooltip(btn);
+      }, 350);
+    }, { passive: true });
+    btn.addEventListener("touchend", () => {
+      clearTimeout(touchTimer);
+    }, { passive: true });
+    btn.addEventListener("touchcancel", () => {
+      clearTimeout(touchTimer);
+    }, { passive: true });
     btn.addEventListener("click", hideTooltip);
     btn.addEventListener("focus", () => showTooltip(btn));
     btn.addEventListener("blur", hideTooltip);
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!tooltip.hidden && !tooltip.contains(e.target) && activeBtn !== e.target) {
+      hideTooltip();
+    }
   });
   window.addEventListener("scroll", hideTooltip, { passive: true });
   document.addEventListener("keydown", (e) => {
