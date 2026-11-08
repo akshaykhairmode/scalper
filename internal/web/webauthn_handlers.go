@@ -685,7 +685,7 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/devices/pair-token
 func (s *Server) handleCreatePairToken(w http.ResponseWriter, r *http.Request) {
-	if !s.isServeAuthenticated(r) {
+	if !s.isServeAuthenticated(r) && !s.isDeviceBound(r) {
 		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Authentication required"})
 		return
 	}
@@ -701,13 +701,80 @@ func (s *Server) handleCreatePairToken(w http.ResponseWriter, r *http.Request) {
 	if secureRequest(r) {
 		scheme = "https"
 	}
-	pairURL := fmt.Sprintf("%s://%s/?pair_token=%s", scheme, r.Host, token)
+	host := r.Host
+	if reqHost, reqPort, err := net.SplitHostPort(host); err == nil {
+		if isLoopbackHost(reqHost) {
+			if lanIP := getOutboundLANIP(); lanIP != "" {
+				host = net.JoinHostPort(lanIP, reqPort)
+			}
+		}
+	} else if isLoopbackHost(host) {
+		if lanIP := getOutboundLANIP(); lanIP != "" {
+			host = lanIP
+		}
+	}
+	pairURL := fmt.Sprintf("%s://%s/?pair_token=%s", scheme, host, token)
 
-	s.log.Info("created device pairing token", "expires_at", expiresAt, "request_id", logging.RequestID(r.Context()))
+	s.log.Info("created device pairing token", "expires_at", expiresAt, "url", pairURL, "request_id", logging.RequestID(r.Context()))
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
 		"url":        pairURL,
 	})
+}
+
+func isLoopbackHost(host string) bool {
+	h := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+func getOutboundLANIP() string {
+	// Attempt OS routing table lookup for outbound interface (UDP connectionless, no packets sent)
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer func() { _ = conn.Close() }()
+		if localAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			if ip := localAddr.IP.To4(); ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+
+	// Fallback: interface scan skipping loopback and point-to-point (VPN/tunnel) adapters
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			ip = ip.To4()
+			if ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
 }

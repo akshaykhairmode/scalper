@@ -608,6 +608,54 @@ a { color: var(--blue); }
 }
 .chart-tools button:hover { color: var(--text); border-color: #3b4d5f; background: var(--panel-2); }
 .chart-tools button.active { color: var(--accent); border-color: #4a3a10; background: #1d1808; }
+
+/* Floating Chart Action Tooltip */
+.chart-tooltip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: 250px;
+  min-width: 140px;
+  padding: 6px 10px;
+  background: var(--panel, #121820);
+  border: 1px solid var(--border-strong, #2c3e50);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7), 0 2px 6px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text, #d0d7de);
+  transition: opacity 0.12s cubic-bezier(0.16, 1, 0.3, 1), transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translateY(0);
+}
+.chart-tooltip[hidden] {
+  display: none !important;
+}
+.chart-tooltip-title {
+  font-weight: 600;
+  color: var(--accent, #f59e0b);
+  margin-bottom: 2px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chart-tooltip-desc {
+  color: var(--text-dim, #8b949e);
+  font-size: 10.5px;
+}
+body[data-theme="light"] .chart-tooltip {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.15), 0 2px 6px rgba(15, 23, 42, 0.08);
+  color: #1e293b;
+}
+body[data-theme="light"] .chart-tooltip-title {
+  color: #b45309;
+}
+body[data-theme="light"] .chart-tooltip-desc {
+  color: #64748b;
+}
 .chart-hint {
   position: absolute;
   inset: 0;

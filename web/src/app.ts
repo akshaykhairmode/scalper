@@ -4477,6 +4477,162 @@ function initChartQuickOrder() {
   });
 }
 
+function initChartTooltips() {
+  const tooltip = $("chart-tooltip");
+  if (!tooltip) return;
+
+  const TOOLTIP_DATA: Record<string, { title: string; desc: string }> = {
+    trades: {
+      title: "Trades & Positions (TX)",
+      desc: "Toggle executed trades, open positions, and pending limit order lines directly on chart candles.",
+    },
+    dom: {
+      title: "Depth of Market (DOM)",
+      desc: "Display live bid and ask order book volume bars beside prices on the chart canvas.",
+    },
+    trendline: {
+      title: "Draw Trendline (TL)",
+      desc: "Click chart twice to place a manual trendline. Drag endpoints to adjust; right-click to delete.",
+    },
+    "auto-tl": {
+      title: "Auto Trendlines (ATL)",
+      desc: "Automatically detects swing highs and swing lows to project dynamic support and resistance lines.",
+    },
+    sr: {
+      title: "Support & Resistance (SR)",
+      desc: "Computes and plots horizontal key pivot levels and price reaction zones.",
+    },
+    patterns: {
+      title: "Pattern Recognition (PTN)",
+      desc: "Detects candlestick patterns (Hammer, Engulfing, Doji, Star). Right-click for pattern settings.",
+    },
+    ma: {
+      title: "Moving Averages (MA)",
+      desc: "Toggle Moving Average overlays (EMA 9, 21, 50, 200) on candles.",
+    },
+    in: {
+      title: "Zoom In (+)",
+      desc: "Increase candlestick width to zoom in closer to recent price action.",
+    },
+    out: {
+      title: "Zoom Out (−)",
+      desc: "Decrease candlestick width to view more historical candles and wider price structure.",
+    },
+    reset: {
+      title: "Reset View (↺)",
+      desc: "Reset time and price zoom back to default and scroll to the latest live candle.",
+    },
+    expand: {
+      title: "Maximize / Restore (⛶)",
+      desc: "Maximize this chart pane to full screen, or click again / press Esc to restore 3-chart layout.",
+    },
+    "tools-toggle": {
+      title: "Technical Tools (📐)",
+      desc: "Toggle advanced chart indicators, overlays, and drawing tools panel.",
+    },
+    "chart-hide": {
+      title: "Hide Chart (✕)",
+      desc: "Hide this chart pane to allocate more screen space to other charts.",
+    },
+  };
+
+  let activeBtn: HTMLElement | null = null;
+  let pendingBtn: HTMLElement | null = null;
+  let showTimer: any = null;
+
+  const showTooltip = (btn: HTMLElement) => {
+    if (activeBtn && activeBtn !== btn) {
+      if (activeBtn.dataset.originalTitle) {
+        activeBtn.setAttribute("title", activeBtn.dataset.originalTitle);
+        delete activeBtn.dataset.originalTitle;
+      }
+    }
+
+    const action = btn.dataset.chartAction ||
+      (btn.classList.contains("pro-tools-toggle") ? "tools-toggle" : "") ||
+      (btn.classList.contains("pane-close-btn") ? "chart-hide" : "");
+    const info = TOOLTIP_DATA[action] || {
+      title: btn.dataset.tooltipTitle || btn.getAttribute("aria-label") || "Chart Action",
+      desc: btn.dataset.tooltipDesc || "",
+    };
+
+    if (!info.title && !info.desc) return;
+
+    activeBtn = btn;
+    if (btn.hasAttribute("title")) {
+      btn.dataset.originalTitle = btn.getAttribute("title") || "";
+      btn.removeAttribute("title");
+    }
+
+    tooltip.innerHTML = `
+      <div class="chart-tooltip-title">${esc(info.title)}</div>
+      ${info.desc ? `<div class="chart-tooltip-desc">${esc(info.desc)}</div>` : ""}
+    `;
+    tooltip.hidden = false;
+
+    // Position tooltip
+    const rect = btn.getBoundingClientRect();
+    const tipWidth = tooltip.offsetWidth || 200;
+    const tipHeight = tooltip.offsetHeight || 50;
+
+    let left = rect.left + rect.width / 2 - tipWidth / 2;
+    // Clamp horizontally
+    left = Math.max(8, Math.min(left, window.innerWidth - tipWidth - 8));
+
+    // Place below button, or above if close to bottom
+    let top = rect.bottom + 6;
+    if (top + tipHeight > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - tipHeight - 6);
+    }
+
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+  };
+
+  const hideTooltip = () => {
+    clearTimeout(showTimer);
+    pendingBtn = null;
+    if (activeBtn) {
+      if (activeBtn.dataset.originalTitle) {
+        activeBtn.setAttribute("title", activeBtn.dataset.originalTitle);
+        delete activeBtn.dataset.originalTitle;
+      }
+      activeBtn = null;
+    }
+    tooltip.hidden = true;
+  };
+
+  const targets = $$(".chart-tools button, .pro-tools-toggle, .pane-close-btn");
+  targets.forEach((btn: any) => {
+    btn.addEventListener("pointerenter", () => {
+      pendingBtn = btn;
+      clearTimeout(showTimer);
+      showTimer = setTimeout(() => {
+        if (pendingBtn === btn) showTooltip(btn);
+      }, 80);
+    });
+    btn.addEventListener("pointerleave", () => {
+      if (pendingBtn === btn) {
+        pendingBtn = null;
+        clearTimeout(showTimer);
+      }
+      if (activeBtn === btn) {
+        hideTooltip();
+      }
+    });
+    btn.addEventListener("click", hideTooltip);
+    btn.addEventListener("focus", () => showTooltip(btn));
+    btn.addEventListener("blur", hideTooltip);
+  });
+
+  window.addEventListener("scroll", hideTooltip, { passive: true });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !tooltip.hidden) {
+      hideTooltip();
+    }
+  });
+}
+
 function bindChartClickEvents() {
   for (const pane of ["ce", "pe", "spot"]) {
     const container = $("chart-" + pane);
@@ -5689,23 +5845,24 @@ async function openPairModal() {
   modal.style.display = "grid";
 
   const qrContainer = $("pair-qr-svg");
-  const urlInput = $("pair-url-input");
+  const urlInput = $("pair-url-input") as HTMLInputElement | null;
   if (qrContainer) qrContainer.innerHTML = "<span style='color:#333;font-size:12px;'>Generating QR code...</span>";
   if (urlInput) urlInput.value = "Generating...";
 
   try {
-    const res = await fetch("/api/devices/pair-token", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok && data.url) {
+    const data = await requestJSON("/api/devices/pair-token", { method: "POST" });
+    if (data && data.ok && data.url) {
       if (urlInput) urlInput.value = data.url;
       if (qrContainer) {
         qrContainer.innerHTML = generateQRCodeSVG(data.url, 220);
       }
     } else {
-      if (qrContainer) qrContainer.innerHTML = "<span style='color:#c00;font-size:12px;'>Failed to generate pairing token</span>";
+      if (urlInput) urlInput.value = "";
+      if (qrContainer) qrContainer.innerHTML = `<span style='color:#c00;font-size:12px;'>${esc(data?.error || "Failed to generate pairing token")}</span>`;
     }
-  } catch (e) {
-    if (qrContainer) qrContainer.innerHTML = "<span style='color:#c00;font-size:12px;'>Error generating pairing token</span>";
+  } catch (e: any) {
+    if (urlInput) urlInput.value = "";
+    if (qrContainer) qrContainer.innerHTML = `<span style='color:#c00;font-size:12px;'>${esc(e?.message || "Error generating pairing token")}</span>`;
   }
 
   await loadDevicesList();
@@ -5726,9 +5883,8 @@ async function loadDevicesList() {
   if (!tbody) return;
 
   try {
-    const res = await fetch("/api/devices");
-    const data = await res.json().catch(() => ({}));
-    const devices = data.devices || [];
+    const data = await requestJSON("/api/devices");
+    const devices = data?.devices || [];
 
     if (devices.length === 0) {
       if (tableWrap) tableWrap.hidden = true;
@@ -5740,7 +5896,7 @@ async function loadDevicesList() {
     if (noDevMsg) noDevMsg.hidden = true;
     if (tableWrap) tableWrap.hidden = false;
 
-    tbody.innerHTML = devices.map((d) => {
+    tbody.innerHTML = devices.map((d: any) => {
       const lastUsed = d.last_used_at ? new Date(d.last_used_at).toLocaleDateString("en-IN", {
         month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
       }) : "—";
@@ -5760,7 +5916,7 @@ async function loadDevicesList() {
       `;
     }).join("");
 
-    tbody.querySelectorAll(".btn-revoke-device").forEach((btn) => {
+    tbody.querySelectorAll(".btn-revoke-device").forEach((btn: any) => {
       btn.addEventListener("click", async () => {
         const id = btn.dataset.deviceId;
         if (!id) return;
@@ -5776,17 +5932,16 @@ async function loadDevicesList() {
 
 async function handleRevokeDevice(id) {
   try {
-    const res = await fetch(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok) {
+    const data = await requestJSON(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (data && data.ok) {
       toast("Device revoked successfully", "ok");
       await loadDevicesList();
       await updateBiometricButtons();
     } else {
-      toast(data.error || "Failed to revoke device", "warn");
+      toast(data?.error || "Failed to revoke device", "warn");
     }
-  } catch (err) {
-    toast("Error revoking device", "warn");
+  } catch (err: any) {
+    toast(err?.message || "Error revoking device", "warn");
   }
 }
 
@@ -6415,6 +6570,7 @@ function bindEvents() {
 
   initChartQuickOrder();
   bindChartClickEvents();
+  initChartTooltips();
 }
 
 function toggleQuantityUnit(type) {
