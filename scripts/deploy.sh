@@ -304,6 +304,11 @@ append_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-}"
 append_env "TYPESAFE_API_KEY" "${TYPESAFE_API_KEY:-}"
 append_env "AI_AGENT_API_KEY" "${AI_AGENT_API_KEY:-}"
 append_env "GEMINI_API_KEY" "${GEMINI_API_KEY:-}"
+append_env "AI_ENABLED" "${AI_ENABLED:-}"
+append_env "AI_SHADOW_MODE" "${AI_SHADOW_MODE:-}"
+append_env "AI_AGENT_PROVIDER" "${AI_AGENT_PROVIDER:-}"
+append_env "AI_AGENT_MODEL" "${AI_AGENT_MODEL:-}"
+append_env "AI_JEV_MODEL" "${AI_JEV_MODEL:-}"
 
 if [[ -n "${ENV_PAYLOAD}" ]]; then
   info "Configuring remote credentials in /etc/default/${SVC_NAME}..."

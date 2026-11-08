@@ -26,6 +26,8 @@ func clearScalperEnv(t *testing.T) {
 		"KOTAK_MOBILE_NUMBER", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_NEO_FIN_KEY",
 		"SCALPER_SERVE_USERNAME", "SERVE_AUTH_USERNAME", "SCALPER_BASIC_AUTH_USERNAME",
 		"SCALPER_SERVE_PASSWORD", "SERVE_AUTH_PASSWORD", "SCALPER_BASIC_AUTH_PASSWORD",
+		"TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "AI_AGENT_API_KEY",
+		"AI_ENABLED", "AI_SHADOW_MODE", "AI_AGENT_PROVIDER", "AI_AGENT_MODEL", "AI_JEV_MODEL",
 	} {
 		key := key
 		old, ok := os.LookupEnv(key)
@@ -99,6 +101,11 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("KOTAK_NEO_FIN_KEY", "customfinkey")
 	t.Setenv("SERVE_AUTH_USERNAME", "customuser")
 	t.Setenv("SERVE_AUTH_PASSWORD", "custompass")
+	t.Setenv("AI_ENABLED", "true")
+	t.Setenv("AI_SHADOW_MODE", "false")
+	t.Setenv("AI_AGENT_PROVIDER", "gemini")
+	t.Setenv("AI_AGENT_MODEL", "gemini-2.5-flash")
+	t.Setenv("AI_JEV_MODEL", "jev-custom")
 
 	cfg, err := LoadBytes([]byte("{}"), "inline")
 	if err != nil {
@@ -127,6 +134,21 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Web.BasicAuth.Password != "custompass" {
 		t.Fatalf("auth password = %q, want custompass", cfg.Web.BasicAuth.Password)
+	}
+	if !cfg.AI.Enabled {
+		t.Fatal("ai.enabled = false, want true")
+	}
+	if cfg.AI.ShadowMode {
+		t.Fatal("ai.shadow_mode = true, want false")
+	}
+	if cfg.AI.Agent.Provider != "gemini" {
+		t.Fatalf("ai.agent.provider = %q, want gemini", cfg.AI.Agent.Provider)
+	}
+	if cfg.AI.Agent.Model != "gemini-2.5-flash" {
+		t.Fatalf("ai.agent.model = %q, want gemini-2.5-flash", cfg.AI.Agent.Model)
+	}
+	if cfg.AI.Jev.Model != "jev-custom" {
+		t.Fatalf("ai.jev.model = %q, want jev-custom", cfg.AI.Jev.Model)
 	}
 }
 

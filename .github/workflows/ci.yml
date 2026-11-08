@@ -328,6 +328,11 @@ jobs:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           AI_AGENT_API_KEY: ${{ secrets.AI_AGENT_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_ENABLED: ${{ vars.AI_ENABLED || secrets.AI_ENABLED || '' }}
+          AI_SHADOW_MODE: ${{ vars.AI_SHADOW_MODE || secrets.AI_SHADOW_MODE || '' }}
+          AI_AGENT_PROVIDER: ${{ vars.AI_AGENT_PROVIDER || secrets.AI_AGENT_PROVIDER || '' }}
+          AI_AGENT_MODEL: ${{ vars.AI_AGENT_MODEL || secrets.AI_AGENT_MODEL || '' }}
+          AI_JEV_MODEL: ${{ vars.AI_JEV_MODEL || secrets.AI_JEV_MODEL || '' }}
         run: |
           chmod +x ./scripts/deploy.sh
           ./scripts/deploy.sh

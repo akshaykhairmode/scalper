@@ -511,6 +511,21 @@ func (c *Config) applyEnv() {
 	} else if v, ok := os.LookupEnv("OPENAI_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)
 	}
+	if v, ok := os.LookupEnv("AI_ENABLED"); ok {
+		c.AI.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := os.LookupEnv("AI_SHADOW_MODE"); ok {
+		c.AI.ShadowMode = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := os.LookupEnv("AI_AGENT_PROVIDER"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.Provider = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("AI_AGENT_MODEL"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.Model = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("AI_JEV_MODEL"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Jev.Model = strings.TrimSpace(v)
+	}
 }
 
 // Location returns the configured timezone. It assumes Validate succeeded.
