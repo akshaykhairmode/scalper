@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}}</title>
-  <link rel="stylesheet" href="/static/settings.css">
+  <link rel="stylesheet" href="/static/settings.css?v={{.Version}}">
 </head>
 <body data-theme="dark">
   <header class="settings-header">
@@ -24,9 +24,9 @@
     </div>
   </header>
 
-  <div id="alert-banner" class="alert-banner" hidden role="alert">
+  <div id="alert-banner" class="alert-banner" hidden style="display:none;" role="alert">
     <div class="alert-content">
-      <strong id="alert-title">Validation Error:</strong>
+      <strong id="alert-title"></strong>
       <span id="alert-message"></span>
     </div>
     <button type="button" class="alert-close" id="alert-close-btn" aria-label="Close alert">&times;</button>
@@ -678,6 +678,6 @@
   <!-- Embedded initial data for instant render -->
   <script id="initial-config-data" type="application/json">{{.InitialJSON}}</script>
   <script id="initial-yaml-data" type="text/plain">{{.InitialYAML}}</script>
-  <script type="module" src="/static/settings.js"></script>
+  <script type="module" src="/static/settings.js?v={{.Version}}"></script>
 </body>
 </html>

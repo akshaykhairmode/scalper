@@ -6,7 +6,7 @@ BIN       ?= bin/scalper
 CONFIG    ?= config.yaml
 COVER_MIN ?= 55
 
-VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION   ?= $(shell V=$$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1); echo "$${V:-v0.7.1}")
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS   := -s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=$(VERSION) \

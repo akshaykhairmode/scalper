@@ -1,4 +1,4 @@
-// src/chart/patterns.ts
+// web/src/chart/patterns.ts
 function calculateATR(candles, period = 14) {
   if (!candles || candles.length < 2) return [];
   const atrs = new Array(candles.length).fill(0);

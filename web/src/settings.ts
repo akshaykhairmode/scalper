@@ -979,14 +979,18 @@
     });
   }
 
-  function showAlert(title, msg) {
-    alertTitle.textContent = title + ':';
+  function showAlert(title: string, msg: string) {
+    alertTitle.textContent = title ? `${title}:` : '';
     alertMessage.textContent = msg;
     alertBanner.hidden = false;
+    alertBanner.style.display = 'flex';
   }
 
   function hideAlert() {
     alertBanner.hidden = true;
+    alertBanner.style.display = 'none';
+    alertTitle.textContent = '';
+    alertMessage.textContent = '';
   }
 
   function showToast(type: string, msg: string, duration = 4500) {

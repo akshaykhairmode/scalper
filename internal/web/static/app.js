@@ -1,4 +1,4 @@
-// src/chart/patterns.ts
+// web/src/chart/patterns.ts
 function calculateATR(candles, period = 14) {
   if (!candles || candles.length < 2) return [];
   const atrs = new Array(candles.length).fill(0);
@@ -1199,7 +1199,7 @@ function detectAllPatterns(candles, {
   return result;
 }
 
-// src/charts.ts
+// web/src/charts.ts
 var chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -3657,7 +3657,7 @@ var CandleChart = class {
   }
 };
 
-// src/utils/qrcode.ts
+// web/src/utils/qrcode.ts
 var EXP = new Uint8Array(256);
 var LOG = new Uint8Array(256);
 var x = 1;
@@ -3907,7 +3907,7 @@ function generateQRCodeSVG(text, size = 220) {
   </svg>`;
 }
 
-// src/app.ts
+// web/src/app.ts
 var $ = (id) => document.getElementById(id);
 var $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 var esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -7218,8 +7218,15 @@ function depthHTML() {
   </div>`;
 }
 function renderFooter() {
-  const ver = S.boot.version || "dev";
-  const displayVer = ver.startsWith("v") ? ver : `v${ver}`;
+  const ver = (S.boot.version || "dev").trim();
+  let displayVer = ver;
+  if (!displayVer || displayVer.toLowerCase() === "dev" || displayVer.toLowerCase().startsWith("dev")) {
+    displayVer = displayVer || "dev";
+  } else if (/^[0-9a-f]{7,40}(-dirty)?$/i.test(displayVer)) {
+    displayVer = `dev (${displayVer})`;
+  } else if (!displayVer.toLowerCase().startsWith("v")) {
+    displayVer = `v${displayVer}`;
+  }
   $("footer-version").textContent = displayVer;
   $("footer-feed").textContent = `${S.feed} feed`;
 }

@@ -76,7 +76,7 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 
 	page := settingsPageData{
 		Title:       "Scalper — Settings & Configuration",
-		Version:     version.Version,
+		Version:     formatDisplayVersion(version.Version),
 		Commit:      version.Commit,
 		ConfigPath:  cfgPath,
 		ServeMode:   s.serveMode,

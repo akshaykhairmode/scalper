@@ -218,7 +218,7 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 		ConfirmLiveOrders: cfg.Trading.ConfirmLiveOrders,
 		PayoffRangePct:    cfg.Trading.RiskView.PayoffRangePct,
 		PayoffPoints:      cfg.Trading.RiskView.PayoffPoints,
-		Version:           version.Version,
+		Version:           formatDisplayVersion(version.Version),
 		MPINConfigured:    mpinConfigured,
 		MarketSession: bootstrapSession{
 			Open:     cfg.Trading.Session.Open,
@@ -625,12 +625,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			Key: commodity.Key, Label: underlyingLabel(commodity.DisplayName, commodity.ExchangeSegment),
 		})
 	}
-	displayVer := strings.TrimSpace(version.Version)
-	if displayVer == "" || displayVer == "dev" {
-		displayVer = "dev"
-	} else if !strings.HasPrefix(displayVer, "v") {
-		displayVer = "v" + displayVer
-	}
+	displayVer := formatDisplayVersion(version.Version)
 	data := pageData{
 		Title:          "Scalper",
 		Mode:           "LIVE",

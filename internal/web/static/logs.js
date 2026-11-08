@@ -1,4 +1,4 @@
-// src/logs.ts
+// web/src/logs.ts
 function initLogsViewer() {
   let allLines = [];
   const container = document.getElementById("log-container");

@@ -3658,8 +3658,15 @@ function depthHTML() {
 }
 
 function renderFooter() {
-  const ver = S.boot.version || "dev";
-  const displayVer = ver.startsWith("v") ? ver : `v${ver}`;
+  const ver = (S.boot.version || "dev").trim();
+  let displayVer = ver;
+  if (!displayVer || displayVer.toLowerCase() === "dev" || displayVer.toLowerCase().startsWith("dev")) {
+    displayVer = displayVer || "dev";
+  } else if (/^[0-9a-f]{7,40}(-dirty)?$/i.test(displayVer)) {
+    displayVer = `dev (${displayVer})`;
+  } else if (!displayVer.toLowerCase().startsWith("v")) {
+    displayVer = `v${displayVer}`;
+  }
   $("footer-version").textContent = displayVer;
   $("footer-feed").textContent = `${S.feed} feed`;
 }

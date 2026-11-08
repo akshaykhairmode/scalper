@@ -93,3 +93,28 @@ func TestHandleVersionCheck(t *testing.T) {
 		t.Errorf("latest = %q, want v99.0.0", res.LatestVersion)
 	}
 }
+
+func TestFormatDisplayVersion(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", "dev"},
+		{"dev", "dev"},
+		{"DEV", "dev"},
+		{"dev (dac3e68)", "dev (dac3e68)"},
+		{"dev-dirty", "dev-dirty"},
+		{"v0.7.1", "v0.7.1"},
+		{"0.7.1", "v0.7.1"},
+		{"V0.8.0", "V0.8.0"},
+		{"dac3e68", "dev (dac3e68)"},
+		{"dac3e68-dirty", "dev (dac3e68-dirty)"},
+		{"8f43fe1a92", "dev (8f43fe1a92)"},
+	}
+	for _, tt := range tests {
+		got := formatDisplayVersion(tt.input)
+		if got != tt.want {
+			t.Errorf("formatDisplayVersion(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

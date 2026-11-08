@@ -205,7 +205,8 @@ if [[ "${CONNECTED}" -eq 0 ]]; then
     node web/build.js
   fi
   go run ./scripts/compress_assets.go
-  VERSION="${APP_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
+  RESOLVED_VER="$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)"
+  VERSION="${APP_VERSION:-${RESOLVED_VER:-v0.7.1}}"
   COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "none")
   BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   LDFLAGS="-s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=${VERSION} \
@@ -243,7 +244,8 @@ else
   info "Step 2/5: Compiling Scalper binary for linux/${REMOTE_ARCH}..."
   mkdir -p bin
 
-  VERSION="${APP_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
+  RESOLVED_VER="$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname 2>/dev/null | head -n 1 || true)"
+  VERSION="${APP_VERSION:-${RESOLVED_VER:-v0.7.1}}"
   COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "none")
   BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   LDFLAGS="-s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=${VERSION} \

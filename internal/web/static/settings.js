@@ -1,4 +1,4 @@
-// src/settings.ts
+// web/src/settings.ts
 (function() {
   "use strict";
   let currentConfig = null;
@@ -834,12 +834,16 @@
     });
   }
   function showAlert(title, msg) {
-    alertTitle.textContent = title + ":";
+    alertTitle.textContent = title ? `${title}:` : "";
     alertMessage.textContent = msg;
     alertBanner.hidden = false;
+    alertBanner.style.display = "flex";
   }
   function hideAlert() {
     alertBanner.hidden = true;
+    alertBanner.style.display = "none";
+    alertTitle.textContent = "";
+    alertMessage.textContent = "";
   }
   function showToast(type, msg, duration = 4500) {
     const toast = document.createElement("div");

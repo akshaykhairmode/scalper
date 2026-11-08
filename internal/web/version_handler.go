@@ -113,6 +113,36 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func formatDisplayVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.EqualFold(v, "dev") {
+		return "dev"
+	}
+	if strings.HasPrefix(strings.ToLower(v), "dev") {
+		return v
+	}
+	if isHexCommit(v) {
+		return "dev (" + v + ")"
+	}
+	if !strings.HasPrefix(v, "v") && !strings.HasPrefix(v, "V") {
+		return "v" + v
+	}
+	return v
+}
+
+func isHexCommit(s string) bool {
+	s = strings.TrimSuffix(s, "-dirty")
+	if len(s) < 7 || len(s) > 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 func parseSemver(v string) []int {
 	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V"))
 	if v == "" {
