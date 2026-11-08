@@ -5,6 +5,7 @@ This document provides architectural guidance, endpoint mapping, rate limiting s
 ## SDK References & Source Code
 
 * **Official Kotak Neo Python SDK v3:** [Kotak-Neo/kotak-neo-python](https://github.com/Kotak-Neo/kotak-neo-python)
+* **SDK Market Data Documentation:** [Kotak-Neo/kotak-neo-python/docs/functions/market_data](https://github.com/Kotak-Neo/kotak-neo-python/tree/main/docs/functions/market_data)
 * **SDK Documentation & Guides:** [Kotak-Neo/Kotak-neo-api-v2/docs](https://github.com/Kotak-Neo/Kotak-neo-api-v2/tree/main/docs)
   * [Scrip Search Reference](https://github.com/Kotak-Neo/Kotak-neo-api-v2/blob/main/docs/Scrip_Search.md)
   * [Portfolio Holdings Reference](https://github.com/Kotak-Neo/kotak-neo-python/blob/main/docs/functions/portfolio/holdings.md)
