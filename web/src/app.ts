@@ -5914,7 +5914,7 @@ async function onAskAI(type: string) {
   const askBtn = $(type === "CE" ? "btn-ask-ce" : "btn-ask-pe") as HTMLButtonElement | null;
   if (askBtn) {
     askBtn.disabled = true;
-    askBtn.textContent = "Asking…";
+    askBtn.textContent = "…";
   }
 
   try {

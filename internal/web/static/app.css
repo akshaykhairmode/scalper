@@ -1095,24 +1095,36 @@ body[data-theme="light"] .cqo-qty-info {
 }
 .lot-control input::-webkit-outer-spin-button,
 .lot-control input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.leg-orderpad .trade { min-width: 92px; }
+.trade-buttons-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.leg-orderpad .trade {
+  min-width: 26px;
+  padding: 5px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
 .trade {
   border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 7px 8px;
+  border-radius: 5px;
+  padding: 5px 6px;
   font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: .06em;
+  letter-spacing: .04em;
 }
-.trade.buy { background: #0e2419; border-color: #1f5537; color: var(--green); }
+.trade.buy { background: #0e2419; border-color: #1f5537; color: var(--green); min-width: 28px; }
 .trade.buy:hover { background: #123322; }
-.trade.sell { background: #2a1111; border-color: #5a2424; color: #ff8f8f; }
+.trade.sell { background: #2a1111; border-color: #5a2424; color: #ff8f8f; min-width: 28px; }
 .trade.sell:hover { background: #371515; }
 .trade.ask {
   background: #0f1c2e;
   border-color: #1e3a5f;
   color: #60a5fa;
-  min-width: 62px;
+  min-width: 36px;
+  padding: 5px 7px;
 }
 .trade.ask:hover:not(:disabled) {
   background: #182b46;
@@ -2113,12 +2125,6 @@ body[data-theme="light"] .risk-flag.good { border-color: #86efac; background: va
 body[data-theme="light"] .footer .dot-sep { color: #94a3b8; }
 body[data-theme="light"] .footer-uptime { color: #64748b; }
 
-.trade-buttons-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
 .pro-tools-toggle {
   display: none;
 }
@@ -3022,7 +3028,7 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   .leg-orderpad .trade.buy,
   .leg-orderpad .trade.sell,
   .leg-orderpad .trade.ask {
-    min-height: 48px;
+    min-height: 44px;
     font-size: 14px;
     font-weight: 800;
     letter-spacing: 0.05em;
@@ -3030,15 +3036,12 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .leg-orderpad .trade.ask {
     padding: 0 16px;
-  }
-    justify-content: center;
-    width: 100%;
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
   }
 
   /* Bottom Panel / Positions on mobile */

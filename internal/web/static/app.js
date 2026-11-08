@@ -9270,7 +9270,7 @@ async function onAskAI(type) {
   const askBtn = $(type === "CE" ? "btn-ask-ce" : "btn-ask-pe");
   if (askBtn) {
     askBtn.disabled = true;
-    askBtn.textContent = "Asking\u2026";
+    askBtn.textContent = "\u2026";
   }
   try {
     const payload = {
