@@ -340,6 +340,37 @@ func TestWebAuthnRegistrationAndAssertionFlow(t *testing.T) {
 	if err == nil {
 		t.Error("expected replay attack detection error, got nil")
 	}
+
+	// 6. Test Platform Authenticator with zero sign_count (Touch ID, Face ID, Android biometrics)
+	// Platform authenticators always return signCount = 0 even if stored SignCount > 0.
+	authDataZero := make([]byte, 37)
+	copy(authDataZero[0:32], rpHash[:])
+	authDataZero[32] = 0x05 // UP + UV
+	binary.BigEndian.PutUint32(authDataZero[33:37], 0) // signCount = 0
+	signedDataZero := append(authDataZero, cDataHash[:]...)
+	sigHashZero := sha256.Sum256(signedDataZero)
+	sigBytesZero, err := ecdsa.SignASN1(rand.Reader, privKey, sigHashZero[:])
+	if err != nil {
+		t.Fatalf("SignASN1: %v", err)
+	}
+	assertRespZero := AssertionResponse{
+		ID:    regResult.CredentialID,
+		RawID: regResult.CredentialID,
+		Type:  "public-key",
+		Response: AssertionResponseData{
+			ClientDataJSON:    cDataAssertB64,
+			AuthenticatorData: base64.RawURLEncoding.EncodeToString(authDataZero),
+			Signature:         base64.RawURLEncoding.EncodeToString(sigBytesZero),
+		},
+	}
+	storedDev.SignCount = 5
+	zeroResult, err := w.FinishAssertion(assertOpts.Challenge, storedDev, assertRespZero)
+	if err != nil {
+		t.Fatalf("expected TouchID/FaceID zero sign count to succeed, got %v", err)
+	}
+	if zeroResult.SignCount != 0 {
+		t.Errorf("expected SignCount = 0, got %d", zeroResult.SignCount)
+	}
 }
 
 func TestWebAuthnRegistrationEdgeCases(t *testing.T) {

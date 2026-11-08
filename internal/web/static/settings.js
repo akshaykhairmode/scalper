@@ -259,6 +259,9 @@
       });
       const finData = await finRes.json();
       if (!finData.ok) throw new Error(finData.error || 'Verification failed');
+      if (finData.device?.id) localStorage.setItem('scalper_device_id', finData.device.id);
+      if (finData.device?.device_name) localStorage.setItem('scalper_device_name', finData.device.device_name);
+      if (finData.token) localStorage.setItem('scalper_serve_session', finData.token);
       showToast('Device registered successfully!', 'success');
       loadSettingsDevices();
     } catch (err) {

@@ -36,27 +36,39 @@ func (s *Server) webAuthnForRequest(r *http.Request) *webauthn.WebAuthn {
 	rpID := "localhost"
 	if r != nil && r.Host != "" {
 		h, _, err := net.SplitHostPort(r.Host)
-		if err == nil && h != "" {
+		if err != nil || h == "" {
+			h = r.Host
+		}
+		ip := net.ParseIP(h)
+		if ip != nil {
+			if ip.IsLoopback() {
+				rpID = "localhost"
+			} else {
+				// IP addresses are not valid WebAuthn RP IDs.
+				rpID = ""
+			}
+		} else {
 			rpID = h
-		} else if !strings.Contains(r.Host, ":") {
-			rpID = r.Host
 		}
 	}
 	scheme := "http"
 	if r != nil && secureRequest(r) {
 		scheme = "https"
 	}
-	var origin string
+	origins := []string{"http://localhost:8080", "http://127.0.0.1:8080", "https://localhost"}
 	if r != nil && r.Host != "" {
-		origin = fmt.Sprintf("%s://%s", scheme, r.Host)
-	} else {
-		origin = "http://localhost:8080"
+		origins = append(origins, fmt.Sprintf("%s://%s", scheme, r.Host))
+	}
+	if r != nil {
+		if reqOrigin := strings.TrimSpace(r.Header.Get("Origin")); reqOrigin != "" {
+			origins = append(origins, reqOrigin)
+		}
 	}
 
 	return webauthn.New(webauthn.Config{
 		RPID:    rpID,
 		RPName:  "Scalper Terminal",
-		Origins: []string{origin},
+		Origins: origins,
 	})
 }
 
@@ -467,7 +479,11 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 	}
 
 	now := time.Now()
-	_ = s.deviceStore.UpdateDeviceUsage(r.Context(), dev.ID, result.SignCount, now)
+	newSignCount := dev.SignCount
+	if result.SignCount > 0 {
+		newSignCount = result.SignCount
+	}
+	_ = s.deviceStore.UpdateDeviceUsage(r.Context(), dev.ID, newSignCount, now)
 
 	s.setDeviceBindingCookie(w, r, dev.ID)
 

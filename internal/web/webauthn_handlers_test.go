@@ -690,10 +690,10 @@ func TestDeviceUnlockEndpoint(t *testing.T) {
 		t.Errorf("token %q is not marked valid in serveSessions", res.Token)
 	}
 
-	// Verify device sign count was incremented
+	// Verify device usage was updated
 	savedDev, _ := devStore.GetDevice(context.Background(), testDev.ID)
-	if savedDev.SignCount != 2 {
-		t.Errorf("expected sign count to be 2, got %d", savedDev.SignCount)
+	if savedDev.LastUsedAt.Before(now) {
+		t.Errorf("expected LastUsedAt to be updated")
 	}
 
 	// 5. Valid unlock via X-Device-ID header

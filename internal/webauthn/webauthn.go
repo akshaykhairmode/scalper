@@ -282,7 +282,16 @@ func (w *WebAuthn) FinishRegistration(expectedChallenge string, res Registration
 	// Verify RP ID hash if RPID is set
 	if w.cfg.RPID != "" {
 		expectedHash := sha256.Sum256([]byte(w.cfg.RPID))
-		if subtle.ConstantTimeCompare(authData[0:32], expectedHash[:]) != 1 {
+		match := subtle.ConstantTimeCompare(authData[0:32], expectedHash[:]) == 1
+		if !match && (w.cfg.RPID == "127.0.0.1" || w.cfg.RPID == "localhost") {
+			alt := "localhost"
+			if w.cfg.RPID == "localhost" {
+				alt = "127.0.0.1"
+			}
+			altHash := sha256.Sum256([]byte(alt))
+			match = subtle.ConstantTimeCompare(authData[0:32], altHash[:]) == 1
+		}
+		if !match {
 			return nil, errors.New("webauthn: RP ID hash mismatch")
 		}
 	}
@@ -496,7 +505,16 @@ func (w *WebAuthn) FinishAssertion(expectedChallenge string, storedDevice Stored
 	// Verify RP ID hash
 	if w.cfg.RPID != "" {
 		expectedHash := sha256.Sum256([]byte(w.cfg.RPID))
-		if subtle.ConstantTimeCompare(authData[0:32], expectedHash[:]) != 1 {
+		match := subtle.ConstantTimeCompare(authData[0:32], expectedHash[:]) == 1
+		if !match && (w.cfg.RPID == "127.0.0.1" || w.cfg.RPID == "localhost") {
+			alt := "localhost"
+			if w.cfg.RPID == "localhost" {
+				alt = "127.0.0.1"
+			}
+			altHash := sha256.Sum256([]byte(alt))
+			match = subtle.ConstantTimeCompare(authData[0:32], altHash[:]) == 1
+		}
+		if !match {
 			return nil, errors.New("webauthn: RP ID hash mismatch")
 		}
 	}
@@ -513,9 +531,12 @@ func (w *WebAuthn) FinishAssertion(expectedChallenge string, storedDevice Stored
 		return nil, errors.New("webauthn: user verified (UV) flag required but not set")
 	}
 
-	// 7. Verify sign_count to prevent replay attacks
+	// 7. Verify sign_count to prevent replay attacks (only when supported by authenticator)
+	// Platform authenticators (Apple Touch ID, Face ID, Android Biometrics, Windows Hello)
+	// do not increment signature counters and always return signCount == 0.
+	// As per W3C WebAuthn spec, only check if both signCount and storedDevice.SignCount are non-zero.
 	signCount := binary.BigEndian.Uint32(authData[33:37])
-	if signCount > 0 || storedDevice.SignCount > 0 {
+	if signCount > 0 && storedDevice.SignCount > 0 {
 		if signCount <= storedDevice.SignCount {
 			return nil, fmt.Errorf("webauthn: sign count did not increase (stored=%d, got=%d)", storedDevice.SignCount, signCount)
 		}

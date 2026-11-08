@@ -5040,13 +5040,14 @@ async function updateBiometricButtons() {
 }
 
 async function tryAutoUnlockDevice() {
-  const savedDevId = localStorage.getItem("scalper_device_id");
-  if (!savedDevId) return false;
+  const savedDevId = localStorage.getItem("scalper_device_id") || "";
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (savedDevId) headers["X-Device-ID"] = savedDevId;
     const res = await fetch("/api/auth/device-unlock", {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json", "X-Device-ID": savedDevId },
+      headers,
       body: JSON.stringify({ device_id: savedDevId }),
     });
     const data = await res.json().catch(() => ({}));
@@ -5066,12 +5067,15 @@ async function tryAutoUnlockDevice() {
   return false;
 }
 
-async function unlockWithSavedDevice(devId) {
+async function unlockWithSavedDevice(devId = "") {
+  const targetId = devId || localStorage.getItem("scalper_device_id") || "";
+  const headers = { "Content-Type": "application/json" };
+  if (targetId) headers["X-Device-ID"] = targetId;
   const res = await fetch("/api/auth/device-unlock", {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "X-Device-ID": devId },
-    body: JSON.stringify({ device_id: devId }),
+    headers,
+    body: JSON.stringify({ device_id: targetId }),
   });
   const data = await res.json().catch(() => ({}));
   if (res.ok && data.ok) {
@@ -5094,75 +5098,94 @@ async function handleBiometricUnlock() {
   if (serveBtn) { serveBtn.disabled = true; serveBtn.textContent = "Authenticating..."; }
 
   try {
-    const savedDevId = localStorage.getItem("scalper_device_id");
+    const savedDevId = localStorage.getItem("scalper_device_id") || "";
+    let webAuthnError = null;
 
     // 1. If WebAuthn is supported, try WebAuthn
-    if (window.PublicKeyCredential) {
-      const beginRes = await fetch("/api/auth/webauthn/login/begin", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" }
-      });
-      const data = await beginRes.json().catch(() => ({}));
+    if (window.isSecureContext && window.PublicKeyCredential) {
+      try {
+        const beginRes = await fetch("/api/auth/webauthn/login/begin", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" }
+        });
+        const data = await beginRes.json().catch(() => ({}));
 
-      if (beginRes.ok && data.ok && data.has_webauthn && data.options) {
-        const opts = data.options || data;
-        const publicKey = {
-          challenge: base64UrlToBuffer(opts.challenge),
-          timeout: opts.timeout || 60000,
-          rpId: opts.rpId || undefined,
-          userVerification: opts.userVerification || "preferred",
-          allowCredentials: (opts.allowCredentials || []).map((c) => ({
-            type: c.type || "public-key",
-            id: base64UrlToBuffer(c.id),
-            transports: c.transports,
-          })),
-        };
+        if (beginRes.ok && data.ok && data.has_webauthn && data.options) {
+          const opts = data.options || data;
+          // Omit rpId if it's an IP address or empty to avoid browser DOMException
+          const safeRpId = (opts.rpId && !/^\d+\.\d+\.\d+\.\d+$/.test(opts.rpId) && opts.rpId !== "127.0.0.1")
+            ? opts.rpId
+            : undefined;
 
-        const assertion = await navigator.credentials.get({ publicKey }).catch(() => null);
-        if (assertion) {
-          const finishBody = {
-            id: assertion.id,
-            rawId: bufferToBase64Url(assertion.rawId),
-            type: assertion.type,
-            response: {
-              clientDataJSON: bufferToBase64Url(assertion.response.clientDataJSON),
-              authenticatorData: bufferToBase64Url(assertion.response.authenticatorData),
-              signature: bufferToBase64Url(assertion.response.signature),
-              userHandle: assertion.response.userHandle ? bufferToBase64Url(assertion.response.userHandle) : null,
-            },
+          const publicKey = {
+            challenge: base64UrlToBuffer(opts.challenge),
+            timeout: opts.timeout || 60000,
+            rpId: safeRpId,
+            userVerification: opts.userVerification || "preferred",
+            allowCredentials: (opts.allowCredentials || []).map((c) => ({
+              type: c.type || "public-key",
+              id: base64UrlToBuffer(c.id),
+              transports: c.transports,
+            })),
           };
 
-          const finRes = await fetch("/api/auth/webauthn/login/finish", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(finishBody),
-          });
-          const finData = await finRes.json().catch(() => ({}));
-          if (finRes.ok && finData.ok) {
-            if (finData.token) localStorage.setItem("scalper_serve_session", finData.token);
-            if (finData.device_id) localStorage.setItem("scalper_device_id", finData.device_id);
-            const serveModal = $("serve-auth-modal");
-            if (serveModal) {
-              serveModal.style.display = "none";
-              serveModal.hidden = true;
+          const assertion = await navigator.credentials.get({ publicKey });
+          if (assertion) {
+            const finishBody = {
+              id: assertion.id,
+              rawId: bufferToBase64Url(assertion.rawId),
+              type: assertion.type,
+              response: {
+                clientDataJSON: bufferToBase64Url(assertion.response.clientDataJSON),
+                authenticatorData: bufferToBase64Url(assertion.response.authenticatorData),
+                signature: bufferToBase64Url(assertion.response.signature),
+                userHandle: assertion.response.userHandle ? bufferToBase64Url(assertion.response.userHandle) : null,
+              },
+            };
+
+            const finRes = await fetch("/api/auth/webauthn/login/finish", {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(finishBody),
+            });
+            const finData = await finRes.json().catch(() => ({}));
+            if (finRes.ok && finData.ok) {
+              if (finData.token) localStorage.setItem("scalper_serve_session", finData.token);
+              if (finData.device_id) localStorage.setItem("scalper_device_id", finData.device_id);
+              const serveModal = $("serve-auth-modal");
+              if (serveModal) {
+                serveModal.style.display = "none";
+                serveModal.hidden = true;
+              }
+              toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
+              await startTerminalSession();
+              return;
+            } else {
+              webAuthnError = finData.error || "Biometric verification rejected";
             }
-            toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
-            await startTerminalSession();
-            return;
           }
         }
+      } catch (waErr) {
+        console.warn("WebAuthn assertion attempt:", waErr);
+        webAuthnError = waErr.name === "NotAllowedError" ? "Biometric authentication cancelled" : (waErr.message || "Biometric failed");
       }
     }
 
-    // 2. Fallback to Device Binding unlock (e.g. for paired mobile devices)
-    if (savedDevId) {
+    // 2. Fallback to Device Binding unlock (works for paired mobile devices & trusted devices)
+    try {
       const unlocked = await unlockWithSavedDevice(savedDevId);
       if (unlocked) return;
+    } catch (devErr) {
+      console.warn("Device unlock fallback error:", devErr);
+      if (webAuthnError && webAuthnError !== "Biometric authentication cancelled") {
+        throw new Error(webAuthnError);
+      }
+      throw devErr;
     }
 
-    throw new Error("Biometric verification not available or no paired device. Please enter password.");
+    throw new Error(webAuthnError || "No paired device recognized. Please enter password.");
   } catch (err) {
     console.warn("biometric unlock error:", err);
     toast(err.message || "Biometric authentication failed", "warn");

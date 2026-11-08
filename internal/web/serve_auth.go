@@ -184,7 +184,7 @@ func (s *Server) isDeviceBound(r *http.Request) bool {
 	if err != nil || dev == nil {
 		return false
 	}
-	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount+1, time.Now())
+	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount, time.Now())
 	return true
 }
 
@@ -275,7 +275,7 @@ func (s *Server) handleDeviceUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount+1, now)
+	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount, now)
 
 	s.setDeviceBindingCookie(w, r, dev.ID)
 	token := s.issueServeSession(w, r)
