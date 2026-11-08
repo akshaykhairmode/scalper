@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
 func (s *Server) brokerSession(w http.ResponseWriter, r *http.Request) (kotakapi.Session, bool) {
@@ -171,7 +175,12 @@ func jsonString(raw json.RawMessage) string {
 }
 
 func (s *Server) handleBrokerHoldings(w http.ResponseWriter, r *http.Request) {
-	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Holdings(r.Context(), x) })
+	if s.books != nil && (r.URL.Query().Get("fresh") == "true" || r.URL.Query().Get("fresh") == "1") {
+		s.books.expire(bookHoldings)
+	}
+	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
+		return s.getBook(r.Context(), bookHoldings, x)
+	})
 }
 func (s *Server) handleBrokerLimits(w http.ResponseWriter, r *http.Request) {
 	if s.books != nil && (r.URL.Query().Get("fresh") == "true" || r.URL.Query().Get("fresh") == "1") {
@@ -446,4 +455,166 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 		ClosedPositions: closedCount,
 		Errors:          errList,
 	})
+}
+
+func (s *Server) handleBrokerMarginRequired(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.brokerSession(w, r)
+	if !ok {
+		return
+	}
+	var req kotakapi.MarginRequest
+	if err := decodeRequest(w, r, &req); err != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, "invalid margin request: "+err.Error(), err)
+		return
+	}
+
+	// Verify that InstrumentToken is a numeric token, otherwise look it up from market scrip master
+	isNumeric := true
+	if req.InstrumentToken == "" {
+		isNumeric = false
+	} else {
+		for _, ch := range req.InstrumentToken {
+			if ch < '0' || ch > '9' {
+				isNumeric = false
+				break
+			}
+		}
+	}
+	if !isNumeric && req.TradingSymbol != "" && s.market != nil {
+		if opt, found := s.market.FindOption(req.ExchangeSegment, req.TradingSymbol); found && opt.PSymbol != "" {
+			req.InstrumentToken = opt.PSymbol
+		} else if opt, found := s.market.Option(req.TradingSymbol); found && opt.PSymbol != "" {
+			req.InstrumentToken = opt.PSymbol
+		}
+	}
+	if req.InstrumentToken == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "instrument_token or recognizable trading_symbol is required", nil)
+		return
+	}
+
+	ot := strings.ToUpper(strings.TrimSpace(req.OrderType))
+	priceKey := req.Price
+	if ot == "MKT" || ot == "MARKET" {
+		priceKey = 0.0
+	}
+	cacheKey := fmt.Sprintf("%s:%s:%s:%s:%s:%s:%d:%.2f", sessionKey(session), req.ExchangeSegment, req.InstrumentToken, req.TransactionType, ot, req.Product, req.Quantity, priceKey)
+
+	s.marginCacheMu.Lock()
+	if s.marginCache == nil {
+		s.marginCache = make(map[string]marginCacheEntry)
+	}
+	if entry, ok := s.marginCache[cacheKey]; ok && time.Since(entry.cachedAt) < 10*time.Second {
+		payload := entry.payload
+		s.marginCacheMu.Unlock()
+		s.writeRouteJSON(w, r, http.StatusOK, payload)
+		return
+	}
+	s.marginCacheMu.Unlock()
+
+	raw, err := s.kotak.MarginRequired(r.Context(), session, req)
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusBadGateway, "margin calculation failed: "+err.Error(), err)
+		return
+	}
+
+	s.marginCacheMu.Lock()
+	if s.marginCache == nil {
+		s.marginCache = make(map[string]marginCacheEntry)
+	}
+	if len(s.marginCache) > 500 {
+		s.marginCache = make(map[string]marginCacheEntry)
+	}
+	s.marginCache[cacheKey] = marginCacheEntry{
+		payload:  raw,
+		cachedAt: time.Now(),
+	}
+	s.marginCacheMu.Unlock()
+
+	s.writeRouteJSON(w, r, http.StatusOK, raw)
+}
+
+func (s *Server) handleScripSearch(w http.ResponseWriter, r *http.Request) {
+	if s.market == nil {
+		s.writeRouteJSON(w, r, http.StatusOK, []scrip.ScripSearchResult{})
+		return
+	}
+	q := r.URL.Query()
+	limit := 50
+	if l, err := strconv.Atoi(q.Get("limit")); err == nil && l > 0 {
+		limit = l
+	}
+	strike := 0.0
+	if st, err := strconv.ParseFloat(q.Get("strike"), 64); err == nil && st > 0 {
+		strike = st
+	}
+	sym := q.Get("symbol")
+	if sym == "" {
+		sym = q.Get("q")
+	}
+
+	results := s.market.SearchScrips(scrip.ScripQuery{
+		Segment:    q.Get("segment"),
+		Symbol:     sym,
+		Expiry:     q.Get("expiry"),
+		OptionType: q.Get("option_type"),
+		Strike:     strike,
+		Limit:      limit,
+	})
+	if results == nil {
+		results = []scrip.ScripSearchResult{}
+	}
+	s.writeRouteJSON(w, r, http.StatusOK, results)
+}
+
+func (s *Server) handleDiagnosticsIP(w http.ResponseWriter, r *http.Request) {
+	s.diagIPMu.Lock()
+	if s.diagIPCache != "" && time.Since(s.diagIPAt) < 60*time.Second {
+		ip := s.diagIPCache
+		s.diagIPMu.Unlock()
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": ip, "cached": true})
+		return
+	}
+	s.diagIPMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=json", nil)
+	if err != nil {
+		s.diagIPMu.Lock()
+		s.diagIPCache = "unavailable"
+		s.diagIPAt = time.Now()
+		s.diagIPMu.Unlock()
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": "unavailable", "error": err.Error()})
+		return
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.diagIPMu.Lock()
+		s.diagIPCache = "unavailable"
+		s.diagIPAt = time.Now()
+		s.diagIPMu.Unlock()
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": "unavailable", "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	var body struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&body); err != nil || body.IP == "" {
+		s.diagIPMu.Lock()
+		s.diagIPCache = "unavailable"
+		s.diagIPAt = time.Now()
+		s.diagIPMu.Unlock()
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": "unavailable"})
+		return
+	}
+
+	s.diagIPMu.Lock()
+	s.diagIPCache = body.IP
+	s.diagIPAt = time.Now()
+	s.diagIPMu.Unlock()
+
+	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": body.IP, "cached": false})
 }

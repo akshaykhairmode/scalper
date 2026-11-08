@@ -3982,7 +3982,9 @@ var S = {
   positions: [],
   orders: [],
   trades: [],
+  holdings: [],
   limits: { available: 0, used: 0, total: 0, loaded: false, error: "" },
+  orderValidity: { CE: "DAY", PE: "DAY" },
   risk: [],
   tab: "positions",
   mobileView: "ce",
@@ -4085,7 +4087,7 @@ function postOrder(payload) {
     quantity: payload.quantity,
     price: payload.price,
     trigger_price: payload.trigger_price || 0,
-    validity: "DAY",
+    validity: payload.validity || "DAY",
     confirm: true
   });
 }
@@ -4484,6 +4486,28 @@ function normalizeTrade(raw) {
     quantity: num(raw.quantity ?? raw.qty ?? raw.fillSz ?? raw.fldQty ?? raw.flQty ?? raw.tradedQty),
     price: num(raw.price ?? raw.prc ?? raw.avgPrc ?? raw.fillPrc ?? raw.fldPrc ?? raw.flPrc ?? raw.tradePrice ?? raw.trdPrc),
     timestamp: raw.timestamp ?? raw.executed_at ?? raw.executedAt ?? raw.ordDtTm ?? raw.hsUpTm ?? raw.ordDt ?? raw.trdDt ?? 0
+  };
+}
+function normalizeHolding(raw) {
+  if (!raw) return null;
+  const symbol = raw.symbol || raw.trdSym || raw.tradingSymbol || raw.sym || raw.scripName || raw.trading_symbol || "";
+  const quantity = num(raw.quantity ?? raw.hldQty ?? raw.holdingQuantity ?? raw.netQty ?? raw.qty);
+  const average_price = num(raw.average_price ?? raw.upldPrc ?? raw.avgPrc ?? raw.buyAvg ?? raw.price);
+  const ltp = num(raw.ltp ?? raw.mktPrc ?? raw.lastPrice ?? raw.close ?? average_price);
+  const invested = quantity * average_price;
+  const current_value = quantity * ltp;
+  const pnl = raw.pnl != null ? num(raw.pnl) : current_value - invested;
+  const pnl_pct = invested > 0 ? (current_value - invested) / invested * 100 : 0;
+  return {
+    symbol,
+    segment: raw.exchangeSegment || raw.exSeg || raw.segment || "nse_cm",
+    quantity,
+    average_price,
+    ltp,
+    invested,
+    current_value,
+    pnl,
+    pnl_pct
   };
 }
 function init() {
@@ -5143,12 +5167,13 @@ async function refreshBooksFromAPI(includePositions = true) {
 var booksInFlight = null;
 async function loadBooksFromAPI(includePositions = true) {
   S.lastBooksRefresh = Date.now();
-  const [positions, orders, trades, limits, brackets] = await Promise.allSettled([
+  const [positions, orders, trades, limits, brackets, holdings] = await Promise.allSettled([
     includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
     getJSON("/api/broker/orders"),
     getJSON("/api/broker/trades"),
     getJSON("/api/broker/limits"),
-    getJSON("/api/brackets")
+    getJSON("/api/brackets"),
+    getJSON("/api/broker/holdings")
   ]);
   if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
   if (orders.status === "fulfilled") {
@@ -5156,6 +5181,14 @@ async function loadBooksFromAPI(includePositions = true) {
   }
   if (trades.status === "fulfilled") {
     S.trades = toArray(trades.value).map(normalizeTrade);
+  }
+  if (holdings.status === "fulfilled") {
+    S.holdings = toArray(holdings.value).map(normalizeHolding).filter(Boolean);
+    const badge = $("holdings-badge");
+    if (badge) {
+      badge.textContent = String(S.holdings.length);
+      badge.hidden = S.holdings.length === 0;
+    }
   }
   if (brackets.status === "fulfilled" && brackets.value) {
     applyServerBrackets(brackets.value);
@@ -5239,6 +5272,8 @@ function toArray(value) {
   if (Array.isArray(value?.positions)) return value.positions;
   if (Array.isArray(value?.orders)) return value.orders;
   if (Array.isArray(value?.trades)) return value.trades;
+  if (Array.isArray(value?.holdings)) return value.holdings;
+  if (Array.isArray(value?.history)) return value.history;
   return [];
 }
 var liveTimer = null;
@@ -6421,6 +6456,71 @@ function scrollATMIntoView(forceATM = false) {
     }
   }
 }
+var marginDebounceTimers = {};
+var lastMarginReqKey = {};
+function requestBrokerMargin(type, option, shares) {
+  if (!option || !shares || !S.session?.authenticated) return;
+  const prefix = type === "CE" ? "call" : "put";
+  if (marginDebounceTimers[type]) {
+    clearTimeout(marginDebounceTimers[type]);
+  }
+  marginDebounceTimers[type] = setTimeout(async () => {
+    const token = option.pSymbol || (option.instrumentKey ? option.instrumentKey.split("|")[1] : "");
+    const seg = option.exchangeSegment || "nse_fo";
+    try {
+      const res = await postJSON("/api/broker/margin/required", {
+        exchange_segment: seg,
+        instrument_token: token,
+        trading_symbol: option.symbol,
+        transaction_type: "B",
+        order_type: "MKT",
+        product: S.product,
+        quantity: shares,
+        price: option.ltp || 0
+      });
+      const data = res?.data || res;
+      const ordMrgn = num(data?.ordMrgn ?? data?.order_margin);
+      const insuf = num(data?.insufFund ?? data?.insufficient_funds);
+      const buyEl = $(`leg-${prefix}-margin-buy`);
+      if (buyEl && ordMrgn > 0) {
+        if (insuf > 0) {
+          buyEl.textContent = `B \u20B9${fmt(ordMrgn, 0)} (\u26A0\uFE0F Short \u20B9${fmt(insuf, 0)})`;
+          buyEl.className = "margin-buy down";
+        } else {
+          buyEl.textContent = `B \u20B9${fmt(ordMrgn, 0)}`;
+          buyEl.className = "margin-buy up";
+        }
+      }
+    } catch (_) {
+    }
+    try {
+      const res = await postJSON("/api/broker/margin/required", {
+        exchange_segment: seg,
+        instrument_token: token,
+        trading_symbol: option.symbol,
+        transaction_type: "S",
+        order_type: "MKT",
+        product: S.product,
+        quantity: shares,
+        price: option.ltp || 0
+      });
+      const data = res?.data || res;
+      const ordMrgn = num(data?.ordMrgn ?? data?.order_margin);
+      const insuf = num(data?.insufFund ?? data?.insufficient_funds);
+      const sellEl = $(`leg-${prefix}-margin-sell`);
+      if (sellEl && ordMrgn > 0) {
+        if (insuf > 0) {
+          sellEl.textContent = `S \u20B9${fmt(ordMrgn, 0)} (\u26A0\uFE0F Short \u20B9${fmt(insuf, 0)})`;
+          sellEl.className = "margin-sell down";
+        } else {
+          sellEl.textContent = `S \u20B9${fmt(ordMrgn, 0)}`;
+          sellEl.className = "margin-sell up";
+        }
+      }
+    } catch (_) {
+    }
+  }, 300);
+}
 function renderOrderPad() {
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
@@ -6442,6 +6542,13 @@ function renderOrderPad() {
     if (toggleBtn) {
       toggleBtn.textContent = isShares ? "SHARES" : "LOTS";
       toggleBtn.title = isShares ? "Quantity shown in Shares. Click to switch to Lots." : "Quantity shown in Lots. Click to switch to Shares.";
+    }
+    const valBtn = document.querySelector(`.validity-toggle[data-validity-toggle="${type}"]`);
+    if (valBtn) {
+      const v = S.orderValidity?.[type] || "DAY";
+      valBtn.textContent = v;
+      valBtn.classList.toggle("active", v === "IOC");
+      valBtn.title = `Validity: ${v} (Click to toggle DAY/IOC)`;
     }
     const buyEl = $(`leg-${prefix}-margin-buy`);
     const sellEl = $(`leg-${prefix}-margin-sell`);
@@ -6480,6 +6587,12 @@ function renderOrderPad() {
           sellEl.className = "margin-sell";
           sellEl.title = sellFinite ? `Sell margin: \u20B9${fmt(reqSell, 2)}` : "Sell margin unavailable (no spot price)";
         }
+      }
+      const token = option.pSymbol || (option.instrumentKey ? option.instrumentKey.split("|")[1] : "");
+      const currentMarginKey = `${type}:${token}:${shares}:${S.product}`;
+      if (option && shares > 0 && lastMarginReqKey[type] !== currentMarginKey) {
+        lastMarginReqKey[type] = currentMarginKey;
+        requestBrokerMargin(type, option, shares);
       }
     }
     $$(".leg-orderpad .trade").filter((button) => button.dataset.type === type).forEach((button) => {
@@ -6605,6 +6718,12 @@ function renderTab() {
     badge.textContent = String(openCount);
     badge.hidden = openCount === 0;
   }
+  const holdingsBadge = $("holdings-badge");
+  if (holdingsBadge) {
+    const hCount = (S.holdings || []).length;
+    holdingsBadge.textContent = String(hCount);
+    holdingsBadge.hidden = hCount === 0;
+  }
   const activeBracketsCount = (S.autoTargets || []).filter((b) => b.status === "PENDING_ENTRY" || b.status === "IN_POSITION").length;
   const bracketBadge = $("brackets-badge");
   if (bracketBadge) {
@@ -6657,6 +6776,7 @@ function renderTab() {
     requestAnimationFrame(drawRiskCharts);
   } else if (S.tab === "orders") content.innerHTML = ordersHTML();
   else if (S.tab === "trades") content.innerHTML = tradesHTML();
+  else if (S.tab === "holdings") content.innerHTML = holdingsHTML();
   else if (S.tab === "depth") content.innerHTML = depthHTML();
 }
 function positionsHTML() {
@@ -6838,9 +6958,9 @@ function openOrdersHTML() {
 function ordersHTML() {
   if (!S.orders.length) return `<div class="empty-state">No orders yet.</div>`;
   return `<table class="book"><thead><tr>
-    <th>Order</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Time</th><th>Action</th>
+    <th>Order ID</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Time</th><th>Action</th>
   </tr></thead><tbody>${S.orders.map((o) => `<tr>
-    <td class="sym">${esc(o.id)}</td>
+    <td class="sym"><button type="button" class="link-button" data-order-history="${esc(o.id)}" title="Click to view lifecycle audit history">${esc(o.id)}</button></td>
     <td class="sym">${esc(o.symbol)}</td>
     <td class="${o.side === "B" ? "up" : "down"}">${o.side === "B" ? "BUY" : o.side === "S" ? "SELL" : esc(o.side)}</td>
     <td>${o.quantity}</td>
@@ -6930,6 +7050,93 @@ function tradesHTML() {
     <td>\u20B9${fmt(t.price * t.quantity, 0)}</td>
     <td>${fmtTime(t.timestamp)}</td>
   </tr>`).join("")}</tbody></table>`;
+}
+function holdingsHTML() {
+  if (!S.holdings || !S.holdings.length) {
+    return `<div class="empty-state">No demat holdings found in this account.</div>`;
+  }
+  let totalInvested = 0;
+  let totalCurrent = 0;
+  let totalPnL = 0;
+  for (const h of S.holdings) {
+    totalInvested += h.invested;
+    totalCurrent += h.current_value;
+    totalPnL += h.pnl;
+  }
+  const totalPnLPct = totalInvested > 0 ? totalPnL / totalInvested * 100 : 0;
+  let html = `<div class="holdings-summary" style="display:flex; gap:20px; padding:10px 14px; margin-bottom:8px; background:rgba(255,255,255,0.03); border-radius:6px; font-size:12px;">
+    <div><span class="muted">Total Invested:</span> <strong>\u20B9${fmt(totalInvested, 2)}</strong></div>
+    <div><span class="muted">Current Value:</span> <strong>\u20B9${fmt(totalCurrent, 2)}</strong></div>
+    <div><span class="muted">Overall P&amp;L:</span> <strong class="${directionClass(totalPnL)}">${fmtSigned(totalPnL, 2)} (${fmtSigned(totalPnLPct, 2)}%)</strong></div>
+  </div>`;
+  html += `<table class="book"><thead><tr>
+    <th>Symbol</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>Invested</th><th>Current</th><th>P&amp;L</th><th>P&amp;L %</th>
+  </tr></thead><tbody>`;
+  for (const h of S.holdings) {
+    html += `<tr>
+      <td class="sym font-bold">${esc(h.symbol)} <span class="muted" style="font-size:10px;">${esc(h.segment)}</span></td>
+      <td>${h.quantity}</td>
+      <td>\u20B9${fmt(h.average_price)}</td>
+      <td>\u20B9${fmt(h.ltp)}</td>
+      <td>\u20B9${fmt(h.invested, 2)}</td>
+      <td>\u20B9${fmt(h.current_value, 2)}</td>
+      <td class="${directionClass(h.pnl)}">${fmtSigned(h.pnl, 2)}</td>
+      <td class="${directionClass(h.pnl_pct)}">${fmtSigned(h.pnl_pct, 2)}%</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+async function showOrderHistory(orderId) {
+  const modal = $("order-history-modal");
+  const meta = $("order-history-meta");
+  const body = $("order-history-body");
+  if (!modal || !body) return;
+  modal.hidden = false;
+  body.innerHTML = `<div class="empty-state">Loading history for order ${esc(orderId)}\u2026</div>`;
+  if (meta) meta.innerHTML = `<span>Order ID: <strong>${esc(orderId)}</strong></span>`;
+  try {
+    const raw = await getJSON(`/api/broker/orders/${encodeURIComponent(orderId)}/history`);
+    const historyList = toArray(raw);
+    if (!historyList || !historyList.length) {
+      body.innerHTML = `<div class="empty-state">No lifecycle events recorded for order ${esc(orderId)}.</div>`;
+      return;
+    }
+    const first = historyList[0] || {};
+    if (meta) {
+      meta.innerHTML = `
+        <div>Order: <strong>${esc(orderId)}</strong></div>
+        <div>Symbol: <strong>${esc(first.trdSym || first.tradingSymbol || first.sym || "\u2014")}</strong></div>
+        <div>Type: <strong>${esc(first.prcTp || first.order_type || "\u2014")}</strong></div>
+        <div>Prod: <strong>${esc(first.prod || first.product || "\u2014")}</strong></div>
+      `;
+    }
+    let html = `<table class="book" style="width:100%; font-size:12px;"><thead><tr>
+      <th>Status</th><th>Filled / Total</th><th>Price</th><th>Avg Price</th><th>Reject Reason</th><th>Timestamp</th>
+    </tr></thead><tbody>`;
+    for (const h of historyList) {
+      const st = (h.ordSt || h.status || "").toLowerCase();
+      const statusClass = st === "complete" ? "up" : st === "rejected" || st === "cancelled" ? "down" : "warn";
+      const rej = h.rejRsn && h.rejRsn !== "--" && h.rejRsn !== "" ? h.rejRsn : "\u2014";
+      const tm = h.exchTmstp || h.timestamp || h.orderDateTime || h.time || "\u2014";
+      const qty = h.qty || h.quantity || 0;
+      const fldQty = h.fldQty ?? h.filledQuantity ?? 0;
+      const prc = num(h.prc || h.price);
+      const avgPrc = num(h.avgPrc || h.average_price);
+      html += `<tr>
+        <td class="${statusClass}"><strong>${esc(h.ordSt || h.status || "\u2014")}</strong></td>
+        <td>${fldQty} / ${qty}</td>
+        <td>${prc ? fmt(prc) : "MKT"}</td>
+        <td>${avgPrc ? fmt(avgPrc) : "\u2014"}</td>
+        <td class="${rej !== "\u2014" ? "down font-bold" : "muted"}">${esc(rej)}</td>
+        <td class="mono" style="font-size:11px;">${esc(tm)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+    body.innerHTML = html;
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state" style="color:var(--danger,#f44336);">Failed to fetch order history: ${esc(err.message)}</div>`;
+  }
 }
 function renderOptionDepthPanel(type) {
   const option = selectedOption(type);
@@ -7076,6 +7283,7 @@ async function onTrade(action, type) {
     price: 0,
     order_type: "MARKET",
     product: S.product,
+    validity: S.orderValidity?.[type] || "DAY",
     intent: "ENTRY",
     mode: orderMode,
     lot_size: lot
@@ -7140,6 +7348,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
     price,
     order_type: "LIMIT",
     product: S.product,
+    validity: S.orderValidity?.[type] || "DAY",
     intent: "ENTRY",
     mode: orderMode,
     lot_size: lot
@@ -8418,6 +8627,28 @@ function renderStatusModalData(health) {
   if ($("status-card-broker-token")) {
     $("status-card-broker-token").textContent = tokenPresent ? "Configured" : "Missing";
   }
+  if ($("status-card-broker-ratelimit")) {
+    const rl = health?.rate_limits;
+    if (rl && (rl.remaining > 0 || rl.limit > 0)) {
+      $("status-card-broker-ratelimit").textContent = `${rl.remaining} / ${rl.limit || "\u2014"} (reset ${rl.reset || 0}s)`;
+    } else {
+      $("status-card-broker-ratelimit").textContent = "Normal / OK";
+    }
+  }
+  const ipEl = $("status-card-broker-outbound-ip");
+  if (ipEl && (ipEl.textContent === "\u2014" || ipEl.textContent === "")) {
+    ipEl.textContent = "Checking\u2026";
+    fetch("/api/diagnostics/ip").then((r) => r.json()).then((data) => {
+      if (data?.ip) {
+        ipEl.textContent = data.ip;
+        ipEl.title = `Outbound IP (cached: ${data.cached})`;
+      } else {
+        ipEl.textContent = "Unavailable";
+      }
+    }).catch(() => {
+      ipEl.textContent = "Unavailable";
+    });
+  }
   const dbCheck = checks.database || {};
   if (dbCheck.status === "ok") {
     setStatusPill($("status-card-db-pill"), "ok", "CONNECTED");
@@ -9048,8 +9279,17 @@ function bindEvents() {
   for (const button of $$("[data-qty-step]")) {
     button.addEventListener("click", () => stepQuantity(button.dataset.qtyStep, num(button.dataset.step)));
   }
-  for (const button of $$(".unit-toggle")) {
+  for (const button of $$(".unit-toggle[data-unit-toggle]")) {
     button.addEventListener("click", () => toggleQuantityUnit(button.dataset.unitToggle));
+  }
+  for (const button of $$(".validity-toggle")) {
+    button.addEventListener("click", () => {
+      const type = button.dataset.validityToggle;
+      if (!type) return;
+      if (!S.orderValidity) S.orderValidity = { CE: "DAY", PE: "DAY" };
+      S.orderValidity[type] = S.orderValidity[type] === "IOC" ? "DAY" : "IOC";
+      renderOrderPad();
+    });
   }
   for (const button of $$(".lot-preset-btn")) {
     button.addEventListener("click", () => {
@@ -9186,6 +9426,24 @@ function bindEvents() {
     if (cancelAllBtn) {
       onCancelAllOpenOrders();
       return;
+    }
+    const historyBtn = event.target.closest("[data-order-history]");
+    if (historyBtn) {
+      showOrderHistory(historyBtn.dataset.orderHistory);
+      return;
+    }
+  });
+  $("order-history-close")?.addEventListener("click", () => {
+    const modal = $("order-history-modal");
+    if (modal) modal.hidden = true;
+  });
+  $("order-history-close-btn")?.addEventListener("click", () => {
+    const modal = $("order-history-modal");
+    if (modal) modal.hidden = true;
+  });
+  $("order-history-modal")?.addEventListener("click", (e) => {
+    if (e.target === $("order-history-modal")) {
+      $("order-history-modal").hidden = true;
     }
   });
   const serveAuthModal = $("serve-auth-modal");
@@ -9399,6 +9657,10 @@ function bindEvents() {
     }
     if (!$("status-modal")?.hidden) {
       closeStatusModal();
+      return;
+    }
+    if (!$("order-history-modal")?.hidden) {
+      $("order-history-modal").hidden = true;
       return;
     }
     if (!$("strike-modal").hidden) {

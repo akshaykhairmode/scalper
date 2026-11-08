@@ -75,6 +75,9 @@ func TestBooksCache(t *testing.T) {
 	if staleAfter(bookLimits) != 3*limitsInterval {
 		t.Errorf("unexpected staleAfter limits: %v", staleAfter(bookLimits))
 	}
+	if staleAfter(bookHoldings) != 3*holdingsInterval {
+		t.Errorf("unexpected staleAfter holdings: %v", staleAfter(bookHoldings))
+	}
 
 	// Unknown book lookup/store
 	if _, ok := cache.lookup("unknown"); ok {

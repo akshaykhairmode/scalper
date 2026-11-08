@@ -20,6 +20,11 @@ place, modify, and cancel requests require `confirm: true` when
 | `GET /api/broker/positions` | Positions |
 | `GET /api/broker/holdings` | Holdings |
 | `GET /api/broker/limits` | Account limits |
+| `POST /api/broker/margin/required` | Pre-trade margin check (cached & debounced) |
+| `GET /api/scrip/search` | Dynamic in-memory instrument search |
+| `GET /api/diagnostics/ip` | Outbound public IP verification |
+
+For full Kotak Neo Trade API v3 Python SDK architecture, endpoint mappings, and schemas, see [KOTAK_API_V3.md](./KOTAK_API_V3.md).
 
 Order writes use the Kotak form fields and paths from the official Python SDK.
 For example:

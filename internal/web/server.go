@@ -71,6 +71,7 @@ type MarketAPI interface {
 	Candles(context.Context, string, string, string) ([]market.Candle, error)
 	Option(string) (scrip.Option, bool)
 	FindOption(string, string) (scrip.Option, bool)
+	SearchScrips(scrip.ScripQuery) []scrip.ScripSearchResult
 }
 
 type chainWindowAPI interface {
@@ -152,6 +153,17 @@ type Server struct {
 	webauthnChallengesMu sync.Mutex
 	webauthnChallenges   map[string]webauthnStoredChallenge
 	webauthnPairTokens   map[string]time.Time
+
+	marginCacheMu sync.Mutex
+	marginCache   map[string]marginCacheEntry
+	diagIPMu      sync.Mutex
+	diagIPCache   string
+	diagIPAt      time.Time
+}
+
+type marginCacheEntry struct {
+	payload  json.RawMessage
+	cachedAt time.Time
 }
 
 // bootstrapConfig is rendered into the page so the frontend can start without
@@ -464,6 +476,10 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/broker/square-off-all", s.handleBrokerSquareOffAll)
 	mux.HandleFunc("GET /api/broker/holdings", s.handleBrokerHoldings)
 	mux.HandleFunc("GET /api/broker/limits", s.handleBrokerLimits)
+	mux.HandleFunc("POST /api/broker/margin/required", s.handleBrokerMarginRequired)
+	mux.HandleFunc("POST /api/margin/required", s.handleBrokerMarginRequired)
+	mux.HandleFunc("GET /api/scrip/search", s.handleScripSearch)
+	mux.HandleFunc("GET /api/diagnostics/ip", s.handleDiagnosticsIP)
 	mux.HandleFunc("GET /api/brackets", s.handleListBrackets)
 	mux.HandleFunc("POST /api/brackets", s.handleCreateBracket)
 	mux.HandleFunc("POST /api/brackets/{id}/cancel", s.handleCancelBracket)
@@ -689,12 +705,13 @@ type healthCheck struct {
 }
 
 type healthResponse struct {
-	Status        string                 `json:"status"`
-	Time          string                 `json:"time"`
-	UptimeSeconds int64                  `json:"uptime_seconds"`
-	Mode          string                 `json:"mode"`
-	Version       map[string]any         `json:"version"`
-	Checks        map[string]healthCheck `json:"checks"`
+	Status        string                       `json:"status"`
+	Time          string                       `json:"time"`
+	UptimeSeconds int64                        `json:"uptime_seconds"`
+	Mode          string                       `json:"mode"`
+	Version       map[string]any               `json:"version"`
+	Checks        map[string]healthCheck       `json:"checks"`
+	RateLimits    *kotakapi.RateLimitTelemetry `json:"rate_limits,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -719,6 +736,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Mode:          s.currentMode(),
 		Version:       version.Info(),
 		Checks:        checks,
+	}
+	if s.kotak != nil {
+		rl := s.kotak.RateLimits()
+		if rl.Limit > 0 || rl.Remaining > 0 {
+			resp.RateLimits = &rl
+		}
 	}
 	if err := writeJSON(w, httpStatus, resp); err != nil {
 		s.log.Warn("write health response", "event", "http_write_failed", "error", err,

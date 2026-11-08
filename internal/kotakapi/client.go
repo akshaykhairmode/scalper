@@ -29,10 +29,21 @@ type Session struct{ BaseURL, SID, Token, ConsumerKey string }
 
 // Client calls the documented Kotak Neo order and account endpoints.
 type Client struct {
-	http        *http.Client
-	log         *slog.Logger
-	rateMu      sync.Mutex
-	nextRequest time.Time
+	http         *http.Client
+	log          *slog.Logger
+	rateMu       sync.Mutex
+	nextRequest  time.Time
+	rateLimitsMu sync.RWMutex
+	rateLimits   RateLimitTelemetry
+}
+
+// RateLimitTelemetry captures rate-limit quota details returned by Kotak Neo.
+type RateLimitTelemetry struct {
+	Limit      int       `json:"limit"`
+	Remaining  int       `json:"remaining"`
+	Reset      int       `json:"reset"`
+	RetryAfter int       `json:"retry_after,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // NewClient creates a Kotak API client with an optional structured logger and optional custom transport.
@@ -148,6 +159,53 @@ func (c *Client) ModifyOrder(ctx context.Context, s Session, id string, o Order)
 	return c.post(ctx, s, "quick/order/vr/modify", form)
 }
 
+// MarginRequest specifies parameters to calculate required margin before placing an order.
+type MarginRequest struct {
+	ExchangeSegment string  `json:"exchange_segment"`
+	Price           float64 `json:"price"`
+	OrderType       string  `json:"order_type"`
+	Product         string  `json:"product"`
+	Quantity        int64   `json:"quantity"`
+	InstrumentToken string  `json:"instrument_token"`
+	TransactionType string  `json:"transaction_type"`
+	TradingSymbol   string  `json:"trading_symbol,omitempty"`
+}
+
+// MarginRequired computes margin needed for an order via Kotak Neo check-margin API.
+func (c *Client) MarginRequired(ctx context.Context, s Session, m MarginRequest) (json.RawMessage, error) {
+	if strings.TrimSpace(m.ExchangeSegment) == "" {
+		return nil, errors.New("exchange_segment is required")
+	}
+	if strings.TrimSpace(m.InstrumentToken) == "" {
+		return nil, errors.New("instrument_token is required")
+	}
+	if m.Quantity <= 0 {
+		return nil, errors.New("quantity must be positive")
+	}
+	tt := strings.ToUpper(strings.TrimSpace(m.TransactionType))
+	switch tt {
+	case "B", "BUY":
+		tt = "B"
+	case "S", "SELL":
+		tt = "S"
+	default:
+		return nil, errors.New("transaction_type must be B or S")
+	}
+
+	form := map[string]any{
+		"brkName": "KOTAK",
+		"brnchId": "ONLINE",
+		"exSeg":   m.ExchangeSegment,
+		"prc":     formatPrice(m.Price),
+		"prcTp":   orderType(m.OrderType),
+		"prod":    m.Product,
+		"qty":     fmt.Sprint(m.Quantity),
+		"tok":     m.InstrumentToken,
+		"trnsTp":  tt,
+	}
+	return c.post(ctx, s, "quick/user/check-margin", form)
+}
+
 func validateOrder(o Order) error {
 	if strings.TrimSpace(o.ExchangeSegment) == "" || strings.TrimSpace(o.TradingSymbol) == "" {
 		return errors.New("exchange segment and trading symbol are required")
@@ -169,6 +227,11 @@ func validateOrder(o Order) error {
 	case "MIS", "NRML", "CNC", "MTF":
 	default:
 		return errors.New("unsupported product")
+	}
+	switch strings.ToUpper(strings.TrimSpace(o.Validity)) {
+	case "", "DAY", "IOC":
+	default:
+		return errors.New("unsupported validity: must be DAY or IOC")
 	}
 	if o.Price < 0 || o.TriggerPrice < 0 {
 		return errors.New("order prices cannot be negative")
@@ -279,6 +342,7 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 		if err != nil {
 			return nil, fmt.Errorf("kotak API request failed: %w", err)
 		}
+		c.updateRateLimits(resp.Header, resp.StatusCode)
 		raw, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 		if closeErr := resp.Body.Close(); closeErr != nil && c.log != nil {
 			c.log.Debug("failed to close Kotak API response body", "error", closeErr)
@@ -315,6 +379,51 @@ func (c *Client) request(ctx context.Context, s Session, method, path string, fo
 		return nil, kotakAPIError(envelope)
 	}
 	return json.RawMessage(raw), nil
+}
+
+// RateLimits returns a thread-safe snapshot of the latest Kotak API rate-limit quota.
+func (c *Client) RateLimits() RateLimitTelemetry {
+	if c == nil {
+		return RateLimitTelemetry{}
+	}
+	c.rateLimitsMu.RLock()
+	defer c.rateLimitsMu.RUnlock()
+	return c.rateLimits
+}
+
+func (c *Client) updateRateLimits(header http.Header, statusCode int) {
+	if c == nil || header == nil {
+		return
+	}
+	limitStr := header.Get("X-RateLimit-Limit")
+	remStr := header.Get("X-RateLimit-Remaining")
+	resetStr := header.Get("X-RateLimit-Reset")
+	retryAfterStr := header.Get("Retry-After")
+
+	c.rateLimitsMu.Lock()
+	defer c.rateLimitsMu.Unlock()
+
+	if statusCode >= 200 && statusCode < 300 {
+		c.rateLimits.RetryAfter = 0
+	}
+
+	if limitStr == "" && remStr == "" && resetStr == "" && retryAfterStr == "" {
+		return
+	}
+
+	if v, err := strconv.Atoi(strings.TrimSpace(limitStr)); err == nil && v >= 0 {
+		c.rateLimits.Limit = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(remStr)); err == nil && v >= 0 {
+		c.rateLimits.Remaining = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(resetStr)); err == nil && v >= 0 {
+		c.rateLimits.Reset = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(retryAfterStr)); err == nil && v >= 0 {
+		c.rateLimits.RetryAfter = v
+	}
+	c.rateLimits.UpdatedAt = time.Now()
 }
 
 // retryAfter returns how long to wait before retrying a rate-limited request.

@@ -996,6 +996,11 @@ body[data-theme="light"] .cqo-qty-info {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: #fff;
 }
+.lot-control .validity-toggle.active {
+  background: color-mix(in srgb, #f59e0b 24%, transparent);
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
 .lot-control input {
   width: 44px;
   border: 0;

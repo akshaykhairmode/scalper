@@ -168,4 +168,14 @@ func TestManagerLoadAndQueries(t *testing.T) {
 	if u := mgr.Underlyings(); len(u) == 0 {
 		t.Fatal("Underlyings returned empty")
 	}
+
+	// Test Search
+	searchResults := mgr.Search(ScripQuery{Symbol: "NIFTY"})
+	if len(searchResults) < 2 {
+		t.Fatalf("expected at least 2 search results for NIFTY, got %d", len(searchResults))
+	}
+	ceResults := mgr.Search(ScripQuery{Symbol: "NIFTY", OptionType: "CE"})
+	if len(ceResults) != 1 || ceResults[0].OptionType != "CE" {
+		t.Fatalf("expected 1 CE result, got %d", len(ceResults))
+	}
 }

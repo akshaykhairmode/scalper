@@ -16,6 +16,7 @@ const (
 	bookOrders    = "orders"
 	bookTrades    = "trades"
 	bookLimits    = "limits"
+	bookHoldings  = "holdings"
 )
 
 // Refresh cadence for the server-side account book. Every dashboard tab reads
@@ -25,6 +26,7 @@ const (
 	positionsInterval      = 5 * time.Second
 	ordersInterval         = 5 * time.Second
 	tradesInterval         = 15 * time.Second
+	holdingsInterval       = 60 * time.Second
 	limitsInterval         = 120 * time.Second
 	forceMinGap            = 2 * time.Second
 	bookRetryBackoff       = 15 * time.Second
@@ -55,12 +57,14 @@ func newBooksCache() *booksCache {
 			bookOrders:    {},
 			bookTrades:    {},
 			bookLimits:    {},
+			bookHoldings:  {},
 		},
 		fetchMu: map[string]*sync.Mutex{
 			bookPositions: {},
 			bookOrders:    {},
 			bookTrades:    {},
 			bookLimits:    {},
+			bookHoldings:  {},
 		},
 		force: make(chan struct{}, 1),
 	}
@@ -198,6 +202,8 @@ func (s *Server) fetchBook(ctx context.Context, kind string, session kotakapi.Se
 		return s.kotak.Trades(ctx, session)
 	case bookLimits:
 		return s.kotak.Limits(ctx, session)
+	case bookHoldings:
+		return s.kotak.Holdings(ctx, session)
 	default:
 		return nil, nil
 	}
@@ -220,6 +226,8 @@ func staleAfter(kind string, marketOpen ...bool) time.Duration {
 		return 3 * positionsInterval
 	case bookTrades:
 		return 3 * tradesInterval
+	case bookHoldings:
+		return 3 * holdingsInterval
 	default:
 		return 3 * limitsInterval
 	}
@@ -316,12 +324,14 @@ func (s *Server) runAccountBooks(ctx context.Context) {
 		oInterval := ordersInterval
 		tInterval := tradesInterval
 		lInterval := limitsInterval
+		hInterval := holdingsInterval
 		backoff := bookRetryBackoff
 		if !marketOpen {
 			pInterval = 60 * time.Second
 			oInterval = 60 * time.Second
 			tInterval = 60 * time.Second
 			lInterval = 180 * time.Second
+			hInterval = 180 * time.Second
 			backoff = bookRetryBackoffClosed
 		}
 
@@ -330,6 +340,7 @@ func (s *Server) runAccountBooks(ctx context.Context) {
 			bookOrders:    oInterval,
 			bookTrades:    tInterval,
 			bookLimits:    lInterval,
+			bookHoldings:  hInterval,
 		} {
 			if now.Sub(last[kind]) < every {
 				continue

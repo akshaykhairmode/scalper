@@ -610,6 +610,14 @@ func (s *Service) ScripStatus() scrip.Status {
 	return s.scrips.Status()
 }
 
+// SearchScrips queries the indexed scrip master for instruments.
+func (s *Service) SearchScrips(q scrip.ScripQuery) []scrip.ScripSearchResult {
+	if s.scrips == nil {
+		return nil
+	}
+	return s.scrips.Search(q)
+}
+
 func sortStrikeRows(strikes []int64) {
 	slices.Sort(strikes)
 }

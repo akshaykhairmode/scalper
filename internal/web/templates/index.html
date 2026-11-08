@@ -187,6 +187,7 @@
             </div>
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="CE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
+              <button type="button" class="unit-toggle validity-toggle" data-validity-toggle="CE" title="Toggle order validity (DAY / IOC)" aria-label="Order validity">DAY</button>
               <button type="button" data-qty-step="CE" data-step="-1" aria-label="Decrease call quantity">−</button>
               <input id="call-lots" data-lots="CE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Call quantity">
               <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call quantity">+</button>
@@ -279,6 +280,7 @@
             </div>
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="PE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
+              <button type="button" class="unit-toggle validity-toggle" data-validity-toggle="PE" title="Toggle order validity (DAY / IOC)" aria-label="Order validity">DAY</button>
               <button type="button" data-qty-step="PE" data-step="-1" aria-label="Decrease put quantity">−</button>
               <input id="put-lots" data-lots="PE" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Put quantity">
               <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put quantity">+</button>
@@ -301,6 +303,7 @@
           <button type="button" role="tab" data-tab="open">Open <span class="tab-badge" id="open-orders-badge" hidden>0</span></button>
           <button type="button" role="tab" data-tab="orders">Orders</button>
           <button type="button" role="tab" data-tab="trades">Trades</button>
+          <button type="button" role="tab" data-tab="holdings">Holdings <span class="tab-badge" id="holdings-badge" hidden>0</span></button>
           <button type="button" role="tab" data-tab="risk">Risk</button>
           <button type="button" role="tab" data-tab="depth">Depth</button>
         </div>
@@ -433,6 +436,14 @@
               <span class="metric-key">Token Status</span>
               <span class="metric-val" id="status-card-broker-token">Missing</span>
             </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Rate Limit Quota</span>
+              <span class="metric-val mono" id="status-card-broker-ratelimit">—</span>
+            </div>
+            <div class="status-metric-row">
+              <span class="metric-key">Outbound IP</span>
+              <span class="metric-val mono" id="status-card-broker-outbound-ip">—</span>
+            </div>
           </div>
         </div>
 
@@ -486,6 +497,28 @@
         <div class="modal-actions">
           <button type="button" class="primary small" id="status-modal-close-btn">Close</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Order History modal -->
+  <div class="modal-backdrop" id="order-history-modal" hidden>
+    <div class="modal order-history-modal" role="dialog" aria-modal="true" aria-labelledby="order-history-title" style="max-width:680px; width:94vw;">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">ORDER AUDIT TRAIL</span>
+          <h2 id="order-history-title">Order History &amp; Lifecycle</h2>
+        </div>
+        <button type="button" class="icon-button" id="order-history-close" aria-label="Close order history">×</button>
+      </div>
+      <div class="order-history-meta" id="order-history-meta" style="padding:12px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--border,#333); font-size:13px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <!-- Order header info -->
+      </div>
+      <div class="order-history-body" id="order-history-body" style="padding:16px; max-height:420px; overflow-y:auto;">
+        <div class="empty-state">Loading order history…</div>
+      </div>
+      <div class="modal-actions" style="padding:12px 16px; border-top:1px solid var(--border,#333); display:flex; justify-content:flex-end;">
+        <button type="button" class="primary small" id="order-history-close-btn">Close</button>
       </div>
     </div>
   </div>

@@ -154,6 +154,12 @@ func TestClientEndpoints(t *testing.T) {
 				case strings.Contains(req.URL.Path, "quick/order/vr/modify"):
 					recorder.WriteHeader(http.StatusOK)
 					_, _ = recorder.Write([]byte(`{"stat":"Ok","result":"modified"}`))
+				case strings.Contains(req.URL.Path, "quick/user/check-margin"):
+					recorder.Header().Set("X-RateLimit-Limit", "100")
+					recorder.Header().Set("X-RateLimit-Remaining", "95")
+					recorder.Header().Set("X-RateLimit-Reset", "10")
+					recorder.WriteHeader(http.StatusOK)
+					_, _ = recorder.Write([]byte(`{"stat":"Ok","data":{"ordMrgn":"1500.00","avlCash":"50000.00"}}`))
 				default:
 					recorder.WriteHeader(http.StatusNotFound)
 					_, _ = recorder.Write([]byte(`{"emsg":"not found"}`))
@@ -242,6 +248,26 @@ func TestClientEndpoints(t *testing.T) {
 	})
 	if err != nil || len(mod) == 0 {
 		t.Fatalf("ModifyOrder failed: %v", err)
+	}
+
+	// MarginRequired
+	margin, err := client.MarginRequired(ctx, session, MarginRequest{
+		ExchangeSegment: "nse_fo",
+		InstrumentToken: "40007",
+		TransactionType: "B",
+		OrderType:       "MKT",
+		Product:         "MIS",
+		Quantity:        25,
+		Price:           150.0,
+	})
+	if err != nil || len(margin) == 0 {
+		t.Fatalf("MarginRequired failed: %v", err)
+	}
+
+	// RateLimits telemetry verification
+	limitsQuota := client.RateLimits()
+	if limitsQuota.Limit != 100 || limitsQuota.Remaining != 95 || limitsQuota.Reset != 10 {
+		t.Fatalf("unexpected RateLimits quota: %+v", limitsQuota)
 	}
 
 	// Untrusted host check

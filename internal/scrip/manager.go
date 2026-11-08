@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -446,6 +447,125 @@ func (m *Manager) Spots() []Spot {
 // Underlyings returns the configured mapping.
 func (m *Manager) Underlyings() []Underlying {
 	return append([]Underlying(nil), m.underlyings...)
+}
+
+// ScripSearchResult is returned by Search.
+type ScripSearchResult struct {
+	InstrumentKey   string  `json:"instrument_key"`
+	ExchangeSegment string  `json:"exchange_segment"`
+	PSymbol         string  `json:"p_symbol"`
+	Symbol          string  `json:"symbol"`
+	PTrdSymbol      string  `json:"p_trd_symbol,omitempty"`
+	Underlying      string  `json:"underlying,omitempty"`
+	Expiry          string  `json:"expiry,omitempty"`
+	Strike          float64 `json:"strike,omitempty"`
+	OptionType      string  `json:"option_type,omitempty"`
+	LotSize         int64   `json:"lot_size,omitempty"`
+}
+
+// ScripQuery specifies search filters for scrip search.
+type ScripQuery struct {
+	Segment    string
+	Symbol     string
+	Expiry     string
+	OptionType string
+	Strike     float64
+	Limit      int
+}
+
+// Search searches cached instruments in memory by segment, symbol prefix/substring, expiry, and option type.
+func (m *Manager) Search(q ScripQuery) []ScripSearchResult {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.snap == nil {
+		return nil
+	}
+
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 200 {
+		limit = 200
+	}
+
+	symUpper := strings.ToUpper(strings.TrimSpace(q.Symbol))
+	segLower := strings.ToLower(strings.TrimSpace(q.Segment))
+	expTrim := strings.TrimSpace(q.Expiry)
+	optUpper := strings.ToUpper(strings.TrimSpace(q.OptionType))
+	wantPaise := int64(0)
+	if q.Strike > 0 {
+		wantPaise = int64(math.Round(q.Strike * 100))
+	}
+
+	var results []ScripSearchResult
+
+	// Check spots if option type is not explicitly requested
+	if optUpper == "" {
+		for _, sp := range m.snap.spots {
+			if segLower != "" && strings.ToLower(sp.ExchangeSegment) != segLower {
+				continue
+			}
+			if symUpper != "" {
+				s1 := strings.ToUpper(sp.Symbol)
+				s2 := strings.ToUpper(sp.DisplayName)
+				s3 := strings.ToUpper(sp.PSymbol)
+				if !strings.Contains(s1, symUpper) && !strings.Contains(s2, symUpper) && !strings.Contains(s3, symUpper) {
+					continue
+				}
+			}
+			results = append(results, ScripSearchResult{
+				InstrumentKey:   sp.InstrumentKey,
+				ExchangeSegment: sp.ExchangeSegment,
+				PSymbol:         sp.PSymbol,
+				Symbol:          sp.DisplayName,
+				PTrdSymbol:      sp.Symbol,
+			})
+			if len(results) >= limit {
+				return results
+			}
+		}
+	}
+
+	for _, opt := range m.snap.options {
+		if segLower != "" && strings.ToLower(opt.ExchangeSegment) != segLower {
+			continue
+		}
+		if expTrim != "" && opt.Expiry != expTrim {
+			continue
+		}
+		if optUpper != "" && strings.ToUpper(string(opt.OptionType)) != optUpper {
+			continue
+		}
+		if wantPaise > 0 && opt.StrikePaise != wantPaise {
+			continue
+		}
+		if symUpper != "" {
+			u := strings.ToUpper(opt.Underlying)
+			trd := strings.ToUpper(opt.PTrdSymbol)
+			ps := strings.ToUpper(opt.PSymbol)
+			if !strings.Contains(u, symUpper) && !strings.Contains(trd, symUpper) && !strings.Contains(ps, symUpper) {
+				continue
+			}
+		}
+
+		results = append(results, ScripSearchResult{
+			InstrumentKey:   opt.InstrumentKey,
+			ExchangeSegment: opt.ExchangeSegment,
+			PSymbol:         opt.PSymbol,
+			Symbol:          opt.PTrdSymbol,
+			PTrdSymbol:      opt.PTrdSymbol,
+			Underlying:      opt.Underlying,
+			Expiry:          opt.Expiry,
+			Strike:          float64(opt.StrikePaise) / 100.0,
+			OptionType:      string(opt.OptionType),
+			LotSize:         opt.LotSize,
+		})
+		if len(results) >= limit {
+			return results
+		}
+	}
+
+	return results
 }
 
 func (m *Manager) cachePath(segment string) string {

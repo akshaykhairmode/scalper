@@ -175,6 +175,15 @@ func (f fakeMarketAPI) FindOption(segment, symbol string) (scrip.Option, bool) {
 	return f.instrument, segment == f.instrument.ExchangeSegment && symbol == f.instrument.PSymbol
 }
 
+func (fakeMarketAPI) SearchScrips(q scrip.ScripQuery) []scrip.ScripSearchResult {
+	if q.Symbol == "NIFTY" {
+		return []scrip.ScripSearchResult{
+			{InstrumentKey: "nse_fo|40007", PSymbol: "40007", Symbol: "NIFTY26NOV25000CE"},
+		}
+	}
+	return nil
+}
+
 func TestCandlesRoute(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
 	rec := do(t, s, localRequest(http.MethodGet, "/api/candles?instrument=nse_fo%7CNIFTY%7C2026-10-29%7C25000%7CCE&tf=5m"))
@@ -1636,5 +1645,51 @@ func TestCORSAndPreflight(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("CheckOrigin(%q) = %v, want %v", tc.origin, got, tc.want)
 		}
+	}
+}
+
+func TestScripSearchRoute(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/api/scrip/search?symbol=NIFTY"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var results []scrip.ScripSearchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+	if len(results) != 1 || results[0].Symbol != "NIFTY26NOV25000CE" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
+func TestDiagnosticsIPRoute(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	// Seed the cache to avoid outbound networking in unit tests
+	s.diagIPMu.Lock()
+	s.diagIPCache = "1.2.3.4"
+	s.diagIPAt = time.Now()
+	s.diagIPMu.Unlock()
+
+	rec := do(t, s, localRequest(http.MethodGet, "/api/diagnostics/ip"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal ip response: %v", err)
+	}
+	if res["ip"] != "1.2.3.4" {
+		t.Fatalf("expected IP 1.2.3.4, got %v", res["ip"])
+	}
+}
+
+func TestMarginRequiredRouteUnauthenticated(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	req := localRequest(http.MethodPost, "/api/broker/margin/required")
+	req.Body = io.NopCloser(strings.NewReader(`{"exchange_segment":"nse_fo","instrument_token":"40007","transaction_type":"B","order_type":"MKT","product":"MIS","quantity":50}`))
+	rec := do(t, s, req)
+	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 503 or 401, got %d", rec.Code)
 	}
 }

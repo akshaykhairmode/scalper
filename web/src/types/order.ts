@@ -3,6 +3,50 @@
 export type OrderSide = "BUY" | "SELL" | "B" | "S";
 export type OrderType = "LIMIT" | "MARKET" | "SL" | "SL-M";
 export type ProductType = "MIS" | "NRML" | "CNC";
+export type ValidityType = "DAY" | "IOC";
+
+export interface HoldingsItem {
+  symbol: string;
+  tradingSymbol?: string;
+  segment?: string;
+  quantity: number;
+  averagePrice: number;
+  lastPrice: number;
+  investedValue: number;
+  currentValue: number;
+  pnl: number;
+  pnlPct: number;
+}
+
+export interface OrderHistoryItem {
+  orderId: string;
+  status: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  filledQuantity: number;
+  price: number;
+  avgPrice: number;
+  triggerPrice?: number;
+  validity: string;
+  product: string;
+  rejectionReason?: string;
+  timestamp: string;
+}
+
+export interface MarginRequiredResponse {
+  stat?: string;
+  data?: {
+    avlCash?: string;
+    totMrgnUsd?: string;
+    mrgnUsd?: string;
+    ordMrgn?: string;
+    rmsVldtd?: string;
+    reqdMrgn?: string;
+    avlMrgn?: string;
+    insufFund?: string;
+  };
+}
 
 export interface OrderItem {
   orderId: string;
