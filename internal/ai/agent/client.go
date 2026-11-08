@@ -190,6 +190,77 @@ func (c *Client) GeneratePlaybook(ctx context.Context, m MarketContext) (*store.
 	}, nil
 }
 
+// ContractSetup holds input parameters for tactical option scalp evaluation.
+type ContractSetup struct {
+	Underlying    string  `json:"underlying"`
+	SpotPrice     float64 `json:"spot_price"`
+	OptionType    string  `json:"option_type"`
+	Strike        string  `json:"strike"`
+	OptionLTP     float64 `json:"option_ltp"`
+	MacroBias     string  `json:"macro_bias"`
+	OrderBookDesc string  `json:"order_book_desc"`
+}
+
+// ContractDecision is the structured tactical decision returned by the Agent.
+type ContractDecision struct {
+	Action     string  `json:"action"` // BUY | PASS
+	Score      int     `json:"score"`  // 1-5
+	Confidence float64 `json:"confidence"`
+	Reasoning  string  `json:"reasoning"`
+}
+
+const contractEvalPrompt = `You are an elite intraday option scalp analyst for Indian index options (NIFTY, BANKNIFTY).
+Evaluate if entering a scalp position in this specific option contract right now at current LTP offers positive expected value based on spot price, strike distance, and order momentum.
+Respond ONLY with a JSON object matching this schema:
+{
+  "action": "BUY" | "PASS",
+  "score": <integer from 1 to 5, where 4-5 is high conviction>,
+  "confidence": <float from 0.0 to 1.0>,
+  "reasoning": "<concise 1-2 sentence tactical scalp reasoning>"
+}
+Do not include markdown or conversational text.`
+
+// EvaluateContract asks the LLM reasoning agent to evaluate an intraday options contract.
+func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (ContractDecision, error) {
+	if c == nil || c.httpClient == nil {
+		return ContractDecision{}, errors.New("agent: client not initialized")
+	}
+
+	userMsg := fmt.Sprintf("Underlying: %s (Spot: ₹%.2f)\nOption: %s Strike: %s @ ₹%.2f\nMacro Bias: %s\nDepth: %s",
+		setup.Underlying, setup.SpotPrice, setup.OptionType, setup.Strike, setup.OptionLTP, setup.MacroBias, setup.OrderBookDesc)
+
+	messages := []openAIChatMessage{
+		{Role: "system", Content: contractEvalPrompt},
+		{Role: "user", Content: userMsg},
+	}
+
+	raw, err := c.completeChat(ctx, messages, true)
+	if err != nil {
+		return ContractDecision{}, err
+	}
+
+	clean := cleanJSONBlock(raw)
+	var decision ContractDecision
+	if err := json.Unmarshal([]byte(clean), &decision); err != nil {
+		return ContractDecision{}, fmt.Errorf("agent: decode decision: %w (raw: %s)", err, raw)
+	}
+
+	action := strings.ToUpper(strings.TrimSpace(decision.Action))
+	if action != "BUY" {
+		action = "PASS"
+	}
+	decision.Action = action
+
+	if decision.Score <= 0 {
+		decision.Score = 3
+	}
+	if decision.Confidence <= 0 {
+		decision.Confidence = 0.60
+	}
+
+	return decision, nil
+}
+
 // Chat executes a freeform single-turn prompt against the configured LLM provider.
 func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	if c == nil || c.httpClient == nil {

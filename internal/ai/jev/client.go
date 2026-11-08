@@ -32,15 +32,12 @@ func NewClient(cfg Config) *Client {
 		baseURL = "https://api.typesafe.ai/v1"
 	}
 
-	endpoint := baseURL
-	isOpenRouter := strings.Contains(baseURL, "openrouter.ai")
-	if isOpenRouter {
-		if !strings.HasSuffix(endpoint, "/systemone") && !strings.HasSuffix(endpoint, "/decisions") {
-			endpoint += "/systemone"
-		}
-	} else if !strings.HasSuffix(endpoint, "/system_one") {
-		endpoint += "/system_one"
+	endpoint := strings.TrimSuffix(baseURL, "/system_one")
+	if !strings.HasSuffix(endpoint, "/systemone") && !strings.HasSuffix(endpoint, "/decisions") {
+		endpoint += "/systemone"
 	}
+
+	isOpenRouter := strings.Contains(baseURL, "openrouter.ai")
 
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
@@ -72,6 +69,9 @@ func NewClient(cfg Config) *Client {
 func (c *Client) EvaluateSetup(ctx context.Context, stateJSON string) (EvaluationResult, error) {
 	if c == nil || c.httpClient == nil {
 		return EvaluationResult{}, errors.New("jev: client not initialized")
+	}
+	if strings.TrimSpace(c.cfg.APIKey) == "" && !strings.Contains(c.endpoint, "127.0.0.1") && !strings.Contains(c.endpoint, "localhost") {
+		return EvaluationResult{}, errors.New("jev: API key not configured")
 	}
 	start := time.Now()
 

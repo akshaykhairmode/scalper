@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/agent"
 	"github.com/akshaykhairmode/scalper/internal/ai/evaluator"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/store"
@@ -208,8 +210,8 @@ type askEvaluationResponse struct {
 }
 
 func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
-	if s.evaluator == nil || s.evaluator.JevClient() == nil {
-		s.writeRouteError(w, r, http.StatusServiceUnavailable, "ai evaluator or jev client not configured", nil)
+	if (s.evaluator == nil || s.evaluator.JevClient() == nil) && s.agentClient == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "no AI evaluation provider (Jev or Agent) is configured. Set TYPESAFE_API_KEY or OPENROUTER_API_KEY / AI_AGENT_API_KEY.", nil)
 		return
 	}
 
@@ -231,24 +233,11 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 		req.OptionType = "CE"
 	}
 
-	eval, err := s.evaluator.EvaluateContract(r.Context(), evaluator.ContractSetup{
-		Underlying:    req.Underlying,
-		InstrumentKey: req.InstrumentKey,
-		Symbol:        req.Symbol,
-		Strike:        req.Strike,
-		OptionType:    req.OptionType,
-		OptionLTP:     req.LTP,
-	})
-	if err != nil {
-		s.log.Error("ai contract evaluation failed", "event", "ai_ask_failed", "instrument", req.InstrumentKey, "error", err,
-			"request_id", logging.RequestID(r.Context()))
-		s.writeRouteError(w, r, http.StatusInternalServerError, "evaluation failed: "+err.Error(), nil)
-		return
-	}
-
 	s.configMu.RLock()
 	targetPct := s.cfg.AI.TargetPct
 	stopLossPct := s.cfg.AI.StopLossPct
+	shadowMode := s.cfg.AI.ShadowMode
+	agentModel := s.cfg.AI.Agent.Model
 	s.configMu.RUnlock()
 	if targetPct <= 0 {
 		targetPct = 8.0
@@ -257,14 +246,118 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 		stopLossPct = 5.0
 	}
 
+	var eval store.Evaluation
+	var jevErr error
+
+	// 1. Try Jev (System 1) fast decision model if available
+	if s.evaluator != nil && s.evaluator.JevClient() != nil {
+		eval, jevErr = s.evaluator.EvaluateContract(r.Context(), evaluator.ContractSetup{
+			Underlying:    req.Underlying,
+			InstrumentKey: req.InstrumentKey,
+			Symbol:        req.Symbol,
+			Strike:        req.Strike,
+			OptionType:    req.OptionType,
+			OptionLTP:     req.LTP,
+		})
+	}
+
 	var agentAnalysis string
-	if s.agentClient != nil {
-		agentCtx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-		defer cancel()
-		prompt := fmt.Sprintf("Underlying %s spot, evaluating %s strike %s at ₹%.2f. System 1 verdict is %s (score %d/5, confidence %.2f). Give a concise 1-sentence tactical recommendation on entering this scalp setup.",
-			req.Underlying, req.OptionType, req.Strike, req.LTP, eval.Action, eval.Score, eval.Confidence)
-		if reply, aerr := s.agentClient.Chat(agentCtx, prompt); aerr == nil && reply != "" {
-			agentAnalysis = strings.TrimSpace(reply)
+	var reasoning string
+
+	// 2. If Jev failed or was unconfigured, fall back to Agent (System 2: OpenRouter / Ollama / Gemini)
+	if jevErr != nil || eval.Action == "" {
+		if jevErr != nil {
+			s.log.Warn("jev evaluation unavailable or failed, attempting agent fallback", "event", "jev_fallback_to_agent",
+				"instrument", req.InstrumentKey, "error", jevErr)
+		}
+
+		if s.agentClient != nil {
+			spot, _ := s.GetSpotPrice(r.Context(), req.Underlying)
+			if spot <= 0 {
+				spot = req.LTP
+			}
+			var macroBias string
+			if s.aiStore != nil {
+				if pb, _ := s.aiStore.GetLatestPlaybook(r.Context()); pb != nil {
+					macroBias = pb.Bias
+				}
+			}
+
+			agentCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+
+			decision, aerr := s.agentClient.EvaluateContract(agentCtx, agent.ContractSetup{
+				Underlying:    req.Underlying,
+				SpotPrice:     spot,
+				OptionType:    req.OptionType,
+				Strike:        req.Strike,
+				OptionLTP:     req.LTP,
+				MacroBias:     macroBias,
+				OrderBookDesc: "real-time market depth",
+			})
+			if aerr != nil {
+				s.log.Error("ai agent evaluation fallback failed", "event", "ai_agent_fallback_failed", "error", aerr)
+				s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+aerr.Error(), aerr)
+				return
+			}
+
+			action := strings.ToUpper(strings.TrimSpace(decision.Action))
+			if action == "BUY" {
+				if req.OptionType == "CE" {
+					action = "BUY_CE"
+				} else {
+					action = "BUY_PE"
+				}
+			}
+
+			targetPrice := math.Round(req.LTP*(1.0+targetPct/100.0)*100) / 100
+			stopLossPrice := math.Round(req.LTP*(1.0-stopLossPct/100.0)*100) / 100
+
+			eval = store.Evaluation{
+				Timestamp:     time.Now(),
+				InstrumentKey: req.InstrumentKey,
+				Underlying:    req.Underlying,
+				SpotPrice:     spot,
+				OptionLTP:     req.LTP,
+				Action:        action,
+				Confidence:    decision.Confidence,
+				Score:         decision.Score,
+				DurationMS:    0,
+				StateSnapshot: fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel),
+				Shadow:        shadowMode,
+				TargetPrice:   targetPrice,
+				StopLossPrice: stopLossPrice,
+				Status:        "PENDING",
+			}
+
+			if s.aiStore != nil {
+				id, serr := s.aiStore.SaveEvaluation(r.Context(), eval)
+				if serr == nil {
+					eval.ID = id
+				}
+			}
+
+			if s.evaluator != nil && (action == "BUY_CE" || action == "BUY_PE" || action == "BUY") {
+				s.evaluator.TrackEvaluation(eval)
+			}
+
+			agentAnalysis = decision.Reasoning
+			reasoning = fmt.Sprintf("Agent conviction score %d/5 with confidence %.0f%%.", decision.Score, decision.Confidence*100)
+		} else {
+			s.log.Error("ai contract evaluation failed and no agent available", "event", "ai_ask_failed", "instrument", req.InstrumentKey, "error", jevErr)
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+jevErr.Error(), jevErr)
+			return
+		}
+	} else {
+		reasoning = fmt.Sprintf("Conviction score %d/5 with confidence %.0f%%.", eval.Score, eval.Confidence*100)
+		if s.agentClient != nil {
+			agentCtx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			defer cancel()
+			prompt := fmt.Sprintf("Underlying %s spot, evaluating %s strike %s at ₹%.2f. System 1 verdict is %s (score %d/5, confidence %.2f). Give a concise 1-sentence tactical recommendation on entering this scalp setup.",
+				req.Underlying, req.OptionType, req.Strike, req.LTP, eval.Action, eval.Score, eval.Confidence)
+			if reply, aerr := s.agentClient.Chat(agentCtx, prompt); aerr == nil && reply != "" {
+				agentAnalysis = strings.TrimSpace(reply)
+			}
 		}
 	}
 
@@ -281,7 +374,7 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 		StopLossPrice: eval.StopLossPrice,
 		TargetPct:     targetPct,
 		StopLossPct:   stopLossPct,
-		Reasoning:     fmt.Sprintf("Conviction score %d/5 with confidence %.0f%%.", eval.Score, eval.Confidence*100),
+		Reasoning:     reasoning,
 		AgentAnalysis: agentAnalysis,
 		Evaluation:    eval,
 	})

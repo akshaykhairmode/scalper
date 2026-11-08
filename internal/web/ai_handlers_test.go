@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/agent"
 	"github.com/akshaykhairmode/scalper/internal/ai/evaluator"
 	"github.com/akshaykhairmode/scalper/internal/ai/jev"
 	"github.com/akshaykhairmode/scalper/internal/config"
@@ -213,8 +214,9 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 		t.Errorf("total_calls = %d, want 1", statsResp.Stats.TotalCalls)
 	}
 
-	// 7. Verify 503 when evaluator has no valid client
+	// 7. Verify 503 when evaluator and agent are nil
 	s.evaluator = nil
+	s.agentClient = nil
 	nilAskRec := do(t, s, localRequestWithBody(http.MethodPost, "/api/ai/evaluations/ask", []byte(`{
 		"underlying": "NIFTY",
 		"instrument_key": "NIFTY24500CE",
@@ -285,5 +287,57 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	}
 	if askResp.StopLossPrice != 95.0 { // 100 * 0.95 = 95
 		t.Errorf("expected stop loss price 95.0, got %f", askResp.StopLossPrice)
+	}
+
+	// 9. Test Agent fallback when Jev fails
+	failingJevCli := jev.NewClient(jev.Config{
+		BaseURL: "http://127.0.0.1:59999",
+		Model:   "jev-test",
+		Timeout: 50 * time.Millisecond,
+	})
+	s.evaluator = evaluator.New(evaluator.Options{
+		Config:        config.AI{Enabled: true, TargetPct: 8.0, StopLossPct: 5.0},
+		Store:         mockStore,
+		JevClient:     failingJevCli,
+		QuoteProvider: s,
+	})
+
+	mockAgentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{
+					"content": `{"action": "BUY", "score": 4, "confidence": 0.85, "reasoning": "Agent fallback scalp setup"}`,
+				}},
+			},
+		})
+	}))
+	defer mockAgentSrv.Close()
+
+	s.agentClient = agent.NewClient(agent.Config{
+		BaseURL: mockAgentSrv.URL,
+		Model:   "test-agent",
+		Timeout: time.Second,
+	})
+
+	fallbackRec := do(t, s, localRequestWithBody(http.MethodPost, "/api/ai/evaluations/ask", []byte(`{
+		"underlying": "NIFTY",
+		"instrument_key": "NIFTY24500CE",
+		"strike": "24500",
+		"option_type": "CE",
+		"ltp": 100.0
+	}`)))
+	if fallbackRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from agent fallback, got %d: %s", fallbackRec.Code, fallbackRec.Body.String())
+	}
+	var fallbackResp askEvaluationResponse
+	if err := json.NewDecoder(fallbackRec.Body).Decode(&fallbackResp); err != nil {
+		t.Fatalf("decode fallback response: %v", err)
+	}
+	if !fallbackResp.Success || fallbackResp.Action != "BUY_CE" {
+		t.Errorf("expected BUY_CE from fallback, got %q", fallbackResp.Action)
+	}
+	if fallbackResp.AgentAnalysis != "Agent fallback scalp setup" {
+		t.Errorf("agent analysis = %q", fallbackResp.AgentAnalysis)
 	}
 }
