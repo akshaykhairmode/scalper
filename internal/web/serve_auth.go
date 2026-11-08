@@ -302,6 +302,11 @@ func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 		if r.URL.Path == "/" ||
 			r.URL.Path == "/api/auth/serve-unlock" ||
 			r.URL.Path == "/api/auth/device-unlock" ||
+			r.URL.Path == "/sw.js" ||
+			r.URL.Path == "/manifest.webmanifest" ||
+			r.URL.Path == "/manifest.json" ||
+			r.URL.Path == "/favicon.ico" ||
+			r.URL.Path == "/robots.txt" ||
 			strings.HasPrefix(r.URL.Path, "/static/") ||
 			r.URL.Path == "/api/auth/webauthn/login/begin" ||
 			r.URL.Path == "/api/auth/webauthn/login/finish" ||

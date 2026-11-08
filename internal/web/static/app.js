@@ -5041,6 +5041,8 @@ async function updateBiometricButtons() {
 
 async function tryAutoUnlockDevice() {
   const savedDevId = localStorage.getItem("scalper_device_id") || "";
+  const hasBindingCookie = typeof document !== "undefined" && document.cookie.includes("scalper_device_binding=");
+  if (!savedDevId && !hasBindingCookie) return false;
   try {
     const headers = { "Content-Type": "application/json" };
     if (savedDevId) headers["X-Device-ID"] = savedDevId;
