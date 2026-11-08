@@ -33,13 +33,24 @@ func NewClient(cfg Config) *Client {
 	}
 
 	endpoint := baseURL
-	if !strings.HasSuffix(endpoint, "/system_one") {
+	isOpenRouter := strings.Contains(baseURL, "openrouter.ai")
+	if isOpenRouter {
+		if !strings.HasSuffix(endpoint, "/systemone") && !strings.HasSuffix(endpoint, "/decisions") {
+			endpoint += "/systemone"
+		}
+	} else if !strings.HasSuffix(endpoint, "/system_one") {
 		endpoint += "/system_one"
 	}
 
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
-		model = "jev-latest"
+		if isOpenRouter {
+			model = "typesafe/jev-latest"
+		} else {
+			model = "jev-latest"
+		}
+	} else if isOpenRouter && !strings.HasPrefix(model, "typesafe/") {
+		model = "typesafe/" + model
 	}
 	cfg.Model = model
 
@@ -110,6 +121,8 @@ func (c *Client) EvaluateSetup(ctx context.Context, stateJSON string) (Evaluatio
 	if apiKey := strings.TrimSpace(c.cfg.APIKey); apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	httpReq.Header.Set("HTTP-Referer", "https://scalper.local")
+	httpReq.Header.Set("X-Title", "Scalper Trading Terminal")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
