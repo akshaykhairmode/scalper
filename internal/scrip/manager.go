@@ -449,8 +449,8 @@ func (m *Manager) Underlyings() []Underlying {
 	return append([]Underlying(nil), m.underlyings...)
 }
 
-// ScripSearchResult is returned by Search.
-type ScripSearchResult struct {
+// SearchResult is returned by Search.
+type SearchResult struct {
 	InstrumentKey   string  `json:"instrument_key"`
 	ExchangeSegment string  `json:"exchange_segment"`
 	PSymbol         string  `json:"p_symbol"`
@@ -463,8 +463,8 @@ type ScripSearchResult struct {
 	LotSize         int64   `json:"lot_size,omitempty"`
 }
 
-// ScripQuery specifies search filters for scrip search.
-type ScripQuery struct {
+// Query specifies search filters for scrip search.
+type Query struct {
 	Segment    string
 	Symbol     string
 	Expiry     string
@@ -474,7 +474,7 @@ type ScripQuery struct {
 }
 
 // Search searches cached instruments in memory by segment, symbol prefix/substring, expiry, and option type.
-func (m *Manager) Search(q ScripQuery) []ScripSearchResult {
+func (m *Manager) Search(q Query) []SearchResult {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.snap == nil {
@@ -497,7 +497,7 @@ func (m *Manager) Search(q ScripQuery) []ScripSearchResult {
 		wantPaise = int64(math.Round(q.Strike * 100))
 	}
 
-	var results []ScripSearchResult
+	var results []SearchResult
 
 	// Check spots if option type is not explicitly requested
 	if optUpper == "" {
@@ -513,7 +513,7 @@ func (m *Manager) Search(q ScripQuery) []ScripSearchResult {
 					continue
 				}
 			}
-			results = append(results, ScripSearchResult{
+			results = append(results, SearchResult{
 				InstrumentKey:   sp.InstrumentKey,
 				ExchangeSegment: sp.ExchangeSegment,
 				PSymbol:         sp.PSymbol,
@@ -548,7 +548,7 @@ func (m *Manager) Search(q ScripQuery) []ScripSearchResult {
 			}
 		}
 
-		results = append(results, ScripSearchResult{
+		results = append(results, SearchResult{
 			InstrumentKey:   opt.InstrumentKey,
 			ExchangeSegment: opt.ExchangeSegment,
 			PSymbol:         opt.PSymbol,

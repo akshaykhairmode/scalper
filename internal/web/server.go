@@ -71,7 +71,7 @@ type MarketAPI interface {
 	Candles(context.Context, string, string, string) ([]market.Candle, error)
 	Option(string) (scrip.Option, bool)
 	FindOption(string, string) (scrip.Option, bool)
-	SearchScrips(scrip.ScripQuery) []scrip.ScripSearchResult
+	SearchScrips(scrip.Query) []scrip.SearchResult
 }
 
 type chainWindowAPI interface {

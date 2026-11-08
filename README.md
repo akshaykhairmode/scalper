@@ -201,13 +201,13 @@ http://127.0.0.1:8080
 
 ## Development & Testing
 
-Common `make` targets:
+Before committing any changes, `make lint` and `make test` must pass with 0 errors:
 
 ```bash
-make test        # Run unit tests
+make lint        # Run gofmt check + golangci-lint + deadcode (must pass with 0 issues)
+make test        # Run unit tests across all packages (must pass 100%)
 make race        # Run unit tests with race detection
 make cover       # Run tests and verify the coverage gate (>= 55%)
-make lint        # Run golangci-lint
 make fmt         # Format code with gofmt / goimports
 make vet         # Run go vet
 make check       # Format check + vet + race + coverage

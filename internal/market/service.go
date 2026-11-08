@@ -611,7 +611,7 @@ func (s *Service) ScripStatus() scrip.Status {
 }
 
 // SearchScrips queries the indexed scrip master for instruments.
-func (s *Service) SearchScrips(q scrip.ScripQuery) []scrip.ScripSearchResult {
+func (s *Service) SearchScrips(q scrip.Query) []scrip.SearchResult {
 	if s.scrips == nil {
 		return nil
 	}

@@ -175,9 +175,9 @@ func (f fakeMarketAPI) FindOption(segment, symbol string) (scrip.Option, bool) {
 	return f.instrument, segment == f.instrument.ExchangeSegment && symbol == f.instrument.PSymbol
 }
 
-func (fakeMarketAPI) SearchScrips(q scrip.ScripQuery) []scrip.ScripSearchResult {
+func (fakeMarketAPI) SearchScrips(q scrip.Query) []scrip.SearchResult {
 	if q.Symbol == "NIFTY" {
-		return []scrip.ScripSearchResult{
+		return []scrip.SearchResult{
 			{InstrumentKey: "nse_fo|40007", PSymbol: "40007", Symbol: "NIFTY26NOV25000CE"},
 		}
 	}
@@ -1654,7 +1654,7 @@ func TestScripSearchRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	var results []scrip.ScripSearchResult
+	var results []scrip.SearchResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &results); err != nil {
 		t.Fatalf("unmarshal results: %v", err)
 	}

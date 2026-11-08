@@ -170,11 +170,11 @@ func TestManagerLoadAndQueries(t *testing.T) {
 	}
 
 	// Test Search
-	searchResults := mgr.Search(ScripQuery{Symbol: "NIFTY"})
+	searchResults := mgr.Search(Query{Symbol: "NIFTY"})
 	if len(searchResults) < 2 {
 		t.Fatalf("expected at least 2 search results for NIFTY, got %d", len(searchResults))
 	}
-	ceResults := mgr.Search(ScripQuery{Symbol: "NIFTY", OptionType: "CE"})
+	ceResults := mgr.Search(Query{Symbol: "NIFTY", OptionType: "CE"})
 	if len(ceResults) != 1 || ceResults[0].OptionType != "CE" {
 		t.Fatalf("expected 1 CE result, got %d", len(ceResults))
 	}

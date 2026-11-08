@@ -535,7 +535,7 @@ func (s *Server) handleBrokerMarginRequired(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleScripSearch(w http.ResponseWriter, r *http.Request) {
 	if s.market == nil {
-		s.writeRouteJSON(w, r, http.StatusOK, []scrip.ScripSearchResult{})
+		s.writeRouteJSON(w, r, http.StatusOK, []scrip.SearchResult{})
 		return
 	}
 	q := r.URL.Query()
@@ -552,7 +552,7 @@ func (s *Server) handleScripSearch(w http.ResponseWriter, r *http.Request) {
 		sym = q.Get("q")
 	}
 
-	results := s.market.SearchScrips(scrip.ScripQuery{
+	results := s.market.SearchScrips(scrip.Query{
 		Segment:    q.Get("segment"),
 		Symbol:     sym,
 		Expiry:     q.Get("expiry"),
@@ -561,7 +561,7 @@ func (s *Server) handleScripSearch(w http.ResponseWriter, r *http.Request) {
 		Limit:      limit,
 	})
 	if results == nil {
-		results = []scrip.ScripSearchResult{}
+		results = []scrip.SearchResult{}
 	}
 	s.writeRouteJSON(w, r, http.StatusOK, results)
 }
@@ -598,7 +598,9 @@ func (s *Server) handleDiagnosticsIP(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"ip": "unavailable", "error": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	var body struct {
 		IP string `json:"ip"`
 	}
