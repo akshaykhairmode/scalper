@@ -52,6 +52,9 @@ func (c Config) Validate() error {
 	if err := c.validateWeb(); err != nil {
 		return err
 	}
+	if err := c.validateAI(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -458,6 +461,34 @@ func (c Config) validateWeb() error {
 		if !isLoopbackHost(host) && !c.Web.InsecureNoAuth && (!hasUser || !hasPass) {
 			return fieldErr("web.basic_auth", "app.listen binds to public/LAN address %q but web.basic_auth is unconfigured; configure web.basic_auth, set web.insecure_no_auth: true, or bind to localhost (127.0.0.1)", c.App.Listen)
 		}
+	}
+	return nil
+}
+
+func (c Config) validateAI() error {
+	if !c.AI.Enabled {
+		return nil
+	}
+	if c.AI.Jev.BaseURL != "" {
+		u, err := url.Parse(c.AI.Jev.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fieldErr("ai.jev.base_url", "invalid URL: %q", c.AI.Jev.BaseURL)
+		}
+	}
+	if c.AI.Agent.BaseURL != "" {
+		u, err := url.Parse(c.AI.Agent.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fieldErr("ai.agent.base_url", "invalid URL: %q", c.AI.Agent.BaseURL)
+		}
+	}
+	if c.AI.MinConfidence < 0 || c.AI.MinConfidence > 1 {
+		return fieldErr("ai.min_confidence", "must be between 0.0 and 1.0, got %f", c.AI.MinConfidence)
+	}
+	if c.AI.MinScore < 1 || c.AI.MinScore > 5 {
+		return fieldErr("ai.min_score", "must be between 1 and 5, got %d", c.AI.MinScore)
+	}
+	if c.AI.EvalCadenceSeconds <= 0 {
+		return fieldErr("ai.eval_cadence_seconds", "must be greater than 0, got %d", c.AI.EvalCadenceSeconds)
 	}
 	return nil
 }

@@ -38,6 +38,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
+	"github.com/akshaykhairmode/scalper/internal/store"
 	"github.com/akshaykhairmode/scalper/internal/version"
 )
 
@@ -59,6 +60,15 @@ type CandleStore interface {
 	CandleSyncAt(ctx context.Context, instrumentKey, timeframe, sessionDate string) (int64, bool, error)
 	MarkCandlesSynced(ctx context.Context, instrumentKey, timeframe, sessionDate string, syncedAt int64) error
 	AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targetTf string) ([]market.Candle, error)
+}
+
+// AIStore persists AI playbooks and decision evaluations in SQLite.
+type AIStore interface {
+	SavePlaybook(ctx context.Context, p store.Playbook) (int64, error)
+	GetLatestPlaybook(ctx context.Context) (*store.Playbook, error)
+	GetPlaybookByDate(ctx context.Context, date string) (*store.Playbook, error)
+	SaveEvaluation(ctx context.Context, e store.Evaluation) error
+	ListEvaluations(ctx context.Context, limit int) ([]store.Evaluation, error)
 }
 
 // MarketAPI is the market data subset used by the web server.
@@ -95,6 +105,7 @@ type Options struct {
 	BracketEngine *bracket.Engine
 	SessionStore  auth.SessionStore
 	DeviceStore   DeviceStore
+	AIStore       AIStore
 	LogDegraded   func() bool
 	TokenPresent  func() bool
 	Started       time.Time
@@ -126,6 +137,7 @@ type Server struct {
 	kotak         *kotakapi.Client
 	orderFeed     *orderfeed.Client
 	bracketEngine *bracket.Engine
+	aiStore       AIStore
 	consumerKey   string
 	books         *booksCache
 	risk          *riskState
@@ -305,6 +317,12 @@ func New(opts Options) (*Server, error) {
 			devStore = ds
 		}
 	}
+	aiSt := opts.AIStore
+	if aiSt == nil {
+		if as, ok := opts.DB.(AIStore); ok {
+			aiSt = as
+		}
+	}
 	s := &Server{
 		log:                 opts.Logger,
 		cfg:                 opts.Config,
@@ -312,6 +330,7 @@ func New(opts Options) (*Server, error) {
 		db:                  opts.DB,
 		candleStore:         opts.CandleStore,
 		deviceStore:         devStore,
+		aiStore:             aiSt,
 		webauthnChallenges:  make(map[string]webauthnStoredChallenge),
 		webauthnPairTokens:  make(map[string]time.Time),
 		loginIPAttempts:     make(map[string][]time.Time),
@@ -499,6 +518,9 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
 	mux.HandleFunc("PUT /api/config", s.handleUpdateConfig)
+	mux.HandleFunc("GET /api/ai/playbook", s.handleGetAIPlaybook)
+	mux.HandleFunc("POST /api/ai/playbook", s.handleSaveAIPlaybook)
+	mux.HandleFunc("GET /api/ai/evaluations", s.handleListAIEvaluations)
 
 	var h http.Handler = mux
 	h = s.serveAuthMiddleware(h)

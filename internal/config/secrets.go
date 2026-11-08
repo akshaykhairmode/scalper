@@ -17,6 +17,8 @@ var secretPaths = [][]string{
 	{"kotak", "mobile_number"},
 	{"kotak", "ucc"},
 	{"web", "basic_auth", "password"},
+	{"ai", "jev", "api_key"},
+	{"ai", "agent", "api_key"},
 }
 
 // RedactSecrets returns a copy of c with every configured secret masked.
@@ -29,6 +31,12 @@ func RedactSecrets(c Config) Config {
 	}
 	if c.Web.BasicAuth.Password != "" {
 		c.Web.BasicAuth.Password = SecretMask
+	}
+	if c.AI.Jev.APIKey != "" {
+		c.AI.Jev.APIKey = SecretMask
+	}
+	if c.AI.Agent.APIKey != "" {
+		c.AI.Agent.APIKey = SecretMask
 	}
 	return c
 }

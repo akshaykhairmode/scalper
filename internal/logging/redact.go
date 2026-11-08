@@ -15,7 +15,7 @@ const Redacted = "[REDACTED]"
 
 var sensitiveSubstrings = []string{
 	"token", "secret", "password", "passwd", "mpin", "totp", "cookie", "csrf",
-	"authorization", "neo-fin-key", "neo_fin_key", "mobile",
+	"authorization", "neo-fin-key", "neo_fin_key", "mobile", "api_key", "apikey",
 }
 
 // IsSensitiveKey reports whether a log/audit key must be redacted.

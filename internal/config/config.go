@@ -27,6 +27,7 @@ type Config struct {
 	Trading Trading `yaml:"trading" json:"trading"`
 	Scrip   Scrip   `yaml:"scrip" json:"scrip"`
 	Web     Web     `yaml:"web" json:"web"`
+	AI      AI      `yaml:"ai" json:"ai"`
 }
 
 // App holds process-level settings.
@@ -203,6 +204,34 @@ type BasicAuth struct {
 	Password string `yaml:"password" json:"password"`
 }
 
+// AI holds configuration for TypeSafe Jev decision models and generic LLM reasoning agents.
+type AI struct {
+	Enabled            bool        `yaml:"enabled" json:"enabled"`
+	ShadowMode         bool        `yaml:"shadow_mode" json:"shadow_mode"`
+	MinConfidence      float64     `yaml:"min_confidence" json:"min_confidence"`
+	MinScore           int         `yaml:"min_score" json:"min_score"`
+	EvalCadenceSeconds int         `yaml:"eval_cadence_seconds" json:"eval_cadence_seconds"`
+	Jev                JevConfig   `yaml:"jev" json:"jev"`
+	Agent              AgentConfig `yaml:"agent" json:"agent"`
+}
+
+// JevConfig holds settings for TypeSafe AI Jev decision models (System 1).
+type JevConfig struct {
+	BaseURL   string `yaml:"base_url" json:"base_url"`
+	APIKey    string `yaml:"api_key" json:"api_key"`
+	Model     string `yaml:"model" json:"model"`
+	TimeoutMS int    `yaml:"timeout_ms" json:"timeout_ms"`
+}
+
+// AgentConfig holds settings for generic LLM reasoning agents (System 2: Ollama, OpenRouter, Gemini, OpenAI).
+type AgentConfig struct {
+	Provider  string `yaml:"provider" json:"provider"` // openrouter, ollama, gemini, openai, generic
+	BaseURL   string `yaml:"base_url" json:"base_url"` // e.g. "https://openrouter.ai/api/v1", "http://localhost:11434/v1"
+	APIKey    string `yaml:"api_key" json:"api_key"`
+	Model     string `yaml:"model" json:"model"`
+	TimeoutMS int    `yaml:"timeout_ms" json:"timeout_ms"`
+}
+
 // Default returns the documented defaults. A minimal config file can omit any
 // section and inherit these values.
 func Default() Config {
@@ -316,6 +345,24 @@ func Default() Config {
 			Segments:  []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"},
 		},
 		Web: Web{OpenBrowser: true},
+		AI: AI{
+			Enabled:            false,
+			ShadowMode:         true,
+			MinConfidence:      0.75,
+			MinScore:           4,
+			EvalCadenceSeconds: 15,
+			Jev: JevConfig{
+				BaseURL:   "https://api.typesafe.ai/v1",
+				Model:     "jev-latest",
+				TimeoutMS: 1500,
+			},
+			Agent: AgentConfig{
+				Provider:  "openrouter",
+				BaseURL:   "https://openrouter.ai/api/v1",
+				Model:     "anthropic/claude-3.5-sonnet",
+				TimeoutMS: 30000,
+			},
+		},
 	}
 }
 
@@ -448,6 +495,18 @@ func (c *Config) applyEnv() {
 			}
 		}
 	}
+	if v, ok := os.LookupEnv("TYPESAFE_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Jev.APIKey = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("AI_AGENT_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.APIKey = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("OPENROUTER_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.APIKey = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("GEMINI_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.APIKey = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("OPENAI_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		c.AI.Agent.APIKey = strings.TrimSpace(v)
+	}
 }
 
 // Location returns the configured timezone. It assumes Validate succeeded.
@@ -520,5 +579,7 @@ func (c Config) Summary() map[string]any {
 		"indices":    keys,
 		"risk_caps_disabled": c.Trading.Risk.MaxLotsPerOrder == 0 &&
 			c.Trading.Risk.MaxOpenLotsPerIndex == 0 && c.Trading.Risk.MaxOrderValueINR == 0,
+		"ai_enabled": c.AI.Enabled,
+		"ai_shadow":  c.AI.ShadowMode,
 	}
 }

@@ -192,6 +192,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		BracketStore: st,
 		SessionStore: st,
 		DeviceStore:  st,
+		AIStore:      st,
 		LogDegraded:  logHandle.Degraded,
 		TokenPresent: func() bool { return hasConsumerKey },
 		ServeMode:    cfg.App.ServeMode,

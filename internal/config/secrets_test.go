@@ -11,10 +11,14 @@ func TestRedactSecretsMasksConfiguredValues(t *testing.T) {
 	cfg.Kotak.UCC = "ABC123"
 	cfg.Web.BasicAuth.Username = "admin"
 	cfg.Web.BasicAuth.Password = "secret"
+	cfg.AI.Jev.APIKey = "jev-secret"
+	cfg.AI.Agent.APIKey = "agent-secret"
 
 	redacted := RedactSecrets(cfg)
 	if redacted.Kotak.MobileNumber != SecretMask || redacted.Kotak.UCC != SecretMask ||
-		redacted.Web.BasicAuth.Password != SecretMask {
+		redacted.Web.BasicAuth.Password != SecretMask ||
+		redacted.AI.Jev.APIKey != SecretMask ||
+		redacted.AI.Agent.APIKey != SecretMask {
 		t.Fatalf("secrets were not masked: %+v", redacted)
 	}
 	if redacted.Web.BasicAuth.Username != "admin" {
@@ -34,13 +38,18 @@ web:
   basic_auth:
     username: admin
     password: "super-secret" # keep me
+ai:
+  jev:
+    api_key: "jev-secret-key"
+  agent:
+    api_key: "agent-secret-key"
 `)
 	redacted, err := RedactYAMLSecrets(current)
 	if err != nil {
 		t.Fatalf("redact: %v", err)
 	}
 	text := string(redacted)
-	for _, secret := range []string{"+919999999999", "TESTUCC", "super-secret"} {
+	for _, secret := range []string{"+919999999999", "TESTUCC", "super-secret", "jev-secret-key", "agent-secret-key"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("redacted yaml still contains %q:\n%s", secret, text)
 		}
@@ -60,7 +69,8 @@ web:
 	if err != nil {
 		t.Fatalf("load restored yaml: %v", err)
 	}
-	if cfg.Web.BasicAuth.Password != "super-secret" || cfg.Kotak.MobileNumber != "+919999999999" || cfg.Kotak.UCC != "TESTUCC" {
+	if cfg.Web.BasicAuth.Password != "super-secret" || cfg.Kotak.MobileNumber != "+919999999999" || cfg.Kotak.UCC != "TESTUCC" ||
+		cfg.AI.Jev.APIKey != "jev-secret-key" || cfg.AI.Agent.APIKey != "agent-secret-key" {
 		t.Fatalf("masked values were not restored: %+v", cfg)
 	}
 	if cfg.Web.BasicAuth.Username != "trader" {
