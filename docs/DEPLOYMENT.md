@@ -87,11 +87,19 @@ You don't have to wait for a git commit to deploy. You can trigger it at any tim
 
 ---
 
-## 6. Oracle Cloud Architecture & Network Hardening
+## 6. Oracle Cloud Architecture, Reverse Proxy & Network Hardening
+
+### Automatic Caddy + sslip.io TLS & HTTP-to-HTTPS Redirection
+The deployment script (`scripts/deploy.sh`) automatically provisions and manages **Caddy v2.8.4** as the server's TLS-terminating reverse proxy / load balancer:
+1. **Automatic Installation**: If Caddy is not installed on the server, the script downloads and installs the official Linux static binary (`amd64` or `arm64`) to `/usr/local/bin/caddy`.
+2. **Automatic TLS with sslip.io**: Generates `/etc/caddy/Caddyfile` targeting `<SERVER_HOST>.sslip.io` (or a custom domain if `SERVER_DOMAIN` is provided). Caddy's native ACME client automatically requests and renews free Let's Encrypt certificates.
+3. **Automatic HTTP → HTTPS Redirect**: Caddy listens on port 80 and automatically redirects all incoming HTTP traffic to HTTPS (port 443).
+4. **WebSocket & Feed Support**: Caddy's `reverse_proxy` proxies WebSocket connections (`/ws`) out-of-the-box to `127.0.0.1:8080`.
+5. **Firewall & Security**: Opens OS firewall services (`http`, `https`, `8080`) while keeping Scalper bound internally to `127.0.0.1:8080`.
 
 ### Listen Address Recommendations
-* **Behind Reverse Proxy (Caddy, Nginx, Traefik) [Recommended]:**
-  Configure `listen: "127.0.0.1:8080"` in `config.yaml`. The reverse proxy handles public TLS termination on ports 80/443 and proxies traffic to loopback.
+* **Behind Caddy Reverse Proxy [Default & Recommended]:**
+  Scalper binds to `127.0.0.1:8080` on the loopback interface. Caddy manages public TLS on ports 80/443 and proxies traffic to loopback.
 * **Direct Internet-Facing (`0.0.0.0:8080`):**
   If Scalper binds directly to `0.0.0.0:8080`, **Basic Auth (`web.basic_auth`) is strictly mandatory**. Scalper refuses to start if bound to `0.0.0.0` without basic authentication (override via `web.insecure_no_auth: true` or `--insecure-no-auth` CLI flag).
 

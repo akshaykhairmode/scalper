@@ -55,6 +55,8 @@ LOCAL_CONFIG="${CONFIG_FILE:-config.yaml}"
 SVC_NAME="${SERVICE_NAME:-scalper}"
 OVERRIDE_ARCH="${TARGET_ARCH:-}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
+SERVER_DOMAIN="${SERVER_DOMAIN:-${DEPLOY_DOMAIN:-}}"
+CADDY_DOMAIN="${SERVER_DOMAIN:-${TARGET_IP}.sslip.io}"
 
 # ── Validate Required Inputs ───────────────────────────────────────────────
 if [[ -z "${TARGET_IP}" ]]; then
@@ -388,15 +390,80 @@ fi
 echo ">>> [Memory Status]:"
 free -h 2>/dev/null || true
 
-# 3. Open firewall port 8080 if firewalld or ufw is active
+# 3. Open firewall ports (80 HTTP, 443 HTTPS, 8080 TCP)
 if command -v firewall-cmd >/dev/null 2>&1 && sudo systemctl is-active --quiet firewalld; then
+  sudo firewall-cmd --add-service=http --permanent >/dev/null 2>&1 || true
+  sudo firewall-cmd --add-service=https --permanent >/dev/null 2>&1 || true
   sudo firewall-cmd --add-port=8080/tcp --permanent >/dev/null 2>&1 || true
   sudo firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+  sudo ufw allow 80/tcp >/dev/null 2>&1 || true
+  sudo ufw allow 443/tcp >/dev/null 2>&1 || true
   sudo ufw allow 8080/tcp >/dev/null 2>&1 || true
 fi
 
-# 4. Setup or update systemd service
+# 4. Install Caddy reverse proxy with automatic TLS if not already installed
+if ! command -v caddy >/dev/null 2>&1 && [ ! -f /usr/local/bin/caddy ]; then
+  echo ">>> [Caddy Installation] Caddy not found on remote server. Installing Caddy v2.8.4..."
+  ARCH="\$(uname -m)"
+  case "\${ARCH}" in
+    x86_64) CADDY_ARCH="amd64" ;;
+    aarch64|arm64) CADDY_ARCH="arm64" ;;
+    *) CADDY_ARCH="amd64" ;;
+  esac
+  curl -sSL "https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_\${CADDY_ARCH}.tar.gz" | sudo tar -xz -C /tmp caddy
+  sudo mv /tmp/caddy /usr/local/bin/caddy
+  sudo chmod +x /usr/local/bin/caddy
+  echo ">>> [Caddy Installation] Successfully installed /usr/local/bin/caddy."
+fi
+
+# 5. Configure /etc/caddy/Caddyfile with automatic TLS and WebSocket reverse proxy
+sudo mkdir -p /etc/caddy
+CADDYFILE_CONTENT="${CADDY_DOMAIN} {
+    reverse_proxy 127.0.0.1:8080
+}"
+CURRENT_CADDYFILE="\$(sudo cat /etc/caddy/Caddyfile 2>/dev/null || true)"
+if [ "\${CURRENT_CADDYFILE}" != "\${CADDYFILE_CONTENT}" ]; then
+  echo ">>> [Caddy Config] Configuring /etc/caddy/Caddyfile for ${CADDY_DOMAIN}..."
+  echo "\${CADDYFILE_CONTENT}" | sudo tee /etc/caddy/Caddyfile >/dev/null
+fi
+
+# 6. Setup or update caddy.service
+CADDY_SVC_FILE="/etc/systemd/system/caddy.service"
+if [ ! -f "\${CADDY_SVC_FILE}" ]; then
+  echo ">>> [Caddy Service] Creating \${CADDY_SVC_FILE}..."
+  sudo tee "\${CADDY_SVC_FILE}" >/dev/null <<'CADDY_EOF'
+[Unit]
+Description=Caddy Web Server with Automatic HTTPS
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=root
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile
+Restart=always
+RestartSec=3s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+CADDY_EOF
+fi
+
+# 7. Reload and start/reload Caddy
+sudo systemctl daemon-reload
+sudo systemctl enable caddy >/dev/null 2>&1
+if systemctl is-active --quiet caddy; then
+  echo ">>> [Caddy Service] Reloading Caddy..."
+  sudo systemctl reload caddy 2>/dev/null || sudo systemctl restart caddy
+else
+  echo ">>> [Caddy Service] Starting Caddy..."
+  sudo systemctl start caddy
+fi
+
+# 8. Setup or update Scalper systemd service
 SERVICE_FILE="/etc/systemd/system/${SVC_NAME}.service"
 sudo tee "\${SERVICE_FILE}" >/dev/null <<SERVICE_EOF
 [Unit]
@@ -422,7 +489,7 @@ SyslogIdentifier=${SVC_NAME}
 WantedBy=multi-user.target
 SERVICE_EOF
 
-# 5. Reload daemon and start service
+# 9. Reload daemon and start Scalper service
 sudo systemctl daemon-reload
 sudo systemctl enable "${SVC_NAME}" >/dev/null 2>&1
 sudo systemctl restart "${SVC_NAME}"
@@ -446,9 +513,12 @@ fi
 echo -e "\n${BOLD}${GREEN}================================================================${NC}"
 echo -e "${BOLD}${GREEN}  Deployment Successful!${NC}"
 echo -e "${BOLD}${GREEN}================================================================${NC}"
-echo -e "Access URL       : ${CYAN}http://${TARGET_IP}:8080/${NC}"
-echo -e "Health Check     : ${CYAN}http://${TARGET_IP}:8080/api/health${NC}"
-echo -e "SSH Command      : ${YELLOW}ssh -i ${KEY_PATH} ${USER_NAME}@${TARGET_IP}${NC}"
-echo -e "Service Logs     : ${YELLOW}sudo journalctl -u ${SVC_NAME} -f${NC}"
-echo -e "Restart Service  : ${YELLOW}sudo systemctl restart ${SVC_NAME}${NC}"
+echo -e "Access URL (HTTPS) : ${CYAN}https://${CADDY_DOMAIN}/${NC}"
+echo -e "Access URL (HTTP)  : ${CYAN}http://${CADDY_DOMAIN}/ (Redirects to HTTPS)${NC}"
+echo -e "Direct Loopback    : ${YELLOW}http://127.0.0.1:8080/${NC}"
+echo -e "Health Check       : ${CYAN}https://${CADDY_DOMAIN}/api/health${NC}"
+echo -e "SSH Command        : ${YELLOW}ssh -i ${KEY_PATH} ${USER_NAME}@${TARGET_IP}${NC}"
+echo -e "Scalper Logs       : ${YELLOW}sudo journalctl -u ${SVC_NAME} -f${NC}"
+echo -e "Caddy Logs         : ${YELLOW}sudo journalctl -u caddy -f${NC}"
+echo -e "Restart Service    : ${YELLOW}sudo systemctl restart ${SVC_NAME}${NC}"
 echo ""

@@ -320,6 +320,7 @@ jobs:
           SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '' }}
           SERVICE_NAME: ${{ vars.SERVICE_NAME || 'scalper' }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN || vars.SERVER_DOMAIN || '' }}
           KOTAK_CONSUMER_KEY: ${{ secrets.KOTAK_CONSUMER_KEY }}
           KOTAK_MPIN: ${{ secrets.KOTAK_MPIN }}
           KOTAK_MOBILE_NUMBER: ${{ secrets.KOTAK_MOBILE_NUMBER || secrets.KOTAK_MOBILE }}
