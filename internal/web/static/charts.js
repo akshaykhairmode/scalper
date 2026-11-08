@@ -1,4 +1,4 @@
-// web/src/chart/patterns.ts
+// src/chart/patterns.ts
 function calculateATR(candles, period = 14) {
   if (!candles || candles.length < 2) return [];
   const atrs = new Array(candles.length).fill(0);
@@ -1199,7 +1199,7 @@ function detectAllPatterns(candles, {
   return result;
 }
 
-// web/src/charts.ts
+// src/charts.ts
 var chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;

@@ -351,6 +351,20 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if r.ContentLength > 0 || r.Header.Get("Content-Type") != "" {
+		if err := decodeRequest(w, r, &req); err != nil {
+			s.writeRouteError(w, r, http.StatusBadRequest, "invalid square-off request: "+err.Error(), err)
+			return
+		}
+	}
+	if !req.Confirm {
+		s.writeRouteError(w, r, http.StatusBadRequest, "explicit confirmation is required to square off all positions", nil)
+		return
+	}
 	raw, err := s.getBook(r.Context(), bookPositions, session)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)

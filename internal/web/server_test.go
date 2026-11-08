@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,8 @@ func testConfig() config.Config {
 	c := config.Default()
 	c.Kotak.MobileNumber = "+919999999999"
 	c.Kotak.UCC = "TEST"
+	c.Web.BasicAuth.Username = "admin"
+	c.Web.BasicAuth.Password = "adminpass"
 	return c
 }
 
@@ -114,7 +117,9 @@ func TestWebSocketUpgradeThroughMiddleware(t *testing.T) {
 	defer httpServer.Close()
 
 	endpoint := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws"
-	conn, response, err := websocket.DefaultDialer.Dial(endpoint, nil)
+	authHdr := http.Header{}
+	authHdr.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:adminpass")))
+	conn, response, err := websocket.DefaultDialer.Dial(endpoint, authHdr)
 	if response != nil && response.Body != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
@@ -260,6 +265,7 @@ func do(t *testing.T, s *Server, req *http.Request) *httptest.ResponseRecorder {
 func localRequest(method, target string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
 	req.Host = "127.0.0.1:8080"
+	req.SetBasicAuth("admin", "adminpass")
 	return req
 }
 
@@ -1191,9 +1197,19 @@ func TestLogsEndpoints(t *testing.T) {
 	cfg.Logging.File = logFile
 	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg})
 
-	// Test GET /logs (HTML view)
+	// Test unauthenticated GET /logs returns 401 Unauthorized
+	reqUnauth := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/logs", nil)
+	reqUnauth.Host = "127.0.0.1:8080"
+	recUnauth := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET /logs status = %d, want 401", recUnauth.Code)
+	}
+
+	// Test GET /logs (HTML view) with authentication
 	reqView := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/logs", nil)
 	reqView.Host = "127.0.0.1:8080"
+	reqView.SetBasicAuth("admin", "adminpass")
 	recView := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recView, reqView)
 	if recView.Code != http.StatusOK {
@@ -1203,9 +1219,10 @@ func TestLogsEndpoints(t *testing.T) {
 		t.Fatalf("expected 'Scalper Logs' in /logs HTML")
 	}
 
-	// Test GET /api/logs (JSON API)
+	// Test GET /api/logs (JSON API) with authentication
 	reqAPI := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/logs?lines=10", nil)
 	reqAPI.Host = "127.0.0.1:8080"
+	reqAPI.SetBasicAuth("admin", "adminpass")
 	recAPI := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recAPI, reqAPI)
 	if recAPI.Code != http.StatusOK {
@@ -1222,9 +1239,10 @@ func TestLogsEndpoints(t *testing.T) {
 		t.Fatalf("unexpected logs response: %+v", data)
 	}
 
-	// Test GET /api/logs?download=1 (download raw file)
+	// Test GET /api/logs?download=1 (download raw file) with authentication
 	reqDL := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/logs?download=1", nil)
 	reqDL.Host = "127.0.0.1:8080"
+	reqDL.SetBasicAuth("admin", "adminpass")
 	recDL := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recDL, reqDL)
 	if recDL.Code != http.StatusOK {
@@ -1232,6 +1250,18 @@ func TestLogsEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(recDL.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatalf("expected Content-Disposition attachment header, got: %s", recDL.Header().Get("Content-Disposition"))
+	}
+
+	// Test GET /logs without any auth mechanism configured returns 403 Forbidden
+	cfgNoAuth := testConfig()
+	cfgNoAuth.Web.BasicAuth.Username = ""
+	cfgNoAuth.Web.BasicAuth.Password = ""
+	sNoAuth := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfgNoAuth})
+	recNoAuth := httptest.NewRecorder()
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/logs", nil)
+	sNoAuth.Handler().ServeHTTP(recNoAuth, reqNoAuth)
+	if recNoAuth.Code != http.StatusForbidden {
+		t.Fatalf("unconfigured auth GET /logs status = %d, want 403", recNoAuth.Code)
 	}
 }
 
@@ -1341,7 +1371,15 @@ func TestBrokerSquareOffAll(t *testing.T) {
 			t.Fatalf("NewBrokerSession: %v", err)
 		}
 
+		unconfirmedReq := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		unconfirmedRec := do(t, s, unconfirmedReq)
+		if unconfirmedRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for unconfirmed square off, got %d: %s", unconfirmedRec.Code, unconfirmedRec.Body.String())
+		}
+
 		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(strings.NewReader(`{"confirm":true}`))
 		rec := do(t, s, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1612,13 +1650,13 @@ func TestCORSAndPreflight(t *testing.T) {
 
 	// 2. Test cross-origin GET request
 	getReq := localRequest(http.MethodGet, "/api/session")
-	getReq.Header.Set("Origin", "https://130.210.18.97.sslip.io")
+	getReq.Header.Set("Origin", "capacitor://localhost")
 	getRec := do(t, s, getReq)
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", getRec.Code)
 	}
-	if getRec.Header().Get("Access-Control-Allow-Origin") != "https://130.210.18.97.sslip.io" {
-		t.Fatalf("expected Access-Control-Allow-Origin = https://130.210.18.97.sslip.io, got %q", getRec.Header().Get("Access-Control-Allow-Origin"))
+	if getRec.Header().Get("Access-Control-Allow-Origin") != "capacitor://localhost" {
+		t.Fatalf("expected Access-Control-Allow-Origin = capacitor://localhost, got %q", getRec.Header().Get("Access-Control-Allow-Origin"))
 	}
 
 	// 3. Test WebSocket Origin check
@@ -1630,7 +1668,7 @@ func TestCORSAndPreflight(t *testing.T) {
 		{"http://127.0.0.1:8080", true},
 		{"capacitor://localhost", true},
 		{"http://localhost:3000", true},
-		{"https://130.210.18.97.sslip.io", true},
+		{"https://130.210.18.97.sslip.io", false},
 		{"http://10.0.2.2:8080", true},
 		{"http://192.168.1.100:18080", true},
 		{"https://scalper.tailscale.net", true},

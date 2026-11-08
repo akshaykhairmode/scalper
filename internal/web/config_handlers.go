@@ -32,6 +32,9 @@ type settingsPageData struct {
 }
 
 func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSecureResourceAccessHTML(w, r) {
+		return
+	}
 	s.configMu.RLock()
 	cfgPath := filepath.Clean(s.configPath)
 	currentCfg := s.cfg
@@ -99,6 +102,9 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSecureResourceAccess(w, r) {
+		return
+	}
 	s.configMu.RLock()
 	cfgPath := filepath.Clean(s.configPath)
 	s.configMu.RUnlock()
@@ -172,6 +178,9 @@ type updateConfigRequest struct {
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSecureResourceAccess(w, r) {
+		return
+	}
 	if !requireJSONContentType(r) {
 		_ = writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{
 			"ok":    false,

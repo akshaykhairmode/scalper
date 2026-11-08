@@ -159,6 +159,11 @@ type Server struct {
 	diagIPMu      sync.Mutex
 	diagIPCache   string
 	diagIPAt      time.Time
+
+	loginBreakerMu   sync.Mutex
+	loginFailures    int
+	loginBlockedTill time.Time
+	loginIPAttempts  map[string][]time.Time
 }
 
 type marginCacheEntry struct {
@@ -309,6 +314,7 @@ func New(opts Options) (*Server, error) {
 		deviceStore:         devStore,
 		webauthnChallenges:  make(map[string]webauthnStoredChallenge),
 		webauthnPairTokens:  make(map[string]time.Time),
+		loginIPAttempts:     make(map[string][]time.Time),
 		logDegraded:         opts.LogDegraded,
 		tokenPresent:        opts.TokenPresent,
 		started:             opts.Started,
@@ -496,7 +502,7 @@ func New(opts Options) (*Server, error) {
 
 	var h http.Handler = mux
 	h = s.serveAuthMiddleware(h)
-	h = corsMiddleware(h)
+	h = s.corsMiddleware(h)
 	h = securityHeaders(h)
 	h = s.accessLog(h)
 	h = requestID(h)
@@ -812,7 +818,139 @@ func tailLogFile(logPath string, maxLines int) ([]string, error) {
 	return rawLines, nil
 }
 
+func (s *Server) hasAuthMechanism() bool {
+	if s == nil {
+		return false
+	}
+	cfg := s.configSnapshot()
+	if strings.TrimSpace(cfg.Web.BasicAuth.Username) != "" {
+		return true
+	}
+	if s.deviceStore != nil {
+		if count, err := s.deviceStore.CountDevices(context.Background()); err == nil && count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) requireSecureResourceAccess(w http.ResponseWriter, r *http.Request) bool {
+	if !s.hasAuthMechanism() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "Access denied: basic_auth or biometric device enrollment is required to access logs and configuration",
+		})
+		return false
+	}
+	if !s.isServeAuthenticated(r) && !s.isDeviceBound(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Scalper Terminal"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "Authentication required",
+		})
+		return false
+	}
+	return true
+}
+
+func (s *Server) requireSecureResourceAccessHTML(w http.ResponseWriter, r *http.Request) bool {
+	if !s.hasAuthMechanism() {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><body style="background:#0b0e14;color:#ff7b72;font-family:sans-serif;padding:32px;text-align:center;">
+<h2>403 Forbidden</h2><p style="color:#8b949e;margin-top:8px;">Access denied: basic_auth or biometric device enrollment is required to access this page.</p>
+</body></html>`))
+		return false
+	}
+	if !s.isServeAuthenticated(r) && !s.isDeviceBound(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Scalper Terminal"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func (s *Server) checkLoginAllowed(r *http.Request) (retryAfter int, errMsg string) {
+	s.loginBreakerMu.Lock()
+	defer s.loginBreakerMu.Unlock()
+
+	now := s.now()
+
+	// 1. Check circuit breaker lockout (protects against Kotak 3-strike 24h freeze)
+	if !s.loginBlockedTill.IsZero() && now.Before(s.loginBlockedTill) {
+		waitSec := int(s.loginBlockedTill.Sub(now).Seconds()) + 1
+		return waitSec, "Login temporarily locked after consecutive failed broker attempts to prevent 24-hour Kotak account lockout. Please try again later."
+	}
+
+	// 2. IP-based rate limiting (max 5 attempts per 5 minutes)
+	clientIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(clientIP); err == nil {
+		clientIP = host
+	}
+	if s.loginIPAttempts == nil {
+		s.loginIPAttempts = make(map[string][]time.Time)
+	}
+	cutoff := now.Add(-5 * time.Minute)
+	if len(s.loginIPAttempts) > 256 {
+		for ip, timestamps := range s.loginIPAttempts {
+			var active []time.Time
+			for _, t := range timestamps {
+				if t.After(cutoff) {
+					active = append(active, t)
+				}
+			}
+			if len(active) == 0 {
+				delete(s.loginIPAttempts, ip)
+			} else {
+				s.loginIPAttempts[ip] = active
+			}
+		}
+	}
+	var recent []time.Time
+	for _, t := range s.loginIPAttempts[clientIP] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= 5 {
+		waitSec := int(recent[0].Add(5*time.Minute).Sub(now).Seconds()) + 1
+		if waitSec < 1 {
+			waitSec = 1
+		}
+		s.loginIPAttempts[clientIP] = recent
+		return waitSec, "Too many login attempts from this IP address. Please wait 5 minutes before trying again."
+	}
+
+	recent = append(recent, now)
+	s.loginIPAttempts[clientIP] = recent
+	return 0, ""
+}
+
+func (s *Server) recordBrokerLoginFailure() {
+	s.loginBreakerMu.Lock()
+	defer s.loginBreakerMu.Unlock()
+	s.loginFailures++
+	if s.loginFailures >= 2 {
+		s.loginBlockedTill = s.now().Add(10 * time.Minute)
+		s.log.Warn("login circuit breaker tripped after 2 failed broker logins; locked for 10 minutes to protect Kotak account from 24h freeze", "event", "broker_lockout_breaker_tripped")
+	}
+}
+
+func (s *Server) recordBrokerLoginSuccess() {
+	s.loginBreakerMu.Lock()
+	defer s.loginBreakerMu.Unlock()
+	s.loginFailures = 0
+	s.loginBlockedTill = time.Time{}
+}
+
 func (s *Server) handleLogsAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSecureResourceAccess(w, r) {
+		return
+	}
 	logPath := s.configSnapshot().Logging.File
 	if logPath == "" {
 		_ = writeJSON(w, http.StatusOK, map[string]any{
@@ -855,7 +993,10 @@ func (s *Server) handleLogsAPI(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLogsView(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleLogsView(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSecureResourceAccessHTML(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1039,6 +1180,11 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
+	if retryAfter, errMsg := s.checkLoginAllowed(r); errMsg != "" {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		_ = writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
 	var req struct {
 		TOTP string `json:"totp"`
 	}
@@ -1053,6 +1199,10 @@ func (s *Server) handleTotpLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.a.BeginLogin(r.Context(), flowID, req.TOTP); err != nil {
+		var inpErr *auth.InputError
+		if !errors.As(err, &inpErr) {
+			s.recordBrokerLoginFailure()
+		}
 		writeAuthError(w, err)
 		return
 	}
@@ -1077,6 +1227,11 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
+	if retryAfter, errMsg := s.checkLoginAllowed(r); errMsg != "" {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		_ = writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
 	var req struct {
 		MPIN string `json:"mpin"`
 	}
@@ -1096,9 +1251,14 @@ func (s *Server) handleMPINLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID, mpin string) {
 	session, err := s.a.CompleteLogin(r.Context(), flowID, mpin)
 	if err != nil {
+		var inpErr *auth.InputError
+		if !errors.As(err, &inpErr) && !errors.Is(err, auth.ErrNoPendingLogin) {
+			s.recordBrokerLoginFailure()
+		}
 		writeAuthError(w, err)
 		return
 	}
+	s.recordBrokerLoginSuccess()
 	cfg := s.configSnapshot()
 	if s.hsm != nil && cfg.Market.DataMode == "websocket" {
 		if err := s.hsm.Start(cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
@@ -1424,10 +1584,18 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin != "" {
+			if !s.isAllowedOrigin(r, origin) {
+				if r.Method == http.MethodOptions {
+					http.Error(w, "Forbidden: origin not allowed", http.StatusForbidden)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-Serve-Password, Accept, Origin, X-Device-ID, X-Serve-Session, X-Requested-With")

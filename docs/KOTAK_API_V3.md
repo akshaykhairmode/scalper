@@ -93,3 +93,9 @@ This document provides architectural guidance, endpoint mapping, rate limiting s
    If a transient broker error or rate-limit spike occurs, Scalper serves the last known valid state rather than blanking the terminal.
 4. **Header Telemetry:**
    `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` are continuously parsed from Kotak API responses and surfaced to the UI.
+5. **Anti-Lockout Protection (2-Strike Circuit Breaker):**
+   Kotak Neo enforces an aggressive security lockout: 3 failed login attempts lock your brokerage account for 24 hours. Scalper tracks consecutive broker login failures locally. After 2 consecutive failures, login endpoints are automatically locked for 10 minutes, guaranteeing that a third failure cannot reach Kotak and preventing a 24-hour brokerage account freeze.
+6. **Session Token Encryption at Rest (AES-256-GCM):**
+   Kotak broker tokens and session identifiers (`broker_token`, `broker_sid`) are encrypted using AES-256-GCM with authenticated tags before storing in SQLite. The encryption key is derived from `./data/.store.key` (permission `0600`) or the `SCALPER_STORE_KEY` environment variable.
+7. **Bulk Liquidation Confirmation Safeguard:**
+   Bulk square-off (`POST /api/broker/square-off-all`) strictly requires `{"confirm": true}` in the JSON payload and confirmation via frontend modal displaying total open position count. Unconfirmed requests return HTTP 400 Bad Request.

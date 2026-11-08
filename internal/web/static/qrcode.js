@@ -1,4 +1,4 @@
-// web/src/utils/qrcode.ts
+// src/utils/qrcode.ts
 var EXP = new Uint8Array(256);
 var LOG = new Uint8Array(256);
 var x = 1;

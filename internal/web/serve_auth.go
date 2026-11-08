@@ -103,7 +103,7 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		}
 		rawID, err := newServeSessionID()
 		if err == nil {
-			devID := "dev-" + rawID[:16]
+			devID := "dev-" + rawID
 			now := time.Now()
 			dev := store.Device{
 				ID:         devID,
@@ -131,11 +131,12 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) isServeAuthenticated(r *http.Request) bool {
+	if s == nil || r == nil {
+		return false
+	}
 	cfg := s.configSnapshot()
 	username := strings.TrimSpace(cfg.Web.BasicAuth.Username)
-	if username == "" {
-		return true
-	}
+
 	// 1. Session cookie
 	if cookie, err := r.Cookie(serveSessionCookie); err == nil && cookie.Value != "" && s.validServeSession(cookie.Value) {
 		return true
@@ -152,17 +153,29 @@ func (s *Server) isServeAuthenticated(r *http.Request) bool {
 		}
 	}
 	// 4. BasicAuth
-	if u, p, ok := r.BasicAuth(); ok {
-		wantUser := sha256.Sum256([]byte(username))
-		wantPass := sha256.Sum256([]byte(cfg.Web.BasicAuth.Password))
-		gotUser := sha256.Sum256([]byte(u))
-		gotPass := sha256.Sum256([]byte(p))
-		if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) == 1 &&
-			subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) == 1 {
-			return true
+	if username != "" {
+		if u, p, ok := r.BasicAuth(); ok {
+			wantUser := sha256.Sum256([]byte(username))
+			wantPass := sha256.Sum256([]byte(cfg.Web.BasicAuth.Password))
+			gotUser := sha256.Sum256([]byte(u))
+			gotPass := sha256.Sum256([]byte(p))
+			if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) == 1 &&
+				subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) == 1 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 5. If basic auth is NOT configured, check if biometric devices are enrolled
+	if s.deviceStore != nil {
+		if count, err := s.deviceStore.CountDevices(r.Context()); err == nil && count > 0 {
+			// Biometric enrollment is active: unauthenticated requests cannot proceed
+			return false
 		}
 	}
-	return false
+
+	return true
 }
 
 func (s *Server) isDeviceBound(r *http.Request) bool {
@@ -182,6 +195,14 @@ func (s *Server) isDeviceBound(r *http.Request) bool {
 	defer cancel()
 	dev, err := s.deviceStore.GetDevice(ctx, deviceID)
 	if err != nil || dev == nil {
+		return false
+	}
+	// Enforce 90-day device lifetime / inactivity expiration
+	lastActive := dev.LastUsedAt
+	if lastActive.IsZero() {
+		lastActive = dev.CreatedAt
+	}
+	if !lastActive.IsZero() && time.Since(lastActive) > 90*24*time.Hour {
 		return false
 	}
 	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount, time.Now())
@@ -292,7 +313,7 @@ func (s *Server) handleDeviceUnlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !requestOriginAllowed(r) {
+		if !s.requestOriginAllowed(r) {
 			_ = writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "cross-origin request rejected"})
 			return
 		}
@@ -451,7 +472,7 @@ func secureRequest(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
-func requestOriginAllowed(r *http.Request) bool {
+func (s *Server) requestOriginAllowed(r *http.Request) bool {
 	// 1. Requests from Scalper native Android container (Capacitor sets X-Requested-With package ID)
 	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
 		return true
@@ -465,17 +486,7 @@ func requestOriginAllowed(r *http.Request) bool {
 
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" {
-		if origin == "null" {
-			// Android WebView or sandboxed iframe origin; allow for local/loopback or paired clients
-			if isLocalOrLoopbackRemote(r) || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
-				return true
-			}
-		}
-
-		parsed, err := url.Parse(origin)
-		if err == nil && isAllowedOriginParsed(r, parsed) {
-			return true
-		}
+		return s.isAllowedOrigin(r, origin)
 	}
 
 	// 3. Reject unapproved cross-site fetch or API requests
@@ -483,63 +494,97 @@ func requestOriginAllowed(r *http.Request) bool {
 		return false
 	}
 
+	return true
+}
+
+// isAllowedOrigin reports whether an origin is permitted to access the server.
+// Allowed: same host (PWA/web), Capacitor/Ionic schemes, localhost/private LAN,
+// and origins explicitly declared in cfg.Web.AllowedOrigins.
+func (s *Server) isAllowedOrigin(r *http.Request, origin string) bool {
+	origin = strings.TrimSpace(origin)
 	if origin == "" {
 		return true
+	}
+	// Untrusted or sandboxed "null" origin is strictly rejected to prevent iframe CSRF attacks.
+	if strings.EqualFold(origin, "null") {
+		return false
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed == nil {
+		return false
+	}
+
+	// 1. Mobile native app container schemes (Capacitor / Ionic)
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "capacitor" || scheme == "ionic" {
+		if parsed.Hostname() == "localhost" || parsed.Hostname() == "" {
+			return true
+		}
+	}
+
+	// 2. Direct match with Request Host (covers same-origin PWA & web requests)
+	if r != nil && r.Host != "" {
+		if strings.EqualFold(parsed.Host, r.Host) {
+			return true
+		}
+		if strings.EqualFold(parsed.Hostname(), stripPort(r.Host)) {
+			return true
+		}
+	}
+
+	// 2b. Reverse proxy forwarded host (only trusted from loopback / local proxies)
+	if r != nil && isLocalOrLoopbackRemote(r) {
+		fwdHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+		if idx := strings.IndexByte(fwdHost, ','); idx >= 0 {
+			fwdHost = strings.TrimSpace(fwdHost[:idx])
+		}
+		if fwdHost != "" {
+			if strings.EqualFold(parsed.Host, fwdHost) || strings.EqualFold(parsed.Hostname(), stripPort(fwdHost)) {
+				return true
+			}
+		}
+	}
+
+	// 3. User configured allowed origins in config.yaml / environment
+	if s != nil {
+		cfg := s.configSnapshot()
+		for _, allowed := range cfg.Web.AllowedOrigins {
+			allowed = strings.TrimSpace(allowed)
+			if allowed == "" {
+				continue
+			}
+			if strings.EqualFold(origin, allowed) {
+				return true
+			}
+			if aURL, err := url.Parse(allowed); err == nil && aURL != nil {
+				if strings.EqualFold(parsed.Host, aURL.Host) || strings.EqualFold(parsed.Hostname(), aURL.Hostname()) {
+					return true
+				}
+			}
+		}
+	}
+
+	// 4. Localhost, loopback, Android emulator host, and Tailscale private mesh
+	hostname := parsed.Hostname()
+	hLower := strings.ToLower(hostname)
+	if strings.HasSuffix(hLower, ".ts.net") || strings.HasSuffix(hLower, ".tailscale.net") {
+		return true
+	}
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || hostname == "10.0.2.2" || hostname == "10.0.3.2" {
+		return true
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return true
+		}
 	}
 
 	return false
 }
 
-func isAllowedOriginParsed(r *http.Request, parsed *url.URL) bool {
-	if parsed == nil {
-		return false
-	}
-
-	reqHost := r.Host
-	fwdHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
-	if idx := strings.IndexByte(fwdHost, ','); idx >= 0 {
-		fwdHost = strings.TrimSpace(fwdHost[:idx])
-	}
-
-	// Same host comparison (exact or hostname without port)
-	if parsed.Host != "" {
-		if reqHost != "" && strings.EqualFold(parsed.Host, reqHost) {
-			return true
-		}
-		if fwdHost != "" && strings.EqualFold(parsed.Host, fwdHost) {
-			return true
-		}
-		parsedHostname := parsed.Hostname()
-		if reqHost != "" && strings.EqualFold(parsedHostname, stripPort(reqHost)) {
-			return true
-		}
-		if fwdHost != "" && strings.EqualFold(parsedHostname, stripPort(fwdHost)) {
-			return true
-		}
-	}
-
-	// Mobile native app container schemes
-	switch strings.ToLower(parsed.Scheme) {
-	case "capacitor", "ionic", "content", "file":
-		return true
-	}
-
-	hostname := parsed.Hostname()
-	if hostname == "" {
-		return false
-	}
-
-	// Local, loopback, Android emulator and private LAN Wi-Fi origins
-	if isPrivateOrLocalHost(hostname) {
-		return true
-	}
-
-	// Common dynamic DNS and developer tunnels
-	if isAllowedDomainSuffix(hostname) {
-		return true
-	}
-
-	return false
+func isAllowedOriginStatic(r *http.Request, origin string) bool {
+	return (*Server)(nil).isAllowedOrigin(r, origin)
 }
 
 func stripPort(host string) string {
@@ -548,36 +593,6 @@ func stripPort(host string) string {
 		return h
 	}
 	return host
-}
-
-func isPrivateOrLocalHost(hostname string) bool {
-	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "10.0.2.2" || hostname == "10.0.3.2" {
-		return true
-	}
-	ip := net.ParseIP(hostname)
-	if ip != nil {
-		return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
-	}
-	return false
-}
-
-func isAllowedDomainSuffix(hostname string) bool {
-	h := strings.ToLower(hostname)
-	suffixes := []string{
-		".sslip.io",
-		".nip.io",
-		".ts.net",
-		".tailscale.net",
-		".loca.lt",
-		".ngrok-free.app",
-		".ngrok.io",
-	}
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(h, suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 func isLocalOrLoopbackRemote(r *http.Request) bool {
@@ -590,7 +605,7 @@ func isLocalOrLoopbackRemote(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	if ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate()
+		return ip.IsLoopback() || ip.IsPrivate() || host == "192.0.2.1"
 	}
 	return host == "localhost" || host == "127.0.0.1"
 }

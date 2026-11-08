@@ -452,5 +452,12 @@ func (c Config) validateWeb() error {
 	if hasUser != hasPass {
 		return fieldErr("web.basic_auth", "username and password must both be set or both be empty")
 	}
+
+	host, _, err := net.SplitHostPort(c.App.Listen)
+	if err == nil {
+		if !isLoopbackHost(host) && !c.Web.InsecureNoAuth && (!hasUser || !hasPass) {
+			return fieldErr("web.basic_auth", "app.listen binds to public/LAN address %q but web.basic_auth is unconfigured; configure web.basic_auth, set web.insecure_no_auth: true, or bind to localhost (127.0.0.1)", c.App.Listen)
+		}
+	}
 	return nil
 }

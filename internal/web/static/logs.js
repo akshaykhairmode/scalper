@@ -1,4 +1,4 @@
-// web/src/logs.ts
+// src/logs.ts
 function initLogsViewer() {
   let allLines = [];
   let isInitialLoad = true;

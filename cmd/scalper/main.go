@@ -42,6 +42,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	configPath := fs.String("config", "config.yaml", "path to config.yaml (defaults to config.yaml in the current directory)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	_ = fs.Bool("serve", true, "serve mode (always enabled; flag retained for backwards compatibility)")
+	insecureNoAuth := fs.Bool("insecure-no-auth", false, "allow binding to public 0.0.0.0 without basic auth")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,6 +54,9 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}
 
 	loadOpts := []config.Option{config.WithServeMode(true)}
+	if *insecureNoAuth {
+		loadOpts = append(loadOpts, config.WithInsecureNoAuth(true))
+	}
 	cfg, err := config.Load(*configPath, loadOpts...)
 	if err != nil {
 		return err

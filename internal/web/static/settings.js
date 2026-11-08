@@ -1,4 +1,4 @@
-// web/src/settings.ts
+// src/settings.ts
 (function() {
   "use strict";
   let currentConfig = null;

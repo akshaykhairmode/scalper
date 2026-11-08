@@ -17,7 +17,9 @@ import (
 //nolint:unparam
 func localRequestWithBody(method, target string, body []byte) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:50000"
 	req.Host = "127.0.0.1:8080"
+	req.SetBasicAuth("admin", "adminpass")
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }

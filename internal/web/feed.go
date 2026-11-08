@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -19,21 +18,14 @@ var feedUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
-		if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal") {
-			return true
-		}
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin == "" {
 			return true
 		}
-		if origin == "null" {
-			return isLocalOrLoopbackRemote(r) || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Requested-With")), "com.scalper.terminal")
-		}
-		parsed, err := url.Parse(origin)
-		if err != nil {
+		if strings.EqualFold(origin, "null") {
 			return false
 		}
-		return isAllowedOriginParsed(r, parsed)
+		return isAllowedOriginStatic(r, origin)
 	},
 }
 
@@ -56,7 +48,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "market and order feeds are not configured", http.StatusServiceUnavailable)
 		return
 	}
-	conn, err := feedUpgrader.Upgrade(w, r, nil)
+	upgrader := feedUpgrader
+	if s != nil {
+		upgrader.CheckOrigin = func(req *http.Request) bool {
+			origin := strings.TrimSpace(req.Header.Get("Origin"))
+			if origin == "" {
+				return true
+			}
+			if strings.EqualFold(origin, "null") {
+				return false
+			}
+			return s.isAllowedOrigin(req, origin)
+		}
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.log.Warn("websocket upgrade failed", "event", "websocket_upgrade_failed", "error", err)
 		return

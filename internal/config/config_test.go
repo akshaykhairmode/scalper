@@ -324,7 +324,7 @@ func TestSummaryHasNoPII(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["listen"] != "0.0.0.0:8080" {
+	if m["listen"] != "127.0.0.1:8080" {
 		t.Fatalf("summary listen = %v", m["listen"])
 	}
 }
@@ -372,22 +372,11 @@ func TestWithServeMode(t *testing.T) {
 	if !cfg.App.ServeMode {
 		t.Fatal("ServeMode should be true")
 	}
-	if cfg.App.Listen != "0.0.0.0:8080" {
-		t.Fatalf("listen = %q, want 0.0.0.0:8080", cfg.App.Listen)
+	if cfg.App.Listen != "127.0.0.1:8080" {
+		t.Fatalf("listen = %q, want 127.0.0.1:8080", cfg.App.Listen)
 	}
 	if cfg.Web.OpenBrowser {
 		t.Fatal("OpenBrowser should be false in serve mode")
-	}
-	warnings := cfg.Warnings()
-	foundAuthWarning := false
-	for _, w := range warnings {
-		if strings.Contains(w, "serve mode is active without basic auth") {
-			foundAuthWarning = true
-			break
-		}
-	}
-	if !foundAuthWarning {
-		t.Fatalf("expected serve mode warning in warnings: %v", warnings)
 	}
 }
 
@@ -407,5 +396,22 @@ func TestBasicAuthValidation(t *testing.T) {
 	c.Web.BasicAuth.Password = "secret"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("expected valid config when both set, got: %v", err)
+	}
+
+	// 0.0.0.0 / unspecified binding without basic auth must fail unless InsecureNoAuth is set
+	for _, nonLoopbackListen := range []string{"0.0.0.0:8080", "[::]:8080"} {
+		cPublic := validConfig()
+		cPublic.App.Listen = nonLoopbackListen
+		cPublic.Web.BasicAuth.Username = ""
+		cPublic.Web.BasicAuth.Password = ""
+		cPublic.Web.InsecureNoAuth = false
+		if err := cPublic.Validate(); err == nil {
+			t.Fatalf("expected error when binding to %s without basic auth", nonLoopbackListen)
+		}
+
+		cPublic.Web.InsecureNoAuth = true
+		if err := cPublic.Validate(); err != nil {
+			t.Fatalf("expected valid config for %s with InsecureNoAuth=true, got: %v", nonLoopbackListen, err)
+		}
 	}
 }

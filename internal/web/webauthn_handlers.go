@@ -32,6 +32,26 @@ type DeviceStore interface {
 	CountDevices(ctx context.Context) (int, error)
 }
 
+type safeDeviceItem struct {
+	ID         string    `json:"id"`
+	DeviceName string    `json:"device_name"`
+	Algorithm  int64     `json:"algorithm"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	IsCurrent  bool      `json:"is_current,omitempty"`
+}
+
+func toSafeDeviceItem(d store.Device, isCurrent bool) safeDeviceItem {
+	return safeDeviceItem{
+		ID:         d.ID,
+		DeviceName: d.DeviceName,
+		Algorithm:  d.Algorithm,
+		CreatedAt:  d.CreatedAt,
+		LastUsedAt: d.LastUsedAt,
+		IsCurrent:  isCurrent,
+	}
+}
+
 func (s *Server) webAuthnForRequest(r *http.Request) *webauthn.WebAuthn {
 	rpID := "localhost"
 	if r != nil && r.Host != "" {
@@ -55,12 +75,12 @@ func (s *Server) webAuthnForRequest(r *http.Request) *webauthn.WebAuthn {
 	if r != nil && secureRequest(r) {
 		scheme = "https"
 	}
-	origins := []string{"http://localhost:8080", "http://127.0.0.1:8080", "https://localhost"}
+	origins := []string{"http://localhost:8080", "http://127.0.0.1:8080", "https://localhost", "capacitor://localhost"}
 	if r != nil && r.Host != "" {
 		origins = append(origins, fmt.Sprintf("%s://%s", scheme, r.Host))
 	}
 	if r != nil {
-		if reqOrigin := strings.TrimSpace(r.Header.Get("Origin")); reqOrigin != "" {
+		if reqOrigin := strings.TrimSpace(r.Header.Get("Origin")); reqOrigin != "" && s.isAllowedOrigin(r, reqOrigin) {
 			origins = append(origins, reqOrigin)
 		}
 	}
@@ -103,7 +123,7 @@ func (s *Server) takeWebAuthnChallenge(challenge string) (webauthnStoredChalleng
 }
 
 func (s *Server) createPairToken() (string, time.Time, error) {
-	var b [16]byte
+	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", time.Time{}, err
 	}
@@ -132,13 +152,27 @@ func (s *Server) validPairToken(token string) bool {
 	return ok && now.Before(exp)
 }
 
-func (s *Server) consumePairToken(token string) {
-	if strings.TrimSpace(token) == "" {
-		return
+// takePairToken atomically validates and consumes the pairing token under mutex lock.
+func (s *Server) takePairToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
 	}
 	s.webauthnChallengesMu.Lock()
 	defer s.webauthnChallengesMu.Unlock()
+	now := time.Now()
+	for t, exp := range s.webauthnPairTokens {
+		if now.After(exp) {
+			delete(s.webauthnPairTokens, t)
+		}
+	}
+	exp, ok := s.webauthnPairTokens[token]
+	if !ok || now.After(exp) {
+		delete(s.webauthnPairTokens, token)
+		return false
+	}
 	delete(s.webauthnPairTokens, token)
+	return true
 }
 
 func extractPairToken(r *http.Request) string {
@@ -316,14 +350,14 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 
 	var sessionToken string
 	if sc.Pairing || isPairing {
-		s.consumePairToken(pairToken)
+		s.takePairToken(pairToken)
 		sessionToken = s.issueServeSession(w, r)
 	}
 
 	s.log.Info("registered webauthn device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
-		"device": dev,
+		"device": toSafeDeviceItem(dev, true),
 		"token":  sessionToken,
 	})
 }
@@ -541,16 +575,9 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		currentDevID = cookie.Value
 	}
 
-	type deviceItem struct {
-		store.Device
-		IsCurrent bool `json:"is_current"`
-	}
-	items := make([]deviceItem, len(devices))
+	items := make([]safeDeviceItem, len(devices))
 	for i, d := range devices {
-		items[i] = deviceItem{
-			Device:    d,
-			IsCurrent: d.ID == currentDevID,
-		}
+		items[i] = toSafeDeviceItem(d, d.ID == currentDevID)
 	}
 
 	_ = writeJSON(w, http.StatusOK, map[string]any{
@@ -620,12 +647,23 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	if req.PairToken != "" && s.validPairToken(req.PairToken) {
-		isPairing = true
-		pairToken = req.PairToken
-	} else if req.PairTokAlt != "" && s.validPairToken(req.PairTokAlt) {
-		isPairing = true
-		pairToken = req.PairTokAlt
+
+	candToken := strings.TrimSpace(req.PairToken)
+	if candToken == "" {
+		candToken = strings.TrimSpace(req.PairTokAlt)
+	}
+	if candToken == "" {
+		candToken = strings.TrimSpace(pairToken)
+	}
+
+	if candToken != "" {
+		if !s.takePairToken(candToken) {
+			_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Invalid or expired pairing token"})
+			return
+		}
+	} else if !s.isServeAuthenticated(r) && !s.isDeviceBound(r) {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Authentication required to bind device"})
+		return
 	}
 
 	deviceName := strings.TrimSpace(req.DeviceName)
@@ -653,7 +691,7 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
 		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Failed to create device ID"})
 		return
 	}
-	devID := "dev-" + rawID[:16]
+	devID := "dev-" + rawID
 	now := time.Now()
 	dev := store.Device{
 		ID:         devID,
@@ -670,15 +708,12 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setDeviceBindingCookie(w, r, devID)
-	if isPairing {
-		s.consumePairToken(pairToken)
-	}
 	sessionToken := s.issueServeSession(w, r)
 
 	s.log.Info("bound device", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
-		"device": dev,
+		"device": toSafeDeviceItem(dev, true),
 		"token":  sessionToken,
 	})
 }

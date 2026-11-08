@@ -35,6 +35,7 @@ kotak:
   neo_fin_key: "neotradeapi"
 web:
   open_browser: false
+  insecure_no_auth: true
 `, listen, dbPath)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

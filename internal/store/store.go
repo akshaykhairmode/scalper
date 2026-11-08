@@ -3,8 +3,11 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,9 +30,10 @@ var migrationFS embed.FS
 
 // Options configures Store.
 type Options struct {
-	Path   string
-	Logger *slog.Logger
-	Now    func() time.Time
+	Path          string
+	Logger        *slog.Logger
+	Now           func() time.Time
+	EncryptionKey []byte
 }
 
 // Store owns the database handle.
@@ -38,6 +42,7 @@ type Store struct {
 	path string
 	log  *slog.Logger
 	now  func() time.Time
+	key  []byte
 }
 
 // Open creates the database directory, opens SQLite in WAL mode and applies
@@ -58,8 +63,15 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve db path %s: %w", opts.Path, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+	dbDir := filepath.Dir(abs)
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		return nil, fmt.Errorf("store: create db directory: %w", err)
+	}
+	_ = os.Chmod(dbDir, 0o700) // #nosec G302
+
+	encKey := opts.EncryptionKey
+	if len(encKey) == 0 {
+		encKey = loadOrCreateKey(dbDir)
 	}
 
 	q := url.Values{}
@@ -84,13 +96,35 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		return nil, errors.Join(fmt.Errorf("store: ping %s: %w", abs, err), cerr)
 	}
 
-	s := &Store{db: db, path: abs, log: log, now: now}
+	s := &Store{db: db, path: abs, log: log, now: now, key: encKey}
 	if err := s.migrate(ctx); err != nil {
 		cerr := db.Close()
 		return nil, errors.Join(err, cerr)
 	}
+	_ = os.Chmod(abs, 0o600)
 	log.Info("database ready", "event", "db_ready", "path", abs)
 	return s, nil
+}
+
+func loadOrCreateKey(dir string) []byte {
+	if envKey := strings.TrimSpace(os.Getenv("SCALPER_STORE_KEY")); envKey != "" {
+		if raw, err := hex.DecodeString(envKey); err == nil && len(raw) == 32 {
+			return raw
+		}
+		// Hash any arbitrary passphrase to derive a deterministic 32-byte key
+		h := sha256.Sum256([]byte(envKey))
+		return h[:]
+	}
+	keyPath := filepath.Join(dir, ".store.key")
+	if data, err := os.ReadFile(keyPath); err == nil && len(data) == 32 { // #nosec G304
+		return data
+	}
+	var newKey [32]byte
+	if _, err := rand.Read(newKey[:]); err == nil {
+		_ = os.WriteFile(keyPath, newKey[:], 0o600) // #nosec G304 G703
+		return newKey[:]
+	}
+	return nil
 }
 
 type migration struct {

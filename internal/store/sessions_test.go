@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,17 @@ func TestSaveAndGetLatestSession(t *testing.T) {
 	}
 	if got.BaseURL != sess.BaseURL {
 		t.Errorf("BaseURL = %q, want %q", got.BaseURL, sess.BaseURL)
+	}
+
+	var rawToken, rawSID string
+	if err := s.db.QueryRowContext(ctx, "SELECT broker_token, broker_sid FROM sessions WHERE token_id = ?", sess.AccessToken).Scan(&rawToken, &rawSID); err != nil {
+		t.Fatalf("query raw: %v", err)
+	}
+	if !strings.HasPrefix(rawToken, "enc:v1:") {
+		t.Errorf("expected encrypted token with enc:v1: prefix, got %q", rawToken)
+	}
+	if !strings.HasPrefix(rawSID, "enc:v1:") {
+		t.Errorf("expected encrypted sid with enc:v1: prefix, got %q", rawSID)
 	}
 	if got.FeedURL != sess.FeedURL {
 		t.Errorf("FeedURL = %q, want %q", got.FeedURL, sess.FeedURL)

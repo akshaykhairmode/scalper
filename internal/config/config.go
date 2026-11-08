@@ -185,8 +185,15 @@ type Scrip struct {
 
 // Web holds browser settings.
 type Web struct {
-	OpenBrowser bool      `yaml:"open_browser" json:"open_browser"`
-	BasicAuth   BasicAuth `yaml:"basic_auth" json:"basic_auth"`
+	OpenBrowser    bool      `yaml:"open_browser" json:"open_browser"`
+	BasicAuth      BasicAuth `yaml:"basic_auth" json:"basic_auth"`
+	AllowedOrigins []string  `yaml:"allowed_origins" json:"allowed_origins"`
+	InsecureNoAuth bool      `yaml:"insecure_no_auth" json:"insecure_no_auth"`
+}
+
+// HasBasicAuth reports whether both username and password are non-empty.
+func (w Web) HasBasicAuth() bool {
+	return strings.TrimSpace(w.BasicAuth.Username) != "" && strings.TrimSpace(w.BasicAuth.Password) != ""
 }
 
 // BasicAuth holds optional HTTP Basic Auth credentials for serve mode.
@@ -201,7 +208,7 @@ type BasicAuth struct {
 func Default() Config {
 	return Config{
 		App: App{
-			Listen:    "0.0.0.0:8080",
+			Listen:    "127.0.0.1:8080",
 			DBPath:    "./data/scalper.db",
 			Timezone:  "Asia/Kolkata",
 			ServeMode: true,
@@ -316,19 +323,26 @@ func Default() Config {
 type Option func(*Config)
 
 // WithServeMode configures serve mode on the Config: binds listen to 0.0.0.0
-// (preserving any configured port), sets ServeMode to true, and disables browser auto-open.
-// WithServeMode configures serve mode on the Config: binds listen to 0.0.0.0
-// (preserving any configured port), sets ServeMode to true, and disables browser auto-open.
+// only if unspecified, sets ServeMode to true, and disables browser auto-open.
 func WithServeMode(_ bool) Option {
 	return func(c *Config) {
 		host, port, err := net.SplitHostPort(c.App.Listen)
 		if err == nil && port != "" {
-			c.App.Listen = net.JoinHostPort("0.0.0.0", port)
+			if host == "" {
+				c.App.Listen = net.JoinHostPort("0.0.0.0", port)
+			}
 		} else if host == "" && port == "" {
 			c.App.Listen = "0.0.0.0:8080"
 		}
 		c.App.ServeMode = true
 		c.Web.OpenBrowser = false
+	}
+}
+
+// WithInsecureNoAuth allows binding to public interfaces without basic auth.
+func WithInsecureNoAuth(insecure bool) Option {
+	return func(c *Config) {
+		c.Web.InsecureNoAuth = insecure
 	}
 }
 
@@ -422,6 +436,17 @@ func (c *Config) applyEnv() {
 		c.Web.BasicAuth.Password = strings.TrimSpace(v)
 	} else if v, ok := os.LookupEnv("SCALPER_BASIC_AUTH_PASSWORD"); ok && strings.TrimSpace(v) != "" {
 		c.Web.BasicAuth.Password = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("SCALPER_INSECURE_NO_AUTH"); ok {
+		c.Web.InsecureNoAuth = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := os.LookupEnv("SCALPER_ALLOWED_ORIGINS"); ok && strings.TrimSpace(v) != "" {
+		parts := strings.Split(v, ",")
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				c.Web.AllowedOrigins = append(c.Web.AllowedOrigins, s)
+			}
+		}
 	}
 }
 

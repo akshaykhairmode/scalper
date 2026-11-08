@@ -1,4 +1,4 @@
-// web/src/chart/patterns.ts
+// src/chart/patterns.ts
 function calculateATR(candles, period = 14) {
   if (!candles || candles.length < 2) return [];
   const atrs = new Array(candles.length).fill(0);
@@ -1199,7 +1199,7 @@ function detectAllPatterns(candles, {
   return result;
 }
 
-// web/src/charts.ts
+// src/charts.ts
 var chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -3657,7 +3657,7 @@ var CandleChart = class {
   }
 };
 
-// web/src/utils/qrcode.ts
+// src/utils/qrcode.ts
 var EXP = new Uint8Array(256);
 var LOG = new Uint8Array(256);
 var x = 1;
@@ -3907,7 +3907,7 @@ function generateQRCodeSVG(text, size = 220) {
   </svg>`;
 }
 
-// web/src/app.ts
+// src/app.ts
 var $ = (id) => document.getElementById(id);
 var $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 var esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({

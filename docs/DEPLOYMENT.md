@@ -83,3 +83,21 @@ You don't have to wait for a git commit to deploy. You can trigger it at any tim
 - **Zero Secret Bleeding**: Secrets stored in your fork are private to your GitHub account. No other fork or upstream repository can view them.
 - **No Git Leaks**: Your phone number, UCC, passwords, and API keys are injected directly into the server's environment via SSH stdin. They are never committed to git.
 - **File System Protection**: Credentials on the server reside in `/etc/default/scalper` with `chmod 600`, inaccessible to unprivileged processes.
+- **Database Encryption**: Broker tokens and session IDs in SQLite are encrypted at rest with AES-256-GCM. The key resides at `./data/.store.key` (`chmod 600`) or via `SCALPER_STORE_KEY`.
+
+---
+
+## 6. Oracle Cloud Architecture & Network Hardening
+
+### Listen Address Recommendations
+* **Behind Reverse Proxy (Caddy, Nginx, Traefik) [Recommended]:**
+  Configure `listen: "127.0.0.1:8080"` in `config.yaml`. The reverse proxy handles public TLS termination on ports 80/443 and proxies traffic to loopback.
+* **Direct Internet-Facing (`0.0.0.0:8080`):**
+  If Scalper binds directly to `0.0.0.0:8080`, **Basic Auth (`web.basic_auth`) is strictly mandatory**. Scalper refuses to start if bound to `0.0.0.0` without basic authentication (override via `web.insecure_no_auth: true` or `--insecure-no-auth` CLI flag).
+
+### CORS & Mobile Connectivity (PWA vs Native App)
+* **PWA (Progressive Web App):** Runs same-origin on your server's domain (`https://scalper.yourdomain.com`). No cross-origin permissions needed.
+* **Capacitor Android / iOS Native App:** Communicates cross-origin from the local webview (`capacitor://localhost` or `https://localhost`). Scalper strictly allowlists mobile container schemes, server `Host`, loopback, and private LAN IPs while rejecting arbitrary third-party web origins. Custom domains can be configured in `web.allowed_origins`.
+
+### Protected Resources
+* Endpoints `/logs`, `/api/logs`, `/settings`, and `/api/config` require an active authentication mechanism (`web.basic_auth` or enrolled biometric device) and valid credentials. If no authentication mechanism is configured, access is rejected with `403 Forbidden`.
