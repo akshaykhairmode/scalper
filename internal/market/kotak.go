@@ -501,28 +501,29 @@ type rawKotakDepthLevel struct {
 }
 
 type rawKotakQuoteRow struct {
-	ExchangeToken   json.RawMessage `json:"exchange_token"`
-	PSymbol         json.RawMessage `json:"p_symbol"`
-	PSymbolCamel    json.RawMessage `json:"pSymbol"`
-	DisplaySymbol   json.RawMessage `json:"display_symbol"`
-	Symbol          json.RawMessage `json:"symbol"`
-	Exchange        json.RawMessage `json:"exchange"`
-	ExchangeSegment json.RawMessage `json:"exchange_segment"`
-	LstupTime       json.RawMessage `json:"lstup_time"`
-	Timestamp       json.RawMessage `json:"timestamp"`
-	LTP             json.RawMessage `json:"ltp"`
-	LastPrice       json.RawMessage `json:"last_price"`
-	Change          json.RawMessage `json:"change"`
-	PerChange       json.RawMessage `json:"per_change"`
-	ChangePct       json.RawMessage `json:"change_pct"`
-	LastVolume      json.RawMessage `json:"last_volume"`
-	Volume          json.RawMessage `json:"volume"`
-	OI              json.RawMessage `json:"oi"`
-	OpenInterest    json.RawMessage `json:"open_interest"`
-	OpenInt         json.RawMessage `json:"open_int"`
-	Close           json.RawMessage `json:"close"`
-	PreviousClose   json.RawMessage `json:"previous_close"`
-	OHLC            *struct {
+	ExchangeToken     json.RawMessage `json:"exchange_token"`
+	PSymbol           json.RawMessage `json:"p_symbol"`
+	PSymbolCamel      json.RawMessage `json:"pSymbol"`
+	DisplaySymbol     json.RawMessage `json:"display_symbol"`
+	Symbol            json.RawMessage `json:"symbol"`
+	Exchange          json.RawMessage `json:"exchange"`
+	ExchangeSegment   json.RawMessage `json:"exchange_segment"`
+	LstupTime         json.RawMessage `json:"lstup_time"`
+	Timestamp         json.RawMessage `json:"timestamp"`
+	LTP               json.RawMessage `json:"ltp"`
+	LastPrice         json.RawMessage `json:"last_price"`
+	Change            json.RawMessage `json:"change"`
+	PerChange         json.RawMessage `json:"per_change"`
+	ChangePct         json.RawMessage `json:"change_pct"`
+	LastVolume        json.RawMessage `json:"last_volume"`
+	Volume            json.RawMessage `json:"volume"`
+	OI                json.RawMessage `json:"oi"`
+	OpenInterest      json.RawMessage `json:"open_interest"`
+	OpenInterestCamel json.RawMessage `json:"openInterest"`
+	OpenInt           json.RawMessage `json:"open_int"`
+	Close             json.RawMessage `json:"close"`
+	PreviousClose     json.RawMessage `json:"previous_close"`
+	OHLC              *struct {
 		Close         json.RawMessage `json:"close"`
 		PreviousClose json.RawMessage `json:"previous_close"`
 	} `json:"ohlc"`
@@ -638,7 +639,7 @@ func decodeRawQuoteRow(row *rawKotakQuoteRow) (Quote, error) {
 	quote.Change, _ = firstRawFloat(row.Change)
 	quote.ChangePct, _ = firstRawFloat(row.PerChange, row.ChangePct)
 	quote.Volume = firstRawInt(row.LastVolume, row.Volume)
-	quote.OI = firstRawInt(row.OI, row.OpenInterest, row.OpenInt)
+	quote.OI = firstRawInt(row.OI, row.OpenInterest, row.OpenInterestCamel, row.OpenInt)
 
 	if row.OHLC != nil {
 		quote.PreviousClose, _ = firstRawFloat(row.OHLC.Close, row.OHLC.PreviousClose)

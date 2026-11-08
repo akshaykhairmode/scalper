@@ -1514,15 +1514,23 @@ function startLivePolling() {
   // up and subscribed without requiring a manual Refresh click.
   if (!underlyingTimer) {
     underlyingTimer = window.setInterval(async () => {
-      if (document.hidden || !S.marketOpen) return;
+      if (document.hidden || !S.session?.authenticated) return;
       try {
         applyIndexQuotes(await getJSON("/api/indices"));
         updateFeedSubscriptions();
         renderHeader();
+        if (S.activeIndex && S.expiry) {
+          const center = num(S.spots.get(S.activeIndex)?.ltp);
+          const chainRaw = await getJSON(chainURL({ center }));
+          acceptChainPage(chainRaw);
+          renderChain(true);
+          renderPaneHeaders();
+          renderPCR();
+        }
       } catch (error) {
-        console.warn("underlying quote refresh failed", error);
+        console.warn("underlying/chain quote refresh failed", error);
       }
-    }, 30000);
+    }, 20000);
   }
 }
 
@@ -1654,6 +1662,7 @@ function handleTickData(data, { batch = false } = {}) {
       renderHeader();
       renderPaneHeaders();
       renderOrderPad();
+      renderPCR();
     }
     return { spot: true };
   }
@@ -2265,7 +2274,7 @@ function toggleAllChartTrades() {
     button.setAttribute("aria-pressed", S.showTrades ? "true" : "false");
   }
   updateChartTrades();
-  toast(S.showTrades ? "Execution markers enabled" : "Execution markers hidden", "ok", 2000);
+  toast(S.showTrades ? "Orders & execution overlays enabled" : "Orders & execution overlays hidden", "ok", 2000);
   return S.showTrades;
 }
 
@@ -2400,16 +2409,12 @@ async function loadCharts(forceRefresh = false) {
       chart.setData([], { symbol: key });
       setChartHint(pane, `Historical data unavailable: ${entry.error.message}`);
     } else {
-      if (S.marketOpen) {
-        if (!S.candles[liveKey]?.length) {
-          S.candles[liveKey] = entry.candles.slice(-500).map((candle) => ({ ...candle }));
-        }
-        chart.setData(mergeChartCandles(entry.candles, S.candles[liveKey] || []), { symbol: key });
-        setChartHint(pane, entry.warning || (entry.candles.length ? "" : "Waiting for live ticks…"));
-      } else {
-        chart.setData(entry.candles, { symbol: key });
-        setChartHint(pane, entry.warning || (entry.candles.length ? "" : "No historical candles returned for this contract."));
+      if (!S.candles[liveKey]?.length && entry.candles?.length) {
+        S.candles[liveKey] = entry.candles.slice(-500).map((candle) => ({ ...candle }));
       }
+      const dataToSet = S.candles[liveKey]?.length ? mergeChartCandles(entry.candles, S.candles[liveKey]) : entry.candles;
+      chart.setData(dataToSet, { symbol: key });
+      setChartHint(pane, entry.warning || (entry.candles.length ? "" : "Waiting for live ticks…"));
     }
   }
   renderPaneHeaders();
@@ -2429,7 +2434,7 @@ function setChartHint(pane, message) {
 }
 
 function updateLiveCandle(key, price, timestamp, volume) {
-  if (!S.marketOpen || S.feed !== "live" || !Number.isFinite(Number(price)) || Number(price) <= 0) return;
+  if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
   const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600 })[S.timeframe];
@@ -2439,12 +2444,15 @@ function updateLiveCandle(key, price, timestamp, volume) {
   const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
   const localDayStart = Math.floor((time + 19800) / 86400) * 86400 - 19800;
   const sessionStart = localDayStart + openSeconds;
-  const bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
+  let bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
   const value = Number(price);
   const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
   const cacheKey = `${key}|${S.timeframe}`;
   const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
   let candle = candles[candles.length - 1];
+  if (candle && bucket < candle.time) {
+    bucket = candle.time;
+  }
   if (!candle || candle.time !== bucket) {
     candle = {
       time: bucket,
@@ -2514,6 +2522,7 @@ function renderPaneHeaders() {
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
   renderOptionStrikeSelect("PE", pe);
   renderPanePCR("pe", pe, chainPCR, expiryLabel);
+  renderPCR();
 
   const ceInst = chartInstrument("CE");
   if (ceInst && S.depths?.[ceInst]) {

@@ -2444,7 +2444,7 @@ export class CandleChart {
 
   refreshOpenOrders() {
     this.clearOpenOrders();
-    if (!this.chart || !this.data.length || !this.openOrdersData.length) return;
+    if (!this.showTrades || !this.chart || !this.data.length || !this.openOrdersData.length) return;
     for (const o of this.openOrdersData) {
       const price = Number(o.price);
       if (!Number.isFinite(price) || price <= 0) continue;
@@ -2470,6 +2470,7 @@ export class CandleChart {
     this.showTrades = typeof forceState === "boolean" ? forceState : !this.showTrades;
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
+    this.refreshOpenOrders();
     return this.showTrades;
   }
 
