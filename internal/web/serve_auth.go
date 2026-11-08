@@ -83,6 +83,7 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var boundDevID string
 	if req.RememberDevice && s.deviceStore != nil {
 		deviceName := strings.TrimSpace(req.DeviceName)
 		if deviceName == "" {
@@ -115,13 +116,18 @@ func (s *Server) handleServeUnlock(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := s.deviceStore.SaveDevice(r.Context(), dev); err == nil {
 				s.setDeviceBindingCookie(w, r, devID)
+				boundDevID = devID
 			}
 		}
 	}
 
 	s.log.Info("serve unlock succeeded", "event", "serve_unlock_succeeded", "remote", key,
 		"request_id", logging.RequestID(r.Context()))
-	_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true, "token": token}
+	if boundDevID != "" {
+		resp["device_id"] = boundDevID
+	}
+	_ = writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) isServeAuthenticated(r *http.Request) bool {
@@ -130,9 +136,22 @@ func (s *Server) isServeAuthenticated(r *http.Request) bool {
 	if username == "" {
 		return true
 	}
+	// 1. Session cookie
 	if cookie, err := r.Cookie(serveSessionCookie); err == nil && cookie.Value != "" && s.validServeSession(cookie.Value) {
 		return true
 	}
+	// 2. Custom header session token
+	if token := strings.TrimSpace(r.Header.Get("X-Serve-Session")); token != "" && s.validServeSession(token) {
+		return true
+	}
+	// 3. Bearer token
+	if authHdr := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authHdr), "bearer ") {
+		token := strings.TrimSpace(authHdr[7:])
+		if token != "" && s.validServeSession(token) {
+			return true
+		}
+	}
+	// 4. BasicAuth
 	if u, p, ok := r.BasicAuth(); ok {
 		wantUser := sha256.Sum256([]byte(username))
 		wantPass := sha256.Sum256([]byte(cfg.Web.BasicAuth.Password))
@@ -176,7 +195,7 @@ func (s *Server) setDeviceBindingCookie(w http.ResponseWriter, r *http.Request, 
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   365 * 24 * 3600, // 1 year
 	})
 }
@@ -188,7 +207,7 @@ func (s *Server) clearDeviceBindingCookie(w http.ResponseWriter, r *http.Request
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
@@ -209,10 +228,66 @@ func (s *Server) issueServeSession(w http.ResponseWriter, r *http.Request) strin
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Expires:  exp,
 	})
 	return token
+}
+
+// POST /api/auth/device-unlock
+// Allows a previously registered / bound device (via X-Device-ID, JSON device_id, or cookie)
+// to automatically unlock the terminal without requiring username and password.
+func (s *Server) handleDeviceUnlock(w http.ResponseWriter, r *http.Request) {
+	if s.deviceStore == nil {
+		_ = writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "Device storage unavailable"})
+		return
+	}
+
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	if requireJSONContentType(r) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		if cookie, err := r.Cookie(deviceBindingCookie); err == nil && strings.TrimSpace(cookie.Value) != "" {
+			deviceID = strings.TrimSpace(cookie.Value)
+		} else if hdr := r.Header.Get("X-Device-ID"); strings.TrimSpace(hdr) != "" {
+			deviceID = strings.TrimSpace(hdr)
+		}
+	}
+
+	if deviceID == "" {
+		_ = writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "device_id required"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	dev, err := s.deviceStore.GetDevice(ctx, deviceID)
+	if err != nil || dev == nil {
+		_ = writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Device not recognized or revoked"})
+		return
+	}
+
+	now := time.Now()
+	_ = s.deviceStore.UpdateDeviceUsage(ctx, dev.ID, dev.SignCount+1, now)
+
+	s.setDeviceBindingCookie(w, r, dev.ID)
+	token := s.issueServeSession(w, r)
+	s.clearUnlockFailures(serveUnlockKey(r))
+
+	s.log.Info("device unlock succeeded", "device_name", dev.DeviceName, "id", dev.ID, "request_id", logging.RequestID(r.Context()))
+	_ = writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"token":       token,
+		"device_id":   dev.ID,
+		"device_name": dev.DeviceName,
+	})
 }
 
 func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
@@ -222,10 +297,11 @@ func (s *Server) serveAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Homepage, static assets, unlock endpoint, biometric login and device discovery are reachable before
+		// Homepage, static assets, unlock endpoint, device unlock, biometric login and device discovery are reachable before
 		// authentication. The homepage contains no account data.
 		if r.URL.Path == "/" ||
 			r.URL.Path == "/api/auth/serve-unlock" ||
+			r.URL.Path == "/api/auth/device-unlock" ||
 			strings.HasPrefix(r.URL.Path, "/static/") ||
 			r.URL.Path == "/api/auth/webauthn/login/begin" ||
 			r.URL.Path == "/api/auth/webauthn/login/finish" ||
@@ -280,7 +356,7 @@ func (s *Server) clearServeSessionCookie(w http.ResponseWriter, r *http.Request)
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }

@@ -161,9 +161,19 @@ function mergeDepthData(existing, incomingBids, incomingAsks) {
 /* ── API helpers ───────────────────────────────────────── */
 
 async function requestJSON(url, options = {}) {
+  const headers = { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) };
+  try {
+    const devId = localStorage.getItem("scalper_device_id");
+    if (devId) headers["X-Device-ID"] = devId;
+    const sessToken = localStorage.getItem("scalper_serve_session");
+    if (sessToken) headers["X-Serve-Session"] = sessToken;
+  } catch (_) {}
+  if (options.headers) Object.assign(headers, options.headers);
+
   const response = await fetch(url, {
-    headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) },
+    credentials: "include",
     ...options,
+    headers,
   });
   const text = await response.text();
   let data = null;
@@ -697,9 +707,9 @@ function init() {
       toast("Pairing link detected. Registering biometric passkey...", "ok", 4000);
       handleRegisterDevice("Mobile Device", pairToken);
     }, 300);
-  }
-
-  if (!isTerminalLocked) {
+  } else if (isTerminalLocked) {
+    tryAutoUnlockDevice();
+  } else {
     startTerminalSession();
   }
 }
@@ -5011,7 +5021,8 @@ function base64UrlToBuffer(base64Url) {
 }
 
 async function checkBiometricUnlockAvailable() {
-  if (!window.PublicKeyCredential) return false;
+  const savedDevId = localStorage.getItem("scalper_device_id");
+  if (savedDevId) return true;
   try {
     const res = await fetch("/api/devices");
     if (!res.ok) return false;
@@ -5028,75 +5039,138 @@ async function updateBiometricButtons() {
   if (serveContainer) serveContainer.hidden = !available;
 }
 
-async function handleBiometricUnlock() {
-  if (!window.PublicKeyCredential) {
-    toast("Biometric unlock not supported in this browser.", "warn");
-    return;
-  }
-
-  const serveBtn = $("biometric-unlock-serve-btn");
-  if (serveBtn) { serveBtn.disabled = true; serveBtn.textContent = "Scanning Biometrics..."; }
-
+async function tryAutoUnlockDevice() {
+  const savedDevId = localStorage.getItem("scalper_device_id");
+  if (!savedDevId) return false;
   try {
-    const beginRes = await fetch("/api/auth/webauthn/login/begin", { method: "POST" });
-    const data = await beginRes.json().catch(() => ({}));
-    if (!beginRes.ok || !data.ok) {
-      throw new Error(data.error || "Failed to initiate biometric unlock");
-    }
-
-    const opts = data.options || data;
-    const publicKey = {
-      challenge: base64UrlToBuffer(opts.challenge),
-      timeout: opts.timeout || 60000,
-      rpId: opts.rpId || undefined,
-      userVerification: opts.userVerification || "preferred",
-      allowCredentials: (opts.allowCredentials || []).map((c) => ({
-        type: c.type || "public-key",
-        id: base64UrlToBuffer(c.id),
-        transports: c.transports,
-      })),
-    };
-
-    const assertion = await navigator.credentials.get({ publicKey });
-    if (!assertion) throw new Error("Biometric authentication cancelled");
-
-    const finishBody = {
-      id: assertion.id,
-      rawId: bufferToBase64Url(assertion.rawId),
-      type: assertion.type,
-      response: {
-        clientDataJSON: bufferToBase64Url(assertion.response.clientDataJSON),
-        authenticatorData: bufferToBase64Url(assertion.response.authenticatorData),
-        signature: bufferToBase64Url(assertion.response.signature),
-        userHandle: assertion.response.userHandle ? bufferToBase64Url(assertion.response.userHandle) : null,
-      },
-    };
-
-    const finRes = await fetch("/api/auth/webauthn/login/finish", {
+    const res = await fetch("/api/auth/device-unlock", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(finishBody),
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-Device-ID": savedDevId },
+      body: JSON.stringify({ device_id: savedDevId }),
     });
-    const finData = await finRes.json().catch(() => ({}));
-    if (!finRes.ok || !finData.ok) {
-      throw new Error(finData.error || "Biometric verification failed");
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      if (data.token) localStorage.setItem("scalper_serve_session", data.token);
+      if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
+      const serveModal = $("serve-auth-modal");
+      if (serveModal) {
+        serveModal.style.display = "none";
+        serveModal.hidden = true;
+      }
+      toast(`Unlocked via ${data.device_name || "Device Binding"}!`, "ok");
+      startTerminalSession();
+      return true;
     }
+  } catch (_) {}
+  return false;
+}
 
+async function unlockWithSavedDevice(devId) {
+  const res = await fetch("/api/auth/device-unlock", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Device-ID": devId },
+    body: JSON.stringify({ device_id: devId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok && data.ok) {
+    if (data.token) localStorage.setItem("scalper_serve_session", data.token);
+    if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
     const serveModal = $("serve-auth-modal");
     if (serveModal) {
       serveModal.style.display = "none";
       serveModal.hidden = true;
     }
-    toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
+    toast(`Unlocked via ${data.device_name || "Device"}!`, "ok");
     await startTerminalSession();
-    if (!S.session?.authenticated) {
-      openLogin();
+    return true;
+  }
+  throw new Error(data.error || "Device unlock failed. Please use password.");
+}
+
+async function handleBiometricUnlock() {
+  const serveBtn = $("biometric-unlock-serve-btn");
+  if (serveBtn) { serveBtn.disabled = true; serveBtn.textContent = "Authenticating..."; }
+
+  try {
+    const savedDevId = localStorage.getItem("scalper_device_id");
+
+    // 1. If WebAuthn is supported, try WebAuthn
+    if (window.PublicKeyCredential) {
+      const beginRes = await fetch("/api/auth/webauthn/login/begin", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await beginRes.json().catch(() => ({}));
+
+      if (beginRes.ok && data.ok && data.has_webauthn && data.options) {
+        const opts = data.options || data;
+        const publicKey = {
+          challenge: base64UrlToBuffer(opts.challenge),
+          timeout: opts.timeout || 60000,
+          rpId: opts.rpId || undefined,
+          userVerification: opts.userVerification || "preferred",
+          allowCredentials: (opts.allowCredentials || []).map((c) => ({
+            type: c.type || "public-key",
+            id: base64UrlToBuffer(c.id),
+            transports: c.transports,
+          })),
+        };
+
+        const assertion = await navigator.credentials.get({ publicKey }).catch(() => null);
+        if (assertion) {
+          const finishBody = {
+            id: assertion.id,
+            rawId: bufferToBase64Url(assertion.rawId),
+            type: assertion.type,
+            response: {
+              clientDataJSON: bufferToBase64Url(assertion.response.clientDataJSON),
+              authenticatorData: bufferToBase64Url(assertion.response.authenticatorData),
+              signature: bufferToBase64Url(assertion.response.signature),
+              userHandle: assertion.response.userHandle ? bufferToBase64Url(assertion.response.userHandle) : null,
+            },
+          };
+
+          const finRes = await fetch("/api/auth/webauthn/login/finish", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(finishBody),
+          });
+          const finData = await finRes.json().catch(() => ({}));
+          if (finRes.ok && finData.ok) {
+            if (finData.token) localStorage.setItem("scalper_serve_session", finData.token);
+            if (finData.device_id) localStorage.setItem("scalper_device_id", finData.device_id);
+            const serveModal = $("serve-auth-modal");
+            if (serveModal) {
+              serveModal.style.display = "none";
+              serveModal.hidden = true;
+            }
+            toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
+            await startTerminalSession();
+            return;
+          }
+        }
+      }
     }
+
+    // 2. Fallback to Device Binding unlock (e.g. for paired mobile devices)
+    if (savedDevId) {
+      const unlocked = await unlockWithSavedDevice(savedDevId);
+      if (unlocked) return;
+    }
+
+    throw new Error("Biometric verification not available or no paired device. Please enter password.");
   } catch (err) {
     console.warn("biometric unlock error:", err);
     toast(err.message || "Biometric authentication failed", "warn");
   } finally {
-    if (serveBtn) { serveBtn.disabled = false; serveBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>"; }
+    if (serveBtn) {
+      serveBtn.disabled = false;
+      serveBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>";
+    }
   }
 }
 
@@ -5112,6 +5186,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
       if (pairToken) headers["X-Pair-Token"] = pairToken;
       const res = await fetch("/api/devices/bind", {
         method: "POST",
+        credentials: "include",
         headers,
         body: JSON.stringify({
           deviceName: deviceName || (window.navigator?.userAgentData?.platform || "My Device"),
@@ -5120,6 +5195,9 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
       });
       const d = await res.json().catch(() => ({}));
       if (res.ok && d.ok) {
+        if (d.device?.id) localStorage.setItem("scalper_device_id", d.device.id);
+        if (d.device?.device_name) localStorage.setItem("scalper_device_name", d.device.device_name);
+        if (d.token) localStorage.setItem("scalper_serve_session", d.token);
         toast(`Device "${d.device?.device_name || "Device"}" bound successfully!`, "ok");
         await loadDevicesList();
         if (pairToken) {
@@ -5147,7 +5225,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
     const headers = { "Content-Type": "application/json" };
     if (pairToken) headers["X-Pair-Token"] = pairToken;
 
-    const beginRes = await fetch(beginUrl, { method: "POST", headers });
+    const beginRes = await fetch(beginUrl, { method: "POST", credentials: "include", headers });
     const data = await beginRes.json().catch(() => ({}));
     if (!beginRes.ok || !data.ok) {
       throw new Error(data.error || "Failed to initiate registration");
@@ -5185,6 +5263,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
 
     const finRes = await fetch("/api/auth/webauthn/register/finish", {
       method: "POST",
+      credentials: "include",
       headers,
       body: JSON.stringify(finishBody),
     });
@@ -5192,6 +5271,10 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
     if (!finRes.ok || !finData.ok) {
       throw new Error(finData.error || "Failed to verify registration");
     }
+
+    if (finData.device?.id) localStorage.setItem("scalper_device_id", finData.device.id);
+    if (finData.device?.device_name) localStorage.setItem("scalper_device_name", finData.device.device_name);
+    if (finData.token) localStorage.setItem("scalper_serve_session", finData.token);
 
     toast(`Device "${finData.device?.device_name || "Passkey"}" registered!`, "ok");
     await updateBiometricButtons();
@@ -5672,6 +5755,8 @@ function bindEvents() {
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.ok) {
+          if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
+          if (data.token) localStorage.setItem("scalper_serve_session", data.token);
           serveAuthModal.style.display = "none";
           serveAuthModal.hidden = true;
           await startTerminalSession();
@@ -6320,6 +6405,90 @@ window.addEventListener("resize", () => {
     }
   });
 });
+
+/* ── Android Hardware / Gesture Back Button Handling ───── */
+
+function handleAppBackButton() {
+  // 1. Close mobile drawer if open
+  const drawerBackdrop = $("mobile-drawer-backdrop");
+  if (drawerBackdrop && !drawerBackdrop.hidden) {
+    closeMobileDrawer();
+    return true;
+  }
+
+  // 2. Close pattern popover if open
+  const patternPopover = $("pattern-popover");
+  if (patternPopover && !patternPopover.hidden && patternPopover.style.display !== "none") {
+    patternPopover.hidden = true;
+    patternPopover.style.display = "none";
+    return true;
+  }
+
+  // 3. Close open modal backdrops (highest priority first)
+  const modalClosers = [
+    { id: "strike-modal", fn: closeStrikeModal },
+    { id: "confirm-modal", fn: closeConfirmModal },
+    { id: "pair-modal", fn: closePairModal },
+    { id: "status-modal", fn: closeStatusModal },
+    { id: "login-modal", fn: closeLogin },
+  ];
+
+  for (const m of modalClosers) {
+    const el = $(m.id);
+    if (el && !el.hidden && el.style.display !== "none") {
+      if (typeof m.fn === "function") {
+        m.fn();
+      } else {
+        el.hidden = true;
+        el.style.display = "none";
+      }
+      return true;
+    }
+  }
+
+  // 4. Close quick order dialog if visible
+  const orderDialog = $("order-dialog");
+  if (orderDialog && !orderDialog.hidden && orderDialog.style.display !== "none") {
+    closeOrderDialog();
+    return true;
+  }
+
+  // 5. If in a mobile subview (e.g. POSITIONS or ORDERS or CE or PE), return to SPOT chart
+  if (S.mobileView && S.mobileView !== "spot") {
+    setMobileView("spot");
+    return true;
+  }
+
+  return false;
+}
+window.handleAppBackButton = handleAppBackButton;
+
+document.addEventListener("backbutton", (e) => {
+  if (handleAppBackButton()) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+});
+
+window.addEventListener("hardwareBackButton", (e) => {
+  if (handleAppBackButton()) {
+    e.preventDefault();
+  }
+});
+
+window.addEventListener("popstate", () => {
+  handleAppBackButton();
+});
+
+if (window.Capacitor?.Plugins?.App) {
+  try {
+    window.Capacitor.Plugins.App.addListener("backButton", ({ canGoBack }) => {
+      if (handleAppBackButton()) return;
+      if (canGoBack) window.history.back();
+      else window.Capacitor.Plugins.App.exitApp();
+    });
+  } catch (_) {}
+}
 
 /* ── Boot ──────────────────────────────────────────────── */
 

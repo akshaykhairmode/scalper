@@ -335,8 +335,25 @@ func (s *Server) handleWebAuthnLoginBegin(w http.ResponseWriter, r *http.Request
 	}
 
 	var credIDs []string
+	hasWebAuthn := false
+	hasBoundDevice := false
 	for _, d := range devices {
-		credIDs = append(credIDs, d.ID)
+		if d.PublicKey != "bound-device" {
+			credIDs = append(credIDs, d.ID)
+			hasWebAuthn = true
+		} else {
+			hasBoundDevice = true
+		}
+	}
+
+	if !hasWebAuthn {
+		// Only bound devices exist (e.g. paired mobile devices)
+		_ = writeJSON(w, http.StatusOK, map[string]any{
+			"ok":               true,
+			"has_webauthn":     false,
+			"has_bound_device": hasBoundDevice,
+		})
+		return
 	}
 
 	wAuth := s.webAuthnForRequest(r)
@@ -351,6 +368,8 @@ func (s *Server) handleWebAuthnLoginBegin(w http.ResponseWriter, r *http.Request
 
 	_ = writeJSON(w, http.StatusOK, map[string]any{
 		"ok":               true,
+		"has_webauthn":     true,
+		"has_bound_device": hasBoundDevice,
 		"options":          opts,
 		"challenge":        opts.Challenge,
 		"rpId":             opts.RPID,
@@ -466,6 +485,7 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 		"ok":          true,
 		"token":       token,
 		"device_name": dev.DeviceName,
+		"device_id":   dev.ID,
 	})
 }
 

@@ -650,6 +650,18 @@
     btnPickImage.addEventListener("click", () => filePicker.click());
 
     // Android Hardware / Gesture Back Button handling
+    window.handleAppBackButton = function() {
+      if (scanning || scannerOverlay.style.display !== "none") {
+        stopScanner(false);
+        return true;
+      }
+      if (manualSection && manualSection.style.display === "block") {
+        manualSection.style.display = "none";
+        return true;
+      }
+      return false;
+    };
+
     window.addEventListener("popstate", () => {
       if (scanning || scannerOverlay.style.display !== "none") {
         stopScanner(true);
@@ -657,10 +669,9 @@
     });
 
     document.addEventListener("backbutton", (e) => {
-      if (scanning || scannerOverlay.style.display !== "none") {
+      if (window.handleAppBackButton()) {
         e.preventDefault();
         e.stopPropagation();
-        stopScanner(false);
       }
     });
 

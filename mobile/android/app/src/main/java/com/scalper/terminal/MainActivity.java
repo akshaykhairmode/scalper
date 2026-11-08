@@ -7,6 +7,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
@@ -44,5 +45,41 @@ public class MainActivity extends BridgeActivity {
             settings.setAllowContentAccess(true);
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
+
+        // Handle Android hardware/gesture back button navigation
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (bridge != null && bridge.getWebView() != null) {
+                    WebView webView = bridge.getWebView();
+                    // First evaluate in JS if any modal, drawer, scanner or view needs to be dismissed
+                    webView.evaluateJavascript(
+                        "(function() {" +
+                        "  if (typeof window.handleAppBackButton === 'function') {" +
+                        "    return window.handleAppBackButton();" +
+                        "  }" +
+                        "  var evt = new CustomEvent('hardwareBackButton', { cancelable: true });" +
+                        "  window.dispatchEvent(evt);" +
+                        "  return evt.defaultPrevented;" +
+                        "})()",
+                        value -> {
+                            if (!"true".equals(value)) {
+                                if (webView.canGoBack()) {
+                                    webView.goBack();
+                                } else {
+                                    setEnabled(false);
+                                    getOnBackPressedDispatcher().onBackPressed();
+                                    setEnabled(true);
+                                }
+                            }
+                        }
+                    );
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 }

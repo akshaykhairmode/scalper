@@ -624,3 +624,180 @@ func TestDeviceBindEndpoint(t *testing.T) {
 		t.Errorf("expected scalper_serve_session cookie to be set")
 	}
 }
+
+func TestDeviceUnlockEndpoint(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password123"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{cfg: &cfg, deviceStore: devStore, db: fakeDB{}})
+
+	// 1. Missing device ID -> 400 Bad Request
+	rec := do(t, s, localRequest(http.MethodPost, "/api/auth/device-unlock"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d", rec.Code)
+	}
+
+	// 2. Unknown device ID -> 401 Unauthorized
+	reqUnknown := localRequestWithBody(http.MethodPost, "/api/auth/device-unlock", []byte(`{"device_id":"unknown-dev-id"}`))
+	reqUnknown.Header.Set("Content-Type", "application/json")
+	recUnknown := do(t, s, reqUnknown)
+	if recUnknown.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for unknown device, got %d", recUnknown.Code)
+	}
+
+	// 3. Register a bound device in store
+	now := time.Now()
+	testDev := store.Device{
+		ID:         "dev-android-test-999",
+		DeviceName: "Samsung Galaxy S24",
+		PublicKey:  "bound-device",
+		Algorithm:  0,
+		SignCount:  1,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+	if err := devStore.SaveDevice(context.Background(), testDev); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+
+	// 4. Valid unlock with JSON body -> 200 OK with token, sets cookies
+	bodyBytes, _ := json.Marshal(map[string]any{"device_id": testDev.ID})
+	reqValid := localRequestWithBody(http.MethodPost, "/api/auth/device-unlock", bodyBytes)
+	reqValid.Header.Set("Content-Type", "application/json")
+	recValid := do(t, s, reqValid)
+	if recValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", recValid.Code, recValid.Body.String())
+	}
+
+	var res struct {
+		OK         bool   `json:"ok"`
+		Token      string `json:"token"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
+	}
+	if err := json.Unmarshal(recValid.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal unlock response: %v", err)
+	}
+	if !res.OK || res.Token == "" || res.DeviceID != testDev.ID || res.DeviceName != testDev.DeviceName {
+		t.Fatalf("unexpected unlock payload: %+v", res)
+	}
+
+	// Verify session token is recorded and works
+	if !s.validServeSession(res.Token) {
+		t.Errorf("token %q is not marked valid in serveSessions", res.Token)
+	}
+
+	// Verify device sign count was incremented
+	savedDev, _ := devStore.GetDevice(context.Background(), testDev.ID)
+	if savedDev.SignCount != 2 {
+		t.Errorf("expected sign count to be 2, got %d", savedDev.SignCount)
+	}
+
+	// 5. Valid unlock via X-Device-ID header
+	reqHdr := localRequest(http.MethodPost, "/api/auth/device-unlock")
+	reqHdr.Header.Set("X-Device-ID", testDev.ID)
+	recHdr := do(t, s, reqHdr)
+	if recHdr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with X-Device-ID header, got %d: %s", recHdr.Code, recHdr.Body.String())
+	}
+
+	// 6. Valid unlock via scalper_device_binding cookie
+	reqCookie := localRequest(http.MethodPost, "/api/auth/device-unlock")
+	reqCookie.AddCookie(&http.Cookie{Name: "scalper_device_binding", Value: testDev.ID})
+	recCookie := do(t, s, reqCookie)
+	if recCookie.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with binding cookie, got %d: %s", recCookie.Code, recCookie.Body.String())
+	}
+}
+
+func TestHeaderBasedServeSession(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password123"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{cfg: &cfg, deviceStore: devStore, db: fakeDB{}})
+
+	// Create valid serve session
+	token := "custom-serve-token-header-xyz"
+	s.serveSessionsMu.Lock()
+	s.serveSessions[token] = time.Now().Add(24 * time.Hour)
+	s.serveSessionsMu.Unlock()
+
+	// 1. Request to protected endpoint (POST /api/devices/pair-token) without auth -> 401
+	recUnauth := do(t, s, localRequest(http.MethodPost, "/api/devices/pair-token"))
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recUnauth.Code)
+	}
+
+	// 2. Request using X-Serve-Session header -> 200 OK
+	reqHeader := localRequest(http.MethodPost, "/api/devices/pair-token")
+	reqHeader.Header.Set("X-Serve-Session", token)
+	recHeader := do(t, s, reqHeader)
+	if recHeader.Code != http.StatusOK {
+		t.Fatalf("expected 200 with X-Serve-Session, got %d: %s", recHeader.Code, recHeader.Body.String())
+	}
+
+	// 3. Request using Authorization: Bearer <token> -> 200 OK
+	reqBearer := localRequest(http.MethodPost, "/api/devices/pair-token")
+	reqBearer.Header.Set("Authorization", "Bearer "+token)
+	recBearer := do(t, s, reqBearer)
+	if recBearer.Code != http.StatusOK {
+		t.Fatalf("expected 200 with Bearer auth, got %d: %s", recBearer.Code, recBearer.Body.String())
+	}
+
+	// 4. Request with invalid X-Serve-Session -> 401
+	reqInvalid := localRequest(http.MethodPost, "/api/devices/pair-token")
+	reqInvalid.Header.Set("X-Serve-Session", "invalid-token-here")
+	recInvalid := do(t, s, reqInvalid)
+	if recInvalid.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with invalid token, got %d", recInvalid.Code)
+	}
+}
+
+func TestWebAuthnLoginBeginWithBoundDevice(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.ServeMode = true
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "password123"
+
+	devStore := newMockDeviceStore()
+	s := newTestServer(t, serverOpts{cfg: &cfg, deviceStore: devStore, db: fakeDB{}})
+
+	// Add only a bound-device (e.g. mobile device paired with QR code)
+	devStore.SaveDevice(context.Background(), store.Device{
+		ID:         "dev-paired-phone",
+		DeviceName: "Paired Phone",
+		PublicKey:  "bound-device",
+		CreatedAt:  time.Now(),
+		LastUsedAt: time.Now(),
+	})
+
+	// POST /api/auth/webauthn/login/begin
+	rec := do(t, s, localRequest(http.MethodPost, "/api/auth/webauthn/login/begin"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		OK             bool `json:"ok"`
+		HasWebAuthn    bool `json:"has_webauthn"`
+		HasBoundDevice bool `json:"has_bound_device"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("expected ok: true")
+	}
+	if res.HasWebAuthn {
+		t.Errorf("expected has_webauthn to be false for bound-device only")
+	}
+	if !res.HasBoundDevice {
+		t.Errorf("expected has_bound_device to be true")
+	}
+}
