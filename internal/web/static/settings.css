@@ -29,6 +29,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -191,6 +195,10 @@ body {
   justify-content: space-between;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.alert-banner[hidden] {
+  display: none !important;
 }
 
 .alert-content {

@@ -14,9 +14,11 @@ logs
 config.yaml
 *.db
 *.br
+*.map
 
 # Mobile dependencies & build artifacts
 node_modules/
+web/node_modules/
 mobile/node_modules/
 mobile/www/
 mobile/android/app/src/main/assets/public/

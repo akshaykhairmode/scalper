@@ -6,14 +6,14 @@ BIN       ?= bin/scalper
 CONFIG    ?= config.yaml
 COVER_MIN ?= 55
 
-VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS   := -s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=$(VERSION) \
              -X github.com/akshaykhairmode/scalper/internal/version.Commit=$(COMMIT) \
              -X github.com/akshaykhairmode/scalper/internal/version.BuildDate=$(BUILD_DATE)
 
-.PHONY: all help fmt vet lint deadcode compress build test race cover cover-html check run serve deploy clean mobile-install mobile-bundle mobile-sync mobile-android mobile-ios
+.PHONY: all help fmt vet lint deadcode web-install web-build compress build test race cover cover-html check run serve deploy clean mobile-install mobile-bundle mobile-sync mobile-android mobile-ios
 
 all: fmt vet lint test build
 
@@ -63,10 +63,18 @@ deadcode:
 		echo "deadcode not installed; run: go install golang.org/x/tools/cmd/deadcode@latest"; \
 	fi
 
+web-install:
+	cd web && npm install
+
+web-build:
+	@if [ -d "web/node_modules" ]; then \
+		node web/build.js; \
+	fi
+
 compress:
 	$(GO) run ./scripts/compress_assets.go
 
-build: compress
+build: web-build compress
 	@mkdir -p "$(dir $(BIN))"
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/scalper
 
@@ -103,7 +111,7 @@ clean:
 mobile-install:
 	cd mobile && npm install
 
-mobile-bundle:
+mobile-bundle: web-build
 	node mobile/scripts/sync-assets.js
 
 mobile-sync: mobile-bundle

@@ -1,0 +1,15 @@
+{
+  "name": "scalper-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scalper Web Terminal TypeScript Source",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2"
+  }
+}

@@ -80,6 +80,7 @@ body[data-theme="light"] {
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -2143,7 +2144,6 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   .clock,
   #logs-button,
   #settings-button,
-  #status-button,
   #pair-device-button,
   #register-device-button,
   #mode-badge,

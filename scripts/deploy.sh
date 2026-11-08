@@ -201,8 +201,11 @@ if [[ "${CONNECTED}" -eq 0 ]]; then
   echo ""
   info "Cross-compiling both Linux binaries (amd64 and arm64) locally so they are ready..."
 
+  if [[ -d "web/node_modules" ]]; then
+    node web/build.js
+  fi
   go run ./scripts/compress_assets.go
-  VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+  VERSION="${APP_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
   COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "none")
   BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   LDFLAGS="-s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=${VERSION} \
@@ -232,12 +235,15 @@ if [[ "${SKIP_BUILD}" == "1" && -f "${TARGET_BIN}" ]]; then
   info "SKIP_BUILD=1: Using existing binary ${TARGET_BIN}"
 else
   info "Step 1/5: Compressing static assets..."
+  if [[ -d "web/node_modules" ]]; then
+    node web/build.js
+  fi
   go run ./scripts/compress_assets.go
 
   info "Step 2/5: Compiling Scalper binary for linux/${REMOTE_ARCH}..."
   mkdir -p bin
 
-  VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+  VERSION="${APP_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
   COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "none")
   BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   LDFLAGS="-s -w -X github.com/akshaykhairmode/scalper/internal/version.Version=${VERSION} \

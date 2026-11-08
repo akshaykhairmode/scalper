@@ -609,10 +609,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			Key: commodity.Key, Label: underlyingLabel(commodity.DisplayName, commodity.ExchangeSegment),
 		})
 	}
+	displayVer := strings.TrimSpace(version.Version)
+	if displayVer == "" || displayVer == "dev" {
+		displayVer = "dev"
+	} else if !strings.HasPrefix(displayVer, "v") {
+		displayVer = "v" + displayVer
+	}
 	data := pageData{
 		Title:          "Scalper",
 		Mode:           "LIVE",
-		Version:        version.Version,
+		Version:        displayVer,
 		Commit:         version.Commit,
 		Underlyings:    underlyings,
 		Uptime:         s.now().Sub(s.started).Round(time.Second).String(),
@@ -1003,7 +1009,7 @@ func (s *Server) handleLogsView(w http.ResponseWriter, _ *http.Request) {
   <span id="log-summary">Showing 0 lines</span>
   <span id="last-updated">—</span>
 </footer>
-<script src="/static/logs.js"></script>
+<script type="module" src="/static/logs.js"></script>
 </body>
 </html>`
 	_, _ = w.Write([]byte(html))
