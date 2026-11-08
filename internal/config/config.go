@@ -497,6 +497,10 @@ func (c *Config) applyEnv() {
 	}
 	if v, ok := os.LookupEnv("TYPESAFE_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Jev.APIKey = strings.TrimSpace(v)
+	} else if v, ok := os.LookupEnv("OPENROUTER_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		if c.AI.Jev.APIKey == "" || strings.Contains(c.AI.Jev.BaseURL, "openrouter.ai") {
+			c.AI.Jev.APIKey = strings.TrimSpace(v)
+		}
 	}
 	if v, ok := os.LookupEnv("AI_AGENT_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)

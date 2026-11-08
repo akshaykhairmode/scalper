@@ -300,6 +300,10 @@ append_env "KOTAK_UCC" "${KOTAK_UCC:-}"
 append_env "KOTAK_NEO_FIN_KEY" "${KOTAK_NEO_FIN_KEY:-}"
 append_env "SERVE_AUTH_USERNAME" "${SERVE_AUTH_USERNAME:-${SCALPER_SERVE_USERNAME:-}}"
 append_env "SERVE_AUTH_PASSWORD" "${SERVE_AUTH_PASSWORD:-${SCALPER_SERVE_PASSWORD:-}}"
+append_env "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-}"
+append_env "TYPESAFE_API_KEY" "${TYPESAFE_API_KEY:-}"
+append_env "AI_AGENT_API_KEY" "${AI_AGENT_API_KEY:-}"
+append_env "GEMINI_API_KEY" "${GEMINI_API_KEY:-}"
 
 if [[ -n "${ENV_PAYLOAD}" ]]; then
   info "Configuring remote credentials in /etc/default/${SVC_NAME}..."

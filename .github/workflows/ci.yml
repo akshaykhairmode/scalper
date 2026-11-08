@@ -324,6 +324,10 @@ jobs:
           KOTAK_NEO_FIN_KEY: ${{ secrets.KOTAK_NEO_FIN_KEY || vars.KOTAK_NEO_FIN_KEY || 'neotradeapi' }}
           SERVE_AUTH_USERNAME: ${{ secrets.SERVE_AUTH_USERNAME || vars.SERVE_AUTH_USERNAME || 'trader' }}
           SERVE_AUTH_PASSWORD: ${{ secrets.SERVE_AUTH_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          AI_AGENT_API_KEY: ${{ secrets.AI_AGENT_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           chmod +x ./scripts/deploy.sh
           ./scripts/deploy.sh
