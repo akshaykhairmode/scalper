@@ -345,7 +345,7 @@ func TestWebAuthnRegistrationAndAssertionFlow(t *testing.T) {
 	// Platform authenticators always return signCount = 0 even if stored SignCount > 0.
 	authDataZero := make([]byte, 37)
 	copy(authDataZero[0:32], rpHash[:])
-	authDataZero[32] = 0x05 // UP + UV
+	authDataZero[32] = 0x05                            // UP + UV
 	binary.BigEndian.PutUint32(authDataZero[33:37], 0) // signCount = 0
 	signedDataZero := append(authDataZero, cDataHash[:]...)
 	sigHashZero := sha256.Sum256(signedDataZero)
