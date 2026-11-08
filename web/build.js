@@ -1,6 +1,9 @@
 const esbuild = require('esbuild');
 const path = require('path');
 
+// Ensure deterministic relative paths in bundles regardless of invocation directory
+process.chdir(path.resolve(__dirname, '..'));
+
 const isWatch = process.argv.includes('--watch');
 
 const entryPoints = [
