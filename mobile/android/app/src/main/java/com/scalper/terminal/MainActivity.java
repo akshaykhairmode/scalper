@@ -44,15 +44,6 @@ public class MainActivity extends BridgeActivity {
             settings.setAllowFileAccess(true);
             settings.setAllowContentAccess(true);
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-
-            try {
-                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.WEB_AUTHENTICATION)) {
-                    androidx.webkit.WebSettingsCompat.setWebAuthenticationSupport(
-                        settings,
-                        androidx.webkit.WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP
-                    );
-                }
-            } catch (Throwable ignored) {}
         }
 
         // Handle Android hardware/gesture back button navigation
