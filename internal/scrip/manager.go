@@ -271,6 +271,9 @@ func (m *Manager) Refresh(ctx context.Context, baseURL string) error {
 		}
 	}
 	m.apply(options, spots, started, "live")
+	// Release the previous snapshot and parse transients now that the new one
+	// is live.
+	m.freeMemory()
 	m.setLastErr(nil)
 	m.log.Info("scrip refresh complete",
 		"event", "scrip_refreshed", "options", len(options), "spots", len(spots),
