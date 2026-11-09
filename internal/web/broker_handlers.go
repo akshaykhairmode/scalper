@@ -383,7 +383,16 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 
 	var orders []kotakapi.Order
 	for _, row := range rows {
-		qty, _ := numberField(row, "quantity", "net_qty", "netQty", "qty", "netqty", "net_quantity")
+		qty, hasQty := numberField(row, "quantity", "net_qty", "netQty", "qty", "netqty", "net_quantity")
+		if !hasQty || qty == 0 {
+			bought, _ := numberField(row, "flBuyQty", "fl_buy_qty")
+			sold, _ := numberField(row, "flSellQty", "fl_sell_qty")
+			carriedBought, _ := numberField(row, "cfBuyQty", "cf_buy_qty")
+			carriedSold, _ := numberField(row, "cfSellQty", "cf_sell_qty")
+			if net := (bought + carriedBought) - (sold + carriedSold); net != 0 {
+				qty = net
+			}
+		}
 		netQty := int64(qty)
 		if netQty == 0 {
 			continue
@@ -396,7 +405,7 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 		if prod == "" {
 			prod = defaultProduct
 		}
-		segment := strings.TrimSpace(stringField(row, "exchange_segment", "exchangeSegment", "exSeg"))
+		segment := strings.ToLower(strings.TrimSpace(stringField(row, "exchange_segment", "exchangeSegment", "exSeg")))
 		symbol := strings.TrimSpace(stringField(row, "trading_symbol", "tradingSymbol", "trdSym", "symbol"))
 
 		orders = append(orders, kotakapi.Order{
@@ -407,6 +416,7 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 			Product:         strings.ToUpper(prod),
 			OrderType:       "MARKET",
 			Price:           0,
+			Validity:        "DAY",
 		})
 	}
 

@@ -247,7 +247,7 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 			OrderType:       orderType,
 			Quantity:        b.Quantity,
 			Price:           b.EntryPrice,
-			Validity:        "GFD",
+			Validity:        "DAY",
 		}
 		orderID, err := e.placeOrder(ctx, o)
 		if err != nil {
@@ -278,8 +278,21 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 		e.mu.Unlock()
 	} else {
 		e.mu.Lock()
-		if bracketCopy.Status == StatusInPosition {
-			e.indexActiveInPosition(&bracketCopy)
+		if curr, ok := e.brackets[b.ID]; ok {
+			if unmatched, found := e.unmatchedOrders[b.EntryOrderID]; found {
+				delete(e.unmatchedOrders, b.EntryOrderID)
+				if isFilledStatus(unmatched.Status) {
+					curr.Status = StatusInPosition
+					if unmatched.FilledPrice > 0 {
+						curr.EntryPrice = unmatched.FilledPrice
+					}
+					curr.UpdatedAt = time.Now()
+					e.indexActiveInPosition(curr)
+				}
+			} else if curr.Status == StatusInPosition {
+				e.indexActiveInPosition(curr)
+			}
+			bracketCopy = *curr
 		}
 		e.mu.Unlock()
 	}
@@ -411,7 +424,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		Product:         b.Product,
 		OrderType:       "MKT",
 		Quantity:        b.Quantity,
-		Validity:        "GFD",
+		Validity:        "DAY",
 	}
 	bracketCopy := *b
 	e.mu.Unlock()
@@ -744,6 +757,9 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 		if b.Status != StatusInPosition && b.Status != StatusExitFailed {
 			continue
 		}
+		if b.Status == StatusExitFailed && time.Since(b.UpdatedAt) < 3*time.Second {
+			continue
+		}
 
 		isLong := b.TransactionType == "BUY"
 
@@ -860,7 +876,7 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 			Product:         trg.product,
 			OrderType:       "MKT",
 			Quantity:        trg.exitQuantity,
-			Validity:        "GFD",
+			Validity:        "DAY",
 		}
 	triggerRetryLoop:
 		for attempt := 0; attempt < 3; attempt++ {

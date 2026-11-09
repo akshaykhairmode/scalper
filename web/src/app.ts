@@ -2486,8 +2486,16 @@ async function loadCharts(forceRefresh = false) {
 }
 
 function mergeChartCandles(historical, live) {
-  const byTime = new Map(historical.map((candle) => [candle.time, candle]));
-  for (const candle of live) byTime.set(candle.time, candle);
+  const byTime = new Map(
+    (historical || [])
+      .filter((c: any) => c && c.low > 0 && c.open > 0 && c.high > 0 && c.close > 0 && c.high >= c.low)
+      .map((candle) => [candle.time, candle])
+  );
+  for (const candle of (live || [])) {
+    if (candle && candle.low > 0 && candle.open > 0 && candle.high > 0 && candle.close > 0 && candle.high >= candle.low) {
+      byTime.set(candle.time, candle);
+    }
+  }
   return [...byTime.values()].sort((a: any, b: any) => a.time - b.time);
 }
 
@@ -3868,7 +3876,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         instrument_key: option.instrumentKey,
         transaction_type: action.toUpperCase(),
         quantity: qty,
-        product: "MIS",
+        product: S.product || "MIS",
         entry_price: price,
         entry_order_id: orderId,
         target_price: autoTargetPrice,

@@ -49,7 +49,7 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 			OrderType:       "L",
 			Quantity:        b.Quantity,
 			Price:           b.EntryPrice,
-			Validity:        "GFD",
+			Validity:        "DAY",
 		}
 		if b.EntryPrice <= 0 {
 			entryOrder.OrderType = "MKT"

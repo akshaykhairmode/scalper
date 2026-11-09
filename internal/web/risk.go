@@ -57,42 +57,52 @@ func (s *Server) checkOrderRisk(ctx context.Context, session kotakapi.Session, o
 	}
 	lots := quantityLots(o.Quantity, lotSize)
 
-	if cfg.MaxLotsPerOrder > 0 && lots > int64(cfg.MaxLotsPerOrder) {
+	var positions []brokerPosition
+	reduces := false
+	raw, err := s.getBook(ctx, bookPositions, session)
+	hardCapsNeedPositions := cfg.MaxOpenLotsPerIndex > 0 || cfg.MaxDailyLossINR > 0
+	if err != nil {
+		if hardCapsNeedPositions {
+			return fmt.Errorf("order blocked: position book unavailable for risk check: %w", err)
+		}
+		s.log.Warn("proceeding with risk check with unavailable position book",
+			"event", "position_check_degraded", "error", err)
+	} else {
+		positions, err = parseBrokerPositions(raw)
+		if err != nil {
+			if hardCapsNeedPositions {
+				return fmt.Errorf("order blocked: cannot parse position book for risk check: %w", err)
+			}
+			s.log.Warn("proceeding with risk check with unparseable position book",
+				"event", "position_check_degraded", "error", err)
+		} else {
+			s.enrichPositionMetadata(positions)
+			reduces = orderReducesPosition(o, option, hasOption, positions)
+		}
+	}
+
+	if !reduces && cfg.MaxLotsPerOrder > 0 && lots > int64(cfg.MaxLotsPerOrder) {
 		return fmt.Errorf("order blocked: %d lots exceeds max_lots_per_order=%d", lots, cfg.MaxLotsPerOrder)
 	}
 
-	if err := s.checkMarketDataFreshness(cfg.BlockOnDataStaleMS); err != nil {
-		return err
+	if !reduces {
+		if err := s.checkMarketDataFreshness(cfg.BlockOnDataStaleMS); err != nil {
+			return err
+		}
 	}
 
 	price, priceErr := s.orderPrice(ctx, o)
-	if priceErr != nil && (cfg.MaxOrderValueINR > 0 || trading.Margin.CheckBeforeOrder) {
+	if priceErr != nil && ((cfg.MaxOrderValueINR > 0 && !reduces) || (trading.Margin.CheckBeforeOrder && !reduces)) {
 		return fmt.Errorf("order blocked: live price unavailable for risk check: %w", priceErr)
 	}
 	orderValue := price * float64(o.Quantity)
-	if cfg.MaxOrderValueINR > 0 {
+	if cfg.MaxOrderValueINR > 0 && !reduces {
 		if price <= 0 {
 			return fmt.Errorf("order blocked: max_order_value_inr is set but no order price is available")
 		}
 		if orderValue > float64(cfg.MaxOrderValueINR) {
 			return fmt.Errorf("order blocked: order value ₹%.2f exceeds max_order_value_inr=%d", orderValue, cfg.MaxOrderValueINR)
 		}
-	}
-
-	needPositions := cfg.MaxOpenLotsPerIndex > 0 || cfg.MaxDailyLossINR > 0 || cfg.MaxExitOrdersPerSecond > 0
-	var positions []brokerPosition
-	reduces := false
-	if needPositions {
-		raw, err := s.getBook(ctx, bookPositions, session)
-		if err != nil {
-			return fmt.Errorf("order blocked: position book unavailable for risk check: %w", err)
-		}
-		positions, err = parseBrokerPositions(raw)
-		if err != nil {
-			return fmt.Errorf("order blocked: cannot parse position book for risk check: %w", err)
-		}
-		s.enrichPositionMetadata(positions)
-		reduces = orderReducesPosition(o, option, hasOption, positions)
 	}
 
 	if cfg.MaxOpenLotsPerIndex > 0 && !reduces {
@@ -110,7 +120,7 @@ func (s *Server) checkOrderRisk(ctx context.Context, session kotakapi.Session, o
 		}
 	}
 
-	if trading.Margin.CheckBeforeOrder {
+	if trading.Margin.CheckBeforeOrder && !reduces {
 		if err := s.checkOrderMargin(ctx, session, orderValue, trading.Margin.FailClosed); err != nil {
 			return err
 		}
@@ -217,12 +227,12 @@ func (r *riskState) reserve(sessionID, side string, cfg config.Risk, now time.Ti
 	exits := pruneBefore(r.exits[key], now.Add(-time.Second))
 	r.exits[key] = exits
 
-	if cfg.MaxOrdersPerMinute > 0 && len(orders) >= cfg.MaxOrdersPerMinute {
-		return fmt.Errorf("order blocked: max_orders_per_minute=%d reached", cfg.MaxOrdersPerMinute)
-	}
 	isExit := side == "S" || side == "SELL"
 	if len(isExitOpt) > 0 {
 		isExit = isExitOpt[0]
+	}
+	if !isExit && cfg.MaxOrdersPerMinute > 0 && len(orders) >= cfg.MaxOrdersPerMinute {
+		return fmt.Errorf("order blocked: max_orders_per_minute=%d reached", cfg.MaxOrdersPerMinute)
 	}
 	if isExit && cfg.MaxExitOrdersPerSecond > 0 && len(exits) >= cfg.MaxExitOrdersPerSecond {
 		return fmt.Errorf("order blocked: max_exit_orders_per_second=%d reached", cfg.MaxExitOrdersPerSecond)
@@ -267,9 +277,18 @@ func (s *Server) enrichPositionMetadata(positions []brokerPosition) {
 		return
 	}
 	for i := range positions {
-		option, ok := s.market.Option(positions[i].InstrumentKey)
+		var option scrip.Option
+		var ok bool
+		if positions[i].InstrumentKey != "" {
+			option, ok = s.market.Option(positions[i].InstrumentKey)
+		} else if positions[i].ExchangeSegment != "" && positions[i].TradingSymbol != "" {
+			option, ok = s.market.FindOption(positions[i].ExchangeSegment, positions[i].TradingSymbol)
+		}
 		if !ok {
 			continue
+		}
+		if positions[i].InstrumentKey == "" {
+			positions[i].InstrumentKey = option.InstrumentKey
 		}
 		if positions[i].Underlying == "" {
 			positions[i].Underlying = option.Underlying
@@ -360,7 +379,16 @@ func parseBrokerPositions(raw json.RawMessage) ([]brokerPosition, error) {
 	}
 	out := make([]brokerPosition, 0, len(rows))
 	for _, row := range rows {
-		qty, _ := numberField(row, "quantity", "net_qty", "netQty", "qty", "netqty", "net_quantity")
+		qty, hasQty := numberField(row, "quantity", "net_qty", "netQty", "qty", "netqty", "net_quantity")
+		if !hasQty || qty == 0 {
+			bought, _ := numberField(row, "flBuyQty", "fl_buy_qty")
+			sold, _ := numberField(row, "flSellQty", "fl_sell_qty")
+			carriedBought, _ := numberField(row, "cfBuyQty", "cf_buy_qty")
+			carriedSold, _ := numberField(row, "cfSellQty", "cf_sell_qty")
+			if net := (bought + carriedBought) - (sold + carriedSold); net != 0 {
+				qty = net
+			}
+		}
 		lot, _ := numberField(row, "lot_size", "lotSize", "lot")
 		pnl, hasPnL := numberField(row, "pnl", "PnL", "profit_loss")
 		if !hasPnL {

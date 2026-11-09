@@ -463,12 +463,16 @@ export function formatDOMQty(q: number | string): string {
 
 export function computeDOMInterval(minPrice: number, maxPrice: number, heightPx = 500): number {
   const span = maxPrice - minPrice;
-  if (!Number.isFinite(span) || span <= 0) return 5;
+  const isSpotOrLarge = minPrice > 5000;
+  if (!Number.isFinite(span) || span <= 0) return isSpotOrLarge ? 10 : 5;
 
-  const desiredRows = Math.max(6, Math.min(22, Math.floor(heightPx / 26)));
+  const desiredRows = Math.max(6, Math.min(20, Math.floor(heightPx / 28)));
   const rawStep = span / desiredRows;
 
-  const candidateSteps = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 500];
+  const candidateSteps = isSpotOrLarge
+    ? [5, 10, 20, 25, 50, 100, 200, 500]
+    : [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100];
+
   for (const step of candidateSteps) {
     if (step >= rawStep) {
       return step;
@@ -779,6 +783,21 @@ function registerCustomOverlays() {
         const yBottom = y + barHeight / 2;
 
         const figures = [];
+
+        // Background container pill for readability
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: xLeft, y: yTop },
+              { x: xRight, y: yTop },
+              { x: xRight, y: yBottom },
+              { x: xLeft, y: yBottom },
+            ],
+          },
+          styles: { style: "fill", color: "rgba(15, 23, 42, 0.45)" },
+          ignoreEvent: true,
+        });
 
         // Center balance line / tick
         figures.push({
@@ -2110,6 +2129,12 @@ export class CandleChart {
         if (this.showDepth) this.debounceDepthRefresh();
       }, { passive: true });
     }
+
+    try {
+      this.chart?.subscribeAction?.("onVisibleRangeChange", () => {
+        if (this.showDepth) this.debounceDepthRefresh();
+      });
+    } catch (_) {}
   }
 
   formatCandle(c) {
@@ -2205,31 +2230,44 @@ export class CandleChart {
 
   getVisiblePriceRange() {
     if (!this.chart || !this.container) return null;
+    let minP = Infinity;
+    let maxP = -Infinity;
+    const height = this.container.clientHeight || 500;
+
+    // 1. Calculate directly from visible candles on screen using getVisibleRange()
     try {
-      const height = this.container.clientHeight || 500;
-      const topRes = this.chart.convertFromPixel({ x: 50, y: 15 });
-      const bottomRes = this.chart.convertFromPixel({ x: 50, y: height - 40 });
-      if (topRes && bottomRes && Number.isFinite(topRes.value) && Number.isFinite(bottomRes.value)) {
-        const maxP = Math.max(topRes.value, bottomRes.value);
-        const minP = Math.min(topRes.value, bottomRes.value);
-        if (maxP > minP && minP > 0) {
-          return { min: minP, max: maxP, height };
+      const vr = typeof this.chart.getVisibleRange === "function" ? this.chart.getVisibleRange() : null;
+      if (vr && Array.isArray(this.data) && this.data.length > 0) {
+        const from = Math.max(0, Math.floor(vr.from != null ? vr.from : 0));
+        const to = Math.min(this.data.length - 1, Math.ceil(vr.to != null ? vr.to : (this.data.length - 1)));
+        for (let i = from; i <= to; i++) {
+          const c = this.data[i];
+          if (c) {
+            const l = Number(c.low);
+            const h = Number(c.high);
+            if (l > 0 && l < minP) minP = l;
+            if (h > 0 && h > maxP) maxP = h;
+          }
         }
       }
     } catch (_) {}
 
-    if (this.data && this.data.length) {
-      const slice = this.data.slice(-50);
-      let minP = Infinity;
-      let maxP = -Infinity;
-      for (const c of slice) {
-        if (c.low > 0 && c.low < minP) minP = c.low;
-        if (c.high > maxP) maxP = c.high;
+    // 2. Fallback to recent slice of candles if visible range didn't produce valid bounds
+    if (!Number.isFinite(minP) || !Number.isFinite(maxP) || maxP <= minP) {
+      if (Array.isArray(this.data) && this.data.length > 0) {
+        const slice = this.data.slice(-45);
+        for (const c of slice) {
+          const l = Number(c.low);
+          const h = Number(c.high);
+          if (l > 0 && l < minP) minP = l;
+          if (h > 0 && h > maxP) maxP = h;
+        }
       }
-      if (Number.isFinite(minP) && Number.isFinite(maxP) && maxP > minP) {
-        const pad = (maxP - minP) * 0.08;
-        return { min: Math.max(0.1, minP - pad), max: maxP + pad, height: this.container.clientHeight || 500 };
-      }
+    }
+
+    if (Number.isFinite(minP) && Number.isFinite(maxP) && maxP > minP && minP > 0) {
+      const pad = (maxP - minP) * 0.05;
+      return { min: Math.max(0.1, minP - pad), max: maxP + pad, height };
     }
     return null;
   }
@@ -2270,6 +2308,7 @@ export class CandleChart {
         const id = this.chart.createOverlay({
           name: "depthLevelBar",
           groupId: "depth_bars",
+          paneId: "candle_pane",
           points: [{ value: b.price }],
           lock: true,
           extendData: {

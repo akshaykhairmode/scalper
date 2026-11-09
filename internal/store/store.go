@@ -193,6 +193,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	// Clean up any historical corrupt candle records with non-positive prices
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM candles WHERE open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR high < low`); err != nil && s.log != nil {
+		s.log.Warn("clean up corrupt candle records", "error", err)
+	}
 	return nil
 }
 

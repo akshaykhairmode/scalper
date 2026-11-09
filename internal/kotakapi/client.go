@@ -140,7 +140,7 @@ func (c *Client) PlaceOrder(ctx context.Context, s Session, o Order) (json.RawMe
 	if err := validateOrder(o); err != nil {
 		return nil, err
 	}
-	form := map[string]any{"am": "NO", "dq": "0", "es": o.ExchangeSegment, "mp": "0", "pc": o.Product, "pr": formatPrice(o.Price), "pt": orderType(o.OrderType), "qt": fmt.Sprint(o.Quantity), "rt": validity(o.Validity), "tp": formatPrice(o.TriggerPrice), "ts": o.TradingSymbol, "tt": strings.ToUpper(o.TransactionType), "os": "NEOTRADEAPI"}
+	form := map[string]any{"am": "NO", "dq": "0", "es": strings.ToLower(strings.TrimSpace(o.ExchangeSegment)), "mp": "0", "pc": strings.ToUpper(strings.TrimSpace(o.Product)), "pr": formatPrice(o.Price), "pt": orderType(o.OrderType), "qt": fmt.Sprint(o.Quantity), "rt": validity(o.Validity), "tp": formatPrice(o.TriggerPrice), "ts": strings.TrimSpace(o.TradingSymbol), "tt": transactionType(o.TransactionType), "os": "NEOTRADEAPI"}
 	if strings.TrimSpace(o.Tag) != "" {
 		form["ig"] = o.Tag
 	}
@@ -230,6 +230,8 @@ func validateOrder(o Order) error {
 	}
 	switch strings.ToUpper(strings.TrimSpace(o.Validity)) {
 	case "", "DAY", "IOC":
+	case "GFD":
+		// Kotak Neo API uses DAY for Good-For-Day. Accept GFD and normalize to DAY.
 	default:
 		return errors.New("unsupported validity: must be DAY or IOC")
 	}
@@ -265,11 +267,21 @@ func orderType(v string) string {
 	}
 	return v
 }
+func transactionType(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "B", "BUY":
+		return "B"
+	case "S", "SELL":
+		return "S"
+	}
+	return strings.ToUpper(strings.TrimSpace(v))
+}
 func validity(v string) string {
-	if strings.TrimSpace(v) == "" {
+	val := strings.ToUpper(strings.TrimSpace(v))
+	if val == "" || val == "GFD" {
 		return "DAY"
 	}
-	return strings.ToUpper(v)
+	return val
 }
 func formatPrice(v float64) string { return fmt.Sprintf("%.2f", v) }
 

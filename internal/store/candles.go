@@ -20,7 +20,9 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ts, open, high, low, close, COALESCE(volume, 0)
-		FROM candles WHERE instrument_key = ? AND timeframe = ? ORDER BY ts`, instrumentKey, timeframe)
+		FROM candles 
+		WHERE instrument_key = ? AND timeframe = ? AND open > 0 AND high > 0 AND low > 0 AND close > 0 AND high >= low 
+		ORDER BY ts`, instrumentKey, timeframe)
 	if err != nil {
 		return nil, fmt.Errorf("store: query candles: %w", err)
 	}

@@ -88,6 +88,36 @@ func TestOrderRiskMarginCheckUsesLimitsBook(t *testing.T) {
 	}
 }
 
+func TestOrderRiskMarginCheckExemptsPositionReduction(t *testing.T) {
+	s := riskTestServer(t, func(c *config.Config) {
+		c.Trading.Margin.CheckBeforeOrder = true
+		c.Trading.Margin.FailClosed = true
+	})
+	session := kotakapi.Session{SID: "sid"}
+	s.books.reset(sessionKey(session))
+	s.books.store(bookLimits, json.RawMessage(`{"data":{"available_margin":50}}`), nil)
+	positionsRaw := json.RawMessage(`{"data":[
+		{"instrument_key":"nse_fo|NIFTY|2026-11-26|25000|CE","exchange_segment":"nse_fo","trading_symbol":"NIFTY26NOV25000CE","underlying":"NIFTY","quantity":75,"lot_size":75}
+	]}`)
+	s.books.store(bookPositions, positionsRaw, nil)
+
+	// An order that reduces an existing long position must NOT be blocked by margin checks
+	exitOrder := riskTestOrder()
+	exitOrder.TransactionType = "S"
+	exitOrder.Quantity = 75 // ₹7,500 notional, exceeds ₹50 margin
+	if err := s.checkOrderRisk(context.Background(), session, exitOrder); err != nil {
+		t.Fatalf("expected exit order to pass margin check when reducing position, got %v", err)
+	}
+
+	// An order that increases the position must still be blocked
+	buyOrder := riskTestOrder()
+	buyOrder.TransactionType = "B"
+	buyOrder.Quantity = 75
+	if err := s.checkOrderRisk(context.Background(), session, buyOrder); err == nil || !strings.Contains(err.Error(), "required margin") {
+		t.Fatalf("expected buy order to be blocked by margin check, got %v", err)
+	}
+}
+
 func TestOrderRiskRateCaps(t *testing.T) {
 	state := newRiskState()
 	cfg := config.Risk{MaxOrdersPerMinute: 2, MaxExitOrdersPerSecond: 1}

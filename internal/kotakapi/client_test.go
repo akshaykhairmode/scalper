@@ -70,6 +70,18 @@ func TestValidation(t *testing.T) {
 		t.Fatal("expected error on negative price")
 	}
 
+	gfdOrder := valid
+	gfdOrder.Validity = "GFD"
+	if err := validateOrder(gfdOrder); err != nil {
+		t.Fatalf("expected GFD validity to be accepted, got %v", err)
+	}
+
+	badValidity := valid
+	badValidity.Validity = "INVALID"
+	if err := validateOrder(badValidity); err == nil {
+		t.Fatal("expected error on invalid validity")
+	}
+
 	if err := validateModification(valid); err != nil {
 		t.Fatalf("expected valid modification, got %v", err)
 	}
@@ -108,8 +120,12 @@ func TestValidation(t *testing.T) {
 		t.Errorf("orderType OTHER = %s", orderType("OTHER"))
 	}
 
-	if validity("") != "DAY" || validity("ioc") != "IOC" {
+	if validity("") != "DAY" || validity("ioc") != "IOC" || validity("GFD") != "DAY" {
 		t.Errorf("validity = %s", validity(""))
+	}
+
+	if transactionType("BUY") != "B" || transactionType("B") != "B" || transactionType("SELL") != "S" || transactionType("S") != "S" {
+		t.Errorf("transactionType unexpected mapping: BUY=%s, SELL=%s", transactionType("BUY"), transactionType("SELL"))
 	}
 }
 
