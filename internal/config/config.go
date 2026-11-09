@@ -526,10 +526,16 @@ func (c *Config) applyEnv() {
 		if c.AI.Jev.Model == "" {
 			c.AI.Jev.Model = "~typesafe/jev-latest"
 		} else if !strings.HasPrefix(c.AI.Jev.Model, "~") {
-			if strings.HasPrefix(c.AI.Jev.Model, "typesafe/") {
-				c.AI.Jev.Model = "~" + c.AI.Jev.Model
-			} else {
-				c.AI.Jev.Model = "~typesafe/" + c.AI.Jev.Model
+			switch {
+			case c.AI.Jev.Model == "jev-latest" || c.AI.Jev.Model == "typesafe/jev-latest":
+				// -latest is OpenRouter's tilde alias namespace.
+				c.AI.Jev.Model = "~typesafe/jev-latest"
+			case strings.HasPrefix(c.AI.Jev.Model, "typesafe/"):
+				// Pinned TypeSafe model: keep it exactly as configured.
+			case strings.Contains(c.AI.Jev.Model, "/"):
+				// Another vendor's model on OpenRouter: leave it alone.
+			default:
+				c.AI.Jev.Model = "typesafe/" + c.AI.Jev.Model
 			}
 		}
 	}

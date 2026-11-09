@@ -237,6 +237,10 @@ func normalizeOpenRouterModel(model string) string {
 	if m == "jev-latest" {
 		return "~typesafe/jev-latest"
 	}
+	if strings.Contains(m, "/") {
+		// Already a vendor-qualified model from another family.
+		return m
+	}
 	return "typesafe/" + m
 }
 

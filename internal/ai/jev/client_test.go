@@ -215,6 +215,8 @@ func TestNormalizeOpenRouterModel(t *testing.T) {
 		"typesafe/jev-latest":  "~typesafe/jev-latest",
 		"~typesafe/jev-latest": "~typesafe/jev-latest",
 		"jev-1.13":             "typesafe/jev-1.13",
+		"typesafe/jev-1.13":    "typesafe/jev-1.13",
+		"openai/gpt-4o":        "openai/gpt-4o",
 	}
 	for in, want := range cases {
 		if got := normalizeOpenRouterModel(in); got != want {

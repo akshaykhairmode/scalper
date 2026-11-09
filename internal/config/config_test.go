@@ -477,3 +477,28 @@ func TestOpenRouterEnvironmentResolution(t *testing.T) {
 		t.Errorf("Agent.Model = %q, want nvidia/nemotron-3.5-lightning:free", cfg.AI.Agent.Model)
 	}
 }
+
+func TestOpenRouterJevModelAliasOnlyForLatest(t *testing.T) {
+	cases := []struct {
+		configured string
+		want       string
+	}{
+		{"", "~typesafe/jev-latest"},
+		{"jev-latest", "~typesafe/jev-latest"},
+		{"typesafe/jev-latest", "~typesafe/jev-latest"},
+		{"typesafe/jev-1.13", "typesafe/jev-1.13"},
+		{"jev-1.13", "typesafe/jev-1.13"},
+	}
+	for _, tc := range cases {
+		clearScalperEnv(t)
+		t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-mock-key-12345")
+		cfg := Default()
+		if tc.configured != "" {
+			cfg.AI.Jev.Model = tc.configured
+		}
+		cfg.applyEnv()
+		if cfg.AI.Jev.Model != tc.want {
+			t.Errorf("configured %q -> %q, want %q", tc.configured, cfg.AI.Jev.Model, tc.want)
+		}
+	}
+}
