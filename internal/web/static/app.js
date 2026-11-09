@@ -6437,13 +6437,6 @@ async function loadCharts(forceRefresh = false) {
       setChartHint(pane, defaultHint);
       continue;
     }
-    if (key.startsWith("mcx_fo|")) {
-      const liveKey = `${key}|${S.timeframe}`;
-      const live = S.candles[liveKey] || [];
-      chart.setData(live, { symbol: key });
-      setChartHint(pane, S.marketOpen ? live.length ? "" : "Waiting for live ticks\u2026" : "Kotak does not provide historical MCX candles. Live candles appear during MCX trading hours.");
-      continue;
-    }
     const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
     let cached = S.historicalCache.get(cacheKey);
     if (cached?.retryAt && Date.now() < cached.retryAt && !forceRefresh) {
@@ -6460,7 +6453,7 @@ async function loadCharts(forceRefresh = false) {
       const batchResp = await getJSON(`/api/candles/batch?${batchQuery.toString()}`);
       if (loadID !== S.chartLoadID) return;
       for (const [pane, key] of paneTargets) {
-        if (!key || key.startsWith("mcx_fo|")) continue;
+        if (!key) continue;
         const result = batchResp[pane];
         const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
         if (!result) continue;
@@ -6511,7 +6504,7 @@ async function loadCharts(forceRefresh = false) {
   if (loadID !== S.chartLoadID) return;
   for (const [pane, key, defaultHint] of paneTargets) {
     const chart = S.charts[pane];
-    if (!chart || !key || key.startsWith("mcx_fo|")) continue;
+    if (!chart || !key) continue;
     const currentExpectedKey = pane === "spot" ? activeSpotInstrument() : pane === "ce" ? chartInstrument("CE") : chartInstrument("PE");
     if (currentExpectedKey !== key) continue;
     const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
@@ -6522,15 +6515,16 @@ async function loadCharts(forceRefresh = false) {
       setChartHint(pane, defaultHint);
     } else if (entry.retryAt) {
       console.warn("historical candles unavailable", { pane, error: entry.error });
-      chart.setData([], { symbol: key });
-      setChartHint(pane, `Historical data unavailable: ${entry.error.message}`);
+      const live = S.candles[liveKey] || [];
+      chart.setData(live, { symbol: key });
+      setChartHint(pane, live.length ? "Live candles only; historical refresh is retrying." : `Historical data unavailable: ${entry.error.message}`);
     } else {
-      if (!S.candles[liveKey]?.length && entry.candles?.length) {
-        S.candles[liveKey] = entry.candles.slice(-500).map((candle) => ({ ...candle }));
+      const merged = mergeChartCandles(entry.candles, S.candles[liveKey]);
+      if (merged.length) {
+        S.candles[liveKey] = merged.slice(-500).map((candle) => ({ ...candle }));
       }
-      const dataToSet = S.candles[liveKey]?.length ? mergeChartCandles(entry.candles, S.candles[liveKey]) : entry.candles;
-      chart.setData(dataToSet, { symbol: key });
-      setChartHint(pane, entry.warning || (entry.candles.length ? "" : "Waiting for live ticks\u2026"));
+      chart.setData(merged, { symbol: key });
+      setChartHint(pane, entry.warning || (merged.length ? "" : "Waiting for live ticks\u2026"));
     }
   }
   renderPaneHeaders();
@@ -6538,12 +6532,22 @@ async function loadCharts(forceRefresh = false) {
 }
 function mergeChartCandles(historical, live) {
   const byTime = new Map(
-    (historical || []).filter((c) => c && c.low > 0 && c.open > 0 && c.high > 0 && c.close > 0 && c.high >= c.low).map((candle) => [candle.time, candle])
+    (historical || []).filter((c) => c && c.low > 0 && c.open > 0 && c.high > 0 && c.close > 0 && c.high >= c.low).map((candle) => [candle.time, { ...candle }])
   );
   for (const candle of live || []) {
-    if (candle && candle.low > 0 && candle.open > 0 && candle.high > 0 && candle.close > 0 && candle.high >= candle.low) {
-      byTime.set(candle.time, candle);
+    if (!candle || candle.low <= 0 || candle.open <= 0 || candle.high <= 0 || candle.close <= 0 || candle.high < candle.low) {
+      continue;
     }
+    const existing = byTime.get(candle.time);
+    if (!existing) {
+      byTime.set(candle.time, { ...candle });
+      continue;
+    }
+    existing.open = existing.open > 0 ? existing.open : candle.open;
+    existing.high = Math.max(existing.high, candle.high);
+    existing.low = Math.min(existing.low, candle.low);
+    existing.close = candle.close;
+    existing.volume = Math.max(existing.volume || 0, candle.volume || 0);
   }
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
@@ -9857,6 +9861,17 @@ function renderAIScannerTimer() {
   const modalBadgeEl = $("ai-modal-scanner-badge");
   if (!headerEl && !modalValEl) return;
   const scanner = S.aiScanner;
+  const scanErrEl = $("ai-modal-scan-error");
+  if (scanErrEl) {
+    const msg = scanner && scanner.last_error ? String(scanner.last_error) : "";
+    if (msg) {
+      scanErrEl.textContent = "\u26A0 Last scan error: " + msg;
+      scanErrEl.style.display = "block";
+    } else {
+      scanErrEl.textContent = "";
+      scanErrEl.style.display = "none";
+    }
+  }
   if (!scanner || !scanner.enabled) {
     if (headerEl) {
       headerEl.textContent = "\u23F1 Off";
@@ -9938,9 +9953,10 @@ function renderAIScannerTimer() {
   } else if (openList) {
     scopeTip += ` \xB7 Active: ${openList}`;
   }
+  const errSuffix = scanner.last_error ? ` \xB7 Last error: ${String(scanner.last_error).slice(0, 200)}` : "";
   if (headerEl) {
     headerEl.textContent = remaining <= 0 ? "\u23F1 Scanning\u2026" : `\u23F1 ${formatted}`;
-    headerEl.title = remaining <= 0 ? "AI scan in progress\u2026" : `Next AI background scan in ${remaining}s (${scopeTip})`;
+    headerEl.title = (remaining <= 0 ? "AI scan in progress\u2026" : `Next AI background scan in ${remaining}s (${scopeTip})`) + errSuffix;
     headerEl.style.opacity = "1";
     if (remaining <= 0) {
       headerEl.style.color = "var(--accent, #f59e0b)";
@@ -9953,7 +9969,7 @@ function renderAIScannerTimer() {
     modalValEl.style.color = "var(--accent, #f59e0b)";
   }
   if (modalBadgeEl) {
-    modalBadgeEl.title = `Next scan in ${remaining}s (${scopeTip})`;
+    modalBadgeEl.title = `Next scan in ${remaining}s (${scopeTip})` + errSuffix;
   }
   if (remaining === 0 && !S.aiScanRefreshTriggered) {
     S.aiScanRefreshTriggered = true;

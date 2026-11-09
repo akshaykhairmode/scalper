@@ -53,35 +53,63 @@ type PlaybookOutput struct {
 
 // CandidateContract is one option contract presented to the reasoning agent.
 type CandidateContract struct {
-	InstrumentKey   string                    `json:"instrument_key,omitempty"`
-	OptionType      string                    `json:"option_type"`
-	Strike          string                    `json:"strike"`
-	StrikePrice     float64                   `json:"strike_price,omitempty"`
-	OptionLTP       float64                   `json:"option_ltp"`
-	Expiry          string                    `json:"expiry,omitempty"`
-	DaysToExpiry    float64                   `json:"days_to_expiry,omitempty"`
-	MoneynessPct    float64                   `json:"moneyness_pct,omitempty"`
-	VWAP            float64                   `json:"vwap,omitempty"`
-	EMA9            float64                   `json:"ema_9,omitempty"`
-	EMA21           float64                   `json:"ema_21,omitempty"`
-	RSI14           float64                   `json:"rsi_14,omitempty"`
-	ATR14           float64                   `json:"atr_14,omitempty"`
-	DistFromVWAPPct float64                   `json:"dist_from_vwap_pct,omitempty"`
-	OI              int64                     `json:"oi,omitempty"`
-	Volume          int64                     `json:"volume,omitempty"`
-	OrderBook       features.OrderBookMetrics `json:"order_book"`
+	InstrumentKey    string                    `json:"instrument_key,omitempty"`
+	OptionType       string                    `json:"option_type"`
+	Strike           string                    `json:"strike"`
+	StrikePrice      float64                   `json:"strike_price,omitempty"`
+	OptionLTP        float64                   `json:"option_ltp"`
+	Expiry           string                    `json:"expiry,omitempty"`
+	DaysToExpiry     float64                   `json:"days_to_expiry,omitempty"`
+	MoneynessPct     float64                   `json:"moneyness_pct,omitempty"`
+	MoneynessLabel   string                    `json:"moneyness_label,omitempty"`
+	PreviousClose    float64                   `json:"previous_close,omitempty"`
+	ChangePct        float64                   `json:"change_pct,omitempty"`
+	DayOpen          float64                   `json:"day_open,omitempty"`
+	DayHigh          float64                   `json:"day_high,omitempty"`
+	DayLow           float64                   `json:"day_low,omitempty"`
+	VWAP             float64                   `json:"vwap,omitempty"`
+	AvgPrice         float64                   `json:"avg_price,omitempty"`
+	EMA9             float64                   `json:"ema_9,omitempty"`
+	EMA21            float64                   `json:"ema_21,omitempty"`
+	RSI14            float64                   `json:"rsi_14,omitempty"`
+	ATR14            float64                   `json:"atr_14,omitempty"`
+	DistFromVWAPPct  float64                   `json:"dist_from_vwap_pct,omitempty"`
+	IndicatorsSource string                    `json:"indicators_source,omitempty"` // ticks | placeholder
+	OI               int64                     `json:"oi,omitempty"`
+	Volume           int64                     `json:"volume,omitempty"`
+	OrderBook        features.OrderBookMetrics `json:"order_book"`
+}
+
+// OpenPosition summarizes a paper position already open on the underlying.
+type OpenPosition struct {
+	InstrumentKey string  `json:"instrument_key"`
+	Underlying    string  `json:"underlying"`
+	Action        string  `json:"action"`
+	Entry         float64 `json:"entry"`
+	Current       float64 `json:"current"`
+	PnLPct        float64 `json:"pnl_pct"`
+	AgeMinutes    int     `json:"age_minutes"`
 }
 
 // CandidateRequest is the market context sent to the reasoning agent to propose
 // candidate paper trades for one underlying.
 type CandidateRequest struct {
-	Timestamp  string              `json:"timestamp"`
-	Underlying string              `json:"underlying"`
-	SpotPrice  float64             `json:"spot_price"`
-	MacroBias  string              `json:"macro_bias,omitempty"`
-	Regime     string              `json:"regime,omitempty"`
-	Narrative  string              `json:"narrative,omitempty"`
-	Candidates []CandidateContract `json:"candidates"`
+	Timestamp         string                     `json:"timestamp"`
+	Underlying        string                     `json:"underlying"`
+	SpotPrice         float64                    `json:"spot_price"`
+	MacroBias         string                     `json:"macro_bias,omitempty"`
+	Regime            string                     `json:"regime,omitempty"`
+	Narrative         string                     `json:"narrative,omitempty"`
+	UnderlyingContext features.UnderlyingContext `json:"underlying_context"`
+	KeySupport        float64                    `json:"key_support,omitempty"`
+	KeyResistance     float64                    `json:"key_resistance,omitempty"`
+	MaxPain           float64                    `json:"max_pain,omitempty"`
+	PCR               float64                    `json:"pcr,omitempty"`
+	CallOIWall        float64                    `json:"call_oi_wall,omitempty"`
+	PutOIWall         float64                    `json:"put_oi_wall,omitempty"`
+	JevRules          string                     `json:"jev_rules,omitempty"`
+	OpenPositions     []OpenPosition             `json:"open_positions,omitempty"`
+	Candidates        []CandidateContract        `json:"candidates"`
 }
 
 // CandidateDecision is the agent's verdict for one candidate contract.

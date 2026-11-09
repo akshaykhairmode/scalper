@@ -48,7 +48,8 @@ func TestQuotesClientDecodesAndLogsRedactedExchange(t *testing.T) {
 			  "change":"25.5",
 			  "per_change":"0.1",
 			  "last_volume":"100",
-			  "ohlc":{"close":"25225"},
+			  "avg_cost":"25200.25",
+			  "ohlc":{"open":"25180","high":"25280","low":"25160","close":"25225"},
 			  "depth":{"buy":[{"price":"25250.4"}],"sell":[{"price":"25250.6"}]}
 			}
 		]`)
@@ -72,6 +73,8 @@ func TestQuotesClientDecodesAndLogsRedactedExchange(t *testing.T) {
 		t.Fatalf("quotes = %+v", quotes)
 	}
 	if quote.LTP != 25250.5 || quote.PreviousClose != 25225 ||
+		quote.Open != 25180 || quote.High != 25280 || quote.Low != 25160 ||
+		quote.AvgPrice != 25200.25 ||
 		quote.Change != 25.5 || quote.ChangePct != 0.1 ||
 		quote.Bid != 25250.4 || quote.Ask != 25250.6 ||
 		quote.UpdatedAt != 1761566400 {

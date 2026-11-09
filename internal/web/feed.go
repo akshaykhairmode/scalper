@@ -278,6 +278,17 @@ func (s *Server) forwardHSMEvents() {
 					s.evaluator.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
 				}
 			}
+			if s.candleAgg != nil {
+				ts := time.Now()
+				if event.Quote.Timestamp > 0 {
+					if event.Quote.Timestamp > 1e12 {
+						ts = time.UnixMilli(event.Quote.Timestamp)
+					} else {
+						ts = time.Unix(event.Quote.Timestamp, 0)
+					}
+				}
+				s.candleAgg.OnTick(key, event.Quote.LTP, event.Quote.Volume, event.Quote.OI, ts)
+			}
 			tickData := map[string]any{
 				"key": key, "ltp": event.Quote.LTP,
 				"prev_close": event.Quote.PreviousClose,

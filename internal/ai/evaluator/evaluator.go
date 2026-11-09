@@ -72,6 +72,18 @@ type liveQuoteProvider interface {
 	GetOptionLTP(ctx context.Context, instrumentKey string) (float64, error)
 }
 
+// chainContextProvider optionally provides a near-ATM option ladder plus
+// chain-level statistics (PCR, max pain, OI walls) for one underlying.
+type chainContextProvider interface {
+	GetChainContext(ctx context.Context, underlying string, spot float64) (features.ChainContext, error)
+}
+
+// underlyingContextProvider optionally provides index/commodity context such as
+// day OHLC, VWAP, India VIX and time left in the session.
+type underlyingContextProvider interface {
+	GetUnderlyingContext(ctx context.Context, underlying string) (features.UnderlyingContext, error)
+}
+
 // AIStore abstracts database storage operations required by the evaluator.
 type AIStore interface {
 	SaveEvaluation(ctx context.Context, e store.Evaluation) (int64, error)
@@ -572,13 +584,22 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 		return nil, fmt.Errorf("evaluator: get spot price: %w", err)
 	}
 
-	ceKey, peKey, ceLTP, peLTP, err := e.quoteProvider.GetATMStrikes(ctx, underlying)
-	if err != nil {
-		e.noteScanFailure(err)
-		return nil, fmt.Errorf("evaluator: get atm strikes: %w", err)
+	var chainCtx features.ChainContext
+	candidates := []scanCandidate{}
+	if provider, ok := e.quoteProvider.(chainContextProvider); ok {
+		if cc, cerr := provider.GetChainContext(ctx, underlying, spot); cerr == nil && len(cc.Candidates) > 0 {
+			chainCtx = cc
+			candidates = e.buildCandidatesFromInfo(ctx, spot, cc.Candidates)
+		}
 	}
-
-	candidates := e.buildCandidates(ctx, underlying, spot, ceKey, peKey, ceLTP, peLTP)
+	if len(candidates) == 0 {
+		ceKey, peKey, ceLTP, peLTP, aerr := e.quoteProvider.GetATMStrikes(ctx, underlying)
+		if aerr != nil {
+			e.noteScanFailure(aerr)
+			return nil, fmt.Errorf("evaluator: get atm strikes: %w", aerr)
+		}
+		candidates = e.buildCandidates(ctx, underlying, spot, ceKey, peKey, ceLTP, peLTP)
+	}
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -587,23 +608,43 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 	e.lastCandidateCnt = len(candidates)
 	e.scanMu.Unlock()
 
-	var bias, regime, narrative string
+	pb := &store.Playbook{}
 	if e.store != nil {
-		if pb, perr := e.store.GetLatestPlaybook(ctx); perr == nil && pb != nil {
-			bias, regime, narrative = pb.Bias, pb.Regime, pb.Narrative
+		if loaded, perr := e.store.GetLatestPlaybook(ctx); perr == nil && loaded != nil {
+			pb = loaded
+		}
+	}
+	bias, regime, narrative := pb.Bias, pb.Regime, pb.Narrative
+
+	underlyingCtx := features.UnderlyingContext{SpotPrice: spot}
+	if provider, ok := e.quoteProvider.(underlyingContextProvider); ok {
+		if uc, uerr := provider.GetUnderlyingContext(ctx, underlying); uerr == nil {
+			underlyingCtx = uc
+			if underlyingCtx.SpotPrice <= 0 {
+				underlyingCtx.SpotPrice = spot
+			}
 		}
 	}
 
 	decisions := make(map[string]agent.CandidateDecision)
 	if agentClient != nil {
 		req := agent.CandidateRequest{
-			Timestamp:  time.Now().Format(time.RFC3339),
-			Underlying: underlying,
-			SpotPrice:  spot,
-			MacroBias:  bias,
-			Regime:     regime,
-			Narrative:  narrative,
-			Candidates: make([]agent.CandidateContract, 0, len(candidates)),
+			Timestamp:         time.Now().Format(time.RFC3339),
+			Underlying:        underlying,
+			SpotPrice:         spot,
+			MacroBias:         bias,
+			Regime:            regime,
+			Narrative:         narrative,
+			UnderlyingContext: underlyingCtx,
+			KeySupport:        pb.KeySupport,
+			KeyResistance:     pb.KeyResistance,
+			MaxPain:           firstNonZeroFloat(pb.MaxPain, chainCtx.MaxPain),
+			PCR:               firstNonZeroFloat(pb.PCR, chainCtx.PCR),
+			CallOIWall:        chainCtx.CallOIWall,
+			PutOIWall:         chainCtx.PutOIWall,
+			JevRules:          pb.JevRulesJSON,
+			OpenPositions:     e.openPositionsSnapshot(),
+			Candidates:        make([]agent.CandidateContract, 0, len(candidates)),
 		}
 		for _, cand := range candidates {
 			req.Candidates = append(req.Candidates, cand.agentInput())
@@ -769,7 +810,12 @@ func (e *Evaluator) buildCandidates(ctx context.Context, _ string, spot float64,
 			strikeLabel = strconv.FormatFloat(strike, 'f', -1, 64)
 		}
 
-		vwap, ema9, ema21, rsi14, atr14 := e.getTechnicalMetrics(item.Key, ltp)
+		vwap, ema9, ema21, rsi14, atr14, hasTicks := e.getTechnicalMetrics(item.Key, ltp)
+		// Kotak's avg_cost is the day's volume-weighted average price. Prefer
+		// it over the short tick-window VWAP when available.
+		if info.AvgPrice > 0 {
+			vwap = info.AvgPrice
+		}
 		distVWAP := 0.0
 		if vwap > 0 {
 			distVWAP = ((ltp - vwap) / vwap) * 100.0
@@ -783,27 +829,138 @@ func (e *Evaluator) buildCandidates(ctx context.Context, _ string, spot float64,
 				moneyness = ((spot - strike) / spot) * 100.0
 			}
 		}
+		indicatorsSource := "placeholder"
+		if hasTicks {
+			indicatorsSource = "ticks"
+		}
 
 		out = append(out, scanCandidate{
-			Key:             item.Key,
-			Type:            strings.ToUpper(strings.TrimSpace(info.OptionType)),
-			Strike:          strikeLabel,
-			StrikePrice:     strike,
-			LTP:             ltp,
-			Expiry:          info.Expiry,
-			MoneynessPct:    moneyness,
-			VWAP:            vwap,
-			EMA9:            ema9,
-			EMA21:           ema21,
-			RSI14:           rsi14,
-			ATR14:           atr14,
-			DistFromVWAPPct: distVWAP,
-			Depth:           depth,
-			OI:              info.OI,
-			Volume:          info.Volume,
+			Key:              item.Key,
+			Type:             strings.ToUpper(strings.TrimSpace(info.OptionType)),
+			Strike:           strikeLabel,
+			StrikePrice:      strike,
+			LTP:              ltp,
+			Expiry:           info.Expiry,
+			PreviousClose:    info.PreviousClose,
+			ChangePct:        info.ChangePct,
+			DayOpen:          info.Open,
+			DayHigh:          info.High,
+			DayLow:           info.Low,
+			AvgPrice:         info.AvgPrice,
+			MoneynessPct:     moneyness,
+			MoneynessLabel:   moneynessLabelFor(moneyness),
+			VWAP:             vwap,
+			EMA9:             ema9,
+			EMA21:            ema21,
+			RSI14:            rsi14,
+			ATR14:            atr14,
+			DistFromVWAPPct:  distVWAP,
+			IndicatorsSource: indicatorsSource,
+			Depth:            depth,
+			OI:               info.OI,
+			Volume:           info.Volume,
 		})
 	}
 	return out
+}
+
+// buildCandidatesFromInfo converts a provider-supplied near-ATM ladder into
+// evaluator candidates. Quotes and depth come from the chain response, so no
+// extra per-contract quote request is needed.
+func (e *Evaluator) buildCandidatesFromInfo(ctx context.Context, spot float64, infos []features.OptionInfo) []scanCandidate {
+	out := make([]scanCandidate, 0, len(infos))
+	seen := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		key := strings.TrimSpace(info.InstrumentKey)
+		if key == "" || info.LTP <= 0 || seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		depth := info.OrderBook
+		if depth.BestBid <= 0 && depth.BestAsk <= 0 && e.quoteProvider != nil {
+			depth, _ = e.quoteProvider.GetMarketDepth(ctx, key)
+		}
+
+		optionType := strings.ToUpper(strings.TrimSpace(info.OptionType))
+		if optionType == "" {
+			optionType = optionTypeFromKey(key)
+		}
+		strike := info.Strike
+		if strike <= 0 {
+			strike = parseStrikeFromKey(key)
+		}
+		strikeLabel := ""
+		if strike > 0 {
+			strikeLabel = strconv.FormatFloat(strike, 'f', -1, 64)
+		}
+
+		moneyness := 0.0
+		if spot > 0 && strike > 0 {
+			if optionType == "PE" {
+				moneyness = ((strike - spot) / spot) * 100.0
+			} else {
+				moneyness = ((spot - strike) / spot) * 100.0
+			}
+		}
+
+		vwap, ema9, ema21, rsi14, atr14, hasTicks := e.getTechnicalMetrics(key, info.LTP)
+		if info.AvgPrice > 0 {
+			vwap = info.AvgPrice
+		}
+		distVWAP := 0.0
+		if vwap > 0 {
+			distVWAP = ((info.LTP - vwap) / vwap) * 100.0
+		}
+		indicatorsSource := "placeholder"
+		if hasTicks {
+			indicatorsSource = "ticks"
+		}
+		label := info.MoneynessLabel
+		if label == "" {
+			label = moneynessLabelFor(moneyness)
+		}
+
+		out = append(out, scanCandidate{
+			Key:              key,
+			Type:             optionType,
+			Strike:           strikeLabel,
+			StrikePrice:      strike,
+			LTP:              info.LTP,
+			Expiry:           info.Expiry,
+			PreviousClose:    info.PreviousClose,
+			ChangePct:        info.ChangePct,
+			DayOpen:          info.Open,
+			DayHigh:          info.High,
+			DayLow:           info.Low,
+			AvgPrice:         info.AvgPrice,
+			MoneynessPct:     moneyness,
+			MoneynessLabel:   label,
+			VWAP:             vwap,
+			EMA9:             ema9,
+			EMA21:            ema21,
+			RSI14:            rsi14,
+			ATR14:            atr14,
+			DistFromVWAPPct:  distVWAP,
+			IndicatorsSource: indicatorsSource,
+			Depth:            depth,
+			OI:               info.OI,
+			Volume:           info.Volume,
+		})
+	}
+	return out
+}
+
+func optionTypeFromKey(key string) string {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	switch {
+	case strings.HasSuffix(upper, "PE"):
+		return "PE"
+	case strings.HasSuffix(upper, "CE"):
+		return "CE"
+	default:
+		return "CE"
+	}
 }
 
 func (e *Evaluator) marketSnapshot(ctx context.Context, instrumentKey string) (features.OrderBookMetrics, features.OptionInfo) {
@@ -1067,7 +1224,7 @@ func (e *Evaluator) pollActivePositions(ctx context.Context) {
 	}
 }
 
-func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap, ema9, ema21, rsi14, atr14 float64) {
+func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap, ema9, ema21, rsi14, atr14 float64, hasTicks bool) {
 	var ring *features.TickRing
 	if e != nil {
 		e.ringMu.RLock()
@@ -1107,7 +1264,7 @@ func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap
 		if rsi14 <= 0 {
 			rsi14 = 50.0
 		}
-		return
+		return vwap, ema9, ema21, rsi14, atr14, true
 	}
 
 	highs := []float64{ltp * 1.01, ltp * 1.01}
@@ -1118,7 +1275,7 @@ func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap
 	ema21 = features.CalculateEMA([]float64{ltp}, 21)
 	rsi14 = features.CalculateRSI(closes, 14)
 	atr14 = features.CalculateATR(highs, lows, closes, 14)
-	return
+	return vwap, ema9, ema21, rsi14, atr14, false
 }
 
 // ActiveCallsCount returns the number of calls currently monitored for market outcomes.
@@ -1145,6 +1302,46 @@ func (e *Evaluator) LivePrices() map[int64]float64 {
 		out[id] = price
 	}
 	return out
+}
+
+// openPositionsSnapshot summarizes open paper calls so the agent knows what is
+// already live before proposing another position.
+func (e *Evaluator) openPositionsSnapshot() []agent.OpenPosition {
+	if e == nil {
+		return nil
+	}
+	now := time.Now()
+	e.activeMu.RLock()
+	defer e.activeMu.RUnlock()
+	out := make([]agent.OpenPosition, 0, len(e.activeCalls))
+	for _, call := range e.activeCalls {
+		current := call.LastPrice
+		if current <= 0 {
+			current = call.EntryPrice
+		}
+		pnl := 0.0
+		if call.EntryPrice > 0 {
+			pnl = ((current - call.EntryPrice) / call.EntryPrice) * 100.0
+			pnl -= call.CostPct
+		}
+		out = append(out, agent.OpenPosition{
+			InstrumentKey: call.InstrumentKey,
+			Underlying:    call.Underlying,
+			Action:        call.Action,
+			Entry:         call.EntryPrice,
+			Current:       current,
+			PnLPct:        math.Round(pnl*100) / 100,
+			AgeMinutes:    int(now.Sub(call.CreatedAt).Minutes()),
+		})
+	}
+	return out
+}
+
+func firstNonZeroFloat(a, b float64) float64 {
+	if a != 0 {
+		return a
+	}
+	return b
 }
 
 // TrackedInstrumentKeys returns the instrument keys currently needed for live tracking.
@@ -1256,7 +1453,7 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		}
 	}
 
-	vwap, ema9, ema21, rsi14, atr14 := e.getTechnicalMetrics(setup.InstrumentKey, setup.OptionLTP)
+	vwap, ema9, ema21, rsi14, atr14, _ := e.getTechnicalMetrics(setup.InstrumentKey, setup.OptionLTP)
 	distVWAP := 0.0
 	if vwap > 0 {
 		distVWAP = ((setup.OptionLTP - vwap) / vwap) * 100.0
@@ -1540,6 +1737,14 @@ func (e *Evaluator) runPositionMonitor(ctx context.Context) {
 	}
 }
 
+type scanCycleResult int
+
+const (
+	scanCycleOK scanCycleResult = iota
+	scanCycleMarketClosed
+	scanCycleFailed
+)
+
 func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done chan struct{}) {
 	defer close(done)
 
@@ -1553,11 +1758,10 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 		retryInterval = 15 * time.Second
 	}
 
-	// runCycle executes one scan pass and reports whether it completed
-	// healthy. Unhealthy cycles (market closed, broker/agent unavailable)
-	// are retried sooner than the full scan interval so the system recovers
-	// quickly after login or feed startup.
-	runCycle := func() bool {
+	// runCycle executes one scan pass. Closed markets are re-checked soon so
+	// the scanner starts promptly at the next open; repeated scan failures back
+	// off exponentially to avoid hammering a slow or rate-limited agent.
+	runCycle := func() scanCycleResult {
 		e.scanMu.Lock()
 		e.nextScanTime = time.Now().Add(interval)
 		e.scanMu.Unlock()
@@ -1575,12 +1779,12 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 			if e.onScanStatus != nil {
 				e.onScanStatus(e.ScannerStatus())
 			}
-			return false
+			return scanCycleMarketClosed
 		}
 
 		underlyings := status.OpenUnderlyings
 		if len(underlyings) == 0 {
-			return false
+			return scanCycleMarketClosed
 		}
 
 		var totalEvals []store.Evaluation
@@ -1617,11 +1821,15 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 		if e.onScanStatus != nil {
 			e.onScanStatus(e.ScannerStatus())
 		}
-		return !failed
+		if failed {
+			return scanCycleFailed
+		}
+		return scanCycleOK
 	}
 
 	// Trigger the first scan shortly after startup (after feeds/scrips stabilize).
 	delay := 5 * time.Second
+	failures := 0
 	for {
 		timer := time.NewTimer(delay)
 		select {
@@ -1630,10 +1838,25 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 			e.log.Info("ai evaluator periodic scanner stopped", "event", "ai_scanner_stopped")
 			return
 		case <-timer.C:
-			healthy := runCycle()
-			delay = interval
-			if !healthy {
+			switch runCycle() {
+			case scanCycleOK:
+				failures = 0
+				delay = interval
+			case scanCycleMarketClosed:
+				failures = 0
 				delay = retryInterval
+			case scanCycleFailed:
+				failures++
+				delay = retryInterval
+				for i := 1; i < failures; i++ {
+					if delay >= interval {
+						break
+					}
+					delay *= 2
+				}
+				if delay > interval {
+					delay = interval
+				}
 			}
 			e.scanMu.Lock()
 			e.nextScanTime = time.Now().Add(delay)
@@ -1655,42 +1878,85 @@ func (e *Evaluator) noteScanFailure(err error) {
 }
 
 type scanCandidate struct {
-	Key             string
-	Type            string
-	Strike          string
-	StrikePrice     float64
-	LTP             float64
-	Expiry          string
-	MoneynessPct    float64
-	VWAP            float64
-	EMA9            float64
-	EMA21           float64
-	RSI14           float64
-	ATR14           float64
-	DistFromVWAPPct float64
-	Depth           features.OrderBookMetrics
-	OI              int64
-	Volume          int64
+	Key              string
+	Type             string
+	Strike           string
+	StrikePrice      float64
+	LTP              float64
+	Expiry           string
+	PreviousClose    float64
+	ChangePct        float64
+	DayOpen          float64
+	DayHigh          float64
+	DayLow           float64
+	AvgPrice         float64
+	MoneynessPct     float64
+	MoneynessLabel   string
+	VWAP             float64
+	EMA9             float64
+	EMA21            float64
+	RSI14            float64
+	ATR14            float64
+	DistFromVWAPPct  float64
+	IndicatorsSource string
+	Depth            features.OrderBookMetrics
+	OI               int64
+	Volume           int64
 }
 
 func (c scanCandidate) agentInput() agent.CandidateContract {
+	daysToExpiry := 0.0
+	if c.Expiry != "" {
+		if expiry, err := time.Parse("2006-01-02", c.Expiry); err == nil {
+			daysToExpiry = math.Max(0, time.Until(expiry).Hours()/24.0)
+			daysToExpiry = math.Round(daysToExpiry*10) / 10
+		}
+	}
+	moneynessLabel := c.MoneynessLabel
+	if moneynessLabel == "" {
+		moneynessLabel = moneynessLabelFor(c.MoneynessPct)
+	}
 	return agent.CandidateContract{
-		InstrumentKey:   c.Key,
-		OptionType:      c.Type,
-		Strike:          c.Strike,
-		StrikePrice:     c.StrikePrice,
-		OptionLTP:       c.LTP,
-		Expiry:          c.Expiry,
-		MoneynessPct:    math.Round(c.MoneynessPct*100) / 100,
-		VWAP:            c.VWAP,
-		EMA9:            c.EMA9,
-		EMA21:           c.EMA21,
-		RSI14:           c.RSI14,
-		ATR14:           c.ATR14,
-		DistFromVWAPPct: math.Round(c.DistFromVWAPPct*100) / 100,
-		OI:              c.OI,
-		Volume:          c.Volume,
-		OrderBook:       c.Depth,
+		InstrumentKey:    c.Key,
+		OptionType:       c.Type,
+		Strike:           c.Strike,
+		StrikePrice:      c.StrikePrice,
+		OptionLTP:        c.LTP,
+		Expiry:           c.Expiry,
+		DaysToExpiry:     daysToExpiry,
+		MoneynessPct:     math.Round(c.MoneynessPct*100) / 100,
+		MoneynessLabel:   moneynessLabel,
+		PreviousClose:    c.PreviousClose,
+		ChangePct:        c.ChangePct,
+		DayOpen:          c.DayOpen,
+		DayHigh:          c.DayHigh,
+		DayLow:           c.DayLow,
+		VWAP:             c.VWAP,
+		AvgPrice:         c.AvgPrice,
+		EMA9:             c.EMA9,
+		EMA21:            c.EMA21,
+		RSI14:            c.RSI14,
+		ATR14:            c.ATR14,
+		DistFromVWAPPct:  math.Round(c.DistFromVWAPPct*100) / 100,
+		IndicatorsSource: c.IndicatorsSource,
+		OI:               c.OI,
+		Volume:           c.Volume,
+		OrderBook:        c.Depth,
+	}
+}
+
+// moneynessLabelFor classifies a contract as ATM, ITM or OTM. Positive
+// moneyness means the option is in-the-money for both calls and puts with the
+// convention used by the evaluator: (spot-strike)/spot for CE and
+// (strike-spot)/spot for PE.
+func moneynessLabelFor(moneynessPct float64) string {
+	switch {
+	case math.Abs(moneynessPct) < 0.5:
+		return "ATM"
+	case moneynessPct > 0:
+		return "ITM"
+	default:
+		return "OTM"
 	}
 }
 

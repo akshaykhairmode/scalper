@@ -262,6 +262,13 @@ func (s *Server) fetchInstrumentCandles(
 				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
 			cached = nil
 		}
+		if len(cached) == 0 && timeframe != "1m" {
+			// Older or tick-only data may exist as 1-minute bars. Derive the
+			// requested timeframe so MCX charts can still show history.
+			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
+				cached = synth
+			}
+		}
 		if len(cached) > 0 && isMalformedCandleRun(cached) {
 			s.log.Warn("cached candles contain malformed run; repairing from 1m store",
 				"event", "malformed_cached_candles", "instrument", instrument, "timeframe", timeframe)
@@ -284,6 +291,19 @@ func (s *Server) fetchInstrumentCandles(
 		if !forceRefresh && len(cached) > 0 && syncErr == nil && synced && !candleRefreshDue(
 			localNow, session.Open, session.Close, syncedAt) {
 			return candleFetchResult{Candles: cached, Source: "sqlite"}
+		}
+	}
+
+	// Kotak has no historical endpoint for MCX. Serve the bars collected from
+	// the live feed instead of returning an upstream error.
+	if strings.HasPrefix(instrument, "mcx_fo|") {
+		if len(cached) > 0 {
+			return candleFetchResult{Candles: cached, Source: "sqlite"}
+		}
+		return candleFetchResult{
+			Candles: []market.Candle{},
+			Source:  "sqlite",
+			Warning: "Collecting live MCX candles from the feed…",
 		}
 	}
 

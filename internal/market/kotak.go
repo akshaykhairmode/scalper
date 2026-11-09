@@ -49,6 +49,10 @@ type Quote struct {
 	UpdatedAt     int64
 	LTP           float64
 	PreviousClose float64
+	Open          float64
+	High          float64
+	Low           float64
+	AvgPrice      float64
 	Change        float64
 	ChangePct     float64
 	Volume        int64
@@ -555,9 +559,16 @@ type rawKotakQuoteRow struct {
 	OpenInterest      json.RawMessage `json:"open_interest"`
 	OpenInterestCamel json.RawMessage `json:"openInterest"`
 	OpenInt           json.RawMessage `json:"open_int"`
+	AvgCost           json.RawMessage `json:"avg_cost"`
+	Open              json.RawMessage `json:"open"`
+	High              json.RawMessage `json:"high"`
+	Low               json.RawMessage `json:"low"`
 	Close             json.RawMessage `json:"close"`
 	PreviousClose     json.RawMessage `json:"previous_close"`
 	OHLC              *struct {
+		Open          json.RawMessage `json:"open"`
+		High          json.RawMessage `json:"high"`
+		Low           json.RawMessage `json:"low"`
 		Close         json.RawMessage `json:"close"`
 		PreviousClose json.RawMessage `json:"previous_close"`
 	} `json:"ohlc"`
@@ -674,9 +685,22 @@ func decodeRawQuoteRow(row *rawKotakQuoteRow) (Quote, error) {
 	quote.ChangePct, _ = firstRawFloat(row.PerChange, row.ChangePct)
 	quote.Volume = firstRawInt(row.LastVolume, row.Volume)
 	quote.OI = firstRawInt(row.OI, row.OpenInterest, row.OpenInterestCamel, row.OpenInt)
+	quote.AvgPrice, _ = firstRawFloat(row.AvgCost)
+	quote.Open, _ = firstRawFloat(row.Open)
+	quote.High, _ = firstRawFloat(row.High)
+	quote.Low, _ = firstRawFloat(row.Low)
 
 	if row.OHLC != nil {
 		quote.PreviousClose, _ = firstRawFloat(row.OHLC.Close, row.OHLC.PreviousClose)
+		if v, ok := firstRawFloat(row.OHLC.Open); ok {
+			quote.Open = v
+		}
+		if v, ok := firstRawFloat(row.OHLC.High); ok {
+			quote.High = v
+		}
+		if v, ok := firstRawFloat(row.OHLC.Low); ok {
+			quote.Low = v
+		}
 	}
 	if quote.PreviousClose == 0 {
 		quote.PreviousClose, _ = firstRawFloat(row.Close, row.PreviousClose)

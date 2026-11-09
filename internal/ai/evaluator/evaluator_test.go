@@ -77,7 +77,16 @@ func (m *mockAIStore) ListEvaluations(_ context.Context, limit int) ([]store.Eva
 }
 
 func (m *mockAIStore) GetLatestPlaybook(_ context.Context) (*store.Playbook, error) {
-	return &store.Playbook{Bias: "BULLISH", Regime: "TRENDING"}, nil
+	return &store.Playbook{
+		Bias:          "BULLISH",
+		Regime:        "TRENDING",
+		KeySupport:    24350,
+		KeyResistance: 24700,
+		MaxPain:       24500,
+		PCR:           1.15,
+		Narrative:     "Trend continuation above VWAP.",
+		JevRulesJSON:  `{"min_score":3}`,
+	}, nil
 }
 
 type mockQuoteProvider struct {
@@ -692,5 +701,113 @@ func TestEvaluatorAgentPassTakesNoCall(t *testing.T) {
 	}
 	if len(evals) != 0 {
 		t.Fatalf("agent passed on every candidate but %d calls were taken", len(evals))
+	}
+}
+
+type mockRichProvider struct {
+	mockQuoteProvider
+}
+
+func (m *mockRichProvider) GetChainContext(_ context.Context, _ string, _ float64) (features.ChainContext, error) {
+	return features.ChainContext{
+		PCR: 1.2, MaxPain: 24600, CallOIWall: 24600, PutOIWall: 24400,
+		Candidates: []features.OptionInfo{
+			{InstrumentKey: "NIFTY24500CE", OptionType: "CE", Strike: 24500, LTP: 150, Expiry: "2026-11-26", PreviousClose: 140, Open: 145, High: 155, Low: 142, AvgPrice: 148, ChangePct: 7.14, OI: 1000, Volume: 5000, DaysToExpiry: 17, MoneynessLabel: "ATM", OrderBook: features.OrderBookMetrics{BestBid: 149.9, BestAsk: 150.1, TotalBidQty: 100, TotalAskQty: 120}},
+			{InstrumentKey: "NIFTY24600CE", OptionType: "CE", Strike: 24600, LTP: 90, Expiry: "2026-11-26", PreviousClose: 85, Open: 86, High: 95, Low: 84, AvgPrice: 90, ChangePct: 5.88, OI: 900, Volume: 4000, DaysToExpiry: 17, MoneynessLabel: "OTM", OrderBook: features.OrderBookMetrics{BestBid: 89.9, BestAsk: 90.1}},
+			{InstrumentKey: "NIFTY24500PE", OptionType: "PE", Strike: 24500, LTP: 120, Expiry: "2026-11-26", PreviousClose: 125, Open: 124, High: 128, Low: 118, AvgPrice: 122, ChangePct: -4.0, OI: 1100, Volume: 6000, DaysToExpiry: 17, MoneynessLabel: "ATM", OrderBook: features.OrderBookMetrics{BestBid: 119.9, BestAsk: 120.1}},
+			{InstrumentKey: "NIFTY24400PE", OptionType: "PE", Strike: 24400, LTP: 70, Expiry: "2026-11-26", PreviousClose: 75, Open: 74, High: 76, Low: 68, AvgPrice: 72, ChangePct: -6.67, OI: 800, Volume: 3000, DaysToExpiry: 17, MoneynessLabel: "OTM", OrderBook: features.OrderBookMetrics{BestBid: 69.9, BestAsk: 70.1}},
+		},
+	}, nil
+}
+
+func (m *mockRichProvider) GetUnderlyingContext(_ context.Context, _ string) (features.UnderlyingContext, error) {
+	return features.UnderlyingContext{
+		SpotPrice: 24520, PreviousClose: 24300, ChangePct: 0.91,
+		DayOpen: 24350, DayHigh: 24550, DayLow: 24320,
+		AvgPrice: 24450, IndiaVIX: 13.5, SessionMinutesLeft: 120,
+	}, nil
+}
+
+func TestEvaluatorSendsEnrichedAgentContext(t *testing.T) {
+	capturedCh := make(chan agent.CandidateRequest, 1)
+	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		var captured agent.CandidateRequest
+		if len(payload.Messages) >= 2 {
+			_ = json.Unmarshal([]byte(payload.Messages[1].Content), &captured)
+		}
+		capturedCh <- captured
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"content": `{"decisions":[{"instrument_key":"NIFTY24500CE","option_type":"CE","action":"BUY","score":4,"confidence":0.8,"reasoning":"best setup"}]}`,
+			}}},
+		})
+	}))
+	defer agentSrv.Close()
+
+	agentCli := agent.NewClient(agent.Config{
+		Provider: "openrouter",
+		BaseURL:  agentSrv.URL,
+		Model:    "test-agent",
+		Timeout:  2 * time.Second,
+	})
+
+	quotes := &mockRichProvider{mockQuoteProvider{spot: 24520, ceLTP: 150, peLTP: 120}}
+	ev := New(Options{
+		Config: config.AI{
+			Enabled:       true,
+			TargetPct:     8.0,
+			StopLossPct:   5.0,
+			MinConfidence: 0.60,
+			MinScore:      3,
+		},
+		Store:         &mockAIStore{},
+		AgentClient:   agentCli,
+		QuoteProvider: quotes,
+	})
+
+	evals, err := ev.ScanNow(context.Background(), "NIFTY")
+	if err != nil {
+		t.Fatalf("ScanNow: %v", err)
+	}
+	if len(evals) != 1 {
+		t.Fatalf("expected 1 paper call, got %d", len(evals))
+	}
+	captured := <-capturedCh
+
+	if captured.UnderlyingContext.IndiaVIX != 13.5 || captured.UnderlyingContext.SessionMinutesLeft != 120 {
+		t.Errorf("underlying context missing: %+v", captured.UnderlyingContext)
+	}
+	if captured.PCR != 1.15 || captured.MaxPain != 24500 {
+		t.Errorf("playbook context missing: PCR=%v MaxPain=%v", captured.PCR, captured.MaxPain)
+	}
+	if captured.CallOIWall != 24600 || captured.PutOIWall != 24400 {
+		t.Errorf("OI walls missing: call=%v put=%v", captured.CallOIWall, captured.PutOIWall)
+	}
+	if captured.KeySupport != 24350 || captured.KeyResistance != 24700 || captured.JevRules == "" {
+		t.Errorf("playbook fields missing: %+v", captured)
+	}
+	if len(captured.Candidates) != 4 {
+		t.Fatalf("expected 4 ladder candidates, got %d", len(captured.Candidates))
+	}
+	first := captured.Candidates[0]
+	if first.DaysToExpiry <= 0 {
+		t.Errorf("days_to_expiry not populated: %+v", first)
+	}
+	if first.MoneynessLabel != "ATM" {
+		t.Errorf("moneyness label = %q, want ATM", first.MoneynessLabel)
+	}
+	if first.PreviousClose != 140 || first.DayHigh != 155 || first.AvgPrice != 148 {
+		t.Errorf("option day context missing: %+v", first)
+	}
+	if first.IndicatorsSource != "placeholder" {
+		t.Errorf("indicators_source = %q, want placeholder (no ticks in test)", first.IndicatorsSource)
 	}
 }

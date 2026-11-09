@@ -377,7 +377,7 @@ func Default() Config {
 				Provider:  "openrouter",
 				BaseURL:   "https://openrouter.ai/api/v1",
 				Model:     "nvidia/nemotron-3.5-lightning:free",
-				TimeoutMS: 60000,
+				TimeoutMS: 90000,
 			},
 		},
 	}
@@ -543,8 +543,8 @@ func (c *Config) applyEnv() {
 		if c.AI.Agent.Provider == "" {
 			c.AI.Agent.Provider = "openrouter"
 		}
-		if c.AI.Agent.TimeoutMS < 40000 {
-			c.AI.Agent.TimeoutMS = 40000
+		if c.AI.Agent.TimeoutMS < 90000 {
+			c.AI.Agent.TimeoutMS = 90000
 		}
 	} else if v, ok := os.LookupEnv("GEMINI_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		c.AI.Agent.APIKey = strings.TrimSpace(v)

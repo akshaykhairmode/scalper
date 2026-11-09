@@ -42,6 +42,10 @@ type IndexQuote struct {
 	QuoteAvailable  bool    `json:"quote_available"`
 	LTP             float64 `json:"ltp"`
 	PreviousClose   float64 `json:"prev_close"`
+	Open            float64 `json:"open"`
+	High            float64 `json:"high"`
+	Low             float64 `json:"low"`
+	AvgPrice        float64 `json:"avg_price"`
 	Change          float64 `json:"change"`
 	ChangePct       float64 `json:"change_pct"`
 	Volume          int64   `json:"volume"`
@@ -62,6 +66,10 @@ type OptionQuote struct {
 	PTrdSymbol      string       `json:"p_trd_symbol"`
 	LTP             float64      `json:"ltp"`
 	PreviousClose   float64      `json:"prev_close"`
+	Open            float64      `json:"open"`
+	High            float64      `json:"high"`
+	Low             float64      `json:"low"`
+	AvgPrice        float64      `json:"avg_price"`
 	Change          float64      `json:"change"`
 	ChangePct       float64      `json:"change_pct"`
 	Volume          int64        `json:"volume"`
@@ -164,6 +172,10 @@ func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, er
 			available++
 			item.LTP = quote.LTP
 			item.PreviousClose = quote.PreviousClose
+			item.Open = quote.Open
+			item.High = quote.High
+			item.Low = quote.Low
+			item.AvgPrice = quote.AvgPrice
 			item.Change = quote.Change
 			item.ChangePct = quote.ChangePct
 			item.Volume = quote.Volume
@@ -189,6 +201,10 @@ func (s *Service) Indices(ctx context.Context, baseURL string) ([]IndexQuote, er
 				available++
 				item.LTP = quote.LTP
 				item.PreviousClose = quote.PreviousClose
+				item.Open = quote.Open
+				item.High = quote.High
+				item.Low = quote.Low
+				item.AvgPrice = quote.AvgPrice
 				item.Change = quote.Change
 				item.ChangePct = quote.ChangePct
 				item.Volume = quote.Volume
@@ -328,6 +344,10 @@ func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scr
 		if found {
 			converted.LTP = quote.LTP
 			converted.PreviousClose = quote.PreviousClose
+			converted.Open = quote.Open
+			converted.High = quote.High
+			converted.Low = quote.Low
+			converted.AvgPrice = quote.AvgPrice
 			converted.Change = quote.Change
 			converted.ChangePct = quote.ChangePct
 			converted.Volume = quote.Volume

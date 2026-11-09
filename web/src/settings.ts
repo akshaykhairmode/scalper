@@ -363,7 +363,7 @@
     setVal('f-agent-base-url', ag.base_url || 'https://openrouter.ai/api/v1');
     setVal('f-agent-model', ag.model || 'nvidia/nemotron-3.5-lightning:free');
     setVal('f-agent-api-key', ag.api_key || '');
-    setVal('f-agent-timeout-ms', ag.timeout_ms || 60000);
+    setVal('f-agent-timeout-ms', ag.timeout_ms || 90000);
 
     renderScannedUnderlyings(cfg);
   }

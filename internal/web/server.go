@@ -147,6 +147,7 @@ type Server struct {
 	aiStore       AIStore
 	evaluator     *evaluator.Evaluator
 	agentClient   *agent.Client
+	candleAgg     *candleAggregator
 	consumerKey   string
 	books         *booksCache
 	risk          *riskState
@@ -453,7 +454,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Config.AI.Agent.BaseURL != "" || opts.Config.AI.Agent.APIKey != "" {
 		timeout := time.Duration(opts.Config.AI.Agent.TimeoutMS) * time.Millisecond
 		if timeout <= 0 {
-			timeout = 60 * time.Second
+			timeout = 90 * time.Second
 		}
 		s.agentClient = agent.NewClient(agent.Config{
 			Provider: opts.Config.AI.Agent.Provider,
@@ -504,6 +505,11 @@ func New(opts Options) (*Server, error) {
 		},
 	})
 	s.evaluator.Start(s.feedCtx)
+
+	if s.candleStore != nil {
+		s.candleAgg = newCandleAggregator(s.candleStore, s.log)
+		go s.candleAgg.Run(s.feedCtx)
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -718,6 +724,11 @@ func (s *Server) Close() {
 	}
 	if s.feedCancel != nil {
 		s.feedCancel()
+	}
+	if s.candleAgg != nil {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.candleAgg.Flush(flushCtx)
+		cancel()
 	}
 	if s.a != nil {
 		s.a.Close()

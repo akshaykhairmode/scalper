@@ -60,6 +60,7 @@ func NewClient(cfg Config) *Client {
 		model = normalizeOpenRouterModel(model)
 	} else {
 		model = strings.TrimPrefix(model, "~typesafe/")
+		model = strings.TrimPrefix(model, "typesafe/")
 	}
 	cfg.Model = model
 

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/ai/features"
 	"github.com/akshaykhairmode/scalper/internal/market"
@@ -153,12 +155,19 @@ func (s *Server) GetMarketSnapshot(ctx context.Context, instrumentKey string) (f
 
 	info.LTP = q.LTP
 	info.PreviousClose = q.PreviousClose
+	info.Open = q.Open
+	info.High = q.High
+	info.Low = q.Low
+	info.AvgPrice = q.AvgPrice
+	info.ChangePct = q.ChangePct
 	info.Volume = q.Volume
 	info.OI = q.OI
 	info.Bid = q.Bid
 	info.Ask = q.Ask
 
-	return features.CalculateOrderBookMetrics(q.LTP, q.Bids, q.Asks), info, nil
+	depth := features.CalculateOrderBookMetrics(q.LTP, q.Bids, q.Asks)
+	info.OrderBook = depth
+	return depth, info, nil
 }
 
 // GetOptionLTP returns the latest traded price for an option instrument. It is
@@ -177,6 +186,246 @@ func (s *Server) GetOptionLTP(ctx context.Context, instrumentKey string) (float6
 		return 0, fmt.Errorf("no LTP available for %q", instrumentKey)
 	}
 	return q.LTP, nil
+}
+
+// GetUnderlyingContext returns index/commodity day context for the agent: spot,
+// day OHLC, VWAP, India VIX and minutes left in the session.
+func (s *Server) GetUnderlyingContext(ctx context.Context, underlying string) (features.UnderlyingContext, error) {
+	out := features.UnderlyingContext{}
+
+	var quotes []market.IndexQuote
+	s.indicesMu.Lock()
+	if s.indicesRaw != nil {
+		var cached struct {
+			Indices []market.IndexQuote `json:"indices"`
+		}
+		if err := json.Unmarshal(s.indicesRaw, &cached); err == nil {
+			quotes = cached.Indices
+		}
+	}
+	s.indicesMu.Unlock()
+
+	if len(quotes) == 0 && s.market != nil {
+		if fetched, err := s.market.Indices(ctx, s.marketBaseURL()); err == nil {
+			quotes = fetched
+		}
+	}
+
+	for _, q := range quotes {
+		if strings.EqualFold(q.Key, underlying) || strings.EqualFold(q.DisplayName, underlying) {
+			out.SpotPrice = q.LTP
+			out.PreviousClose = q.PreviousClose
+			out.ChangePct = q.ChangePct
+			out.DayOpen = q.Open
+			out.DayHigh = q.High
+			out.DayLow = q.Low
+			out.AvgPrice = q.AvgPrice
+			break
+		}
+	}
+
+	if out.SpotPrice <= 0 {
+		if spot, err := s.GetSpotPrice(ctx, underlying); err == nil {
+			out.SpotPrice = spot
+		}
+	}
+	for _, q := range quotes {
+		if strings.Contains(strings.ToUpper(q.Key), "VIX") || strings.Contains(strings.ToUpper(q.DisplayName), "VIX") {
+			if q.LTP > 0 {
+				out.IndiaVIX = q.LTP
+			}
+			break
+		}
+	}
+	if out.IndiaVIX <= 0 {
+		if vix, err := s.GetSpotPrice(ctx, "INDIA VIX"); err == nil {
+			out.IndiaVIX = vix
+		}
+	}
+	out.SessionMinutesLeft = s.sessionMinutesLeft(underlying)
+	return out, nil
+}
+
+// GetChainContext returns a near-ATM option ladder plus chain-level stats for
+// one underlying. It replaces the two-contract ATM-only view with a small
+// strike ladder so the agent can choose the best contract.
+func (s *Server) GetChainContext(ctx context.Context, underlying string, spot float64) (features.ChainContext, error) {
+	if s.market == nil {
+		return features.ChainContext{}, errors.New("market API not configured")
+	}
+
+	expiries, err := s.market.Expiries(underlying)
+	if err != nil || len(expiries) == 0 {
+		return features.ChainContext{}, fmt.Errorf("no expiries available for %q: %w", underlying, err)
+	}
+	expiry := firstLiveExpiry(expiries)
+
+	if spot <= 0 {
+		spot, _ = s.GetSpotPrice(ctx, underlying)
+	}
+
+	// Fetch only a bounded near-ATM window. 20 strikes = 40 instruments, which
+	// fits in one quotes batch and keeps the scanner far below Kotak's rate
+	// ceiling. A full-chain fetch is used only as a fallback.
+	var rows []market.ChainRow
+	if spot > 0 {
+		if cw, ok := s.market.(chainWindowAPI); ok {
+			if page, werr := cw.ChainWindow(ctx, s.marketBaseURL(), underlying, expiry, spot, 20, "around"); werr == nil && len(page.Rows) > 0 {
+				rows = page.Rows
+			}
+		}
+	}
+	if len(rows) == 0 {
+		rows, err = s.market.Chain(ctx, s.marketBaseURL(), underlying, expiry)
+	}
+	if err != nil || len(rows) == 0 {
+		return features.ChainContext{}, fmt.Errorf("option chain empty for %q %s: %w", underlying, expiry, err)
+	}
+	if spot <= 0 {
+		spot = rows[len(rows)/2].Strike
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Strike < rows[j].Strike })
+
+	var out features.ChainContext
+	var totalCallOI, totalPutOI int64
+	var maxCallOI, maxPutOI int64
+	for _, r := range rows {
+		if r.Call != nil {
+			totalCallOI += r.Call.OI
+			if r.Call.OI > maxCallOI {
+				maxCallOI = r.Call.OI
+				out.CallOIWall = r.Strike
+			}
+		}
+		if r.Put != nil {
+			totalPutOI += r.Put.OI
+			if r.Put.OI > maxPutOI {
+				maxPutOI = r.Put.OI
+				out.PutOIWall = r.Strike
+			}
+		}
+	}
+	if totalCallOI > 0 {
+		out.PCR = float64(totalPutOI) / float64(totalCallOI)
+	}
+	out.MaxPain = computeMaxPain(rows)
+
+	atmIdx := 0
+	minDiff := math.MaxFloat64
+	for i, r := range rows {
+		if diff := math.Abs(r.Strike - spot); diff < minDiff {
+			minDiff = diff
+			atmIdx = i
+		}
+	}
+	const radius = 2
+	start := atmIdx - radius
+	if start < 0 {
+		start = 0
+	}
+	end := atmIdx + radius
+	if end >= len(rows) {
+		end = len(rows) - 1
+	}
+	for _, r := range rows[start : end+1] {
+		if r.Call != nil && r.Call.LTP > 0 {
+			out.Candidates = append(out.Candidates, optionInfoFromQuote(r.Call, spot))
+		}
+		if r.Put != nil && r.Put.LTP > 0 {
+			out.Candidates = append(out.Candidates, optionInfoFromQuote(r.Put, spot))
+		}
+	}
+	return out, nil
+}
+
+func optionInfoFromQuote(q *market.OptionQuote, spot float64) features.OptionInfo {
+	moneyness := 0.0
+	if spot > 0 && q.Strike > 0 {
+		if strings.EqualFold(q.OptionType, "PE") {
+			moneyness = ((q.Strike - spot) / spot) * 100.0
+		} else {
+			moneyness = ((spot - q.Strike) / spot) * 100.0
+		}
+	}
+	label := "ATM"
+	if math.Abs(moneyness) >= 0.5 {
+		if moneyness > 0 {
+			label = "ITM"
+		} else {
+			label = "OTM"
+		}
+	}
+	days := 0.0
+	if expiry, perr := time.Parse("2006-01-02", q.Expiry); perr == nil {
+		days = math.Max(0, time.Until(expiry).Hours()/24.0)
+		days = math.Round(days*10) / 10
+	}
+	return features.OptionInfo{
+		InstrumentKey:  q.InstrumentKey,
+		Underlying:     q.Underlying,
+		Expiry:         q.Expiry,
+		Strike:         q.Strike,
+		OptionType:     q.OptionType,
+		LotSize:        q.LotSize,
+		LTP:            q.LTP,
+		PreviousClose:  q.PreviousClose,
+		Open:           q.Open,
+		High:           q.High,
+		Low:            q.Low,
+		AvgPrice:       q.AvgPrice,
+		ChangePct:      q.ChangePct,
+		Volume:         q.Volume,
+		OI:             q.OI,
+		Bid:            q.Bid,
+		Ask:            q.Ask,
+		DaysToExpiry:   days,
+		MoneynessLabel: label,
+		OrderBook:      features.CalculateOrderBookMetrics(q.LTP, q.Bids, q.Asks),
+	}
+}
+
+// computeMaxPain returns the strike with the lowest aggregate option-holder
+// pain, using open interest as the weight.
+func computeMaxPain(rows []market.ChainRow) float64 {
+	var bestStrike float64
+	bestPain := math.MaxFloat64
+	for _, target := range rows {
+		pain := 0.0
+		for _, r := range rows {
+			if r.Call != nil && target.Strike > r.Strike {
+				pain += float64(r.Call.OI) * (target.Strike - r.Strike)
+			}
+			if r.Put != nil && r.Strike > target.Strike {
+				pain += float64(r.Put.OI) * (r.Strike - target.Strike)
+			}
+		}
+		if pain < bestPain {
+			bestPain = pain
+			bestStrike = target.Strike
+		}
+	}
+	if bestPain == math.MaxFloat64 {
+		return 0
+	}
+	return bestStrike
+}
+
+func (s *Server) sessionMinutesLeft(underlying string) int {
+	cfg := s.configSnapshot()
+	loc := cfg.Location()
+	now := time.Now()
+	if loc != nil {
+		now = now.In(loc)
+	}
+	closeHour, closeMin := 15, 30
+	if s.isMCX(underlying) {
+		closeHour, closeMin = 23, 55
+	}
+	closeAt := time.Date(now.Year(), now.Month(), now.Day(), closeHour, closeMin, 0, 0, now.Location())
+	if !now.Before(closeAt) {
+		return 0
+	}
+	return int(closeAt.Sub(now).Minutes())
 }
 
 // firstLiveExpiry returns the nearest non-expired expiry date. If every

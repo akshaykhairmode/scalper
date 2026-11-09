@@ -222,3 +222,17 @@ func TestNormalizeOpenRouterModel(t *testing.T) {
 		}
 	}
 }
+
+func TestJevTypeSafeModelNormalization(t *testing.T) {
+	c := NewClient(Config{
+		BaseURL: "https://api.typesafe.ai/v1",
+		APIKey:  "ts-key",
+		Model:   "typesafe/jev-1.13",
+	})
+	if c.cfg.Model != "jev-1.13" {
+		t.Errorf("model = %q, want jev-1.13", c.cfg.Model)
+	}
+	if c.endpoint != "https://api.typesafe.ai/v1/systemone" {
+		t.Errorf("endpoint = %q", c.endpoint)
+	}
+}

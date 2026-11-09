@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 45 * time.Second
+		timeout = 90 * time.Second
 	}
 
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -86,6 +87,15 @@ type openAIChatRequest struct {
 	Temperature float64               `json:"temperature"`
 	MaxTokens   int                   `json:"max_tokens,omitempty"`
 	Format      *openAIResponseFormat `json:"response_format,omitempty"`
+	Reasoning   *openAIReasoning      `json:"reasoning,omitempty"`
+}
+
+// openAIReasoning controls OpenRouter's unified reasoning tokens. Structured
+// JSON calls disable reasoning so the model returns the answer directly
+// instead of spending the token budget on a visible chain-of-thought.
+type openAIReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Exclude bool   `json:"exclude,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -228,15 +238,20 @@ Respond ONLY with a JSON object matching this schema:
 }
 Do not include markdown or conversational text.`
 
-const candidateGenerationPrompt = `You are System 2, the candidate generator for an intraday Indian index-options paper-trading system.
-You receive live ATM call and put contracts with technical indicators, order-book microstructure, and macro bias.
-Your job is to propose at most TWO actionable long-option candidates (one CE and/or one PE). A separate System 1 model (Jev) will independently validate and score every candidate before any paper position is opened.
+const candidateGenerationPrompt = `You are System 2, the candidate generator for an intraday Indian index/commodity-options paper-trading system.
+You receive a small near-ATM ladder of call and put contracts for one underlying, plus underlying context (spot, day OHLC, VWAP, change, India VIX, PCR/max pain/OI walls when available), order-book microstructure, and any open paper positions. A separate System 1 model (Jev) will independently validate and score every candidate before any paper position is opened.
 
 Rules:
 - Only return action "BUY" when the setup has a clear directional edge, acceptable spread, and positive risk/reward. Otherwise return "PASS".
-- Never invent contracts, prices, or indicators. Only use the supplied candidates.
+- Never invent contracts, prices, or indicators. Only use the supplied candidates and context.
 - Return one decision per supplied candidate.
+- Choose at most TWO BUY decisions; PASS the rest. Prefer the contract with the cleanest risk/reward and liquidity.
+- "avg_price" is the day's volume-weighted average price when available. "vwap"/EMA/RSI/ATR may be short-window.
+- If "indicators_source" is "placeholder", the technical indicators could not be computed from real ticks; do not over-weight them.
+- "moneyness_label" (ATM/ITM/OTM) and "days_to_expiry" describe the contract.
 - Keep reasoning concise and grounded in the supplied numbers.
+- Do not write a thinking process, analysis, numbered steps, or commentary.
+- Your entire response must be a single JSON object. Start with "{" and end with "}".
 
 Respond ONLY with valid JSON matching this schema:
 {
@@ -253,7 +268,7 @@ Respond ONLY with valid JSON matching this schema:
   ],
   "market_note": "<optional one-sentence regime note>"
 }
-Return {"decisions":[]} when neither candidate is worth taking. Do not include markdown or conversational filler.`
+Return {"decisions":[]} when no candidate is worth taking. Do not include markdown or conversational filler.`
 
 // EvaluateContract asks the LLM reasoning agent to evaluate an intraday options contract.
 func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (ContractDecision, error) {
@@ -316,7 +331,7 @@ func (c *Client) EvaluateCandidates(ctx context.Context, req CandidateRequest) (
 		{Role: "user", Content: string(payload)},
 	}
 
-	raw, err := c.completeChat(ctx, messages, true, 2400)
+	raw, err := c.completeChat(ctx, messages, true, 4000)
 	if err != nil {
 		return nil, err
 	}
@@ -324,8 +339,8 @@ func (c *Client) EvaluateCandidates(ctx context.Context, req CandidateRequest) (
 	decisions, err := parseCandidateDecisions(raw)
 	if err != nil {
 		rawSnippet := raw
-		if len(rawSnippet) > 240 {
-			rawSnippet = rawSnippet[:240] + "... (truncated)"
+		if len(rawSnippet) > 600 {
+			rawSnippet = rawSnippet[:600] + "... (truncated)"
 		}
 		return nil, fmt.Errorf("agent: parse candidate decisions: %w (raw: %s)", err, rawSnippet)
 	}
@@ -333,25 +348,25 @@ func (c *Client) EvaluateCandidates(ctx context.Context, req CandidateRequest) (
 }
 
 func parseCandidateDecisions(raw string) ([]CandidateDecision, error) {
-	clean := cleanJSONBlock(raw)
+	for _, candidate := range extractJSONCandidates(raw) {
+		// Preferred shape: {"decisions":[...], "market_note":"..."}
+		var resp CandidateResponse
+		if err := json.Unmarshal([]byte(candidate), &resp); err == nil && resp.Decisions != nil {
+			return normalizeCandidateDecisions(resp.Decisions), nil
+		}
 
-	var resp CandidateResponse
-	if err := json.Unmarshal([]byte(clean), &resp); err == nil && len(resp.Decisions) > 0 {
-		return normalizeCandidateDecisions(resp.Decisions), nil
-	}
-
-	var arr []CandidateDecision
-	if arrText := extractJSONArray(raw); arrText != "" {
-		if err := json.Unmarshal([]byte(arrText), &arr); err == nil && len(arr) > 0 {
+		// Bare array of decisions.
+		var arr []CandidateDecision
+		if err := json.Unmarshal([]byte(candidate), &arr); err == nil && arr != nil {
 			return normalizeCandidateDecisions(arr), nil
 		}
-	}
 
-	var single CandidateDecision
-	if err := json.Unmarshal([]byte(clean), &single); err == nil && strings.TrimSpace(single.Action) != "" {
-		return normalizeCandidateDecisions([]CandidateDecision{single}), nil
+		// A single decision object.
+		var single CandidateDecision
+		if err := json.Unmarshal([]byte(candidate), &single); err == nil && strings.TrimSpace(single.Action) != "" {
+			return normalizeCandidateDecisions([]CandidateDecision{single}), nil
+		}
 	}
-
 	return nil, errors.New("no decisions found in agent response")
 }
 
@@ -386,14 +401,111 @@ func normalizeCandidateDecisions(in []CandidateDecision) []CandidateDecision {
 	return out
 }
 
-func extractJSONArray(raw string) string {
-	s := strings.TrimSpace(raw)
-	start := strings.Index(s, "[")
-	end := strings.LastIndex(s, "]")
-	if start != -1 && end != -1 && end > start {
-		return strings.TrimSpace(s[start : end+1])
+// extractJSONCandidates returns every plausible JSON value found in a model
+// reply, preferring larger (outer) values. Reasoning models sometimes wrap the
+// requested JSON in prose or a thinking process, so callers try each candidate.
+func extractJSONCandidates(raw string) []string {
+	var values []string
+	seen := make(map[string]bool)
+
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			return
+		}
+		if s[0] != '{' && s[0] != '[' {
+			return
+		}
+		seen[s] = true
+		values = append(values, s)
 	}
-	return ""
+
+	// Fenced code blocks anywhere in the reply.
+	rest := raw
+	for {
+		start := strings.Index(rest, "```")
+		if start == -1 {
+			break
+		}
+		after := rest[start+3:]
+		if strings.HasPrefix(strings.ToLower(after), "json") {
+			after = after[4:]
+		}
+		end := strings.Index(after, "```")
+		if end == -1 {
+			break
+		}
+		add(after[:end])
+		rest = after[end+3:]
+	}
+
+	// Balanced JSON values embedded in prose.
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' && raw[i] != '[' {
+			continue
+		}
+		if value, _, ok := balancedJSON(raw, i); ok {
+			add(value)
+		}
+	}
+
+	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	return values
+}
+
+// balancedJSON returns the balanced JSON value starting at start, honoring
+// quoted strings and escapes so braces inside string literals are ignored.
+func balancedJSON(s string, start int) (string, int, bool) {
+	if start < 0 || start >= len(s) {
+		return "", start, false
+	}
+	open := s[start]
+	var closing byte
+	switch open {
+	case '{':
+		closing = '}'
+	case '[':
+		closing = ']'
+	default:
+		return "", start, false
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == open {
+			depth++
+			continue
+		}
+		if c == closing {
+			depth--
+			if depth == 0 {
+				return s[start : i+1], i, true
+			}
+		}
+	}
+	return "", start, false
 }
 
 // Chat executes a freeform single-turn prompt against the configured LLM provider.
@@ -410,15 +522,28 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 
 func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) (string, error) {
 	useJSONMode := jsonMode && c.supportsJSONMode()
+	// Structured JSON tasks disable reasoning on OpenRouter when the model
+	// supports it, so the answer is not buried under a thinking trace.
+	disableReasoning := jsonMode && c.isOpenRouter()
 
-	body, status, err := c.doChat(ctx, messages, useJSONMode, maxTokens)
+	body, status, err := c.doChat(ctx, messages, useJSONMode, disableReasoning, maxTokens)
 	if err != nil {
 		return "", err
 	}
 
+	// Some models reject reasoning controls even though they are reasoning
+	// capable; retry once without the parameter.
+	if disableReasoning && isReasoningRejection(status, body) {
+		disableReasoning = false
+		body, status, err = c.doChat(ctx, messages, useJSONMode, false, maxTokens)
+		if err != nil {
+			return "", err
+		}
+	}
+
 	// Some free/reasoning models reject response_format. Retry once without it.
 	if useJSONMode && isJSONModeRejection(status, body) {
-		body, status, err = c.doChat(ctx, messages, false, maxTokens)
+		body, status, err = c.doChat(ctx, messages, false, disableReasoning, maxTokens)
 		if err != nil {
 			return "", err
 		}
@@ -463,14 +588,22 @@ func (c *Client) supportsJSONMode() bool {
 	if strings.EqualFold(strings.TrimSpace(c.cfg.Provider), "ollama") {
 		return false
 	}
-	// OpenRouter's free tier frequently rejects response_format on reasoning models.
+	// OpenRouter's free variants (e.g. nemotron:free) do not advertise
+	// response_format/structured_outputs, so skip the extra round trip.
 	if strings.Contains(strings.ToLower(c.cfg.Model), ":free") {
 		return false
 	}
 	return true
 }
 
-func (c *Client) doChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) ([]byte, int, error) {
+func (c *Client) isOpenRouter() bool {
+	if strings.EqualFold(strings.TrimSpace(c.cfg.Provider), "openrouter") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(c.endpoint), "openrouter.ai")
+}
+
+func (c *Client) doChat(ctx context.Context, messages []openAIChatMessage, jsonMode, disableReasoning bool, maxTokens int) ([]byte, int, error) {
 	reqBody := openAIChatRequest{
 		Model:       c.cfg.Model,
 		Messages:    messages,
@@ -479,6 +612,9 @@ func (c *Client) doChat(ctx context.Context, messages []openAIChatMessage, jsonM
 	}
 	if jsonMode {
 		reqBody.Format = &openAIResponseFormat{Type: "json_object"}
+	}
+	if disableReasoning {
+		reqBody.Reasoning = &openAIReasoning{Effort: "none", Exclude: true}
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -520,6 +656,16 @@ func isJSONModeRejection(status int, body []byte) bool {
 		strings.Contains(s, "structured") ||
 		strings.Contains(s, "json mode") ||
 		strings.Contains(s, "json_object")
+}
+
+func isReasoningRejection(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity && status != http.StatusNotFound {
+		return false
+	}
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "reasoning") ||
+		strings.Contains(s, "thinking") ||
+		strings.Contains(s, "effort")
 }
 
 func cleanJSONBlock(input string) string {
