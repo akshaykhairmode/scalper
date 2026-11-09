@@ -1,5 +1,5 @@
 // Scalper Service Worker for PWA Support and Asset Caching
-const CACHE_VERSION = 'scalper-v2';
+const CACHE_VERSION = 'scalper-v3';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 
@@ -8,10 +8,7 @@ const CORE_SHELL = [
   '/manifest.webmanifest',
   '/static/app.css',
   '/static/app.js',
-  '/static/charts.js',
   '/static/klinecharts.min.js',
-  '/static/patterns.js',
-  '/static/qrcode.js',
   '/static/icon.svg',
   '/static/icon-192.png',
   '/static/icon-512.png',

@@ -57,7 +57,7 @@ func TestQuotesClientDecodesAndLogsRedactedExchange(t *testing.T) {
 	defer server.Close()
 
 	var logOutput strings.Builder
-	client := NewQuotesClient("consumer-key-secret", slog.New(slog.NewTextHandler(&logOutput, nil)))
+	client := NewQuotesClient("consumer-key-secret", slog.New(slog.NewTextHandler(&logOutput, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	client.http = server.Client()
 	quotes, err := client.Fetch(context.Background(), server.URL, []QuoteInstrument{
 		{ExchangeSegment: "nse_cm", Symbol: "Nifty 50"},

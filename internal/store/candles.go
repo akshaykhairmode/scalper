@@ -12,8 +12,13 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/market"
 )
 
-// ReadCandles returns all cached bars for an instrument and interval, ordered
-// from oldest to newest.
+// maxReadCandles bounds how much stored history a single chart request loads.
+// Charts only display a few hundred bars; reading the entire table makes
+// polling cost grow forever as history accumulates.
+const maxReadCandles = 5000
+
+// ReadCandles returns the most recent cached bars for an instrument and
+// interval, ordered from oldest to newest.
 func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string) ([]market.Candle, error) {
 	if instrumentKey == "" || timeframe == "" {
 		return nil, errors.New("store: candle instrument and timeframe are required")
@@ -22,7 +27,8 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 		SELECT ts, open, high, low, close, COALESCE(volume, 0)
 		FROM candles 
 		WHERE instrument_key = ? AND timeframe = ? AND open > 0 AND high > 0 AND low > 0 AND close > 0 AND high >= low 
-		ORDER BY ts`, instrumentKey, timeframe)
+		ORDER BY ts DESC
+		LIMIT ?`, instrumentKey, timeframe, maxReadCandles)
 	if err != nil {
 		return nil, fmt.Errorf("store: query candles: %w", err)
 	}
@@ -42,6 +48,9 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate candles: %w", err)
+	}
+	for i, j := 0, len(candles)-1; i < j; i, j = i+1, j-1 {
+		candles[i], candles[j] = candles[j], candles[i]
 	}
 	return candles, nil
 }

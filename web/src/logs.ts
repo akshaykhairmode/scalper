@@ -107,8 +107,9 @@ function initLogsViewer(): void {
   if (refreshBtn) refreshBtn.addEventListener('click', fetchLogs);
 
   setInterval(() => {
+    if (document.hidden) return;
     if (autorefreshToggle && autorefreshToggle.checked) fetchLogs();
-  }, 3000);
+  }, 5000);
 
   fetchLogs();
 }

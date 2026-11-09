@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /**
  * sync-assets.js
- * Synchronizes Scalper web frontend static assets into the Capacitor mobile web bundle.
+ * Synchronizes the Capacitor mobile pairing shell into the native web bundles.
+ *
+ * The mobile app is a pairing screen that navigates to the user's Scalper
+ * server; it does not run the terminal UI locally. Only the shell, jsQR and
+ * icons are needed, which keeps the native bundles small.
  */
 
 const fs = require('fs');
@@ -10,9 +14,24 @@ const path = require('path');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STATIC_SRC = path.resolve(ROOT_DIR, '..', 'internal', 'web', 'static');
 const WWW_DIR = path.resolve(ROOT_DIR, 'www');
-const WWW_STATIC_DIR = path.resolve(WWW_DIR, 'static');
 const ANDROID_ASSETS_DIR = path.resolve(ROOT_DIR, 'android', 'app', 'src', 'main', 'assets', 'public');
 const IOS_ASSETS_DIR = path.resolve(ROOT_DIR, 'ios', 'App', 'App', 'public');
+
+const ROOT_FILES = [
+  'index.html',
+  'jsqr.js',
+  'manifest.json',
+  'manifest.webmanifest',
+  'sw.js',
+];
+const STATIC_FILES = [
+  'icon.svg',
+  'icon-192.png',
+  'icon-512.png',
+  'icon-maskable-192.png',
+  'icon-maskable-512.png',
+  'apple-touch-icon.png',
+];
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
@@ -20,60 +39,42 @@ function ensureDir(dir) {
   }
 }
 
-function copyFile(src, dst) {
-  fs.copyFileSync(src, dst);
-}
-
-function copyDirClean(src, dst) {
+function cleanAndCopy(src, dst, allowed) {
   ensureDir(dst);
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      continue;
+  for (const entry of fs.readdirSync(dst, { withFileTypes: true })) {
+    if (entry.isDirectory()) continue;
+    if (!allowed.has(entry.name)) {
+      fs.rmSync(path.join(dst, entry.name), { force: true });
     }
-    // Skip brotli pre-compressed files (.br) for local mobile webview bundle
-    if (entry.name.endsWith('.br')) {
-      continue;
+  }
+  for (const name of allowed) {
+    const srcPath = path.join(src, name);
+    if (fs.existsSync(srcPath)) {
+      fs.copyFileSync(srcPath, path.join(dst, name));
     }
-    const srcPath = path.join(src, entry.name);
-    const dstPath = path.join(dst, entry.name);
-    copyFile(srcPath, dstPath);
   }
 }
 
-console.log('[sync-assets] Syncing Scalper frontend assets for Capacitor mobile...');
+function syncTarget(dstRoot) {
+  cleanAndCopy(STATIC_SRC, dstRoot, new Set(ROOT_FILES));
+  cleanAndCopy(STATIC_SRC, path.join(dstRoot, 'static'), new Set(STATIC_FILES));
+}
+
+console.log('[sync-assets] Syncing Scalper mobile pairing shell...');
 
 if (!fs.existsSync(STATIC_SRC)) {
   console.error(`[sync-assets] Error: Source static directory does not exist: ${STATIC_SRC}`);
   process.exit(1);
 }
 
-ensureDir(WWW_DIR);
-ensureDir(WWW_STATIC_DIR);
+syncTarget(WWW_DIR);
 
-// Copy static assets into www/ and www/static/
-copyDirClean(STATIC_SRC, WWW_STATIC_DIR);
-copyDirClean(STATIC_SRC, WWW_DIR);
-
-// Copy to Android and iOS asset folders if they exist
 if (fs.existsSync(path.dirname(ANDROID_ASSETS_DIR))) {
-  ensureDir(ANDROID_ASSETS_DIR);
-  copyDirClean(STATIC_SRC, ANDROID_ASSETS_DIR);
-  ensureDir(path.join(ANDROID_ASSETS_DIR, 'static'));
-  copyDirClean(STATIC_SRC, path.join(ANDROID_ASSETS_DIR, 'static'));
-  if (fs.existsSync(path.join(WWW_DIR, 'index.html'))) {
-    copyFile(path.join(WWW_DIR, 'index.html'), path.join(ANDROID_ASSETS_DIR, 'index.html'));
-  }
+  syncTarget(ANDROID_ASSETS_DIR);
 }
 
 if (fs.existsSync(path.dirname(IOS_ASSETS_DIR))) {
-  ensureDir(IOS_ASSETS_DIR);
-  copyDirClean(STATIC_SRC, IOS_ASSETS_DIR);
-  ensureDir(path.join(IOS_ASSETS_DIR, 'static'));
-  copyDirClean(STATIC_SRC, path.join(IOS_ASSETS_DIR, 'static'));
-  if (fs.existsSync(path.join(WWW_DIR, 'index.html'))) {
-    copyFile(path.join(WWW_DIR, 'index.html'), path.join(IOS_ASSETS_DIR, 'index.html'));
-  }
+  syncTarget(IOS_ASSETS_DIR);
 }
 
-console.log('[sync-assets] Successfully synced web assets into www/, android, and ios bundles.');
+console.log('[sync-assets] Successfully synced the mobile shell into www/, android, and ios bundles.');

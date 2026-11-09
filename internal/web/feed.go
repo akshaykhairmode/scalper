@@ -208,6 +208,7 @@ func (s *Server) forwardHSMEvents() {
 
 	pendingTicks := make(map[string]map[string]any)
 	keyCache := make(map[string]string)
+	lastDepth := make(map[string]time.Time)
 
 	flush := func() {
 		if len(pendingTicks) == 0 {
@@ -303,8 +304,13 @@ func (s *Server) forwardHSMEvents() {
 				tickData["oi"] = event.Quote.OI
 			}
 			if len(event.Quote.Bids) > 0 || len(event.Quote.Asks) > 0 {
-				tickData["bids"] = event.Quote.Bids
-				tickData["asks"] = event.Quote.Asks
+				// Depth is only needed by the depth tab/chart. Throttle it to
+				// 1 Hz instead of shipping 5 levels on every 250 ms tick.
+				if now := time.Now(); now.Sub(lastDepth[key]) >= time.Second {
+					tickData["bids"] = event.Quote.Bids
+					tickData["asks"] = event.Quote.Asks
+					lastDepth[key] = now
+				}
 			}
 			pendingTicks[key] = tickData
 		}

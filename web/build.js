@@ -8,11 +8,8 @@ const isWatch = process.argv.includes('--watch');
 
 const entryPoints = [
   { in: path.resolve(__dirname, 'src/app.ts'), out: 'app' },
-  { in: path.resolve(__dirname, 'src/charts.ts'), out: 'charts' },
-  { in: path.resolve(__dirname, 'src/patterns.ts'), out: 'patterns' },
   { in: path.resolve(__dirname, 'src/settings.ts'), out: 'settings' },
   { in: path.resolve(__dirname, 'src/logs.ts'), out: 'logs' },
-  { in: path.resolve(__dirname, 'src/utils/qrcode.ts'), out: 'qrcode' },
 ];
 
 const outdir = path.resolve(__dirname, '../internal/web/static');
@@ -24,7 +21,10 @@ const buildOptions = {
   bundle: true,
   format: 'esm',
   target: 'es2022',
-  sourcemap: true,
+  // Source maps are a debug aid, not a production asset. Enable with SOURCEMAP=1.
+  sourcemap: process.env.SOURCEMAP === '1',
+  // Minify by default; use MINIFY=0 for a readable local build.
+  minify: process.env.MINIFY !== '0',
   logLevel: 'info',
 };
 

@@ -17,9 +17,26 @@ const num = (value, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const numberFormatters = new Map<number, Intl.NumberFormat>();
+const timeFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Kolkata",
+});
+const clockFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Kolkata",
+});
+const marketStateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kolkata", weekday: "short", year: "numeric", month: "2-digit",
+  day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
 function fmt(value, digits = 2) {
   if (!Number.isFinite(value)) return "—";
-  return value.toLocaleString("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  let formatter = numberFormatters.get(digits);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    numberFormatters.set(digits, formatter);
+  }
+  return formatter.format(value);
 }
 
 function fmtSigned(value, digits = 2) {
@@ -49,7 +66,7 @@ function fmtTime(ts) {
   if (!ts) return "—";
   const date = typeof ts === "number" ? new Date(ts < 1e12 ? ts * 1000 : ts) : new Date(ts);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Kolkata" });
+  return timeFormatter.format(date);
 }
 
 function parseBootstrap() {
@@ -756,8 +773,8 @@ async function startTerminalSession() {
   }
   closeLogin();
   connectWebSocket();
+  // loadMarket() -> loadFromAPI() already refreshes account books.
   loadMarket();
-  refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
   if (!sessionRefreshTimer) {
     sessionRefreshTimer = window.setInterval(refreshSession, 30000);
   }
@@ -1548,13 +1565,12 @@ let chainPollCounter = 0;
 function startLivePolling() {
   if (!S.session?.authenticated) return;
   if (!liveTimer) {
-    // Poll account books regularly when logged in and visible.
-    // Throttle to 60s when market is closed to respect broker rate limits.
+    // Safety-net poll only; order/position/margin events refresh immediately
+    // via scheduleBooksRefresh(). This cuts broker REST traffic substantially.
     liveTimer = window.setInterval(() => {
       if (document.hidden || !S.session?.authenticated) return;
-      if (!S.marketOpen && Date.now() - (S.lastBooksRefresh || 0) < 60000) return;
       refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
-    }, 15000);
+    }, 60000);
   }
   // The Scrip Master refresh can finish after the first page quote request.
   // Poll underlying prices independently so new spot/future tokens are picked
@@ -1572,7 +1588,7 @@ function startLivePolling() {
           chainPollCounter = 0;
           const center = num(S.spots.get(S.activeIndex)?.ltp);
           const chainRaw = await getJSON(chainURL({ center }));
-          acceptChainPage(chainRaw);
+          acceptChainPage(chainRaw, true);
           renderChain(true);
           renderPaneHeaders();
           renderPCR();
@@ -3146,6 +3162,8 @@ function closeMobileDrawer() {
   if (backdrop) backdrop.hidden = true;
 }
 
+let bottomDirty = false;
+
 function renderTab() {
   const content = $("tab-content");
   for (const button of $$("#tabs button")) {
@@ -3213,6 +3231,15 @@ function renderTab() {
   const hasOpen = S.positions.some((p) => Math.abs(num(p.quantity)) > 0);
   const sqBtn = $("square-off-button");
   if (sqBtn) sqBtn.disabled = !hasOpen;
+
+  // The bottom panel ships collapsed. Avoid rebuilding hidden tables; mark
+  // dirty and render once when the user expands it.
+  const bottomPanel = $("bottom-panel");
+  if (bottomPanel?.classList.contains("bottom-collapsed")) {
+    bottomDirty = true;
+    return;
+  }
+  bottomDirty = false;
 
   if (S.tab === "positions") content.innerHTML = positionsHTML();
   else if (S.tab === "brackets") content.innerHTML = bracketsHTML();
@@ -6138,7 +6165,7 @@ function openAISignalsModal() {
         return;
       }
       refreshAISignalsModal(true);
-    }, 5000);
+    }, 10000);
   }
 }
 
@@ -6594,6 +6621,7 @@ function bindEvents() {
     panel.closest(".terminal").classList.toggle("bottom-open", !collapsed);
     $("bottom-toggle").textContent = collapsed ? "Expand" : "Collapse";
     $("bottom-toggle").setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (!collapsed && bottomDirty) renderTab();
   });
   $("theme-toggle").addEventListener("click", () => {
     setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
@@ -7264,12 +7292,6 @@ function bindEvents() {
     });
   });
 
-  window.addEventListener("resize", () => {
-    for (const chart of (Object.values(S.charts) as any[])) {
-      if (chart && typeof chart.resize === "function") chart.resize();
-    }
-  });
-
   initChartQuickOrder();
   bindChartClickEvents();
   initChartTooltips();
@@ -7390,29 +7412,13 @@ function toggleFullscreen() {
 function updateClock() {
   const clock = $("clock");
   if (clock) {
-    const text = new Date().toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-      timeZone: "Asia/Kolkata",
-    });
-    clock.textContent = `${text} IST`;
+    clock.textContent = `${clockFormatter.format(new Date())} IST`;
   }
   updateSessionCountdown();
 }
 
 function currentMarketState() {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date());
+  const parts = marketStateFormatter.formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const date = `${values.year}-${values.month}-${values.day}`;
   if (values.weekday === "Sat" || values.weekday === "Sun" ||

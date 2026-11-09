@@ -747,32 +747,54 @@ func normalizeSymbol(symbol string) string {
 }
 
 func (c *QuotesClient) logExchange(req *http.Request, resp *http.Response, body []byte, started time.Time, err error) {
-	safeBody := "[non-JSON body omitted]"
-	if redacted, redactErr := logging.RedactJSON(body); redactErr == nil {
-		safeBody = string(redacted)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
 	}
 	args := []any{
 		"event", "kotak_api_exchange",
 		"method", req.Method,
 		"url", logging.RedactURL(req.URL.String()),
-		"request_headers", logging.RedactHeaders(req.Header),
-		"request_body", "",
+		"status", status,
+		"bytes", len(body),
 		"duration_ms", time.Since(started).Milliseconds(),
 	}
-	if resp != nil {
-		args = append(args,
-			"status", resp.StatusCode,
-			"response_headers", logging.RedactHeaders(resp.Header),
-			"response_body", safeBody)
-	}
-	if err != nil {
-		args = append(args, "error", err)
+
+	failed := err != nil || (resp != nil && (status < http.StatusOK || status >= http.StatusMultipleChoices))
+	if failed {
+		args = append(args, "request_headers", logging.RedactHeaders(req.Header))
+		if resp != nil {
+			args = append(args, "response_headers", logging.RedactHeaders(resp.Header))
+		}
+		if len(body) > 0 {
+			safeBody := "[non-JSON body omitted]"
+			if redacted, redactErr := logging.RedactJSON(body); redactErr == nil {
+				safeBody = string(redacted)
+			}
+			args = append(args, "response_body", safeBody)
+		}
+		if err != nil {
+			args = append(args, "error", err)
+		}
 		c.log.Error("Kotak market API exchange", args...)
 		return
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		c.log.Error("Kotak market API exchange", args...)
-		return
-	}
+
+	// Successful calls are high-volume; keep the Info line metadata-only.
 	c.log.Info("Kotak market API exchange", args...)
+	if !c.log.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	args = append(args, "request_headers", logging.RedactHeaders(req.Header))
+	if resp != nil {
+		args = append(args, "response_headers", logging.RedactHeaders(resp.Header))
+	}
+	if len(body) > 0 {
+		safeBody := "[non-JSON body omitted]"
+		if redacted, redactErr := logging.RedactJSON(body); redactErr == nil {
+			safeBody = string(redacted)
+		}
+		args = append(args, "response_body", safeBody)
+	}
+	c.log.Debug("Kotak market API exchange detail", args...)
 }

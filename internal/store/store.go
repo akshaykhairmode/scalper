@@ -79,6 +79,9 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "cache_size(-65536)")
+	q.Add("_pragma", "temp_store(memory)")
+	q.Add("_pragma", "mmap_size(268435456)")
 	dsn := (&url.URL{Scheme: "file", Path: abs, RawQuery: q.Encode()}).String()
 
 	db, err := sql.Open("sqlite", dsn)
