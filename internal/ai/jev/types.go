@@ -1,6 +1,32 @@
 package jev
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
+
+// FlexFloat unmarshals JSON numbers (float/int) or quoted numeric strings gracefully.
+type FlexFloat float64
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (f *FlexFloat) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil
+	}
+	*f = FlexFloat(val)
+	return nil
+}
+
+// Float64 returns the float64 representation or 0 if nil.
+func (f *FlexFloat) Float64() float64 {
+	if f == nil {
+		return 0
+	}
+	return float64(*f)
+}
 
 // Config holds connection settings for TypeSafe AI Jev decision models.
 type Config struct {
@@ -17,7 +43,7 @@ type Question struct {
 	Criteria     any    `json:"criteria,omitempty"`
 }
 
-// SystemOneRequest is the payload sent to /v1/system_one.
+// SystemOneRequest is the payload sent to /v1/system_one or /api/alpha/decisions.
 type SystemOneRequest struct {
 	State     string              `json:"state"`
 	Questions map[string]Question `json:"questions"`
@@ -25,10 +51,15 @@ type SystemOneRequest struct {
 }
 
 // Answer is a typed answer returned by Jev for a specific question.
+// Supports both direct TypeSafe and OpenRouter Decisions API schemas.
 type Answer struct {
-	Choice *string  `json:"choice,omitempty"`
-	Noul   *float64 `json:"noul,omitempty"`
-	Score  *int     `json:"score,omitempty"`
+	Type        string     `json:"type,omitempty"`
+	Choice      *string    `json:"choice,omitempty"`
+	Value       *string    `json:"value,omitempty"`
+	Noul        *FlexFloat `json:"noul,omitempty"`
+	Probability *FlexFloat `json:"probability,omitempty"`
+	Score       *FlexFloat `json:"score,omitempty"`
+	Confidence  *FlexFloat `json:"confidence,omitempty"`
 }
 
 // SystemOneResponse is the response returned from TypeSafe AI.

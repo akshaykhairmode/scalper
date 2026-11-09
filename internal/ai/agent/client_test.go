@@ -40,15 +40,9 @@ func TestAgentGeneratePlaybook(t *testing.T) {
 		}
 
 		resp := openAIChatResponse{
-			Choices: []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			}{
+			Choices: []openAIChatChoice{
 				{
-					Message: struct {
-						Content string `json:"content"`
-					}{
+					Message: openAIChatChoiceMessage{
 						Content: "```json\n" + mockResponse + "\n```",
 					},
 				},
@@ -92,15 +86,9 @@ func TestAgentGeneratePlaybook(t *testing.T) {
 func TestAgentChat(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := openAIChatResponse{
-			Choices: []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			}{
+			Choices: []openAIChatChoice{
 				{
-					Message: struct {
-						Content string `json:"content"`
-					}{
+					Message: openAIChatChoiceMessage{
 						Content: "Nifty resistance is at 24,600.",
 					},
 				},
@@ -180,6 +168,47 @@ func TestCleanJSONBlock(t *testing.T) {
 				t.Errorf("cleanJSONBlock(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAgentChatReasoningFallback(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := openAIChatResponse{
+			Choices: []openAIChatChoice{
+				{
+					Message: openAIChatChoiceMessage{
+						Content:          "", // content empty, reasoning has answer
+						ReasoningContent: `{"action": "BUY", "score": 4, "confidence": 0.88, "reasoning": "Strong trend"}`,
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	client := NewClient(Config{
+		Provider: "openrouter",
+		BaseURL:  ts.URL,
+		APIKey:   "test-key",
+	})
+
+	dec, err := client.EvaluateContract(context.Background(), ContractSetup{
+		Underlying: "NIFTY",
+		SpotPrice:  25400,
+		OptionType: "CE",
+		Strike:     "25400",
+		OptionLTP:  150,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateContract failed: %v", err)
+	}
+	if dec.Action != "BUY" {
+		t.Errorf("Action = %q, want BUY", dec.Action)
+	}
+	if dec.Score != 4 {
+		t.Errorf("Score = %d, want 4", dec.Score)
 	}
 }
 

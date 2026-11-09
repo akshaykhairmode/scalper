@@ -98,16 +98,23 @@ type openAIResponseFormat struct {
 }
 
 type openAIChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
+	Choices []openAIChatChoice `json:"choices"`
+	Error   *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 		Code    any    `json:"code"`
 	} `json:"error,omitempty"`
+}
+
+type openAIChatChoice struct {
+	Message openAIChatChoiceMessage `json:"message"`
+	Text    string                  `json:"text,omitempty"`
+}
+
+type openAIChatChoiceMessage struct {
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
 }
 
 const systemPrompt = `You are an elite derivatives market analyst and Chief Investment Officer for Indian index options (NIFTY, BANKNIFTY, SENSEX).
@@ -149,7 +156,7 @@ func (c *Client) GeneratePlaybook(ctx context.Context, m MarketContext) (*store.
 		{Role: "user", Content: string(userPromptBytes)},
 	}
 
-	rawContent, err := c.completeChat(ctx, messages, true, 800)
+	rawContent, err := c.completeChat(ctx, messages, true, 2500)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +242,7 @@ func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (Con
 		{Role: "user", Content: userMsg},
 	}
 
-	raw, err := c.completeChat(ctx, messages, true, 300)
+	raw, err := c.completeChat(ctx, messages, true, 1500)
 	if err != nil {
 		return ContractDecision{}, err
 	}
@@ -271,7 +278,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	messages := []openAIChatMessage{
 		{Role: "user", Content: prompt},
 	}
-	return c.completeChat(ctx, messages, false, 150)
+	return c.completeChat(ctx, messages, false, 500)
 }
 
 func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) (string, error) {
@@ -334,7 +341,18 @@ func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage,
 		return "", errors.New("agent: no completion choices returned by model")
 	}
 
-	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	if content == "" {
+		if chatResp.Choices[0].Message.ReasoningContent != "" {
+			content = strings.TrimSpace(chatResp.Choices[0].Message.ReasoningContent)
+		} else if chatResp.Choices[0].Message.Reasoning != "" {
+			content = strings.TrimSpace(chatResp.Choices[0].Message.Reasoning)
+		} else if chatResp.Choices[0].Text != "" {
+			content = strings.TrimSpace(chatResp.Choices[0].Text)
+		}
+	}
+
+	return content, nil
 }
 
 func cleanJSONBlock(input string) string {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -162,26 +163,63 @@ func (c *Client) EvaluateSetup(ctx context.Context, stateJSON string) (Evaluatio
 	}
 
 	actionAns, ok := sysResp.Answers["action"]
-	if !ok || actionAns.Choice == nil {
+	if !ok {
+		return EvaluationResult{}, errors.New("jev: missing action answer")
+	}
+
+	var actionStr string
+	if actionAns.Choice != nil && strings.TrimSpace(*actionAns.Choice) != "" {
+		actionStr = *actionAns.Choice
+	} else if actionAns.Value != nil && strings.TrimSpace(*actionAns.Value) != "" {
+		actionStr = *actionAns.Value
+	}
+	if actionStr == "" {
 		return EvaluationResult{}, errors.New("jev: missing action choice answer")
 	}
 
 	confAns, ok := sysResp.Answers["breakout_prob"]
 	var confidence float64
-	if ok && confAns.Noul != nil {
-		confidence = *confAns.Noul
+	if ok {
+		if confAns.Noul != nil {
+			confidence = confAns.Noul.Float64()
+		} else if confAns.Probability != nil {
+			confidence = confAns.Probability.Float64()
+		} else if confAns.Confidence != nil {
+			confidence = confAns.Confidence.Float64()
+		}
+	}
+	if confidence == 0 && actionAns.Confidence != nil {
+		confidence = actionAns.Confidence.Float64()
 	}
 
 	scoreAns, ok := sysResp.Answers["conviction"]
 	var score int
 	if ok && scoreAns.Score != nil {
-		score = *scoreAns.Score
+		sVal := scoreAns.Score.Float64()
+		if sVal < 1.0 && sVal >= 0.0 {
+			// Continuous score normalized between 0 and 1 (e.g. 0.09) -> scale to 1..5
+			score = int(math.Round(sVal*4.0)) + 1
+		} else {
+			score = int(math.Round(sVal))
+		}
+	} else if ok && scoreAns.Probability != nil {
+		sVal := scoreAns.Probability.Float64()
+		score = int(math.Round(sVal*4.0)) + 1
+	} else if ok && scoreAns.Confidence != nil {
+		sVal := scoreAns.Confidence.Float64()
+		score = int(math.Round(sVal*4.0)) + 1
+	}
+
+	if score < 1 {
+		score = 1
+	} else if score > 5 {
+		score = 5
 	}
 
 	duration := int(time.Since(start).Milliseconds())
 
 	return EvaluationResult{
-		Action:     strings.ToUpper(strings.TrimSpace(*actionAns.Choice)),
+		Action:     strings.ToUpper(strings.TrimSpace(actionStr)),
 		Confidence: confidence,
 		Score:      score,
 		DurationMS: duration,

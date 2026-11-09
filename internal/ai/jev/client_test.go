@@ -24,8 +24,8 @@ func TestJevEvaluateSetupSuccess(t *testing.T) {
 		}
 
 		choice := "BUY"
-		noul := 0.84
-		score := 4
+		noul := FlexFloat(0.84)
+		score := FlexFloat(4)
 
 		resp := SystemOneResponse{
 			Answers: map[string]Answer{
@@ -113,5 +113,55 @@ func TestNilJevClientReturnsError(t *testing.T) {
 	var c *Client
 	if _, err := c.EvaluateSetup(context.Background(), `{}`); err == nil {
 		t.Fatal("expected error on nil client EvaluateSetup, got nil")
+	}
+}
+
+func TestJevOpenRouterDecisionsResponseParsing(t *testing.T) {
+	// Raw JSON returned by OpenRouter typesafe/jev-1.13 decisions API with continuous float score 0.09
+	rawOpenRouterJSON := `{
+		"model": "typesafe/jev-1.13",
+		"answers": {
+			"action": {
+				"type": "choice",
+				"choice": "HOLD",
+				"confidence": 0.85
+			},
+			"breakout_prob": {
+				"type": "noul",
+				"probability": 0.35
+			},
+			"conviction": {
+				"type": "score",
+				"score": 0.09
+			}
+		}
+	}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(rawOpenRouterJSON))
+	}))
+	defer ts.Close()
+
+	client := NewClient(Config{
+		BaseURL: ts.URL,
+		APIKey:  "test-openrouter-key",
+		Model:   "typesafe/jev-1.13",
+	})
+
+	res, err := client.EvaluateSetup(context.Background(), `{"spot": 25400}`)
+	if err != nil {
+		t.Fatalf("unexpected error parsing OpenRouter decisions response: %v", err)
+	}
+
+	if res.Action != "HOLD" {
+		t.Errorf("Action = %q, want HOLD", res.Action)
+	}
+	if res.Confidence != 0.35 {
+		t.Errorf("Confidence = %f, want 0.35", res.Confidence)
+	}
+	// 0.09 is on 0..1 scale, mapped to 1..5 scale -> 1
+	if res.Score != 1 {
+		t.Errorf("Score = %d, want 1", res.Score)
 	}
 }
