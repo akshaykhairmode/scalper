@@ -25,3 +25,8 @@ Before committing ANY code, you MUST run and verify that all of the following co
 - Follow all non-negotiables in [`GO_STANDARDS.md`](./GO_STANDARDS.md).
 - Follow architectural specifications in [`docs/KOTAK_API_V3.md`](./docs/KOTAK_API_V3.md).
 - Enforce strict broker rate-limiting optimizations (client debouncing, session-isolated server caching, local in-memory queries).
+
+## 3. Deployment Policy
+- **Deployments MUST happen via CI/CD only (GitHub Actions).**
+- **AI agents MUST NOT execute `./scripts/deploy.sh` or trigger manual server deployments directly.**
+- If manual server deployment or binary upload is ever needed, agents MUST explicitly ask the user for approval first before running any deployment script or command.
