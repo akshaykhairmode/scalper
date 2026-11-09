@@ -350,12 +350,6 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 		Model:   "jev-test",
 		Timeout: 50 * time.Millisecond,
 	})
-	s.evaluator = evaluator.New(evaluator.Options{
-		Config:        config.AI{Enabled: true, TargetPct: 8.0, StopLossPct: 5.0},
-		Store:         mockStore,
-		JevClient:     failingJevCli,
-		QuoteProvider: s,
-	})
 
 	mockAgentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -373,6 +367,14 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 		BaseURL: mockAgentSrv.URL,
 		Model:   "test-agent",
 		Timeout: time.Second,
+	})
+
+	s.evaluator = evaluator.New(evaluator.Options{
+		Config:        config.AI{Enabled: true, TargetPct: 8.0, StopLossPct: 5.0},
+		Store:         mockStore,
+		JevClient:     failingJevCli,
+		AgentClient:   s.agentClient,
+		QuoteProvider: s,
 	})
 
 	fallbackRec := do(t, s, localRequestWithBody(http.MethodPost, "/api/ai/evaluations/ask", []byte(`{

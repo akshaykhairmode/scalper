@@ -156,7 +156,7 @@ func (c *Client) GeneratePlaybook(ctx context.Context, m MarketContext) (*store.
 		{Role: "user", Content: string(userPromptBytes)},
 	}
 
-	rawContent, err := c.completeChat(ctx, messages, true, 2500)
+	rawContent, err := c.completeChat(ctx, messages, true, 3000)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +228,33 @@ Respond ONLY with a JSON object matching this schema:
 }
 Do not include markdown or conversational text.`
 
+const candidateGenerationPrompt = `You are System 2, the candidate generator for an intraday Indian index-options paper-trading system.
+You receive live ATM call and put contracts with technical indicators, order-book microstructure, and macro bias.
+Your job is to propose at most TWO actionable long-option candidates (one CE and/or one PE). A separate System 1 model (Jev) will independently validate and score every candidate before any paper position is opened.
+
+Rules:
+- Only return action "BUY" when the setup has a clear directional edge, acceptable spread, and positive risk/reward. Otherwise return "PASS".
+- Never invent contracts, prices, or indicators. Only use the supplied candidates.
+- Return one decision per supplied candidate.
+- Keep reasoning concise and grounded in the supplied numbers.
+
+Respond ONLY with valid JSON matching this schema:
+{
+  "decisions": [
+    {
+      "instrument_key": "<exact supplied instrument_key>",
+      "option_type": "CE" | "PE",
+      "strike": "<supplied strike>",
+      "action": "BUY" | "PASS",
+      "score": <integer 1-5, where 5 is a textbook setup>,
+      "confidence": <float 0.0-1.0>,
+      "reasoning": "<1-2 sentence tactical rationale>"
+    }
+  ],
+  "market_note": "<optional one-sentence regime note>"
+}
+Return {"decisions":[]} when neither candidate is worth taking. Do not include markdown or conversational filler.`
+
 // EvaluateContract asks the LLM reasoning agent to evaluate an intraday options contract.
 func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (ContractDecision, error) {
 	if c == nil || c.httpClient == nil {
@@ -242,7 +269,7 @@ func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (Con
 		{Role: "user", Content: userMsg},
 	}
 
-	raw, err := c.completeChat(ctx, messages, true, 1500)
+	raw, err := c.completeChat(ctx, messages, true, 2000)
 	if err != nil {
 		return ContractDecision{}, err
 	}
@@ -269,6 +296,106 @@ func (c *Client) EvaluateContract(ctx context.Context, setup ContractSetup) (Con
 	return decision, nil
 }
 
+// EvaluateCandidates asks the reasoning agent to propose which of the supplied
+// ATM contracts (if any) are worth sending to Jev for independent validation.
+func (c *Client) EvaluateCandidates(ctx context.Context, req CandidateRequest) ([]CandidateDecision, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, errors.New("agent: client not initialized")
+	}
+	if len(req.Candidates) == 0 {
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("agent: marshal candidate request: %w", err)
+	}
+
+	messages := []openAIChatMessage{
+		{Role: "system", Content: candidateGenerationPrompt},
+		{Role: "user", Content: string(payload)},
+	}
+
+	raw, err := c.completeChat(ctx, messages, true, 2400)
+	if err != nil {
+		return nil, err
+	}
+
+	decisions, err := parseCandidateDecisions(raw)
+	if err != nil {
+		rawSnippet := raw
+		if len(rawSnippet) > 240 {
+			rawSnippet = rawSnippet[:240] + "... (truncated)"
+		}
+		return nil, fmt.Errorf("agent: parse candidate decisions: %w (raw: %s)", err, rawSnippet)
+	}
+	return decisions, nil
+}
+
+func parseCandidateDecisions(raw string) ([]CandidateDecision, error) {
+	clean := cleanJSONBlock(raw)
+
+	var resp CandidateResponse
+	if err := json.Unmarshal([]byte(clean), &resp); err == nil && len(resp.Decisions) > 0 {
+		return normalizeCandidateDecisions(resp.Decisions), nil
+	}
+
+	var arr []CandidateDecision
+	if arrText := extractJSONArray(raw); arrText != "" {
+		if err := json.Unmarshal([]byte(arrText), &arr); err == nil && len(arr) > 0 {
+			return normalizeCandidateDecisions(arr), nil
+		}
+	}
+
+	var single CandidateDecision
+	if err := json.Unmarshal([]byte(clean), &single); err == nil && strings.TrimSpace(single.Action) != "" {
+		return normalizeCandidateDecisions([]CandidateDecision{single}), nil
+	}
+
+	return nil, errors.New("no decisions found in agent response")
+}
+
+func normalizeCandidateDecisions(in []CandidateDecision) []CandidateDecision {
+	out := make([]CandidateDecision, 0, len(in))
+	for _, d := range in {
+		action := strings.ToUpper(strings.TrimSpace(d.Action))
+		if action != "BUY" && !strings.HasPrefix(action, "BUY_") && action != "LONG" {
+			action = "PASS"
+		} else {
+			action = "BUY"
+		}
+		d.Action = action
+		if d.Score < 1 {
+			d.Score = 3
+		} else if d.Score > 5 {
+			d.Score = 5
+		}
+		if d.Confidence > 1.0 {
+			if d.Confidence > 2.0 && d.Confidence <= 100.0 {
+				d.Confidence = d.Confidence / 100.0
+			} else {
+				d.Confidence = 1.0
+			}
+		}
+		if d.Confidence <= 0 {
+			d.Confidence = 0.55
+		}
+		d.OptionType = strings.ToUpper(strings.TrimSpace(d.OptionType))
+		out = append(out, d)
+	}
+	return out
+}
+
+func extractJSONArray(raw string) string {
+	s := strings.TrimSpace(raw)
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start != -1 && end != -1 && end > start {
+		return strings.TrimSpace(s[start : end+1])
+	}
+	return ""
+}
+
 // Chat executes a freeform single-turn prompt against the configured LLM provider.
 func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	if c == nil || c.httpClient == nil {
@@ -278,54 +405,31 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	messages := []openAIChatMessage{
 		{Role: "user", Content: prompt},
 	}
-	return c.completeChat(ctx, messages, false, 500)
+	return c.completeChat(ctx, messages, false, 800)
 }
 
 func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) (string, error) {
-	reqBody := openAIChatRequest{
-		Model:       c.cfg.Model,
-		Messages:    messages,
-		Temperature: 0.2,
-		MaxTokens:   maxTokens,
-	}
-	if jsonMode {
-		reqBody.Format = &openAIResponseFormat{Type: "json_object"}
-	}
+	useJSONMode := jsonMode && c.supportsJSONMode()
 
-	data, err := json.Marshal(reqBody)
+	body, status, err := c.doChat(ctx, messages, useJSONMode, maxTokens)
 	if err != nil {
-		return "", fmt.Errorf("agent: marshal request: %w", err)
+		return "", err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("agent: create request: %w", err)
+	// Some free/reasoning models reject response_format. Retry once without it.
+	if useJSONMode && isJSONModeRejection(status, body) {
+		body, status, err = c.doChat(ctx, messages, false, maxTokens)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey := strings.TrimSpace(c.cfg.APIKey); apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	httpReq.Header.Set("HTTP-Referer", "https://scalper.local")
-	httpReq.Header.Set("X-Title", "Scalper Trading Terminal")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("agent: HTTP request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("agent: read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if status < 200 || status >= 300 {
 		errBody := strings.TrimSpace(string(body))
 		if len(errBody) > 300 {
 			errBody = errBody[:300] + "... (truncated)"
 		}
-		return "", fmt.Errorf("agent: API returned HTTP %d: %s", resp.StatusCode, errBody)
+		return "", fmt.Errorf("agent: API returned HTTP %d: %s", status, errBody)
 	}
 
 	var chatResp openAIChatResponse
@@ -353,6 +457,69 @@ func (c *Client) completeChat(ctx context.Context, messages []openAIChatMessage,
 	}
 
 	return content, nil
+}
+
+func (c *Client) supportsJSONMode() bool {
+	if strings.EqualFold(strings.TrimSpace(c.cfg.Provider), "ollama") {
+		return false
+	}
+	// OpenRouter's free tier frequently rejects response_format on reasoning models.
+	if strings.Contains(strings.ToLower(c.cfg.Model), ":free") {
+		return false
+	}
+	return true
+}
+
+func (c *Client) doChat(ctx context.Context, messages []openAIChatMessage, jsonMode bool, maxTokens int) ([]byte, int, error) {
+	reqBody := openAIChatRequest{
+		Model:       c.cfg.Model,
+		Messages:    messages,
+		Temperature: 0.2,
+		MaxTokens:   maxTokens,
+	}
+	if jsonMode {
+		reqBody.Format = &openAIResponseFormat{Type: "json_object"}
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, 0, fmt.Errorf("agent: marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, fmt.Errorf("agent: create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey := strings.TrimSpace(c.cfg.APIKey); apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("HTTP-Referer", "https://scalper.local")
+	httpReq.Header.Set("X-Title", "Scalper Trading Terminal")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("agent: HTTP request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("agent: read response: %w", err)
+	}
+	return body, resp.StatusCode, nil
+}
+
+func isJSONModeRejection(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity && status != http.StatusNotFound {
+		return false
+	}
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "response_format") ||
+		strings.Contains(s, "structured") ||
+		strings.Contains(s, "json mode") ||
+		strings.Contains(s, "json_object")
 }
 
 func cleanJSONBlock(input string) string {

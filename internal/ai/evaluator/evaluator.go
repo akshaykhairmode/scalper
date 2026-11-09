@@ -1,5 +1,6 @@
-// Package evaluator coordinates periodic market scanning with TypeSafe Jev (System 1)
-// and tracks real-time execution outcomes (Target vs Stop-Loss) against live feed ticks.
+// Package evaluator coordinates periodic market scanning with a reasoning agent
+// (System 2 candidate generation), TypeSafe Jev (System 1 validation), and
+// paper-only outcome tracking against live feed ticks.
 package evaluator
 
 import (
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,16 +22,20 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
-// OutcomeCallback is invoked when an active call reaches Target or Stop-Loss.
+// OutcomeCallback is invoked when an active call reaches Target, Stop-Loss, or expiry.
 type OutcomeCallback func(eval store.Evaluation)
 
-// NewCallCallback is invoked when a new high-conviction Jev call is detected.
+// NewCallCallback is invoked when a new validated paper call is opened.
 type NewCallCallback func(eval store.Evaluation)
+
+// TrackCallback is invoked when a paper call starts being tracked so the server
+// can subscribe the contract to the live feed.
+type TrackCallback func(eval store.Evaluation)
 
 // ScanStatusCallback is invoked when periodic scanner timing or execution status updates.
 type ScanStatusCallback func(status ScannerStatus)
 
-// ActiveCall tracks an open Jev recommendation awaiting market outcome.
+// ActiveCall tracks an open paper position awaiting a market outcome.
 type ActiveCall struct {
 	ID            int64
 	InstrumentKey string
@@ -40,7 +46,12 @@ type ActiveCall struct {
 	StopLossPrice float64
 	Score         int
 	Confidence    float64
+	Source        string
+	Reasoning     string
+	CostPct       float64
 	CreatedAt     time.Time
+	LastPrice     float64
+	LastTickAt    time.Time
 }
 
 // QuoteProvider returns current market quote data for an instrument or underlying.
@@ -48,6 +59,17 @@ type QuoteProvider interface {
 	GetSpotPrice(ctx context.Context, underlying string) (float64, error)
 	GetATMStrikes(ctx context.Context, underlying string) (ceKey, peKey string, ceLTP, peLTP float64, err error)
 	GetMarketDepth(ctx context.Context, instrumentKey string) (features.OrderBookMetrics, error)
+}
+
+// marketSnapshotProvider optionally provides depth plus contract metadata in one call.
+type marketSnapshotProvider interface {
+	GetMarketSnapshot(ctx context.Context, instrumentKey string) (features.OrderBookMetrics, features.OptionInfo, error)
+}
+
+// liveQuoteProvider optionally provides a REST LTP fallback when the live feed
+// is not delivering ticks for a tracked contract.
+type liveQuoteProvider interface {
+	GetOptionLTP(ctx context.Context, instrumentKey string) (float64, error)
 }
 
 // AIStore abstracts database storage operations required by the evaluator.
@@ -60,15 +82,18 @@ type AIStore interface {
 	GetLatestPlaybook(ctx context.Context) (*store.Playbook, error)
 }
 
-// Evaluator manages periodic Jev evaluations and live feed outcome tracking.
+// Evaluator manages periodic AI evaluations and live feed outcome tracking.
 type Evaluator struct {
-	cfgMu         sync.RWMutex
-	cfg           config.AI
-	store         AIStore
-	jevClient     *jev.Client
-	agentClient   *agent.Client
+	cfgMu sync.RWMutex
+	cfg   config.AI
+	store AIStore
+	log   *slog.Logger
+
+	clientMu    sync.RWMutex
+	jevClient   *jev.Client
+	agentClient *agent.Client
+
 	quoteProvider QuoteProvider
-	log           *slog.Logger
 
 	activeMu    sync.RWMutex
 	activeCalls map[int64]*ActiveCall
@@ -77,19 +102,32 @@ type Evaluator struct {
 	ringMu    sync.RWMutex
 	tickRings map[string]*features.TickRing
 
+	lastSignalMu sync.Mutex
+	lastSignal   map[string]time.Time
+
 	onOutcome    OutcomeCallback
 	onNewCall    NewCallCallback
+	onTrack      TrackCallback
 	onScanStatus ScanStatusCallback
 
+	baseMu     sync.RWMutex
+	baseCtx    context.Context
 	scanCancel context.CancelFunc
 	scanDone   chan struct{}
 	running    atomic.Bool
 	isScanning atomic.Bool
-	baseCtx    context.Context
 
-	scanMu       sync.RWMutex
-	nextScanTime time.Time
-	lastScanTime time.Time
+	scanMu           sync.RWMutex
+	nextScanTime     time.Time
+	lastScanTime     time.Time
+	lastScanError    string
+	lastCandidateCnt int
+	lastCallsTaken   int
+
+	// scanRunMu serializes scan cycles so the periodic scanner and a manual
+	// "Scan Now" can never evaluate the same underlying concurrently and open
+	// duplicate paper positions.
+	scanRunMu sync.Mutex
 }
 
 // Options configures the Evaluator instance.
@@ -102,6 +140,7 @@ type Options struct {
 	Logger        *slog.Logger
 	OnOutcome     OutcomeCallback
 	OnNewCall     NewCallCallback
+	OnTrack       TrackCallback
 	OnScanStatus  ScanStatusCallback
 }
 
@@ -121,38 +160,79 @@ func New(opts Options) *Evaluator {
 		log:           logger,
 		activeCalls:   make(map[int64]*ActiveCall),
 		tickRings:     make(map[string]*features.TickRing),
+		lastSignal:    make(map[string]time.Time),
 		onOutcome:     opts.OnOutcome,
 		onNewCall:     opts.OnNewCall,
+		onTrack:       opts.OnTrack,
 		onScanStatus:  opts.OnScanStatus,
 	}
 
-	// Load existing PENDING calls from store on boot
-	if opts.Store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if pending, err := opts.Store.GetActiveEvaluations(ctx); err == nil {
-			for _, p := range pending {
-				e.activeCalls[p.ID] = &ActiveCall{
-					ID:            p.ID,
-					InstrumentKey: p.InstrumentKey,
-					Underlying:    p.Underlying,
-					Action:        p.Action,
-					EntryPrice:    p.OptionLTP,
-					TargetPrice:   p.TargetPrice,
-					StopLossPrice: p.StopLossPrice,
-					Score:         p.Score,
-					Confidence:    p.Confidence,
-					CreatedAt:     p.Timestamp,
-				}
-			}
-			e.activeCount = int64(len(e.activeCalls))
-		}
-	}
-
+	e.restorePendingCalls()
 	return e
 }
 
-// Start begins the background periodic evaluation scanner if enabled.
+func (e *Evaluator) restorePendingCalls() {
+	if e.store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pending, err := e.store.GetActiveEvaluations(ctx)
+	if err != nil {
+		e.log.Warn("failed to restore pending ai calls", "event", "ai_restore_failed", "error", err)
+		return
+	}
+
+	settings := e.scanSettings()
+	now := time.Now()
+	for _, p := range pending {
+		expired := !isActionableAction(p.Action)
+		if !expired && settings.maxHold > 0 && now.Sub(p.Timestamp) >= settings.maxHold {
+			expired = true
+		}
+		if !expired && settings.maxHold <= 0 && p.Timestamp.Format("2006-01-02") != now.Format("2006-01-02") {
+			expired = true
+		}
+		if expired {
+			exit := p.OptionLTP
+			_ = e.store.UpdateEvaluationOutcome(ctx, p.ID, "EXPIRED", exit, 0, now)
+			continue
+		}
+
+		call := &ActiveCall{
+			ID:            p.ID,
+			InstrumentKey: p.InstrumentKey,
+			Underlying:    p.Underlying,
+			Action:        p.Action,
+			EntryPrice:    p.OptionLTP,
+			TargetPrice:   p.TargetPrice,
+			StopLossPrice: p.StopLossPrice,
+			Score:         p.Score,
+			Confidence:    p.Confidence,
+			Source:        p.Source,
+			Reasoning:     p.Reasoning,
+			CostPct:       settings.costPct,
+			CreatedAt:     p.Timestamp,
+			LastPrice:     p.OptionLTP,
+			LastTickAt:    p.Timestamp,
+		}
+		e.activeCalls[p.ID] = call
+		e.noteSignal(p.Underlying, p.Timestamp)
+	}
+
+	atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
+	if len(e.activeCalls) == 0 {
+		return
+	}
+
+	e.log.Info("restored active ai paper calls", "event", "ai_calls_restored", "count", len(e.activeCalls))
+	for _, call := range e.activeCalls {
+		e.notifyTracked(call)
+	}
+}
+
+// Start begins the background periodic evaluation scanner and position monitor if enabled.
 func (e *Evaluator) Start(ctx context.Context) {
 	if e == nil {
 		return
@@ -170,17 +250,20 @@ func (e *Evaluator) Start(ctx context.Context) {
 		intervalMin = 15
 	}
 
+	e.baseMu.Lock()
 	if ctx != nil && ctx.Err() == nil {
 		e.baseCtx = ctx
 	} else if e.baseCtx == nil || e.baseCtx.Err() != nil {
 		e.baseCtx = context.Background()
 	}
+	baseCtx := e.baseCtx
+	e.baseMu.Unlock()
 
 	if e.running.Swap(true) {
 		return // already running
 	}
 
-	scanCtx, cancel := context.WithCancel(e.baseCtx)
+	scanCtx, cancel := context.WithCancel(baseCtx)
 	e.scanCancel = cancel
 	done := make(chan struct{})
 	e.scanDone = done
@@ -194,6 +277,7 @@ func (e *Evaluator) Start(ctx context.Context) {
 	}
 
 	go e.runScanner(scanCtx, time.Duration(intervalMin)*time.Minute, done)
+	go e.runPositionMonitor(scanCtx)
 }
 
 // scannerStopTimeout bounds how long Stop waits for an in-flight scanner run.
@@ -236,6 +320,9 @@ type ScannerStatus struct {
 	SecondsUntilNext  int       `json:"seconds_until_next"`
 	LastScanTime      time.Time `json:"last_scan_time,omitempty"`
 	LastScanUnix      int64     `json:"last_scan_unix"`
+	LastError         string    `json:"last_error,omitempty"`
+	LastCandidateCnt  int       `json:"last_candidate_count"`
+	LastCallsTaken    int       `json:"last_calls_taken"`
 	AnyMarketOpen     bool      `json:"any_market_open"`
 	OpenUnderlyings   []string  `json:"open_underlyings,omitempty"`
 	ClosedUnderlyings []string  `json:"closed_underlyings,omitempty"`
@@ -260,6 +347,9 @@ func (e *Evaluator) ScannerStatus() ScannerStatus {
 	e.scanMu.RLock()
 	next := e.nextScanTime
 	last := e.lastScanTime
+	lastErr := e.lastScanError
+	lastCandidates := e.lastCandidateCnt
+	lastCalls := e.lastCallsTaken
 	e.scanMu.RUnlock()
 
 	var secUntil int
@@ -314,6 +404,9 @@ func (e *Evaluator) ScannerStatus() ScannerStatus {
 		SecondsUntilNext:  secUntil,
 		LastScanTime:      last,
 		LastScanUnix:      lastUnix,
+		LastError:         lastErr,
+		LastCandidateCnt:  lastCandidates,
+		LastCallsTaken:    lastCalls,
 		AnyMarketOpen:     anyOpen,
 		OpenUnderlyings:   openUnderlyings,
 		ClosedUnderlyings: closedUnderlyings,
@@ -330,21 +423,27 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 	e.cfg = newCfg
 	e.cfgMu.Unlock()
 
+	e.baseMu.Lock()
 	if ctx != nil && ctx.Err() == nil {
 		e.baseCtx = ctx
 	}
+	baseCtx := e.baseCtx
+	e.baseMu.Unlock()
 
-	// Update Jev client if URL or key changed
-	if newCfg.Jev.BaseURL != oldCfg.Jev.BaseURL || newCfg.Jev.APIKey != oldCfg.Jev.APIKey || newCfg.Jev.Model != oldCfg.Jev.Model {
+	// Update Jev client if URL, key, or model changed.
+	if newCfg.Jev.BaseURL != oldCfg.Jev.BaseURL || newCfg.Jev.APIKey != oldCfg.Jev.APIKey || newCfg.Jev.Model != oldCfg.Jev.Model || newCfg.Jev.TimeoutMS != oldCfg.Jev.TimeoutMS {
+		e.clientMu.Lock()
 		e.jevClient = jev.NewClient(jev.Config{
 			BaseURL: newCfg.Jev.BaseURL,
 			APIKey:  newCfg.Jev.APIKey,
 			Model:   newCfg.Jev.Model,
 			Timeout: time.Duration(newCfg.Jev.TimeoutMS) * time.Millisecond,
 		})
+		e.clientMu.Unlock()
 	}
-	// Update Agent client if provider, URL, key, or model changed
-	if newCfg.Agent.BaseURL != oldCfg.Agent.BaseURL || newCfg.Agent.APIKey != oldCfg.Agent.APIKey || newCfg.Agent.Model != oldCfg.Agent.Model || newCfg.Agent.Provider != oldCfg.Agent.Provider {
+	// Update Agent client if provider, URL, key, or model changed.
+	if newCfg.Agent.BaseURL != oldCfg.Agent.BaseURL || newCfg.Agent.APIKey != oldCfg.Agent.APIKey || newCfg.Agent.Model != oldCfg.Agent.Model || newCfg.Agent.Provider != oldCfg.Agent.Provider || newCfg.Agent.TimeoutMS != oldCfg.Agent.TimeoutMS {
+		e.clientMu.Lock()
 		e.agentClient = agent.NewClient(agent.Config{
 			Provider: newCfg.Agent.Provider,
 			BaseURL:  newCfg.Agent.BaseURL,
@@ -352,6 +451,7 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 			Model:    newCfg.Agent.Model,
 			Timeout:  time.Duration(newCfg.Agent.TimeoutMS) * time.Millisecond,
 		})
+		e.clientMu.Unlock()
 	}
 
 	wasEnabled := oldCfg.Enabled && oldCfg.PeriodicScan
@@ -361,7 +461,7 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 		e.Stop()
 	} else if nowEnabled && (!wasEnabled || newCfg.ScanIntervalMinutes != oldCfg.ScanIntervalMinutes) {
 		e.Stop()
-		e.Start(e.baseCtx)
+		e.Start(baseCtx)
 	} else if nowEnabled && e.onScanStatus != nil {
 		e.onScanStatus(e.ScannerStatus())
 	}
@@ -375,92 +475,70 @@ func (e *Evaluator) OnTick(ctx context.Context, instrumentKey string, ltp float6
 	}
 
 	now := time.Now()
-	e.ringMu.Lock()
-	ring, ok := e.tickRings[instrumentKey]
-	if !ok {
-		ring = features.NewTickRing(100)
-		e.tickRings[instrumentKey] = ring
-	}
-	ring.Push(features.Tick{Price: ltp, Timestamp: now.UnixMilli()})
-	e.ringMu.Unlock()
+	e.pushTick(instrumentKey, ltp, now)
 
 	if atomic.LoadInt64(&e.activeCount) == 0 {
 		return
 	}
 
-	e.activeMu.RLock()
+	e.activeMu.Lock()
 	var targets []*ActiveCall
 	for _, call := range e.activeCalls {
 		if call.InstrumentKey == instrumentKey || strings.EqualFold(call.InstrumentKey, instrumentKey) {
+			call.LastPrice = ltp
+			call.LastTickAt = now
 			targets = append(targets, call)
 		}
 	}
-	e.activeMu.RUnlock()
+	e.activeMu.Unlock()
 
-	if len(targets) == 0 {
-		return
-	}
-
-	now = time.Now()
 	for _, call := range targets {
 		var status string
-		var pnlPct float64
+		exitPrice := ltp
 
 		if call.TargetPrice > 0 && ltp >= call.TargetPrice {
 			status = "TARGET_HIT"
-			pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
+			// A resting target order fills at the target, not at the gapped tick.
+			exitPrice = call.TargetPrice
 		} else if call.StopLossPrice > 0 && ltp <= call.StopLossPrice {
 			status = "SL_HIT"
-			pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
+			exitPrice = ltp
 		}
 
 		if status != "" {
-			e.activeMu.Lock()
-			delete(e.activeCalls, call.ID)
-			atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
-			e.activeMu.Unlock()
-
-			// Round PnL % to 2 decimals
-			pnlPct = math.Round(pnlPct*100) / 100
-
-			if e.store != nil {
-				_ = e.store.UpdateEvaluationOutcome(ctx, call.ID, status, ltp, pnlPct, now)
-			}
-
-			eval := store.Evaluation{
-				ID:            call.ID,
-				Timestamp:     call.CreatedAt,
-				InstrumentKey: call.InstrumentKey,
-				Underlying:    call.Underlying,
-				Action:        call.Action,
-				OptionLTP:     call.EntryPrice,
-				TargetPrice:   call.TargetPrice,
-				StopLossPrice: call.StopLossPrice,
-				Status:        status,
-				ExitPrice:     ltp,
-				ExitTime:      &now,
-				PnLPct:        pnlPct,
-				Score:         call.Score,
-				Confidence:    call.Confidence,
-			}
-
-			e.log.Info("ai call outcome determined", "event", "ai_call_outcome",
-				"id", call.ID, "instrument", call.InstrumentKey, "status", status,
-				"entry", call.EntryPrice, "exit", ltp, "pnl_pct", pnlPct)
-
-			if e.onOutcome != nil {
-				e.onOutcome(eval)
-			}
+			e.finalizeCall(ctx, call, status, exitPrice, now)
 		}
 	}
 }
 
-// ScanNow triggers an on-demand evaluation of active ATM strikes against Jev or Agent.
+func (e *Evaluator) pushTick(instrumentKey string, ltp float64, now time.Time) {
+	e.ringMu.Lock()
+	ring, ok := e.tickRings[instrumentKey]
+	if !ok {
+		// Bound memory: evict an arbitrary old instrument when the ring map grows.
+		if len(e.tickRings) >= 1024 {
+			for key := range e.tickRings {
+				delete(e.tickRings, key)
+				break
+			}
+		}
+		ring = features.NewTickRing(240)
+		e.tickRings[instrumentKey] = ring
+	}
+	ring.Push(features.Tick{Price: ltp, Timestamp: now.UnixMilli()})
+	e.ringMu.Unlock()
+}
+
+// ScanNow triggers an on-demand evaluation of active ATM strikes.
+// When an agent is configured it generates candidates first and Jev validates
+// them. Without an agent, Jev alone is used as the candidate generator.
 func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Evaluation, error) {
 	if e == nil {
 		return nil, errors.New("evaluator: nil instance")
 	}
-	if e.jevClient == nil && e.agentClient == nil {
+	jevClient := e.JevClient()
+	agentClient := e.AgentClient()
+	if jevClient == nil && agentClient == nil {
 		return nil, errors.New("evaluator: neither jev nor agent client is configured")
 	}
 	if e.quoteProvider == nil {
@@ -471,47 +549,183 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 		underlying = "NIFTY"
 	}
 
+	e.scanRunMu.Lock()
+	defer e.scanRunMu.Unlock()
+
 	e.isScanning.Store(true)
 	defer e.isScanning.Store(false)
 
 	e.scanMu.Lock()
 	e.lastScanTime = time.Now()
+	e.lastScanError = ""
+	e.lastCandidateCnt = 0
+	e.lastCallsTaken = 0
 	e.scanMu.Unlock()
 
-	e.cfgMu.RLock()
-	minConfidence := e.cfg.MinConfidence
-	minScore := e.cfg.MinScore
-	targetPct := e.cfg.TargetPct
-	stopLossPct := e.cfg.StopLossPct
-	shadowMode := e.cfg.ShadowMode
-	agentModel := e.cfg.Agent.Model
-	e.cfgMu.RUnlock()
+	settings := e.scanSettings()
 
-	if targetPct <= 0 {
-		targetPct = 8.0
-	}
-	if stopLossPct <= 0 {
-		stopLossPct = 5.0
-	}
-	if minConfidence <= 0 {
-		minConfidence = 0.75
-	}
-	if minScore <= 0 {
-		minScore = 4
-	}
+	e.expireStaleCalls(ctx, settings)
 
 	spot, err := e.quoteProvider.GetSpotPrice(ctx, underlying)
 	if err != nil {
+		e.noteScanFailure(err)
 		return nil, fmt.Errorf("evaluator: get spot price: %w", err)
 	}
 
 	ceKey, peKey, ceLTP, peLTP, err := e.quoteProvider.GetATMStrikes(ctx, underlying)
 	if err != nil {
+		e.noteScanFailure(err)
 		return nil, fmt.Errorf("evaluator: get atm strikes: %w", err)
 	}
 
+	candidates := e.buildCandidates(ctx, underlying, spot, ceKey, peKey, ceLTP, peLTP)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	e.scanMu.Lock()
+	e.lastCandidateCnt = len(candidates)
+	e.scanMu.Unlock()
+
+	var bias, regime, narrative string
+	if e.store != nil {
+		if pb, perr := e.store.GetLatestPlaybook(ctx); perr == nil && pb != nil {
+			bias, regime, narrative = pb.Bias, pb.Regime, pb.Narrative
+		}
+	}
+
+	decisions := make(map[string]agent.CandidateDecision)
+	if agentClient != nil {
+		req := agent.CandidateRequest{
+			Timestamp:  time.Now().Format(time.RFC3339),
+			Underlying: underlying,
+			SpotPrice:  spot,
+			MacroBias:  bias,
+			Regime:     regime,
+			Narrative:  narrative,
+			Candidates: make([]agent.CandidateContract, 0, len(candidates)),
+		}
+		for _, cand := range candidates {
+			req.Candidates = append(req.Candidates, cand.agentInput())
+		}
+
+		agentStart := time.Now()
+		agentDecisions, aerr := agentClient.EvaluateCandidates(ctx, req)
+		if aerr != nil {
+			e.log.Warn("agent candidate generation failed", "event", "ai_agent_candidates_failed",
+				"underlying", underlying, "error", aerr)
+			e.noteScanFailure(aerr)
+			return nil, fmt.Errorf("evaluator: agent candidate generation failed: %w", aerr)
+		}
+		e.log.Info("agent candidate generation finished", "event", "ai_agent_candidates_ok",
+			"underlying", underlying, "contracts", len(candidates), "decisions", len(agentDecisions),
+			"duration_ms", time.Since(agentStart).Milliseconds())
+		decisions = matchAgentDecisions(candidates, agentDecisions)
+
+		anyBuy := false
+		for _, d := range decisions {
+			if d.Action == "BUY" {
+				anyBuy = true
+				break
+			}
+		}
+		if !anyBuy {
+			e.log.Info("agent passed on all candidates", "event", "ai_agent_no_candidates", "underlying", underlying)
+			return nil, nil
+		}
+	}
+
 	var results []store.Evaluation
-	candidates := []struct {
+	for _, cand := range candidates {
+		var agentDecision *agent.CandidateDecision
+		if agentClient != nil {
+			d, ok := decisions[cand.Key]
+			if !ok || d.Action != "BUY" {
+				continue
+			}
+			dc := d
+			agentDecision = &dc
+		}
+
+		if !e.canOpenCall(underlying, cand.Key, settings.cooldown) {
+			e.log.Info("skipping ai candidate: position or cooldown already active",
+				"event", "ai_candidate_skipped", "underlying", underlying, "instrument", cand.Key)
+			continue
+		}
+
+		snapshot := e.buildSnapshot(underlying, spot, bias, regime, cand, agentDecision, settings)
+		stateJSON, _ := snapshot.ToJSON()
+
+		var jevRes *jev.EvaluationResult
+		if jevClient != nil {
+			start := time.Now()
+			res, jerr := jevClient.EvaluateSetup(ctx, stateJSON)
+			durationMS := int(time.Since(start).Milliseconds())
+			if jerr != nil {
+				// Jev is the validation layer. If it cannot validate, do not open
+				// a paper position and do not silently fall back to the agent.
+				e.log.Warn("jev validation failed; skipping candidate", "event", "jev_validation_failed",
+					"underlying", underlying, "instrument", cand.Key, "error", jerr)
+				continue
+			}
+			res.DurationMS = durationMS
+			jevRes = &res
+		}
+
+		approved := false
+		if jevRes != nil {
+			approved = approveJev(*jevRes, settings)
+		} else if agentDecision != nil {
+			approved = approveAgent(*agentDecision, settings)
+		}
+		if !approved {
+			e.log.Info("ai candidate rejected by decision layer", "event", "ai_candidate_rejected",
+				"underlying", underlying, "instrument", cand.Key,
+				"jev_action", jevAction(jevRes), "jev_score", jevScore(jevRes), "jev_conf", jevConfidence(jevRes),
+				"agent_score", agentScore(agentDecision), "agent_conf", agentConfidence(agentDecision))
+			continue
+		}
+
+		source := "jev"
+		if agentDecision != nil && jevRes != nil {
+			source = "agent+jev"
+		} else if agentDecision != nil {
+			source = "agent"
+		}
+
+		score := jevScore(jevRes)
+		confidence := jevConfidence(jevRes)
+		if jevRes == nil && agentDecision != nil {
+			score = agentDecision.Score
+			confidence = agentDecision.Confidence
+		}
+
+		reasoning := buildReasoning(agentDecision, jevRes)
+
+		eval, ok, cerr := e.createPaperCall(ctx, cand, underlying, spot, source, reasoning, score, confidence, stateJSON, settings)
+		if cerr != nil {
+			e.log.Error("failed to persist ai paper call", "event", "ai_paper_call_save_failed",
+				"underlying", underlying, "instrument", cand.Key, "error", cerr)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		results = append(results, eval)
+	}
+
+	e.scanMu.Lock()
+	e.lastCallsTaken = len(results)
+	e.scanMu.Unlock()
+
+	if e.onScanStatus != nil {
+		e.onScanStatus(e.ScannerStatus())
+	}
+	return results, nil
+}
+
+func (e *Evaluator) buildCandidates(ctx context.Context, _ string, spot float64, ceKey, peKey string, ceLTP, peLTP float64) []scanCandidate {
+	raw := []struct {
 		Key  string
 		Type string
 		LTP  float64
@@ -520,164 +734,337 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 		{Key: peKey, Type: "PE", LTP: peLTP},
 	}
 
-	// Retrieve active playbook bias if available
-	var agentBias string
-	if e.store != nil {
-		if pb, perr := e.store.GetLatestPlaybook(ctx); perr == nil && pb != nil {
-			agentBias = pb.Bias
-		}
-	}
-
-	for _, cand := range candidates {
-		if cand.Key == "" || cand.LTP <= 0 {
+	out := make([]scanCandidate, 0, len(raw))
+	for _, item := range raw {
+		if strings.TrimSpace(item.Key) == "" {
 			continue
 		}
 
-		depth, _ := e.quoteProvider.GetMarketDepth(ctx, cand.Key)
-		vwap, ema9, ema21, rsi14, atr14 := e.getTechnicalMetrics(cand.Key, cand.LTP)
-		distVWAP := 0.0
-		if vwap > 0 {
-			distVWAP = ((cand.LTP - vwap) / vwap) * 100.0
+		ltp := item.LTP
+		if ltp <= 0 {
+			if lp, ok := e.quoteProvider.(liveQuoteProvider); ok {
+				if p, err := lp.GetOptionLTP(ctx, item.Key); err == nil {
+					ltp = p
+				}
+			}
 		}
 
-		snapshot := features.StateSnapshot{
-			Timestamp:       time.Now().Format(time.RFC3339),
-			Underlying:      underlying,
-			SpotPrice:       spot,
-			Strike:          cand.Key,
-			OptionType:      cand.Type,
-			OptionLTP:       cand.LTP,
+		depth, info := e.marketSnapshot(ctx, item.Key)
+		if info.OptionType == "" {
+			info.OptionType = item.Type
+		}
+		if info.LTP > 0 {
+			ltp = info.LTP
+		}
+		if ltp <= 0 {
+			// Without a price there is no meaningful setup to evaluate.
+			continue
+		}
+		strike := info.Strike
+		if strike <= 0 {
+			strike = parseStrikeFromKey(item.Key)
+		}
+		strikeLabel := ""
+		if strike > 0 {
+			strikeLabel = strconv.FormatFloat(strike, 'f', -1, 64)
+		}
+
+		vwap, ema9, ema21, rsi14, atr14 := e.getTechnicalMetrics(item.Key, ltp)
+		distVWAP := 0.0
+		if vwap > 0 {
+			distVWAP = ((ltp - vwap) / vwap) * 100.0
+		}
+
+		moneyness := 0.0
+		if spot > 0 && strike > 0 {
+			if strings.EqualFold(info.OptionType, "PE") {
+				moneyness = ((strike - spot) / spot) * 100.0
+			} else {
+				moneyness = ((spot - strike) / spot) * 100.0
+			}
+		}
+
+		out = append(out, scanCandidate{
+			Key:             item.Key,
+			Type:            strings.ToUpper(strings.TrimSpace(info.OptionType)),
+			Strike:          strikeLabel,
+			StrikePrice:     strike,
+			LTP:             ltp,
+			Expiry:          info.Expiry,
+			MoneynessPct:    moneyness,
 			VWAP:            vwap,
 			EMA9:            ema9,
 			EMA21:           ema21,
 			RSI14:           rsi14,
 			ATR14:           atr14,
 			DistFromVWAPPct: distVWAP,
-			OrderBook:       depth,
-			MacroBias:       agentBias,
+			Depth:           depth,
+			OI:              info.OI,
+			Volume:          info.Volume,
+		})
+	}
+	return out
+}
+
+func (e *Evaluator) marketSnapshot(ctx context.Context, instrumentKey string) (features.OrderBookMetrics, features.OptionInfo) {
+	if provider, ok := e.quoteProvider.(marketSnapshotProvider); ok {
+		depth, info, err := provider.GetMarketSnapshot(ctx, instrumentKey)
+		if err == nil {
+			return depth, info
 		}
-		stateJSON, _ := snapshot.ToJSON()
+	}
+	if e.quoteProvider == nil {
+		return features.OrderBookMetrics{}, features.OptionInfo{}
+	}
+	depth, _ := e.quoteProvider.GetMarketDepth(ctx, instrumentKey)
+	return depth, features.OptionInfo{}
+}
 
-		start := time.Now()
-		var action string
-		var confidence float64
-		var score int
-		var durationMS int
-		source := "jev"
-
-		if e.jevClient != nil {
-			jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
-			durationMS = int(time.Since(start).Milliseconds())
-			if jerr != nil {
-				e.log.Warn("jev evaluation failed", "event", "jev_eval_failed", "instrument", cand.Key, "error", jerr)
-			} else {
-				action = strings.ToUpper(strings.TrimSpace(jevRes.Action))
-				confidence = jevRes.Confidence
-				score = jevRes.Score
-			}
+func (e *Evaluator) buildSnapshot(underlying string, spot float64, bias, regime string, cand scanCandidate, decision *agent.CandidateDecision, settings scanSettings) features.StateSnapshot {
+	daysToExpiry := 0.0
+	if cand.Expiry != "" {
+		if expiry, err := time.Parse("2006-01-02", cand.Expiry); err == nil {
+			daysToExpiry = math.Max(0, time.Until(expiry).Hours()/24.0)
 		}
-
-		if action == "" && e.agentClient != nil {
-			startAgent := time.Now()
-			decision, aerr := e.agentClient.EvaluateContract(ctx, agent.ContractSetup{
-				Underlying:    underlying,
-				SpotPrice:     spot,
-				OptionType:    cand.Type,
-				Strike:        cand.Key,
-				OptionLTP:     cand.LTP,
-				MacroBias:     agentBias,
-				OrderBookDesc: "real-time market depth",
-			})
-			durationMS = int(time.Since(startAgent).Milliseconds())
-			if aerr != nil {
-				e.log.Warn("agent evaluation failed", "event", "agent_eval_failed", "instrument", cand.Key, "error", aerr)
-				continue
-			}
-			action = strings.ToUpper(strings.TrimSpace(decision.Action))
-			confidence = decision.Confidence
-			score = decision.Score
-			source = "agent"
-		}
-
-		if action == "" {
-			action = "HOLD"
-		}
-
-		// Normalize to BUY_CE or BUY_PE
-		if action == "BUY" {
-			if cand.Type == "CE" {
-				action = "BUY_CE"
-			} else {
-				action = "BUY_PE"
-			}
-		}
-
-		targetPrice := math.Round(cand.LTP*(1.0+targetPct/100.0)*100) / 100
-		stopLossPrice := math.Round(cand.LTP*(1.0-stopLossPct/100.0)*100) / 100
-
-		stateSnap := stateJSON
-		if source == "agent" {
-			stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel)
-		}
-
-		eval := store.Evaluation{
-			Timestamp:     time.Now(),
-			InstrumentKey: cand.Key,
-			Underlying:    underlying,
-			SpotPrice:     spot,
-			OptionLTP:     cand.LTP,
-			Action:        action,
-			Confidence:    confidence,
-			Score:         score,
-			DurationMS:    durationMS,
-			StateSnapshot: stateSnap,
-			Shadow:        shadowMode,
-			TargetPrice:   targetPrice,
-			StopLossPrice: stopLossPrice,
-			Status:        "PENDING",
-		}
-
-		// Always persist evaluations in the store so recent JEV setups show in the UI table
-		if e.store != nil {
-			id, serr := e.store.SaveEvaluation(ctx, eval)
-			if serr == nil {
-				eval.ID = id
-			}
-		}
-
-		// Filter for high-conviction setups only to track win/loss against live ticks
-		if eval.Score >= minScore && eval.Confidence >= minConfidence && strings.HasPrefix(eval.Action, "BUY") {
-			// Add to in-memory active call tracker
-			e.activeMu.Lock()
-			e.activeCalls[eval.ID] = &ActiveCall{
-				ID:            eval.ID,
-				InstrumentKey: eval.InstrumentKey,
-				Underlying:    eval.Underlying,
-				Action:        eval.Action,
-				EntryPrice:    eval.OptionLTP,
-				TargetPrice:   eval.TargetPrice,
-				StopLossPrice: eval.StopLossPrice,
-				Score:         eval.Score,
-				Confidence:    eval.Confidence,
-				CreatedAt:     eval.Timestamp,
-			}
-			atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
-			e.activeMu.Unlock()
-
-			e.log.Info("new high conviction call tracked", "event", "ai_call_detected",
-				"id", eval.ID, "action", eval.Action, "instrument", eval.InstrumentKey,
-				"entry", eval.OptionLTP, "target", eval.TargetPrice, "stop", eval.StopLossPrice,
-				"score", eval.Score, "conf", eval.Confidence, "source", source)
-		}
-
-		if e.onNewCall != nil {
-			e.onNewCall(eval)
-		}
-
-		results = append(results, eval)
 	}
 
-	return results, nil
+	snapshot := features.StateSnapshot{
+		Timestamp:       time.Now().Format(time.RFC3339),
+		Underlying:      underlying,
+		SpotPrice:       spot,
+		Strike:          cand.Strike,
+		StrikePrice:     cand.StrikePrice,
+		OptionType:      cand.Type,
+		OptionLTP:       cand.LTP,
+		Expiry:          cand.Expiry,
+		DaysToExpiry:    math.Round(daysToExpiry*10) / 10,
+		MoneynessPct:    math.Round(cand.MoneynessPct*100) / 100,
+		VWAP:            cand.VWAP,
+		EMA9:            cand.EMA9,
+		EMA21:           cand.EMA21,
+		RSI14:           cand.RSI14,
+		ATR14:           cand.ATR14,
+		DistFromVWAPPct: math.Round(cand.DistFromVWAPPct*100) / 100,
+		OrderBook:       cand.Depth,
+		OI:              cand.OI,
+		Volume:          cand.Volume,
+		MacroRegime:     regime,
+		MacroBias:       bias,
+		TargetPct:       settings.targetPct,
+		StopLossPct:     settings.stopLossPct,
+		Timeframe:       "5m",
+	}
+	if decision != nil {
+		snapshot.AgentSignal = decision.Action
+		snapshot.AgentScore = decision.Score
+		snapshot.AgentConfidence = decision.Confidence
+		snapshot.AgentReasoning = decision.Reasoning
+	}
+	return snapshot
+}
+
+func (e *Evaluator) createPaperCall(ctx context.Context, cand scanCandidate, underlying string, spot float64, source, reasoning string, score int, confidence float64, stateJSON string, settings scanSettings) (store.Evaluation, bool, error) {
+	entry := fillPrice(cand.LTP, cand.Depth)
+	if entry <= 0 {
+		return store.Evaluation{}, false, nil
+	}
+
+	// Re-check under the active lock to avoid two candidates on the same underlying.
+	if !e.canOpenCall(underlying, cand.Key, settings.cooldown) {
+		return store.Evaluation{}, false, nil
+	}
+
+	targetPrice := math.Round(entry*(1.0+settings.targetPct/100.0)*100) / 100
+	stopLossPrice := math.Round(entry*(1.0-settings.stopLossPct/100.0)*100) / 100
+
+	eval := store.Evaluation{
+		Timestamp:     time.Now(),
+		InstrumentKey: cand.Key,
+		Underlying:    underlying,
+		SpotPrice:     spot,
+		OptionLTP:     entry,
+		Action:        "BUY_" + strings.ToUpper(cand.Type),
+		Confidence:    confidence,
+		Score:         score,
+		StateSnapshot: stateJSON,
+		Shadow:        settings.shadow,
+		TargetPrice:   targetPrice,
+		StopLossPrice: stopLossPrice,
+		Status:        "PENDING",
+		Source:        source,
+		Reasoning:     reasoning,
+	}
+
+	if e.store != nil {
+		id, serr := e.store.SaveEvaluation(ctx, eval)
+		if serr != nil {
+			return store.Evaluation{}, false, serr
+		}
+		eval.ID = id
+	}
+
+	e.TrackEvaluation(eval)
+
+	e.log.Info("new ai paper call opened", "event", "ai_call_detected",
+		"id", eval.ID, "action", eval.Action, "instrument", eval.InstrumentKey,
+		"entry", eval.OptionLTP, "target", eval.TargetPrice, "stop", eval.StopLossPrice,
+		"score", eval.Score, "conf", eval.Confidence, "source", source)
+
+	if e.onNewCall != nil {
+		e.onNewCall(eval)
+	}
+	return eval, true, nil
+}
+
+func fillPrice(ltp float64, depth features.OrderBookMetrics) float64 {
+	if ltp <= 0 {
+		return 0
+	}
+	// Conservative paper fill at the best ask when it is close to the LTP.
+	if depth.BestAsk > 0 && depth.BestAsk >= depth.BestBid && depth.BestAsk <= ltp*1.05 {
+		return math.Round(depth.BestAsk*100) / 100
+	}
+	return ltp
+}
+
+func (e *Evaluator) finalizeCall(ctx context.Context, call *ActiveCall, status string, exitPrice float64, now time.Time) {
+	if e == nil || call == nil {
+		return
+	}
+
+	e.activeMu.Lock()
+	current, ok := e.activeCalls[call.ID]
+	if !ok || current != call {
+		e.activeMu.Unlock()
+		return
+	}
+	delete(e.activeCalls, call.ID)
+	atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
+	e.activeMu.Unlock()
+
+	if exitPrice <= 0 {
+		exitPrice = call.LastPrice
+	}
+	if exitPrice <= 0 {
+		exitPrice = call.EntryPrice
+	}
+
+	pnlPct := 0.0
+	if call.EntryPrice > 0 {
+		pnlPct = ((exitPrice - call.EntryPrice) / call.EntryPrice) * 100.0
+		pnlPct -= call.CostPct
+	}
+	pnlPct = math.Round(pnlPct*100) / 100
+
+	if e.store != nil {
+		_ = e.store.UpdateEvaluationOutcome(ctx, call.ID, status, exitPrice, pnlPct, now)
+	}
+
+	eval := store.Evaluation{
+		ID:            call.ID,
+		Timestamp:     call.CreatedAt,
+		InstrumentKey: call.InstrumentKey,
+		Underlying:    call.Underlying,
+		Action:        call.Action,
+		OptionLTP:     call.EntryPrice,
+		TargetPrice:   call.TargetPrice,
+		StopLossPrice: call.StopLossPrice,
+		Status:        status,
+		ExitPrice:     exitPrice,
+		ExitTime:      &now,
+		PnLPct:        pnlPct,
+		Score:         call.Score,
+		Confidence:    call.Confidence,
+		Source:        call.Source,
+		Reasoning:     call.Reasoning,
+	}
+
+	e.log.Info("ai paper call outcome determined", "event", "ai_call_outcome",
+		"id", call.ID, "instrument", call.InstrumentKey, "status", status,
+		"entry", call.EntryPrice, "exit", exitPrice, "pnl_pct", pnlPct, "source", call.Source)
+
+	if e.onOutcome != nil {
+		e.onOutcome(eval)
+	}
+}
+
+func (e *Evaluator) expireStaleCalls(ctx context.Context, settings scanSettings) {
+	if e == nil || atomic.LoadInt64(&e.activeCount) == 0 {
+		return
+	}
+
+	now := time.Now()
+	type expiredCall struct {
+		call  *ActiveCall
+		price float64
+	}
+	var expired []expiredCall
+
+	e.activeMu.RLock()
+	for _, call := range e.activeCalls {
+		shouldExpire := settings.maxHold > 0 && now.Sub(call.CreatedAt) >= settings.maxHold
+		if !shouldExpire && settings.maxHold <= 0 && call.CreatedAt.Format("2006-01-02") != now.Format("2006-01-02") {
+			shouldExpire = true
+		}
+		if !shouldExpire {
+			if checker, ok := e.quoteProvider.(interface{ IsUnderlyingMarketOpen(string) bool }); ok {
+				if !checker.IsUnderlyingMarketOpen(call.Underlying) {
+					shouldExpire = true
+				}
+			}
+		}
+		if shouldExpire {
+			price := call.LastPrice
+			if price <= 0 {
+				price = call.EntryPrice
+			}
+			expired = append(expired, expiredCall{call: call, price: price})
+		}
+	}
+	e.activeMu.RUnlock()
+
+	for _, item := range expired {
+		e.finalizeCall(ctx, item.call, "EXPIRED", item.price, now)
+	}
+}
+
+func (e *Evaluator) pollActivePositions(ctx context.Context) {
+	if e == nil || atomic.LoadInt64(&e.activeCount) == 0 {
+		return
+	}
+	provider, ok := e.quoteProvider.(liveQuoteProvider)
+	if !ok {
+		return
+	}
+
+	settings := e.scanSettings()
+	e.expireStaleCalls(ctx, settings)
+
+	type pendingQuote struct {
+		key      string
+		lastTick time.Time
+	}
+	now := time.Now()
+	var pending []pendingQuote
+
+	e.activeMu.RLock()
+	for _, call := range e.activeCalls {
+		if call.LastTickAt.After(now.Add(-20 * time.Second)) {
+			continue
+		}
+		pending = append(pending, pendingQuote{key: call.InstrumentKey, lastTick: call.LastTickAt})
+	}
+	e.activeMu.RUnlock()
+
+	for _, item := range pending {
+		quoteCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		price, err := provider.GetOptionLTP(quoteCtx, item.key)
+		cancel()
+		if err != nil || price <= 0 {
+			continue
+		}
+		e.OnTick(ctx, item.key, price)
+	}
 }
 
 func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap, ema9, ema21, rsi14, atr14 float64) {
@@ -689,7 +1076,6 @@ func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap
 	}
 
 	if ring != nil && ring.Len() > 0 {
-		_, _ = ring.Latest()
 		ticks := ring.Slice()
 		prices := make([]float64, len(ticks))
 		vols := make([]int64, len(ticks))
@@ -743,6 +1129,53 @@ func (e *Evaluator) ActiveCallsCount() int {
 	return int(atomic.LoadInt64(&e.activeCount))
 }
 
+// LivePrices returns the latest known price for each open paper call.
+func (e *Evaluator) LivePrices() map[int64]float64 {
+	if e == nil {
+		return nil
+	}
+	out := make(map[int64]float64)
+	e.activeMu.RLock()
+	defer e.activeMu.RUnlock()
+	for id, call := range e.activeCalls {
+		price := call.LastPrice
+		if price <= 0 {
+			price = call.EntryPrice
+		}
+		out[id] = price
+	}
+	return out
+}
+
+// TrackedInstrumentKeys returns the instrument keys currently needed for live tracking.
+func (e *Evaluator) TrackedInstrumentKeys() map[string]bool {
+	if e == nil {
+		return nil
+	}
+	out := make(map[string]bool)
+	e.activeMu.RLock()
+	defer e.activeMu.RUnlock()
+	for _, call := range e.activeCalls {
+		out[strings.ToUpper(call.InstrumentKey)] = true
+	}
+	return out
+}
+
+// FilterUntrackedKeys removes keys that are still needed by an open paper call.
+func (e *Evaluator) FilterUntrackedKeys(keys []string) []string {
+	tracked := e.TrackedInstrumentKeys()
+	if len(tracked) == 0 {
+		return keys
+	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !tracked[strings.ToUpper(strings.TrimSpace(key))] {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
 // Stats returns evaluation win/loss counts and win rate percentage.
 func (e *Evaluator) Stats(ctx context.Context) (store.EvaluationStats, error) {
 	if e == nil || e.store == nil {
@@ -759,14 +1192,18 @@ type ContractSetup struct {
 	Strike        string  `json:"strike"`
 	OptionType    string  `json:"option_type"`
 	OptionLTP     float64 `json:"option_ltp"`
+	Source        string  `json:"source,omitempty"`
 }
 
-// EvaluateContract performs on-demand evaluation of a specified contract using Jev or Agent and tracks it.
+// EvaluateContract performs an on-demand evaluation of a specified contract using
+// Jev or the Agent. It persists and tracks the call only when the action is BUY.
 func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (store.Evaluation, error) {
 	if e == nil {
 		return store.Evaluation{}, errors.New("evaluator: nil instance")
 	}
-	if e.jevClient == nil && e.agentClient == nil {
+	jevClient := e.JevClient()
+	agentClient := e.AgentClient()
+	if jevClient == nil && agentClient == nil {
 		return store.Evaluation{}, errors.New("evaluator: neither jev nor agent client is configured")
 	}
 	if setup.OptionLTP <= 0 {
@@ -778,6 +1215,7 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 	if setup.OptionType == "" {
 		setup.OptionType = "CE"
 	}
+	setup.OptionType = strings.ToUpper(strings.TrimSpace(setup.OptionType))
 
 	var spot float64
 	if e.quoteProvider != nil {
@@ -787,15 +1225,34 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		spot = setup.OptionLTP
 	}
 
-	var depth features.OrderBookMetrics
+	depth, info := features.OrderBookMetrics{}, features.OptionInfo{}
 	if e.quoteProvider != nil && setup.InstrumentKey != "" {
-		depth, _ = e.quoteProvider.GetMarketDepth(ctx, setup.InstrumentKey)
+		depth, info = e.marketSnapshot(ctx, setup.InstrumentKey)
 	}
 
-	var agentBias string
+	var bias, regime string
 	if e.store != nil {
 		if pb, perr := e.store.GetLatestPlaybook(ctx); perr == nil && pb != nil {
-			agentBias = pb.Bias
+			bias, regime = pb.Bias, pb.Regime
+		}
+	}
+
+	settings := e.scanSettings()
+	strike := setup.Strike
+	strikePrice := info.Strike
+	if strikePrice <= 0 {
+		strikePrice = parseStrikeFromKey(setup.InstrumentKey)
+	}
+	if strike == "" && strikePrice > 0 {
+		strike = strconv.FormatFloat(strikePrice, 'f', -1, 64)
+	}
+	expiry := info.Expiry
+	moneyness := 0.0
+	if spot > 0 && strikePrice > 0 {
+		if setup.OptionType == "PE" {
+			moneyness = ((strikePrice - spot) / spot) * 100.0
+		} else {
+			moneyness = ((spot - strikePrice) / spot) * 100.0
 		}
 	}
 
@@ -809,125 +1266,136 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		Timestamp:       time.Now().Format(time.RFC3339),
 		Underlying:      setup.Underlying,
 		SpotPrice:       spot,
-		Strike:          setup.Strike,
+		Strike:          strike,
+		StrikePrice:     strikePrice,
 		OptionType:      setup.OptionType,
 		OptionLTP:       setup.OptionLTP,
+		Expiry:          expiry,
+		MoneynessPct:    math.Round(moneyness*100) / 100,
 		VWAP:            vwap,
 		EMA9:            ema9,
 		EMA21:           ema21,
 		RSI14:           rsi14,
 		ATR14:           atr14,
-		DistFromVWAPPct: distVWAP,
+		DistFromVWAPPct: math.Round(distVWAP*100) / 100,
 		OrderBook:       depth,
-		MacroBias:       agentBias,
+		OI:              info.OI,
+		Volume:          info.Volume,
+		MacroRegime:     regime,
+		MacroBias:       bias,
+		TargetPct:       settings.targetPct,
+		StopLossPct:     settings.stopLossPct,
+		Timeframe:       "5m",
 	}
 	stateJSON, _ := snapshot.ToJSON()
 
-	start := time.Now()
 	var action string
 	var confidence float64
 	var score int
 	var durationMS int
-	source := "jev"
+	var reasoning string
+	source := strings.TrimSpace(setup.Source)
+	if source == "" {
+		source = "manual"
+	}
 
-	if e.jevClient != nil {
-		jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
+	if jevClient != nil {
+		start := time.Now()
+		res, jerr := jevClient.EvaluateSetup(ctx, stateJSON)
 		durationMS = int(time.Since(start).Milliseconds())
 		if jerr != nil {
-			e.log.Warn("jev evaluation failed, trying agent fallback", "event", "jev_eval_fallback", "instrument", setup.InstrumentKey, "error", jerr)
+			e.log.Warn("manual jev evaluation failed, trying agent fallback",
+				"event", "jev_eval_fallback", "instrument", setup.InstrumentKey, "error", jerr)
 		} else {
-			action = strings.ToUpper(strings.TrimSpace(jevRes.Action))
-			confidence = jevRes.Confidence
-			score = jevRes.Score
+			action = strings.ToUpper(strings.TrimSpace(res.Action))
+			confidence = res.Confidence
+			score = res.Score
 		}
 	}
 
-	if action == "" && e.agentClient != nil {
-		startAgent := time.Now()
-		decision, aerr := e.agentClient.EvaluateContract(ctx, agent.ContractSetup{
+	if action == "" && agentClient != nil {
+		start := time.Now()
+		decision, aerr := agentClient.EvaluateContract(ctx, agent.ContractSetup{
 			Underlying:    setup.Underlying,
 			SpotPrice:     spot,
 			OptionType:    setup.OptionType,
-			Strike:        setup.Strike,
+			Strike:        strike,
 			OptionLTP:     setup.OptionLTP,
-			MacroBias:     agentBias,
+			MacroBias:     bias,
 			OrderBookDesc: "real-time market depth",
 		})
-		durationMS = int(time.Since(startAgent).Milliseconds())
+		durationMS = int(time.Since(start).Milliseconds())
 		if aerr != nil {
 			return store.Evaluation{}, fmt.Errorf("evaluator: agent evaluation failed: %w", aerr)
 		}
 		action = strings.ToUpper(strings.TrimSpace(decision.Action))
 		confidence = decision.Confidence
 		score = decision.Score
-		source = "agent"
+		reasoning = decision.Reasoning
+		if source == "manual" {
+			source = "manual+agent"
+		}
 	}
 
 	if action == "" {
 		return store.Evaluation{}, errors.New("evaluator: no decision returned by AI models")
 	}
 
-	e.cfgMu.RLock()
-	targetPct := e.cfg.TargetPct
-	stopLossPct := e.cfg.StopLossPct
-	shadowMode := e.cfg.ShadowMode
-	agentModel := e.cfg.Agent.Model
-	e.cfgMu.RUnlock()
-
-	if targetPct <= 0 {
-		targetPct = 8.0
-	}
-	if stopLossPct <= 0 {
-		stopLossPct = 5.0
-	}
-
-	if action == "BUY" {
-		if setup.OptionType == "CE" {
-			action = "BUY_CE"
-		} else {
-			action = "BUY_PE"
-		}
+	action = normalizeOptionAction(action, setup.OptionType)
+	if action != "BUY_CE" && action != "BUY_PE" {
+		return store.Evaluation{
+			Timestamp:     time.Now(),
+			InstrumentKey: setup.InstrumentKey,
+			Underlying:    setup.Underlying,
+			SpotPrice:     spot,
+			OptionLTP:     setup.OptionLTP,
+			Action:        action,
+			Confidence:    confidence,
+			Score:         score,
+			DurationMS:    durationMS,
+			StateSnapshot: stateJSON,
+			Shadow:        settings.shadow,
+			Status:        "REJECTED",
+			Source:        source,
+			Reasoning:     reasoning,
+		}, nil
 	}
 
-	targetPrice := math.Round(setup.OptionLTP*(1.0+targetPct/100.0)*100) / 100
-	stopLossPrice := math.Round(setup.OptionLTP*(1.0-stopLossPct/100.0)*100) / 100
-
-	stateSnap := stateJSON
-	if source == "agent" {
-		stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel)
-	}
+	entry := setup.OptionLTP
+	targetPrice := math.Round(entry*(1.0+settings.targetPct/100.0)*100) / 100
+	stopLossPrice := math.Round(entry*(1.0-settings.stopLossPct/100.0)*100) / 100
 
 	eval := store.Evaluation{
 		Timestamp:     time.Now(),
 		InstrumentKey: setup.InstrumentKey,
 		Underlying:    setup.Underlying,
 		SpotPrice:     spot,
-		OptionLTP:     setup.OptionLTP,
+		OptionLTP:     entry,
 		Action:        action,
 		Confidence:    confidence,
 		Score:         score,
 		DurationMS:    durationMS,
-		StateSnapshot: stateSnap,
-		Shadow:        shadowMode,
+		StateSnapshot: stateJSON,
+		Shadow:        settings.shadow,
 		TargetPrice:   targetPrice,
 		StopLossPrice: stopLossPrice,
 		Status:        "PENDING",
+		Source:        source,
+		Reasoning:     reasoning,
 	}
 
 	if e.store != nil {
 		id, serr := e.store.SaveEvaluation(ctx, eval)
-		if serr == nil {
-			eval.ID = id
+		if serr != nil {
+			return store.Evaluation{}, fmt.Errorf("evaluator: save manual evaluation: %w", serr)
 		}
+		eval.ID = id
 	}
 
-	if eval.TargetPrice > 0 {
-		e.TrackEvaluation(eval)
-		if e.onNewCall != nil && (action == "BUY_CE" || action == "BUY_PE" || action == "BUY") {
-			e.onNewCall(eval)
-		}
+	e.TrackEvaluation(eval)
+	if e.onNewCall != nil {
+		e.onNewCall(eval)
 	}
-
 	return eval, nil
 }
 
@@ -936,6 +1404,8 @@ func (e *Evaluator) JevClient() *jev.Client {
 	if e == nil {
 		return nil
 	}
+	e.clientMu.RLock()
+	defer e.clientMu.RUnlock()
 	return e.jevClient
 }
 
@@ -944,14 +1414,20 @@ func (e *Evaluator) AgentClient() *agent.Client {
 	if e == nil {
 		return nil
 	}
+	e.clientMu.RLock()
+	defer e.clientMu.RUnlock()
 	return e.agentClient
 }
 
-// TrackEvaluation registers an evaluation into the live tick outcome tracker.
+// TrackEvaluation registers an actionable call into the live tick outcome tracker.
 func (e *Evaluator) TrackEvaluation(eval store.Evaluation) {
-	if e == nil || eval.ID == 0 {
+	if e == nil || eval.ID == 0 || !isActionableAction(eval.Action) {
 		return
 	}
+
+	settings := e.scanSettings()
+	now := time.Now()
+
 	e.activeMu.Lock()
 	e.activeCalls[eval.ID] = &ActiveCall{
 		ID:            eval.ID,
@@ -963,10 +1439,19 @@ func (e *Evaluator) TrackEvaluation(eval store.Evaluation) {
 		StopLossPrice: eval.StopLossPrice,
 		Score:         eval.Score,
 		Confidence:    eval.Confidence,
+		Source:        eval.Source,
+		Reasoning:     eval.Reasoning,
+		CostPct:       settings.costPct,
 		CreatedAt:     eval.Timestamp,
+		LastPrice:     eval.OptionLTP,
+		LastTickAt:    now,
 	}
 	atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
+	call := e.activeCalls[eval.ID]
 	e.activeMu.Unlock()
+
+	e.noteSignal(eval.Underlying, now)
+	e.notifyTracked(call)
 }
 
 // UntrackEvaluation removes an evaluation from the live tick outcome tracker
@@ -983,15 +1468,96 @@ func (e *Evaluator) UntrackEvaluation(id int64) {
 	e.activeMu.Unlock()
 }
 
+func (e *Evaluator) notifyTracked(call *ActiveCall) {
+	if e.onTrack == nil || call == nil {
+		return
+	}
+	e.onTrack(store.Evaluation{
+		ID:            call.ID,
+		Timestamp:     call.CreatedAt,
+		InstrumentKey: call.InstrumentKey,
+		Underlying:    call.Underlying,
+		OptionLTP:     call.EntryPrice,
+		Action:        call.Action,
+		TargetPrice:   call.TargetPrice,
+		StopLossPrice: call.StopLossPrice,
+		Score:         call.Score,
+		Confidence:    call.Confidence,
+		Source:        call.Source,
+		Reasoning:     call.Reasoning,
+		Status:        "PENDING",
+	})
+}
+
+func (e *Evaluator) noteSignal(underlying string, at time.Time) {
+	key := strings.ToUpper(strings.TrimSpace(underlying))
+	if key == "" {
+		return
+	}
+	e.lastSignalMu.Lock()
+	e.lastSignal[key] = at
+	e.lastSignalMu.Unlock()
+}
+
+func (e *Evaluator) canOpenCall(underlying, instrumentKey string, cooldown time.Duration) bool {
+	underlying = strings.ToUpper(strings.TrimSpace(underlying))
+	instrumentKey = strings.ToUpper(strings.TrimSpace(instrumentKey))
+
+	e.activeMu.RLock()
+	for _, call := range e.activeCalls {
+		if strings.EqualFold(call.Underlying, underlying) || strings.EqualFold(call.InstrumentKey, instrumentKey) {
+			e.activeMu.RUnlock()
+			return false
+		}
+	}
+	e.activeMu.RUnlock()
+
+	if cooldown <= 0 {
+		return true
+	}
+	e.lastSignalMu.Lock()
+	last, ok := e.lastSignal[underlying]
+	e.lastSignalMu.Unlock()
+	return !ok || time.Since(last) >= cooldown
+}
+
+func (e *Evaluator) runPositionMonitor(ctx context.Context) {
+	for {
+		settings := e.scanSettings()
+		interval := time.Duration(settings.evalCadence) * time.Second
+		if interval < 10*time.Second {
+			interval = 10 * time.Second
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			e.pollActivePositions(ctx)
+		}
+	}
+}
+
 func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done chan struct{}) {
 	defer close(done)
 
 	e.log.Info("ai evaluator periodic scanner started", "event", "ai_scanner_started", "interval", interval)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	retryInterval := 2 * time.Minute
+	if retryInterval > interval {
+		retryInterval = interval
+	}
+	if retryInterval < 15*time.Second {
+		retryInterval = 15 * time.Second
+	}
 
-	doScan := func() {
+	// runCycle executes one scan pass and reports whether it completed
+	// healthy. Unhealthy cycles (market closed, broker/agent unavailable)
+	// are retried sooner than the full scan interval so the system recovers
+	// quickly after login or feed startup.
+	runCycle := func() bool {
 		e.scanMu.Lock()
 		e.nextScanTime = time.Now().Add(interval)
 		e.scanMu.Unlock()
@@ -1001,20 +1567,26 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 			e.onScanStatus(status)
 		}
 
+		// Always expire stale positions, even when markets are closed.
+		e.expireStaleCalls(ctx, e.scanSettings())
+
 		if !status.AnyMarketOpen {
 			e.log.Info("periodic ai scan skipped: all configured markets closed", "event", "ai_periodic_scan_markets_closed", "closed", status.ClosedUnderlyings)
-			return
+			if e.onScanStatus != nil {
+				e.onScanStatus(e.ScannerStatus())
+			}
+			return false
 		}
 
 		underlyings := status.OpenUnderlyings
 		if len(underlyings) == 0 {
-			return
+			return false
 		}
 
 		var totalEvals []store.Evaluation
 		var scanErr error
 		for _, u := range underlyings {
-			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			scanCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 			evals, err := e.ScanNow(scanCtx, u)
 			cancel()
 			if err != nil {
@@ -1024,37 +1596,298 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done
 			}
 		}
 
+		failed := scanErr != nil && len(totalEvals) == 0
+
 		e.scanMu.Lock()
 		e.lastScanTime = time.Now()
+		if failed {
+			e.lastScanError = scanErr.Error()
+		} else {
+			e.lastScanError = ""
+		}
 		e.scanMu.Unlock()
 
-		if scanErr != nil && len(totalEvals) == 0 {
+		if failed {
 			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", scanErr)
 		} else {
-			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(totalEvals), "scanned", underlyings)
+			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success",
+				"count", len(totalEvals), "scanned", underlyings)
 		}
 
 		if e.onScanStatus != nil {
 			e.onScanStatus(e.ScannerStatus())
 		}
+		return !failed
 	}
 
-	// Trigger initial scan shortly after startup (after feeds/scrips stabilize)
-	go func() {
-		select {
-		case <-time.After(5 * time.Second):
-			doScan()
-		case <-ctx.Done():
-		}
-	}()
-
+	// Trigger the first scan shortly after startup (after feeds/scrips stabilize).
+	delay := 5 * time.Second
 	for {
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			e.log.Info("ai evaluator periodic scanner stopped", "event", "ai_scanner_stopped")
 			return
-		case <-ticker.C:
-			doScan()
+		case <-timer.C:
+			healthy := runCycle()
+			delay = interval
+			if !healthy {
+				delay = retryInterval
+			}
+			e.scanMu.Lock()
+			e.nextScanTime = time.Now().Add(delay)
+			e.scanMu.Unlock()
+			if e.onScanStatus != nil {
+				e.onScanStatus(e.ScannerStatus())
+			}
 		}
 	}
+}
+
+func (e *Evaluator) noteScanFailure(err error) {
+	if err == nil {
+		return
+	}
+	e.scanMu.Lock()
+	e.lastScanError = err.Error()
+	e.scanMu.Unlock()
+}
+
+type scanCandidate struct {
+	Key             string
+	Type            string
+	Strike          string
+	StrikePrice     float64
+	LTP             float64
+	Expiry          string
+	MoneynessPct    float64
+	VWAP            float64
+	EMA9            float64
+	EMA21           float64
+	RSI14           float64
+	ATR14           float64
+	DistFromVWAPPct float64
+	Depth           features.OrderBookMetrics
+	OI              int64
+	Volume          int64
+}
+
+func (c scanCandidate) agentInput() agent.CandidateContract {
+	return agent.CandidateContract{
+		InstrumentKey:   c.Key,
+		OptionType:      c.Type,
+		Strike:          c.Strike,
+		StrikePrice:     c.StrikePrice,
+		OptionLTP:       c.LTP,
+		Expiry:          c.Expiry,
+		MoneynessPct:    math.Round(c.MoneynessPct*100) / 100,
+		VWAP:            c.VWAP,
+		EMA9:            c.EMA9,
+		EMA21:           c.EMA21,
+		RSI14:           c.RSI14,
+		ATR14:           c.ATR14,
+		DistFromVWAPPct: math.Round(c.DistFromVWAPPct*100) / 100,
+		OI:              c.OI,
+		Volume:          c.Volume,
+		OrderBook:       c.Depth,
+	}
+}
+
+type scanSettings struct {
+	minConfidence float64
+	minScore      int
+	targetPct     float64
+	stopLossPct   float64
+	costPct       float64
+	maxHold       time.Duration
+	cooldown      time.Duration
+	evalCadence   int
+	shadow        bool
+}
+
+func (e *Evaluator) scanSettings() scanSettings {
+	e.cfgMu.RLock()
+	c := e.cfg
+	e.cfgMu.RUnlock()
+
+	if c.TargetPct <= 0 {
+		c.TargetPct = 8.0
+	}
+	if c.StopLossPct <= 0 {
+		c.StopLossPct = 5.0
+	}
+	if c.MinConfidence <= 0 {
+		c.MinConfidence = 0.60
+	}
+	if c.MinScore <= 0 {
+		c.MinScore = 3
+	}
+	if c.RoundTripCostPct < 0 {
+		c.RoundTripCostPct = 0
+	}
+	if c.MaxHoldMinutes < 0 {
+		c.MaxHoldMinutes = 0
+	}
+	if c.CooldownMinutes < 0 {
+		c.CooldownMinutes = 0
+	}
+	if c.EvalCadenceSeconds <= 0 {
+		c.EvalCadenceSeconds = 15
+	}
+
+	return scanSettings{
+		minConfidence: c.MinConfidence,
+		minScore:      c.MinScore,
+		targetPct:     c.TargetPct,
+		stopLossPct:   c.StopLossPct,
+		costPct:       c.RoundTripCostPct,
+		maxHold:       time.Duration(c.MaxHoldMinutes) * time.Minute,
+		cooldown:      time.Duration(c.CooldownMinutes) * time.Minute,
+		evalCadence:   c.EvalCadenceSeconds,
+		shadow:        c.ShadowMode,
+	}
+}
+
+func approveJev(res jev.EvaluationResult, settings scanSettings) bool {
+	action := strings.ToUpper(strings.TrimSpace(res.Action))
+	if action != "BUY" && action != "BUY_CE" && action != "BUY_PE" {
+		return false
+	}
+	return res.Score >= settings.minScore && res.Confidence >= settings.minConfidence
+}
+
+func approveAgent(decision agent.CandidateDecision, settings scanSettings) bool {
+	return strings.EqualFold(strings.TrimSpace(decision.Action), "BUY") &&
+		decision.Score >= settings.minScore &&
+		decision.Confidence >= settings.minConfidence
+}
+
+func normalizeOptionAction(action, optionType string) string {
+	action = strings.ToUpper(strings.TrimSpace(action))
+	optionType = strings.ToUpper(strings.TrimSpace(optionType))
+	if optionType != "PE" {
+		optionType = "CE"
+	}
+	if action == "BUY" || action == "BUY_CE" || action == "BUY_PE" || strings.HasPrefix(action, "BUY_") {
+		return "BUY_" + optionType
+	}
+	return action
+}
+
+func isActionableAction(action string) bool {
+	switch strings.ToUpper(strings.TrimSpace(action)) {
+	case "BUY", "BUY_CE", "BUY_PE":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchAgentDecisions(candidates []scanCandidate, decisions []agent.CandidateDecision) map[string]agent.CandidateDecision {
+	out := make(map[string]agent.CandidateDecision)
+	for _, d := range decisions {
+		matched := ""
+		for _, cand := range candidates {
+			if d.InstrumentKey != "" && strings.EqualFold(strings.TrimSpace(d.InstrumentKey), cand.Key) {
+				matched = cand.Key
+				break
+			}
+			if d.OptionType != "" && strings.EqualFold(strings.TrimSpace(d.OptionType), cand.Type) {
+				if d.Strike == "" || strikesEqual(d.Strike, cand.Strike) {
+					matched = cand.Key
+					break
+				}
+			}
+		}
+		if matched == "" && len(candidates) == 1 && d.OptionType == "" {
+			matched = candidates[0].Key
+		}
+		if matched != "" {
+			out[matched] = d
+		}
+	}
+	return out
+}
+
+func strikesEqual(a, b string) bool {
+	af, aerr := strconv.ParseFloat(strings.TrimSpace(a), 64)
+	bf, berr := strconv.ParseFloat(strings.TrimSpace(b), 64)
+	if aerr == nil && berr == nil {
+		return math.Abs(af-bf) < 0.001
+	}
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func parseStrikeFromKey(instrumentKey string) float64 {
+	s := strings.ToUpper(strings.TrimSpace(instrumentKey))
+	s = strings.TrimSuffix(s, "CE")
+	s = strings.TrimSuffix(s, "PE")
+
+	end := -1
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] >= '0' && s[i] <= '9' {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return 0
+	}
+	start := end
+	for start >= 0 && ((s[start] >= '0' && s[start] <= '9') || s[start] == '.') {
+		start--
+	}
+	value, err := strconv.ParseFloat(s[start+1:end+1], 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func buildReasoning(agentDecision *agent.CandidateDecision, jevRes *jev.EvaluationResult) string {
+	parts := make([]string, 0, 2)
+	if agentDecision != nil && strings.TrimSpace(agentDecision.Reasoning) != "" {
+		parts = append(parts, "Agent: "+strings.TrimSpace(agentDecision.Reasoning))
+	}
+	if jevRes != nil {
+		parts = append(parts, fmt.Sprintf("Jev validation: %s, score %d/5, confidence %.0f%%",
+			strings.ToUpper(strings.TrimSpace(jevRes.Action)), jevRes.Score, jevRes.Confidence*100))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func jevAction(res *jev.EvaluationResult) string {
+	if res == nil {
+		return ""
+	}
+	return res.Action
+}
+
+func jevScore(res *jev.EvaluationResult) int {
+	if res == nil {
+		return 0
+	}
+	return res.Score
+}
+
+func jevConfidence(res *jev.EvaluationResult) float64 {
+	if res == nil {
+		return 0
+	}
+	return res.Confidence
+}
+
+func agentScore(decision *agent.CandidateDecision) int {
+	if decision == nil {
+		return 0
+	}
+	return decision.Score
+}
+
+func agentConfidence(decision *agent.CandidateDecision) float64 {
+	if decision == nil {
+		return 0
+	}
+	return decision.Confidence
 }

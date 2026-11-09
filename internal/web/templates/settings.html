@@ -618,12 +618,42 @@
             </div>
 
             <div class="form-group" data-field="ai.eval_cadence_seconds">
-              <label for="f-ai-eval-cadence">Evaluation Cadence</label>
+              <label for="f-ai-eval-cadence">Position Poll Cadence</label>
               <div class="input-unit">
                 <input type="number" id="f-ai-eval-cadence" min="5" max="300" step="5" placeholder="15">
                 <span class="unit-suffix">sec</span>
               </div>
-              <span class="form-help">Frequency of running Jev tactical evaluations on active ATM strikes.</span>
+              <span class="form-help">Fallback REST quote polling for open paper positions when live feed ticks are stale.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.max_hold_minutes">
+              <label for="f-ai-max-hold">Max Hold Time</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-max-hold" min="0" max="1440" step="5" placeholder="120">
+                <span class="unit-suffix">min</span>
+              </div>
+              <span class="form-help">Time-exit an open paper position after this many minutes (0 = only at session end).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.cooldown_minutes">
+              <label for="f-ai-cooldown">Signal Cooldown</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-cooldown" min="0" max="240" step="5" placeholder="15">
+                <span class="unit-suffix">min</span>
+              </div>
+              <span class="form-help">Minimum gap before taking another call on the same underlying.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="ai.round_trip_cost_pct">
+              <label for="f-ai-cost-pct">Round-Trip Cost</label>
+              <div class="input-unit">
+                <input type="number" id="f-ai-cost-pct" min="0" max="10" step="0.05" placeholder="0.10">
+                <span class="unit-suffix">%</span>
+              </div>
+              <span class="form-help">Conservative brokerage + slippage charged to every paper PnL calculation.</span>
               <span class="field-error"></span>
             </div>
           </div>
@@ -645,18 +675,18 @@
 
             <div class="form-group" data-field="ai.jev.model">
               <label for="f-jev-model">Jev Model ID</label>
-              <input type="text" id="f-jev-model" placeholder="typesafe/jev-latest">
-              <span class="form-help">e.g. <code>typesafe/jev-latest</code> on OpenRouter, or <code>jev-latest</code> on TypeSafe.</span>
+              <input type="text" id="f-jev-model" placeholder="~typesafe/jev-latest">
+              <span class="form-help">e.g. <code>~typesafe/jev-latest</code> on OpenRouter, or <code>jev-latest</code> on TypeSafe.</span>
               <span class="field-error"></span>
             </div>
 
             <div class="form-group" data-field="ai.jev.timeout_ms">
               <label for="f-jev-timeout-ms">HTTP Timeout</label>
               <div class="input-unit">
-                <input type="number" id="f-jev-timeout-ms" min="100" max="10000" step="100" placeholder="1500">
+                <input type="number" id="f-jev-timeout-ms" min="100" max="30000" step="500" placeholder="8000">
                 <span class="unit-suffix">ms</span>
               </div>
-              <span class="form-help">Must be fast (1000–2000ms recommended for scalping).</span>
+              <span class="form-help">Allow enough time for the hosted decision model (5000–10000ms recommended).</span>
               <span class="field-error"></span>
             </div>
 
@@ -706,10 +736,10 @@
             <div class="form-group" data-field="ai.agent.timeout_ms">
               <label for="f-agent-timeout-ms">HTTP Timeout</label>
               <div class="input-unit">
-                <input type="number" id="f-agent-timeout-ms" min="5000" max="120000" step="5000" placeholder="30000">
+                <input type="number" id="f-agent-timeout-ms" min="5000" max="180000" step="5000" placeholder="60000">
                 <span class="unit-suffix">ms</span>
               </div>
-              <span class="form-help">Timeout for deep macro briefings (default 30000ms).</span>
+              <span class="form-help">Timeout for candidate generation and deep macro briefings (default 60000ms).</span>
               <span class="field-error"></span>
             </div>
 

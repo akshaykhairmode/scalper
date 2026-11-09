@@ -214,3 +214,139 @@ func TestDeleteEvaluation(t *testing.T) {
 		t.Fatal("expected error for invalid evaluation id")
 	}
 }
+
+func TestEvaluationPaperTradeProvenanceAndStats(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	// Actionable call proposed by the agent and validated by Jev.
+	id, err := s.SaveEvaluation(ctx, Evaluation{
+		Timestamp:     base,
+		InstrumentKey: "NIFTY24500CE",
+		Underlying:    "NIFTY",
+		OptionLTP:     150,
+		Action:        "BUY_CE",
+		Confidence:    0.82,
+		Score:         4,
+		TargetPrice:   162,
+		StopLossPrice: 142.5,
+		Status:        "PENDING",
+		Source:        "agent+jev",
+		Reasoning:     "Agent: breakout | Jev validation: BUY, score 4/5",
+	})
+	if err != nil {
+		t.Fatalf("SaveEvaluation BUY_CE: %v", err)
+	}
+
+	// Non-actionable verdicts must never appear in paper stats or the calls list.
+	if _, err := s.SaveEvaluation(ctx, Evaluation{
+		Timestamp:     base.Add(time.Second),
+		InstrumentKey: "NIFTY24500CE",
+		Underlying:    "NIFTY",
+		Action:        "HOLD",
+		Status:        "PENDING",
+		Source:        "jev",
+	}); err != nil {
+		t.Fatalf("SaveEvaluation HOLD: %v", err)
+	}
+
+	// Expired paper call.
+	if _, err := s.SaveEvaluation(ctx, Evaluation{
+		Timestamp:     base.Add(2 * time.Second),
+		InstrumentKey: "NIFTY24500PE",
+		Underlying:    "NIFTY",
+		OptionLTP:     120,
+		Action:        "BUY_PE",
+		Confidence:    0.7,
+		Score:         3,
+		TargetPrice:   129.6,
+		StopLossPrice: 114,
+		Status:        "EXPIRED",
+		PnLPct:        -0.1,
+		Source:        "agent+jev",
+	}); err != nil {
+		t.Fatalf("SaveEvaluation EXPIRED: %v", err)
+	}
+
+	// Default source is recorded for legacy writers.
+	if _, err := s.SaveEvaluation(ctx, Evaluation{
+		Timestamp:     base.Add(3 * time.Second),
+		InstrumentKey: "NIFTY24600CE",
+		Underlying:    "NIFTY",
+		OptionLTP:     90,
+		Action:        "BUY_CE",
+		Status:        "PENDING",
+	}); err != nil {
+		t.Fatalf("SaveEvaluation default source: %v", err)
+	}
+
+	evals, err := s.ListEvaluations(ctx, 50)
+	if err != nil {
+		t.Fatalf("ListEvaluations: %v", err)
+	}
+	if len(evals) != 3 {
+		t.Fatalf("expected 3 actionable evaluations, got %d", len(evals))
+	}
+	var found *Evaluation
+	for i := range evals {
+		if evals[i].ID == id {
+			found = &evals[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected to find the agent+jev evaluation")
+	}
+	if found.Source != "agent+jev" {
+		t.Errorf("source = %q, want agent+jev", found.Source)
+	}
+	if found.Reasoning == "" {
+		t.Error("expected reasoning to round-trip")
+	}
+	if found.CurrentPrice != 0 {
+		t.Errorf("runtime-only current price should not persist, got %f", found.CurrentPrice)
+	}
+
+	var defaultSource string
+	for _, e := range evals {
+		if e.InstrumentKey == "NIFTY24600CE" {
+			defaultSource = e.Source
+		}
+	}
+	if defaultSource != "jev" {
+		t.Errorf("default source = %q, want jev", defaultSource)
+	}
+
+	stats, err := s.GetEvaluationStats(ctx)
+	if err != nil {
+		t.Fatalf("GetEvaluationStats: %v", err)
+	}
+	if stats.TotalCalls != 3 {
+		t.Errorf("total_calls = %d, want 3 (HOLD excluded)", stats.TotalCalls)
+	}
+	if stats.ExpiredCalls != 1 {
+		t.Errorf("expired_calls = %d, want 1", stats.ExpiredCalls)
+	}
+	if stats.PendingCalls != 2 {
+		t.Errorf("pending_calls = %d, want 2", stats.PendingCalls)
+	}
+	if stats.ResolvedCalls != 0 || stats.WinRatePct != 0 {
+		t.Errorf("resolved/win rate = %d/%f, want 0/0", stats.ResolvedCalls, stats.WinRatePct)
+	}
+
+	// Resolve one call; win rate is target hits over resolved (target + stop) calls.
+	if err := s.UpdateEvaluationOutcome(ctx, id, "TARGET_HIT", 162, 7.9, time.Now()); err != nil {
+		t.Fatalf("UpdateEvaluationOutcome: %v", err)
+	}
+	stats, err = s.GetEvaluationStats(ctx)
+	if err != nil {
+		t.Fatalf("GetEvaluationStats after update: %v", err)
+	}
+	if stats.TargetHits != 1 || stats.ResolvedCalls != 1 || stats.WinRatePct != 100.0 {
+		t.Errorf("unexpected stats after target hit: %+v", stats)
+	}
+	if stats.ExpiredCalls != 1 {
+		t.Errorf("expired_calls = %d, want 1", stats.ExpiredCalls)
+	}
+}

@@ -305,18 +305,21 @@
     setVal("f-ai-scan-interval", ai.scan_interval_minutes !== void 0 ? ai.scan_interval_minutes : 15);
     setVal("f-ai-target-pct", ai.target_pct !== void 0 ? ai.target_pct : 8);
     setVal("f-ai-stop-loss-pct", ai.stop_loss_pct !== void 0 ? ai.stop_loss_pct : 5);
-    setVal("f-ai-min-confidence", ai.min_confidence !== void 0 ? ai.min_confidence : 0.75);
-    setVal("f-ai-min-score", ai.min_score !== void 0 ? ai.min_score : 4);
+    setVal("f-ai-min-confidence", ai.min_confidence !== void 0 ? ai.min_confidence : 0.6);
+    setVal("f-ai-min-score", ai.min_score !== void 0 ? ai.min_score : 3);
     setVal("f-ai-eval-cadence", ai.eval_cadence_seconds !== void 0 ? ai.eval_cadence_seconds : 15);
+    setVal("f-ai-max-hold", ai.max_hold_minutes !== void 0 ? ai.max_hold_minutes : 120);
+    setVal("f-ai-cooldown", ai.cooldown_minutes !== void 0 ? ai.cooldown_minutes : 15);
+    setVal("f-ai-cost-pct", ai.round_trip_cost_pct !== void 0 ? ai.round_trip_cost_pct : 0.1);
     setVal("f-jev-base-url", jev.base_url || "https://openrouter.ai/api/v1");
-    setVal("f-jev-model", jev.model || "typesafe/jev-latest");
+    setVal("f-jev-model", jev.model || "~typesafe/jev-latest");
     setVal("f-jev-api-key", jev.api_key || "");
-    setVal("f-jev-timeout-ms", jev.timeout_ms || 1500);
+    setVal("f-jev-timeout-ms", jev.timeout_ms || 8e3);
     setVal("f-agent-provider", ag.provider || "openrouter");
     setVal("f-agent-base-url", ag.base_url || "https://openrouter.ai/api/v1");
     setVal("f-agent-model", ag.model || "nvidia/nemotron-3.5-lightning:free");
     setVal("f-agent-api-key", ag.api_key || "");
-    setVal("f-agent-timeout-ms", ag.timeout_ms || 3e4);
+    setVal("f-agent-timeout-ms", ag.timeout_ms || 6e4);
     renderScannedUnderlyings(cfg);
   }
   function setVal(id, val) {
@@ -377,6 +380,9 @@
       { id: "f-ai-min-confidence", path: ["ai", "min_confidence"], type: "float" },
       { id: "f-ai-min-score", path: ["ai", "min_score"], type: "int" },
       { id: "f-ai-eval-cadence", path: ["ai", "eval_cadence_seconds"], type: "int" },
+      { id: "f-ai-max-hold", path: ["ai", "max_hold_minutes"], type: "int" },
+      { id: "f-ai-cooldown", path: ["ai", "cooldown_minutes"], type: "int" },
+      { id: "f-ai-cost-pct", path: ["ai", "round_trip_cost_pct"], type: "float" },
       { id: "f-jev-base-url", path: ["ai", "jev", "base_url"], type: "string" },
       { id: "f-jev-model", path: ["ai", "jev", "model"], type: "string" },
       { id: "f-jev-api-key", path: ["ai", "jev", "api_key"], type: "string" },

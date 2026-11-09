@@ -22,21 +22,24 @@ import (
 
 const defaultAISettingsYAML = `ai:
   enabled: false             # Master toggle for AI evaluation engine
-  shadow_mode: true          # Log evaluations to SQLite without sending broker orders
-  periodic_scan: false       # Automatically query Jev for periodic option setups
+  shadow_mode: true          # Paper-only: never send broker orders from AI signals
+  periodic_scan: true        # Agent proposes calls, Jev validates, paper positions are tracked
   scan_interval_minutes: 15  # Periodic scan interval (5, 15, 30, 60m)
-  target_pct: 8.0            # Target profit percentage for call tracking (+8%)
-  stop_loss_pct: 5.0         # Stop-loss risk percentage for call tracking (-5%)
-  min_confidence: 0.75       # Minimum Noul probability cutoff (0.0 to 1.0)
-  min_score: 4               # Minimum setup conviction score (1 to 5)
-  eval_cadence_seconds: 15   # Evaluation frequency for active strikes
+  target_pct: 8.0            # Target profit percentage for paper call tracking (+8%)
+  stop_loss_pct: 5.0         # Stop-loss risk percentage for paper call tracking (-5%)
+  min_confidence: 0.60       # Minimum Jev probability required to take a paper position
+  min_score: 3               # Minimum Jev conviction score (1 to 5)
+  eval_cadence_seconds: 15   # Active paper-position quote polling cadence
+  max_hold_minutes: 120      # Time-exit open paper positions after 2 hours (0 = session end only)
+  cooldown_minutes: 15       # Minimum gap between new calls on the same underlying
+  round_trip_cost_pct: 0.10  # Conservative round-trip brokerage/slippage charged to PnL
 
   # System 1: Fast Decision Model (TypeSafe AI Jev via OpenRouter or TypeSafe)
   jev:
     base_url: "https://openrouter.ai/api/v1"
     api_key: ""              # Powered by OPENROUTER_API_KEY or TYPESAFE_API_KEY
-    model: "typesafe/jev-latest"
-    timeout_ms: 1500
+    model: "~typesafe/jev-latest"
+    timeout_ms: 8000
 
   # System 2: Strategic Reasoning Agent (Ollama / OpenRouter / Gemini / OpenAI)
   agent:
@@ -44,7 +47,7 @@ const defaultAISettingsYAML = `ai:
     base_url: "https://openrouter.ai/api/v1" # e.g. http://localhost:11434/v1 for Ollama
     api_key: ""              # Or set AI_AGENT_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY
     model: "nvidia/nemotron-3.5-lightning:free" # or meta-llama/llama-3.3-70b-instruct:free, etc.
-    timeout_ms: 30000
+    timeout_ms: 60000
 `
 
 type settingsPageData struct {

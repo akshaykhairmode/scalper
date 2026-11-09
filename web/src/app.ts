@@ -6108,6 +6108,8 @@ async function onAskAI(type: string) {
   }
 }
 
+let aiModalRefreshTimer: number | null = null;
+
 function isAISignalsModalOpen(): boolean {
   const modal = $("ai-signals-modal");
   return Boolean(modal && !modal.hidden && modal.style.display !== "none");
@@ -6119,6 +6121,18 @@ function openAISignalsModal() {
   modal.hidden = false;
   modal.style.display = "grid";
   refreshAISignalsModal();
+  if (aiModalRefreshTimer === null) {
+    aiModalRefreshTimer = window.setInterval(() => {
+      if (!isAISignalsModalOpen()) {
+        if (aiModalRefreshTimer !== null) {
+          window.clearInterval(aiModalRefreshTimer);
+          aiModalRefreshTimer = null;
+        }
+        return;
+      }
+      refreshAISignalsModal(true);
+    }, 5000);
+  }
 }
 
 function closeAISignalsModal() {
@@ -6126,6 +6140,10 @@ function closeAISignalsModal() {
   if (modal) {
     modal.hidden = true;
     modal.style.display = "none";
+  }
+  if (aiModalRefreshTimer !== null) {
+    window.clearInterval(aiModalRefreshTimer);
+    aiModalRefreshTimer = null;
   }
 }
 
@@ -6285,37 +6303,53 @@ async function updateAIWinRateChip() {
     const chip = $("ai-winrate-chip");
     if (!chip || !stats) return;
 
-    if (stats.total_calls > 0 && (stats.target_hits + stats.stop_loss_hits) > 0) {
+    if (stats.total_calls > 0 && ((stats.resolved_calls ?? (stats.target_hits + stats.stop_loss_hits)) > 0)) {
       const winRate = Number(stats.win_rate_pct).toFixed(1);
       chip.textContent = `${winRate}%`;
       chip.style.color = stats.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
+      chip.title = `${stats.target_hits || 0} target · ${stats.stop_loss_hits || 0} SL · ${stats.expired_calls || 0} expired · ${stats.pending_calls || 0} active`;
     } else if (stats.total_calls > 0) {
       chip.textContent = `${stats.pending_calls} active`;
       chip.style.color = "var(--accent, #f59e0b)";
+      chip.title = "Win rate appears after the first call resolves";
     } else {
       chip.textContent = "--%";
       chip.style.color = "inherit";
+      chip.title = "No AI paper calls yet";
     }
   } catch (_) {
     // ignore
   }
 }
 
-async function refreshAISignalsModal() {
+async function refreshAISignalsModal(silent = false) {
+  let roundTripCostPct = 0;
   try {
     const [statsRes, evalsRes] = await Promise.allSettled([
       getJSON("/api/ai/evaluations/stats"),
       getJSON("/api/ai/evaluations?limit=50")
     ]);
 
+    if (statsRes.status === "fulfilled" && statsRes.value) {
+      roundTripCostPct = Number(statsRes.value.round_trip_cost_pct || 0);
+    }
     if (statsRes.status === "fulfilled" && statsRes.value?.stats) {
       const s = statsRes.value.stats;
       if (statsRes.value?.scanner) {
         updateAIScannerStatus(statsRes.value.scanner);
       }
+
+      const targetPct = Number(statsRes.value.target_pct || 0);
+      const stopPct = Number(statsRes.value.stop_loss_pct || 0);
+      const targetTh = $("ai-th-target");
+      const stopTh = $("ai-th-stop-loss");
+      if (targetTh) targetTh.textContent = targetPct > 0 ? `Target (+${fmt(targetPct, 1)}%)` : "Target";
+      if (stopTh) stopTh.textContent = stopPct > 0 ? `SL (-${fmt(stopPct, 1)}%)` : "SL";
+
+      const resolved = Number(s.resolved_calls ?? (Number(s.target_hits || 0) + Number(s.stop_loss_hits || 0)));
       const winRateEl = $("ai-modal-winrate");
       if (winRateEl) {
-        if (s.target_hits + s.stop_loss_hits > 0) {
+        if (resolved > 0) {
           winRateEl.textContent = `${Number(s.win_rate_pct).toFixed(1)}%`;
           winRateEl.style.color = s.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
         } else {
@@ -6325,16 +6359,19 @@ async function refreshAISignalsModal() {
       }
       if ($("ai-modal-target-hits")) $("ai-modal-target-hits").textContent = String(s.target_hits || 0);
       if ($("ai-modal-sl-hits")) $("ai-modal-sl-hits").textContent = String(s.stop_loss_hits || 0);
+      if ($("ai-modal-expired-calls")) $("ai-modal-expired-calls").textContent = String(s.expired_calls || 0);
       if ($("ai-modal-active-calls")) $("ai-modal-active-calls").textContent = String(s.pending_calls || 0);
       if ($("ai-modal-total-calls")) $("ai-modal-total-calls").textContent = String(s.total_calls || 0);
 
       const chip = $("ai-winrate-chip");
       if (chip) {
-        if (s.target_hits + s.stop_loss_hits > 0) {
+        if (resolved > 0) {
           chip.textContent = `${Number(s.win_rate_pct).toFixed(1)}%`;
           chip.style.color = s.win_rate_pct >= 50 ? "var(--green, #22c55e)" : "var(--red, #ef4444)";
+          chip.title = `${s.target_hits || 0} target · ${s.stop_loss_hits || 0} SL · ${s.expired_calls || 0} expired · ${s.pending_calls || 0} active`;
         } else if (s.total_calls > 0) {
           chip.textContent = `${s.pending_calls} active`;
+          chip.title = "Win rate appears after the first call resolves";
         }
       }
     }
@@ -6345,7 +6382,7 @@ async function refreshAISignalsModal() {
       if (!tbody) return;
 
       if (!evals.length) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI evaluation calls recorded yet. Click "Scan Now" or use "Ask" on any strike.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI paper calls yet. The scanner runs automatically on its interval, or click “Scan Now”.</td></tr>`;
         return;
       }
 
@@ -6355,25 +6392,53 @@ async function refreshAISignalsModal() {
         const strikeVal = parts.length >= 4 ? parts[3] : "";
         const optType = parts.length >= 5 ? parts[4] : "";
         const strikeLabel = `${e.underlying || ""}${strikeVal ? " " + strikeVal : ""}${optType ? " " + optType : ""}`.trim() || e.instrument_key || "—";
+
+        const source = String(e.source || "jev");
+        const sourceLabel = source === "agent+jev" ? "🤝 Agent+Jev" : source === "agent" ? "🧠 Agent" : source === "manual" ? "✍️ Manual" : "⚡ Jev";
+        const sourceColor = source.includes("agent") ? "var(--accent,#f59e0b)" : "var(--text-muted,#888)";
+
         let statusBadge = `<span class="ai-status-pill ai-status-pending">PENDING</span>`;
         if (e.status === "TARGET_HIT") {
           statusBadge = `<span class="ai-status-pill ai-status-target">TARGET HIT</span>`;
         } else if (e.status === "SL_HIT") {
           statusBadge = `<span class="ai-status-pill ai-status-sl">SL HIT</span>`;
+        } else if (e.status === "EXPIRED") {
+          statusBadge = `<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">EXPIRED</span>`;
+        } else if (e.status === "REJECTED") {
+          statusBadge = `<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">REJECTED</span>`;
         }
 
-        const pnlStr = e.pnl_pct ? `<span style="font-weight:700; color:${e.pnl_pct >= 0 ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)'}">${e.pnl_pct > 0 ? '+' : ''}${fmt(e.pnl_pct, 2)}%</span>` : "—";
+        const isPending = String(e.status || "").toUpperCase() === "PENDING";
+        const currentPrice = Number(e.current_price || 0);
+        let liveExit = "—";
+        if (isPending) {
+          liveExit = currentPrice > 0 ? `<span style="color:var(--accent,#f59e0b);">₹${fmt(currentPrice, 2)}</span>` : "—";
+        } else if (e.exit_price) {
+          liveExit = `₹${fmt(e.exit_price, 2)}`;
+        }
+
+        let pnlPct = Number(e.pnl_pct ?? 0);
+        if (isPending && currentPrice > 0 && Number(e.option_ltp) > 0) {
+          pnlPct = ((currentPrice - Number(e.option_ltp)) / Number(e.option_ltp)) * 100 - roundTripCostPct;
+        }
+        const pnlStr = (isPending && currentPrice <= 0)
+          ? "—"
+          : `<span style="font-weight:700; color:${pnlPct >= 0 ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)'};${isPending ? ' opacity:0.85;' : ''}">${pnlPct > 0 ? '+' : ''}${fmt(pnlPct, 2)}%</span>`;
+
+        const scoreStr = e.score ? `${e.score}/5 <span style="color:var(--text-muted,#888);">· ${Math.round(Number(e.confidence || 0) * 100)}%</span>` : "—";
 
         const removeBtn = `<button type="button" class="ai-call-remove" data-ai-eval-id="${e.id}" data-ai-eval-label="${esc(strikeLabel)}" title="Remove this call (stop tracking)" aria-label="Remove call ${esc(strikeLabel)}">✕</button>`;
 
         return `<tr style="border-bottom:1px solid var(--border,#333);">
           <td style="padding:8px 10px; font-family:var(--mono);">${timeStr}</td>
           <td style="padding:8px 10px; font-weight:600;">${strikeLabel}</td>
+          <td style="padding:8px 10px; font-size:11px; color:${sourceColor};">${sourceLabel}</td>
           <td style="padding:8px 10px; font-weight:700; color:${e.action?.includes('PE') ? 'var(--red,#ef4444)' : 'var(--green,#22c55e)'};">${e.action || "—"}</td>
           <td style="padding:8px 10px; font-family:var(--mono);">₹${fmt(e.option_ltp, 2)}</td>
+          <td style="padding:8px 10px; font-family:var(--mono);">${liveExit}</td>
           <td style="padding:8px 10px; font-family:var(--mono); color:var(--green,#22c55e);">₹${fmt(e.target_price, 2)}</td>
           <td style="padding:8px 10px; font-family:var(--mono); color:var(--red,#ef4444);">₹${fmt(e.stop_loss_price, 2)}</td>
-          <td style="padding:8px 10px; font-family:var(--mono);">${e.exit_price ? '₹' + fmt(e.exit_price, 2) : '—'}</td>
+          <td style="padding:8px 10px; font-family:var(--mono);">${scoreStr}</td>
           <td style="padding:8px 10px; font-family:var(--mono);">${pnlStr}</td>
           <td style="padding:8px 10px; text-align:center;">${statusBadge}</td>
           <td style="padding:8px 10px; text-align:center;">${removeBtn}</td>
@@ -6381,7 +6446,9 @@ async function refreshAISignalsModal() {
       }).join("");
     }
   } catch (err: any) {
-    toast("Failed to refresh AI signals: " + (err?.message || String(err)), "error");
+    if (!silent) {
+      toast("Failed to refresh AI signals: " + (err?.message || String(err)), "error");
+    }
   }
 }
 
@@ -6418,9 +6485,12 @@ function handleAICallEvent(eventType: string, data: any) {
       toast(`🎯 AI Target Hit: ${data.instrument_key || data.underlying} +${fmt(data.pnl_pct, 1)}%!`, "success", 6000);
     } else if (data.status === "SL_HIT") {
       toast(`🛑 AI Stop-Loss Hit: ${data.instrument_key || data.underlying} ${fmt(data.pnl_pct, 1)}%`, "warn", 6000);
+    } else if (data.status === "EXPIRED") {
+      toast(`⏳ AI Call Expired: ${data.instrument_key || data.underlying} ${fmt(data.pnl_pct, 1)}%`, "info", 5000);
     }
   } else if (eventType === "ai_call_new" && data) {
-    toast(`🤖 New Jev Signal: ${data.action} ${data.underlying} @ ₹${fmt(data.option_ltp, 2)} (Target: ₹${fmt(data.target_price, 2)})`, "info", 5000);
+    const src = data.source === "agent+jev" ? "Agent+Jev" : data.source === "agent" ? "Agent" : "Jev";
+    toast(`🤖 New AI Paper Call (${src}): ${data.action} ${data.underlying} @ ₹${fmt(data.option_ltp, 2)} · Score ${data.score || "—"}/5 · Target ₹${fmt(data.target_price, 2)}`, "info", 5500);
   }
 }
 
@@ -7029,7 +7099,7 @@ function bindEvents() {
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "⚡ Scan Now (Jev)";
+        btn.textContent = "⚡ Scan Now (Agent + Jev)";
       }
     }
   });

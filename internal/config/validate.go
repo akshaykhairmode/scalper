@@ -499,5 +499,14 @@ func (c Config) validateAI() error {
 	if c.AI.StopLossPct <= 0 {
 		return fieldErr("ai.stop_loss_pct", "must be greater than 0, got %f", c.AI.StopLossPct)
 	}
+	if c.AI.MaxHoldMinutes < 0 {
+		return fieldErr("ai.max_hold_minutes", "must be zero or greater, got %d", c.AI.MaxHoldMinutes)
+	}
+	if c.AI.CooldownMinutes < 0 {
+		return fieldErr("ai.cooldown_minutes", "must be zero or greater, got %d", c.AI.CooldownMinutes)
+	}
+	if c.AI.RoundTripCostPct < 0 || c.AI.RoundTripCostPct > 10 {
+		return fieldErr("ai.round_trip_cost_pct", "must be between 0 and 10, got %f", c.AI.RoundTripCostPct)
+	}
 	return nil
 }

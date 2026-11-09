@@ -222,3 +222,44 @@ func TestNilClientReturnsError(t *testing.T) {
 		t.Error("expected error on nil client Chat, got nil")
 	}
 }
+
+func TestParseCandidateDecisions(t *testing.T) {
+	// Object with a decisions array.
+	obj := `{"decisions":[{"instrument_key":"NIFTY24500CE","action":"BUY","score":4,"confidence":80,"reasoning":"ok"}],"market_note":"bullish"}`
+	got, err := parseCandidateDecisions(obj)
+	if err != nil {
+		t.Fatalf("parse object: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != "BUY" {
+		t.Fatalf("unexpected decisions: %+v", got)
+	}
+	if got[0].Confidence != 0.80 {
+		t.Errorf("confidence = %v, want 0.80 (percent normalized)", got[0].Confidence)
+	}
+
+	// Bare JSON array.
+	arr := `[{"instrument_key":"NIFTY24500PE","action":"LONG","score":9,"confidence":1.4}]`
+	got, err = parseCandidateDecisions(arr)
+	if err != nil {
+		t.Fatalf("parse array: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != "BUY" {
+		t.Fatalf("unexpected array decisions: %+v", got)
+	}
+	if got[0].Score != 5 {
+		t.Errorf("score = %d, want clamped 5", got[0].Score)
+	}
+	if got[0].Confidence != 1.0 {
+		t.Errorf("confidence = %v, want clamped 1.0", got[0].Confidence)
+	}
+
+	// Single decision object.
+	single := `{"action":"PASS","score":2,"confidence":0.3,"reasoning":"no edge"}`
+	got, err = parseCandidateDecisions(single)
+	if err != nil {
+		t.Fatalf("parse single: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != "PASS" {
+		t.Fatalf("unexpected single decision: %+v", got)
+	}
+}

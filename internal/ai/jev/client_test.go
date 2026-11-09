@@ -57,8 +57,10 @@ func TestJevEvaluateSetupSuccess(t *testing.T) {
 	if res.Confidence != 0.84 {
 		t.Errorf("Confidence = %f, want 0.84", res.Confidence)
 	}
-	if res.Score != 4 {
-		t.Errorf("Score = %d, want 4", res.Score)
+	// Jev conviction scores are 0-based positions on the criteria scale, so
+	// raw 4 (the fifth criterion of five) maps to 5/5.
+	if res.Score != 5 {
+		t.Errorf("Score = %d, want 5", res.Score)
 	}
 	if res.DurationMS < 0 {
 		t.Errorf("DurationMS = %d, want >= 0", res.DurationMS)
@@ -92,8 +94,8 @@ func TestJevOpenRouterResolution(t *testing.T) {
 	if client.endpoint != "https://openrouter.ai/api/alpha/decisions" {
 		t.Errorf("endpoint = %q, want https://openrouter.ai/api/alpha/decisions", client.endpoint)
 	}
-	if client.cfg.Model != "typesafe/jev-latest" {
-		t.Errorf("model = %q, want typesafe/jev-latest", client.cfg.Model)
+	if client.cfg.Model != "~typesafe/jev-latest" {
+		t.Errorf("model = %q, want ~typesafe/jev-latest", client.cfg.Model)
 	}
 
 	// Auto-redirect to OpenRouter when OpenRouter key is provided even if BaseURL was left as TypeSafe default
@@ -104,8 +106,8 @@ func TestJevOpenRouterResolution(t *testing.T) {
 	if skClient.endpoint != "https://openrouter.ai/api/alpha/decisions" {
 		t.Errorf("endpoint = %q, want https://openrouter.ai/api/alpha/decisions", skClient.endpoint)
 	}
-	if skClient.cfg.Model != "typesafe/jev-latest" {
-		t.Errorf("model = %q, want typesafe/jev-latest", skClient.cfg.Model)
+	if skClient.cfg.Model != "~typesafe/jev-latest" {
+		t.Errorf("model = %q, want ~typesafe/jev-latest", skClient.cfg.Model)
 	}
 }
 
@@ -163,5 +165,60 @@ func TestJevOpenRouterDecisionsResponseParsing(t *testing.T) {
 	// 0.09 is on 0..1 scale, mapped to 1..5 scale -> 1
 	if res.Score != 1 {
 		t.Errorf("Score = %d, want 1", res.Score)
+	}
+}
+
+func TestJevConvictionScoreMapping(t *testing.T) {
+	cases := []struct {
+		raw  float64
+		want int
+	}{
+		{0, 1},
+		{1, 2},
+		{2, 3},
+		{3, 4},
+		{4, 5},
+		{9, 5},
+		{-3, 1},
+	}
+	for _, tc := range cases {
+		if got := jevConvictionScore(tc.raw); got != tc.want {
+			t.Errorf("jevConvictionScore(%v) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestJevProbabilityScoreMapping(t *testing.T) {
+	cases := []struct {
+		raw  float64
+		want int
+	}{
+		{0.0, 1},
+		{0.25, 2},
+		{0.5, 3},
+		{0.75, 4},
+		{1.0, 5},
+		{84, 4},
+		{50, 3},
+		{1.5, 1},
+	}
+	for _, tc := range cases {
+		if got := jevProbabilityScore(tc.raw); got != tc.want {
+			t.Errorf("jevProbabilityScore(%v) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeOpenRouterModel(t *testing.T) {
+	cases := map[string]string{
+		"jev-latest":           "~typesafe/jev-latest",
+		"typesafe/jev-latest":  "~typesafe/jev-latest",
+		"~typesafe/jev-latest": "~typesafe/jev-latest",
+		"jev-1.13":             "typesafe/jev-1.13",
+	}
+	for in, want := range cases {
+		if got := normalizeOpenRouterModel(in); got != want {
+			t.Errorf("normalizeOpenRouterModel(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

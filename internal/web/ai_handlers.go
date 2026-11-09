@@ -126,6 +126,24 @@ func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request)
 		evals = []store.Evaluation{}
 	}
 
+	// Enrich open calls with the latest tracked price and time in trade so the
+	// UI can show live PnL before an outcome is recorded.
+	if s.evaluator != nil {
+		prices := s.evaluator.LivePrices()
+		now := time.Now()
+		for i := range evals {
+			if price, ok := prices[evals[i].ID]; ok && price > 0 {
+				evals[i].CurrentPrice = price
+			}
+			if strings.EqualFold(evals[i].Status, "PENDING") && !evals[i].Timestamp.IsZero() {
+				evals[i].TimeInTradeSeconds = int(now.Sub(evals[i].Timestamp).Seconds())
+				if evals[i].TimeInTradeSeconds < 0 {
+					evals[i].TimeInTradeSeconds = 0
+				}
+			}
+		}
+	}
+
 	s.writeRouteJSON(w, r, http.StatusOK, evaluationsResponse{Evaluations: evals})
 }
 
@@ -167,8 +185,11 @@ func (s *Server) handleDeleteAIEvaluation(w http.ResponseWriter, r *http.Request
 }
 
 type evaluationStatsResponse struct {
-	Stats   store.EvaluationStats    `json:"stats"`
-	Scanner *evaluator.ScannerStatus `json:"scanner,omitempty"`
+	Stats            store.EvaluationStats    `json:"stats"`
+	Scanner          *evaluator.ScannerStatus `json:"scanner,omitempty"`
+	TargetPct        float64                  `json:"target_pct,omitempty"`
+	StopLossPct      float64                  `json:"stop_loss_pct,omitempty"`
+	RoundTripCostPct float64                  `json:"round_trip_cost_pct,omitempty"`
 }
 
 func (s *Server) handleGetAIEvaluationStats(w http.ResponseWriter, r *http.Request) {
@@ -190,9 +211,13 @@ func (s *Server) handleGetAIEvaluationStats(w http.ResponseWriter, r *http.Reque
 		scannerStatus = &st
 	}
 
+	cfg := s.configSnapshot()
 	s.writeRouteJSON(w, r, http.StatusOK, evaluationStatsResponse{
-		Stats:   stats,
-		Scanner: scannerStatus,
+		Stats:            stats,
+		Scanner:          scannerStatus,
+		TargetPct:        cfg.AI.TargetPct,
+		StopLossPct:      cfg.AI.StopLossPct,
+		RoundTripCostPct: cfg.AI.RoundTripCostPct,
 	})
 }
 
@@ -243,7 +268,7 @@ func (s *Server) handleTriggerAIScan(w http.ResponseWriter, r *http.Request) {
 		Success:     true,
 		Evaluations: evals,
 		Scanner:     scannerStatus,
-		Message:     fmt.Sprintf("Scan completed for %s: %d setups evaluated", underlying, len(evals)),
+		Message:     fmt.Sprintf("Scan completed for %s: %d paper call(s) opened", underlying, len(evals)),
 	})
 }
 
@@ -271,7 +296,17 @@ type askEvaluationResponse struct {
 }
 
 func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
-	if (s.evaluator == nil || s.evaluator.JevClient() == nil) && s.agentClient == nil {
+	// Prefer the evaluator's live clients: they are rebuilt when settings change.
+	var agentClient *agent.Client
+	if s.evaluator != nil {
+		agentClient = s.evaluator.AgentClient()
+	}
+	if agentClient == nil {
+		agentClient = s.agentClient
+	}
+	jevConfigured := s.evaluator != nil && s.evaluator.JevClient() != nil
+
+	if !jevConfigured && agentClient == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "no AI evaluation provider (Jev or Agent) is configured. Set TYPESAFE_API_KEY or OPENROUTER_API_KEY / AI_AGENT_API_KEY.", nil)
 		return
 	}
@@ -308,11 +343,10 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var eval store.Evaluation
-	var jevErr error
+	var evalErr error
 
-	// 1. Try Jev (System 1) fast decision model if available
-	if s.evaluator != nil && s.evaluator.JevClient() != nil {
-		eval, jevErr = s.evaluator.EvaluateContract(r.Context(), evaluator.ContractSetup{
+	if s.evaluator != nil {
+		eval, evalErr = s.evaluator.EvaluateContract(r.Context(), evaluator.ContractSetup{
 			Underlying:    req.Underlying,
 			InstrumentKey: req.InstrumentKey,
 			Symbol:        req.Symbol,
@@ -320,118 +354,115 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 			OptionType:    req.OptionType,
 			OptionLTP:     req.LTP,
 		})
+	} else {
+		// Legacy agent-only fallback used by tests / minimal deployments.
+		spot, _ := s.GetSpotPrice(r.Context(), req.Underlying)
+		if spot <= 0 {
+			spot = req.LTP
+		}
+		var macroBias string
+		if s.aiStore != nil {
+			if pb, _ := s.aiStore.GetLatestPlaybook(r.Context()); pb != nil {
+				macroBias = pb.Bias
+			}
+		}
+
+		agentTimeout := 40 * time.Second
+		s.configMu.RLock()
+		if s.cfg.AI.Agent.TimeoutMS > 0 {
+			agentTimeout = time.Duration(s.cfg.AI.Agent.TimeoutMS) * time.Millisecond
+		}
+		s.configMu.RUnlock()
+
+		agentCtx, cancel := context.WithTimeout(r.Context(), agentTimeout)
+		defer cancel()
+
+		decision, aerr := agentClient.EvaluateContract(agentCtx, agent.ContractSetup{
+			Underlying:    req.Underlying,
+			SpotPrice:     spot,
+			OptionType:    strings.ToUpper(strings.TrimSpace(req.OptionType)),
+			Strike:        req.Strike,
+			OptionLTP:     req.LTP,
+			MacroBias:     macroBias,
+			OrderBookDesc: "real-time market depth",
+		})
+		if aerr != nil {
+			s.log.Error("ai agent evaluation failed", "event", "ai_agent_fallback_failed", "error", aerr)
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+aerr.Error(), aerr)
+			return
+		}
+
+		action := strings.ToUpper(strings.TrimSpace(decision.Action))
+		optionType := strings.ToUpper(strings.TrimSpace(req.OptionType))
+		if optionType != "PE" {
+			optionType = "CE"
+		}
+		actionable := action == "BUY" || strings.HasPrefix(action, "BUY_") || action == "LONG"
+
+		eval = store.Evaluation{
+			Timestamp:     time.Now(),
+			InstrumentKey: req.InstrumentKey,
+			Underlying:    req.Underlying,
+			SpotPrice:     spot,
+			OptionLTP:     req.LTP,
+			Confidence:    decision.Confidence,
+			Score:         decision.Score,
+			StateSnapshot: fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel),
+			Shadow:        shadowMode,
+			Source:        "manual+agent",
+			Reasoning:     decision.Reasoning,
+		}
+
+		if actionable {
+			eval.Action = "BUY_" + optionType
+			eval.TargetPrice = math.Round(req.LTP*(1.0+targetPct/100.0)*100) / 100
+			eval.StopLossPrice = math.Round(req.LTP*(1.0-stopLossPct/100.0)*100) / 100
+			eval.Status = "PENDING"
+
+			if s.aiStore != nil {
+				id, serr := s.aiStore.SaveEvaluation(r.Context(), eval)
+				if serr != nil {
+					s.log.Error("failed to save agent paper call", "event", "ai_paper_call_save_failed", "error", serr)
+				} else {
+					eval.ID = id
+				}
+			}
+		} else {
+			eval.Action = action
+			eval.Status = "REJECTED"
+		}
+	}
+
+	if evalErr != nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+evalErr.Error(), evalErr)
+		return
 	}
 
 	var agentAnalysis string
 	var reasoning string
-
-	// 2. If Jev failed or was unconfigured, fall back to Agent (System 2: OpenRouter / Ollama / Gemini)
-	if jevErr != nil || eval.Action == "" {
-		if jevErr != nil {
-			s.log.Warn("jev evaluation unavailable or failed, attempting agent fallback", "event", "jev_fallback_to_agent",
-				"instrument", req.InstrumentKey, "error", jevErr)
-		}
-
-		if s.agentClient != nil {
-			spot, _ := s.GetSpotPrice(r.Context(), req.Underlying)
-			if spot <= 0 {
-				spot = req.LTP
-			}
-			var macroBias string
-			if s.aiStore != nil {
-				if pb, _ := s.aiStore.GetLatestPlaybook(r.Context()); pb != nil {
-					macroBias = pb.Bias
-				}
-			}
-
-			agentTimeout := 40 * time.Second
-			s.configMu.RLock()
-			if s.cfg.AI.Agent.TimeoutMS > 0 {
-				agentTimeout = time.Duration(s.cfg.AI.Agent.TimeoutMS) * time.Millisecond
-			}
-			s.configMu.RUnlock()
-
-			agentCtx, cancel := context.WithTimeout(r.Context(), agentTimeout)
-			defer cancel()
-
-			decision, aerr := s.agentClient.EvaluateContract(agentCtx, agent.ContractSetup{
-				Underlying:    req.Underlying,
-				SpotPrice:     spot,
-				OptionType:    req.OptionType,
-				Strike:        req.Strike,
-				OptionLTP:     req.LTP,
-				MacroBias:     macroBias,
-				OrderBookDesc: "real-time market depth",
-			})
-			if aerr != nil {
-				s.log.Error("ai agent evaluation fallback failed", "event", "ai_agent_fallback_failed", "error", aerr)
-				s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+aerr.Error(), aerr)
-				return
-			}
-
-			action := strings.ToUpper(strings.TrimSpace(decision.Action))
-			if action == "BUY" {
-				if req.OptionType == "CE" {
-					action = "BUY_CE"
-				} else {
-					action = "BUY_PE"
-				}
-			}
-
-			targetPrice := math.Round(req.LTP*(1.0+targetPct/100.0)*100) / 100
-			stopLossPrice := math.Round(req.LTP*(1.0-stopLossPct/100.0)*100) / 100
-
-			eval = store.Evaluation{
-				Timestamp:     time.Now(),
-				InstrumentKey: req.InstrumentKey,
-				Underlying:    req.Underlying,
-				SpotPrice:     spot,
-				OptionLTP:     req.LTP,
-				Action:        action,
-				Confidence:    decision.Confidence,
-				Score:         decision.Score,
-				DurationMS:    0,
-				StateSnapshot: fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel),
-				Shadow:        shadowMode,
-				TargetPrice:   targetPrice,
-				StopLossPrice: stopLossPrice,
-				Status:        "PENDING",
-			}
-
-			if s.aiStore != nil {
-				id, serr := s.aiStore.SaveEvaluation(r.Context(), eval)
-				if serr == nil {
-					eval.ID = id
-				}
-			}
-
-			if s.evaluator != nil && eval.TargetPrice > 0 {
-				s.evaluator.TrackEvaluation(eval)
-			}
-
-			agentAnalysis = decision.Reasoning
-			reasoning = fmt.Sprintf("Agent conviction score %d/5 with confidence %.0f%%.", decision.Score, decision.Confidence*100)
-		} else {
-			s.log.Error("ai contract evaluation failed and no agent available", "event", "ai_ask_failed", "instrument", req.InstrumentKey, "error", jevErr)
-			s.writeRouteError(w, r, http.StatusServiceUnavailable, "AI evaluation failed: "+jevErr.Error(), jevErr)
-			return
-		}
+	if eval.Status == "REJECTED" {
+		reasoning = fmt.Sprintf("Model returned %s; no paper position taken.", eval.Action)
 	} else {
-		reasoning = fmt.Sprintf("Conviction score %d/5 with confidence %.0f%%.", eval.Score, eval.Confidence*100)
-		if s.agentClient != nil {
-			agentCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-			defer cancel()
-			prompt := fmt.Sprintf("Underlying %s spot, evaluating %s strike %s at ₹%.2f. System 1 verdict is %s (score %d/5, confidence %.2f). Give a concise 1-sentence tactical recommendation on entering this scalp setup.",
-				req.Underlying, req.OptionType, req.Strike, req.LTP, eval.Action, eval.Score, eval.Confidence)
-			if reply, aerr := s.agentClient.Chat(agentCtx, prompt); aerr == nil && reply != "" {
-				agentAnalysis = strings.TrimSpace(reply)
-			}
+		reasoning = fmt.Sprintf("Conviction score %d/5 with confidence %.0f%% (source %s).",
+			eval.Score, eval.Confidence*100, eval.Source)
+	}
+
+	if strings.Contains(eval.Source, "agent") && strings.TrimSpace(eval.Reasoning) != "" {
+		agentAnalysis = strings.TrimSpace(eval.Reasoning)
+	} else if agentClient != nil {
+		agentCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		prompt := fmt.Sprintf("Underlying %s spot, evaluating %s strike %s at ₹%.2f. System 1 verdict is %s (score %d/5, confidence %.2f). Give a concise 1-sentence tactical recommendation on entering this scalp setup.",
+			req.Underlying, req.OptionType, req.Strike, req.LTP, eval.Action, eval.Score, eval.Confidence)
+		if reply, aerr := agentClient.Chat(agentCtx, prompt); aerr == nil && reply != "" {
+			agentAnalysis = strings.TrimSpace(reply)
 		}
 	}
 
 	s.log.Info("ai contract ask evaluated", "event", "ai_ask_evaluated",
 		"instrument", req.InstrumentKey, "action", eval.Action, "score", eval.Score, "conf", eval.Confidence,
-		"target", eval.TargetPrice, "stop", eval.StopLossPrice, "request_id", logging.RequestID(r.Context()))
+		"target", eval.TargetPrice, "stop", eval.StopLossPrice, "status", eval.Status,
+		"source", eval.Source, "request_id", logging.RequestID(r.Context()))
 
 	s.writeRouteJSON(w, r, http.StatusOK, askEvaluationResponse{
 		Success:       true,

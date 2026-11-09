@@ -440,7 +440,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Config.AI.Jev.BaseURL != "" {
 		timeout := time.Duration(opts.Config.AI.Jev.TimeoutMS) * time.Millisecond
 		if timeout <= 0 {
-			timeout = 1500 * time.Millisecond
+			timeout = 8000 * time.Millisecond
 		}
 		jevClient = jev.NewClient(jev.Config{
 			BaseURL: opts.Config.AI.Jev.BaseURL,
@@ -453,7 +453,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Config.AI.Agent.BaseURL != "" || opts.Config.AI.Agent.APIKey != "" {
 		timeout := time.Duration(opts.Config.AI.Agent.TimeoutMS) * time.Millisecond
 		if timeout <= 0 {
-			timeout = 10 * time.Second
+			timeout = 60 * time.Second
 		}
 		s.agentClient = agent.NewClient(agent.Config{
 			Provider: opts.Config.AI.Agent.Provider,
@@ -482,6 +482,19 @@ func New(opts Options) (*Server, error) {
 				"type": "ai_call_new",
 				"data": eval,
 			})
+		},
+		OnTrack: func(eval store.Evaluation) {
+			if s.hsm == nil {
+				return
+			}
+			key := strings.TrimSpace(eval.InstrumentKey)
+			if key == "" {
+				return
+			}
+			if err := s.hsm.Subscribe([]string{key}); err != nil {
+				s.log.Warn("failed to subscribe ai paper call instrument",
+					"event", "ai_track_subscribe_failed", "instrument", key, "error", err)
+			}
 		},
 		OnScanStatus: func(status evaluator.ScannerStatus) {
 			s.broadcast(map[string]any{

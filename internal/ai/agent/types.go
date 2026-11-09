@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/features"
 	"github.com/akshaykhairmode/scalper/internal/store"
 )
 
@@ -48,6 +49,56 @@ type PlaybookOutput struct {
 		ActionAllowed  string  `json:"action_allowed"` // ALL, BUY_ONLY, SELL_ONLY
 		VolatilityRisk string  `json:"volatility_risk"`
 	} `json:"jev_criteria"`
+}
+
+// CandidateContract is one option contract presented to the reasoning agent.
+type CandidateContract struct {
+	InstrumentKey   string                    `json:"instrument_key,omitempty"`
+	OptionType      string                    `json:"option_type"`
+	Strike          string                    `json:"strike"`
+	StrikePrice     float64                   `json:"strike_price,omitempty"`
+	OptionLTP       float64                   `json:"option_ltp"`
+	Expiry          string                    `json:"expiry,omitempty"`
+	DaysToExpiry    float64                   `json:"days_to_expiry,omitempty"`
+	MoneynessPct    float64                   `json:"moneyness_pct,omitempty"`
+	VWAP            float64                   `json:"vwap,omitempty"`
+	EMA9            float64                   `json:"ema_9,omitempty"`
+	EMA21           float64                   `json:"ema_21,omitempty"`
+	RSI14           float64                   `json:"rsi_14,omitempty"`
+	ATR14           float64                   `json:"atr_14,omitempty"`
+	DistFromVWAPPct float64                   `json:"dist_from_vwap_pct,omitempty"`
+	OI              int64                     `json:"oi,omitempty"`
+	Volume          int64                     `json:"volume,omitempty"`
+	OrderBook       features.OrderBookMetrics `json:"order_book"`
+}
+
+// CandidateRequest is the market context sent to the reasoning agent to propose
+// candidate paper trades for one underlying.
+type CandidateRequest struct {
+	Timestamp  string              `json:"timestamp"`
+	Underlying string              `json:"underlying"`
+	SpotPrice  float64             `json:"spot_price"`
+	MacroBias  string              `json:"macro_bias,omitempty"`
+	Regime     string              `json:"regime,omitempty"`
+	Narrative  string              `json:"narrative,omitempty"`
+	Candidates []CandidateContract `json:"candidates"`
+}
+
+// CandidateDecision is the agent's verdict for one candidate contract.
+type CandidateDecision struct {
+	InstrumentKey string  `json:"instrument_key,omitempty"`
+	OptionType    string  `json:"option_type,omitempty"`
+	Strike        string  `json:"strike,omitempty"`
+	Action        string  `json:"action"` // BUY | PASS
+	Score         int     `json:"score"`  // 1-5
+	Confidence    float64 `json:"confidence"`
+	Reasoning     string  `json:"reasoning,omitempty"`
+}
+
+// CandidateResponse is the structured JSON schema returned by the agent.
+type CandidateResponse struct {
+	Decisions  []CandidateDecision `json:"decisions"`
+	MarketNote string              `json:"market_note,omitempty"`
 }
 
 // Provider represents an interface for an LLM reasoning agent.

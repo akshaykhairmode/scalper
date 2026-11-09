@@ -25,7 +25,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 5000 * time.Millisecond
+		timeout = 8000 * time.Millisecond
 	}
 
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -52,12 +52,14 @@ func NewClient(cfg Config) *Client {
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
 		if isOpenRouter {
-			model = "typesafe/jev-latest"
+			model = "~typesafe/jev-latest"
 		} else {
 			model = "jev-latest"
 		}
-	} else if isOpenRouter && !strings.HasPrefix(model, "typesafe/") {
-		model = "typesafe/" + model
+	} else if isOpenRouter {
+		model = normalizeOpenRouterModel(model)
+	} else {
+		model = strings.TrimPrefix(model, "~typesafe/")
 	}
 	cfg.Model = model
 
@@ -195,19 +197,13 @@ func (c *Client) EvaluateSetup(ctx context.Context, stateJSON string) (Evaluatio
 	scoreAns, ok := sysResp.Answers["conviction"]
 	var score int
 	if ok && scoreAns.Score != nil {
-		sVal := scoreAns.Score.Float64()
-		if sVal < 1.0 && sVal >= 0.0 {
-			// Continuous score normalized between 0 and 1 (e.g. 0.09) -> scale to 1..5
-			score = int(math.Round(sVal*4.0)) + 1
-		} else {
-			score = int(math.Round(sVal))
-		}
+		// Jev score answers are 0-based positions on the criteria scale
+		// (0..len(criteria)-1). For five criteria the raw value is 0..4.
+		score = jevConvictionScore(scoreAns.Score.Float64())
 	} else if ok && scoreAns.Probability != nil {
-		sVal := scoreAns.Probability.Float64()
-		score = int(math.Round(sVal*4.0)) + 1
+		score = jevProbabilityScore(scoreAns.Probability.Float64())
 	} else if ok && scoreAns.Confidence != nil {
-		sVal := scoreAns.Confidence.Float64()
-		score = int(math.Round(sVal*4.0)) + 1
+		score = jevProbabilityScore(scoreAns.Confidence.Float64())
 	}
 
 	if score < 1 {
@@ -224,4 +220,48 @@ func (c *Client) EvaluateSetup(ctx context.Context, stateJSON string) (Evaluatio
 		Score:      score,
 		DurationMS: duration,
 	}, nil
+}
+
+func normalizeOpenRouterModel(model string) string {
+	m := strings.TrimSpace(model)
+	if strings.HasPrefix(m, "~") {
+		return m
+	}
+	if strings.HasPrefix(m, "typesafe/") {
+		if strings.TrimPrefix(m, "typesafe/") == "jev-latest" {
+			return "~typesafe/jev-latest"
+		}
+		return m
+	}
+	if m == "jev-latest" {
+		return "~typesafe/jev-latest"
+	}
+	return "typesafe/" + m
+}
+
+func jevConvictionScore(raw float64) int {
+	if math.IsNaN(raw) || math.IsInf(raw, 0) {
+		return 1
+	}
+	return clampScore(int(math.Round(raw)) + 1)
+}
+
+func jevProbabilityScore(raw float64) int {
+	if math.IsNaN(raw) || math.IsInf(raw, 0) {
+		return 1
+	}
+	if raw > 1.0 && raw <= 100.0 {
+		raw = raw / 100.0
+	}
+	return clampScore(int(math.Round(raw*4.0)) + 1)
+}
+
+func clampScore(score int) int {
+	if score < 1 {
+		return 1
+	}
+	if score > 5 {
+		return 5
+	}
+	return score
 }

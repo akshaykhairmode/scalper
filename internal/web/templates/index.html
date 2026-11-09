@@ -604,6 +604,10 @@
             <div id="ai-modal-sl-hits" style="font-size:22px; font-weight:800; color:var(--red,#ef4444); margin-top:4px;">0</div>
           </div>
           <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
+            <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Expired</div>
+            <div id="ai-modal-expired-calls" style="font-size:22px; font-weight:800; color:var(--text-muted,#888); margin-top:4px;">0</div>
+          </div>
+          <div class="ai-metric-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:12px; text-align:center;">
             <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">Active Calls</div>
             <div id="ai-modal-active-calls" style="font-size:22px; font-weight:800; color:var(--accent,#f59e0b); margin-top:4px;">0</div>
           </div>
@@ -614,13 +618,13 @@
         </div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-          <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Recent Jev Setups &amp; Execution Outcomes</h3>
+          <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Recent AI Paper Calls (Agent proposes · Jev validates)</h3>
           <div style="display:flex; align-items:center; gap:8px;">
             <span class="badge-pill" id="ai-modal-scanner-badge" style="display:inline-flex; align-items:center; gap:5px; font-family:var(--mono, monospace); font-size:11px; padding:3px 8px; border:1px solid var(--border,#333); border-radius:4px; background:rgba(255,255,255,0.03);" title="Next periodic AI scanner execution">
               <span style="color:var(--text-muted,#888);">⏱ Next Scan:</span>
               <strong id="ai-modal-timer-val" style="color:var(--accent,#f59e0b); font-variant-numeric:tabular-nums;">--:--</strong>
             </span>
-            <button type="button" class="accent small" id="ai-scan-now-btn">⚡ Scan Now (Jev)</button>
+            <button type="button" class="accent small" id="ai-scan-now-btn">⚡ Scan Now (Agent + Jev)</button>
             <button type="button" class="ghost small" id="ai-refresh-stats-btn">↻ Refresh</button>
           </div>
         </div>
@@ -631,11 +635,13 @@
               <tr style="text-align:left; background:rgba(255,255,255,0.02); border-bottom:1px solid var(--border,#333); color:var(--text-muted,#888);">
                 <th style="padding:8px 10px;">Time</th>
                 <th style="padding:8px 10px;">Setup / Strike</th>
+                <th style="padding:8px 10px;">Source</th>
                 <th style="padding:8px 10px;">Action</th>
                 <th style="padding:8px 10px;">Entry</th>
-                <th style="padding:8px 10px;">Target (+8%)</th>
-                <th style="padding:8px 10px;">SL (-5%)</th>
-                <th style="padding:8px 10px;">Exit / LTP</th>
+                <th style="padding:8px 10px;">Live / Exit</th>
+                <th style="padding:8px 10px;" id="ai-th-target">Target</th>
+                <th style="padding:8px 10px;" id="ai-th-stop-loss">SL</th>
+                <th style="padding:8px 10px;">Score</th>
                 <th style="padding:8px 10px;">PnL %</th>
                 <th style="padding:8px 10px; text-align:center;">Status</th>
                 <th style="padding:8px 10px; text-align:center;">Action</th>
@@ -643,7 +649,7 @@
             </thead>
             <tbody id="ai-calls-tbody">
               <tr>
-                <td colspan="10" style="text-align:center; padding:20px; color:var(--text-muted,#888);">Loading AI evaluation calls…</td>
+                <td colspan="12" style="text-align:center; padding:20px; color:var(--text-muted,#888);">Loading AI paper calls…</td>
               </tr>
             </tbody>
           </table>
@@ -651,7 +657,7 @@
       </div>
 
       <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border,#333); padding:12px 16px;">
-        <span style="font-size:11px; color:var(--text-muted,#888);">Target / Stop-Loss tracked dynamically on tick feeds in real time.</span>
+        <span style="font-size:11px; color:var(--text-muted,#888);">📝 Paper-only: no broker orders are placed. Target / Stop-Loss are tracked live and PnL includes round-trip costs.</span>
         <button type="button" class="primary small" id="ai-signals-close-btn">Close</button>
       </div>
     </div>

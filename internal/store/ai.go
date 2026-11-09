@@ -45,16 +45,24 @@ type Evaluation struct {
 	ExitPrice     float64    `json:"exit_price"`
 	ExitTime      *time.Time `json:"exit_time,omitempty"`
 	PnLPct        float64    `json:"pnl_pct"`
+	Source        string     `json:"source"`    // agent+jev, jev, agent, manual
+	Reasoning     string     `json:"reasoning"` // concise model rationale
+
+	// Runtime-only enrichment; never persisted.
+	CurrentPrice       float64 `json:"current_price,omitempty"`
+	TimeInTradeSeconds int     `json:"time_in_trade_seconds,omitempty"`
 }
 
 // EvaluationStats holds summary metrics for Jev calls and win rates.
 type EvaluationStats struct {
-	TotalCalls   int     `json:"total_calls"`
-	TargetHits   int     `json:"target_hits"`
-	StopLossHits int     `json:"stop_loss_hits"`
-	PendingCalls int     `json:"pending_calls"`
-	WinRatePct   float64 `json:"win_rate_pct"`
-	AvgPnLPct    float64 `json:"avg_pnl_pct"`
+	TotalCalls    int     `json:"total_calls"`
+	TargetHits    int     `json:"target_hits"`
+	StopLossHits  int     `json:"stop_loss_hits"`
+	ExpiredCalls  int     `json:"expired_calls"`
+	PendingCalls  int     `json:"pending_calls"`
+	ResolvedCalls int     `json:"resolved_calls"`
+	WinRatePct    float64 `json:"win_rate_pct"`
+	AvgPnLPct     float64 `json:"avg_pnl_pct"`
 }
 
 // SavePlaybook persists an AI playbook in the database and returns its assigned ID.
@@ -185,17 +193,24 @@ func (s *Store) SaveEvaluation(ctx context.Context, e Evaluation) (int64, error)
 		status = "PENDING"
 	}
 
+	source := strings.TrimSpace(e.Source)
+	if source == "" {
+		source = "jev"
+	}
+
 	query := `
 		INSERT INTO ai_evaluations (
 			timestamp, instrument_key, underlying, spot_price, option_ltp,
 			action, confidence, score, duration_ms, state_snapshot, shadow,
-			target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct,
+			source, reasoning
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := s.db.ExecContext(ctx, query,
 		ts, e.InstrumentKey, e.Underlying, e.SpotPrice, e.OptionLTP,
 		e.Action, e.Confidence, e.Score, e.DurationMS, e.StateSnapshot, e.Shadow,
 		e.TargetPrice, e.StopLossPrice, status, e.ExitPrice, e.ExitTime, e.PnLPct,
+		source, strings.TrimSpace(e.Reasoning),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: save evaluation: %w", err)
@@ -258,7 +273,8 @@ func (s *Store) GetActiveEvaluations(ctx context.Context) ([]Evaluation, error) 
 	query := `
 		SELECT id, timestamp, instrument_key, underlying, spot_price, option_ltp,
 		       action, confidence, score, duration_ms, state_snapshot, shadow,
-		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
+		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct,
+		       source, reasoning
 		FROM ai_evaluations
 		WHERE status = 'PENDING'
 		ORDER BY timestamp DESC`
@@ -277,6 +293,7 @@ func (s *Store) GetActiveEvaluations(ctx context.Context) ([]Evaluation, error) 
 			&e.ID, &e.Timestamp, &e.InstrumentKey, &e.Underlying, &e.SpotPrice, &e.OptionLTP,
 			&e.Action, &e.Confidence, &e.Score, &e.DurationMS, &e.StateSnapshot, &e.Shadow,
 			&e.TargetPrice, &e.StopLossPrice, &e.Status, &e.ExitPrice, &exitTime, &e.PnLPct,
+			&e.Source, &e.Reasoning,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan active evaluation: %w", err)
 		}
@@ -302,16 +319,18 @@ func (s *Store) GetEvaluationStats(ctx context.Context) (EvaluationStats, error)
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'TARGET_HIT' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'SL_HIT' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0),
-			COALESCE(AVG(CASE WHEN status IN ('TARGET_HIT', 'SL_HIT') THEN pnl_pct END), 0.0)
+			COALESCE(AVG(CASE WHEN status IN ('TARGET_HIT', 'SL_HIT', 'EXPIRED') THEN pnl_pct END), 0.0)
 		FROM ai_evaluations
-		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY', 'HOLD', 'PASS')`
+		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY')`
 
 	var stats EvaluationStats
 	err := s.db.QueryRowContext(ctx, query).Scan(
 		&stats.TotalCalls,
 		&stats.TargetHits,
 		&stats.StopLossHits,
+		&stats.ExpiredCalls,
 		&stats.PendingCalls,
 		&stats.AvgPnLPct,
 	)
@@ -319,9 +338,9 @@ func (s *Store) GetEvaluationStats(ctx context.Context) (EvaluationStats, error)
 		return stats, fmt.Errorf("store: get evaluation stats: %w", err)
 	}
 
-	closed := stats.TargetHits + stats.StopLossHits
-	if closed > 0 {
-		stats.WinRatePct = float64(stats.TargetHits) / float64(closed) * 100.0
+	stats.ResolvedCalls = stats.TargetHits + stats.StopLossHits
+	if stats.ResolvedCalls > 0 {
+		stats.WinRatePct = float64(stats.TargetHits) / float64(stats.ResolvedCalls) * 100.0
 	}
 	return stats, nil
 }
@@ -338,8 +357,10 @@ func (s *Store) ListEvaluations(ctx context.Context, limit int) ([]Evaluation, e
 	query := `
 		SELECT id, timestamp, instrument_key, underlying, spot_price, option_ltp,
 		       action, confidence, score, duration_ms, state_snapshot, shadow,
-		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct
+		       target_price, stop_loss_price, status, exit_price, exit_time, pnl_pct,
+		       source, reasoning
 		FROM ai_evaluations
+		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY')
 		ORDER BY timestamp DESC
 		LIMIT ?`
 
@@ -357,6 +378,7 @@ func (s *Store) ListEvaluations(ctx context.Context, limit int) ([]Evaluation, e
 			&e.ID, &e.Timestamp, &e.InstrumentKey, &e.Underlying, &e.SpotPrice, &e.OptionLTP,
 			&e.Action, &e.Confidence, &e.Score, &e.DurationMS, &e.StateSnapshot, &e.Shadow,
 			&e.TargetPrice, &e.StopLossPrice, &e.Status, &e.ExitPrice, &exitTime, &e.PnLPct,
+			&e.Source, &e.Reasoning,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan evaluation: %w", err)
 		}

@@ -459,8 +459,8 @@ func TestOpenRouterEnvironmentResolution(t *testing.T) {
 	if cfg.AI.Jev.BaseURL != "https://openrouter.ai/api/v1" {
 		t.Errorf("Jev.BaseURL = %q, want https://openrouter.ai/api/v1", cfg.AI.Jev.BaseURL)
 	}
-	if cfg.AI.Jev.Model != "typesafe/jev-latest" {
-		t.Errorf("Jev.Model = %q, want typesafe/jev-latest", cfg.AI.Jev.Model)
+	if cfg.AI.Jev.Model != "~typesafe/jev-latest" {
+		t.Errorf("Jev.Model = %q, want ~typesafe/jev-latest", cfg.AI.Jev.Model)
 	}
 
 	// Agent should also route to OpenRouter

@@ -158,8 +158,18 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if s.hsm == nil {
 				continue
 			}
-			if err := s.hsm.Unsubscribe(command.Keys); err != nil {
-				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "keys", command.Keys, "error", err)
+			keys := command.Keys
+			// Browser subscriptions are global in the HSM feed, so never let a
+			// client unsubscribe a contract that an open AI paper call still
+			// needs for live outcome tracking.
+			if s.evaluator != nil {
+				keys = s.evaluator.FilterUntrackedKeys(keys)
+			}
+			if len(keys) == 0 {
+				continue
+			}
+			if err := s.hsm.Unsubscribe(keys); err != nil {
+				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "keys", keys, "error", err)
 			}
 		default:
 			s.log.Warn("unknown browser feed command", "event", "websocket_command_invalid", "type", command.Type)

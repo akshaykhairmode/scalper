@@ -217,6 +217,9 @@ type AI struct {
 	MinConfidence       float64     `yaml:"min_confidence" json:"min_confidence"`
 	MinScore            int         `yaml:"min_score" json:"min_score"`
 	EvalCadenceSeconds  int         `yaml:"eval_cadence_seconds" json:"eval_cadence_seconds"`
+	MaxHoldMinutes      int         `yaml:"max_hold_minutes" json:"max_hold_minutes"`
+	CooldownMinutes     int         `yaml:"cooldown_minutes" json:"cooldown_minutes"`
+	RoundTripCostPct    float64     `yaml:"round_trip_cost_pct" json:"round_trip_cost_pct"`
 	Jev                 JevConfig   `yaml:"jev" json:"jev"`
 	Agent               AgentConfig `yaml:"agent" json:"agent"`
 }
@@ -359,19 +362,22 @@ func Default() Config {
 			ScannedUnderlyings:  []string{"NIFTY", "SENSEX"},
 			TargetPct:           8.0,
 			StopLossPct:         5.0,
-			MinConfidence:       0.75,
-			MinScore:            4,
+			MinConfidence:       0.60,
+			MinScore:            3,
 			EvalCadenceSeconds:  15,
+			MaxHoldMinutes:      120,
+			CooldownMinutes:     15,
+			RoundTripCostPct:    0.10,
 			Jev: JevConfig{
 				BaseURL:   "https://openrouter.ai/api/v1",
-				Model:     "typesafe/jev-latest",
-				TimeoutMS: 5000,
+				Model:     "~typesafe/jev-latest",
+				TimeoutMS: 8000,
 			},
 			Agent: AgentConfig{
 				Provider:  "openrouter",
 				BaseURL:   "https://openrouter.ai/api/v1",
 				Model:     "nvidia/nemotron-3.5-lightning:free",
-				TimeoutMS: 40000,
+				TimeoutMS: 60000,
 			},
 		},
 	}
@@ -517,10 +523,14 @@ func (c *Config) applyEnv() {
 		if c.AI.Jev.BaseURL == "" || strings.Contains(c.AI.Jev.BaseURL, "typesafe.ai") {
 			c.AI.Jev.BaseURL = "https://openrouter.ai/api/v1"
 		}
-		if !strings.HasPrefix(c.AI.Jev.Model, "typesafe/") && c.AI.Jev.Model != "" {
-			c.AI.Jev.Model = "typesafe/" + c.AI.Jev.Model
-		} else if c.AI.Jev.Model == "" {
-			c.AI.Jev.Model = "typesafe/jev-latest"
+		if c.AI.Jev.Model == "" {
+			c.AI.Jev.Model = "~typesafe/jev-latest"
+		} else if !strings.HasPrefix(c.AI.Jev.Model, "~") {
+			if strings.HasPrefix(c.AI.Jev.Model, "typesafe/") {
+				c.AI.Jev.Model = "~" + c.AI.Jev.Model
+			} else {
+				c.AI.Jev.Model = "~typesafe/" + c.AI.Jev.Model
+			}
 		}
 	}
 	if v, ok := os.LookupEnv("AI_AGENT_API_KEY"); ok && strings.TrimSpace(v) != "" {
