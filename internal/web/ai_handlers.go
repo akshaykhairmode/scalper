@@ -157,8 +157,8 @@ type triggerScanResponse struct {
 }
 
 func (s *Server) handleTriggerAIScan(w http.ResponseWriter, r *http.Request) {
-	if s.evaluator == nil || s.evaluator.JevClient() == nil {
-		s.writeRouteError(w, r, http.StatusServiceUnavailable, "ai evaluator or jev client not configured", nil)
+	if s.evaluator == nil || (s.evaluator.JevClient() == nil && s.evaluator.AgentClient() == nil) {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "ai evaluator or ai provider (Jev/Agent) not configured", nil)
 		return
 	}
 
@@ -344,7 +344,7 @@ func (s *Server) handleAskAIEvaluation(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if s.evaluator != nil && (action == "BUY_CE" || action == "BUY_PE" || action == "BUY") {
+			if s.evaluator != nil && eval.TargetPrice > 0 {
 				s.evaluator.TrackEvaluation(eval)
 			}
 

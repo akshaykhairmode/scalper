@@ -463,6 +463,7 @@ func New(opts Options) (*Server, error) {
 		Config:        opts.Config.AI,
 		Store:         aiSt,
 		JevClient:     jevClient,
+		AgentClient:   s.agentClient,
 		QuoteProvider: s,
 		Logger:        opts.Logger,
 		OnOutcome: func(eval store.Evaluation) {

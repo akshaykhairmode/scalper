@@ -288,7 +288,7 @@ func (s *Store) GetEvaluationStats(ctx context.Context) (EvaluationStats, error)
 			COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(CASE WHEN status IN ('TARGET_HIT', 'SL_HIT') THEN pnl_pct END), 0.0)
 		FROM ai_evaluations
-		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY')`
+		WHERE action IN ('BUY_CE', 'BUY_PE', 'BUY', 'HOLD', 'PASS')`
 
 	var stats EvaluationStats
 	err := s.db.QueryRowContext(ctx, query).Scan(

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/ai/agent"
 	"github.com/akshaykhairmode/scalper/internal/ai/features"
 	"github.com/akshaykhairmode/scalper/internal/ai/jev"
 	"github.com/akshaykhairmode/scalper/internal/config"
@@ -62,6 +63,7 @@ type Evaluator struct {
 	cfg           config.AI
 	store         AIStore
 	jevClient     *jev.Client
+	agentClient   *agent.Client
 	quoteProvider QuoteProvider
 	log           *slog.Logger
 
@@ -85,6 +87,7 @@ type Options struct {
 	Config        config.AI
 	Store         AIStore
 	JevClient     *jev.Client
+	AgentClient   *agent.Client
 	QuoteProvider QuoteProvider
 	Logger        *slog.Logger
 	OnOutcome     OutcomeCallback
@@ -102,6 +105,7 @@ func New(opts Options) *Evaluator {
 		cfg:           opts.Config,
 		store:         opts.Store,
 		jevClient:     opts.JevClient,
+		agentClient:   opts.AgentClient,
 		quoteProvider: opts.QuoteProvider,
 		log:           logger,
 		activeCalls:   make(map[int64]*ActiveCall),
@@ -197,6 +201,16 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 			Timeout: time.Duration(newCfg.Jev.TimeoutMS) * time.Millisecond,
 		})
 	}
+	// Update Agent client if provider, URL, key, or model changed
+	if newCfg.Agent.BaseURL != oldCfg.Agent.BaseURL || newCfg.Agent.APIKey != oldCfg.Agent.APIKey || newCfg.Agent.Model != oldCfg.Agent.Model || newCfg.Agent.Provider != oldCfg.Agent.Provider {
+		e.agentClient = agent.NewClient(agent.Config{
+			Provider: newCfg.Agent.Provider,
+			BaseURL:  newCfg.Agent.BaseURL,
+			APIKey:   newCfg.Agent.APIKey,
+			Model:    newCfg.Agent.Model,
+			Timeout:  time.Duration(newCfg.Agent.TimeoutMS) * time.Millisecond,
+		})
+	}
 
 	wasEnabled := oldCfg.Enabled && oldCfg.PeriodicScan
 	nowEnabled := newCfg.Enabled && newCfg.PeriodicScan
@@ -248,14 +262,12 @@ func (e *Evaluator) OnTick(ctx context.Context, instrumentKey string, ltp float6
 		var status string
 		var pnlPct float64
 
-		if call.Action == "BUY_CE" || call.Action == "BUY_PE" || call.Action == "BUY" {
-			if call.TargetPrice > 0 && ltp >= call.TargetPrice {
-				status = "TARGET_HIT"
-				pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
-			} else if call.StopLossPrice > 0 && ltp <= call.StopLossPrice {
-				status = "SL_HIT"
-				pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
-			}
+		if call.TargetPrice > 0 && ltp >= call.TargetPrice {
+			status = "TARGET_HIT"
+			pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
+		} else if call.StopLossPrice > 0 && ltp <= call.StopLossPrice {
+			status = "SL_HIT"
+			pnlPct = ((ltp - call.EntryPrice) / call.EntryPrice) * 100.0
 		}
 
 		if status != "" {
@@ -299,13 +311,13 @@ func (e *Evaluator) OnTick(ctx context.Context, instrumentKey string, ltp float6
 	}
 }
 
-// ScanNow triggers an on-demand evaluation of active ATM strikes against Jev.
+// ScanNow triggers an on-demand evaluation of active ATM strikes against Jev or Agent.
 func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Evaluation, error) {
 	if e == nil {
 		return nil, errors.New("evaluator: nil instance")
 	}
-	if e.jevClient == nil {
-		return nil, errors.New("evaluator: jev client not configured")
+	if e.jevClient == nil && e.agentClient == nil {
+		return nil, errors.New("evaluator: neither jev nor agent client is configured")
 	}
 	if e.quoteProvider == nil {
 		return nil, errors.New("evaluator: quote provider not configured")
@@ -395,15 +407,46 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 		stateJSON, _ := snapshot.ToJSON()
 
 		start := time.Now()
-		jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
-		durationMS := int(time.Since(start).Milliseconds())
+		var action string
+		var confidence float64
+		var score int
+		var durationMS int
+		source := "jev"
 
-		if jerr != nil {
-			e.log.Warn("jev evaluation failed", "event", "jev_eval_failed", "instrument", cand.Key, "error", jerr)
-			continue
+		if e.jevClient != nil {
+			jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
+			durationMS = int(time.Since(start).Milliseconds())
+			if jerr != nil {
+				e.log.Warn("jev evaluation failed", "event", "jev_eval_failed", "instrument", cand.Key, "error", jerr)
+			} else {
+				action = strings.ToUpper(strings.TrimSpace(jevRes.Action))
+				confidence = jevRes.Confidence
+				score = jevRes.Score
+			}
 		}
 
-		action := strings.ToUpper(strings.TrimSpace(jevRes.Action))
+		if action == "" && e.agentClient != nil {
+			startAgent := time.Now()
+			decision, aerr := e.agentClient.EvaluateContract(ctx, agent.ContractSetup{
+				Underlying:    underlying,
+				SpotPrice:     spot,
+				OptionType:    cand.Type,
+				Strike:        cand.Key,
+				OptionLTP:     cand.LTP,
+				MacroBias:     agentBias,
+				OrderBookDesc: "real-time market depth",
+			})
+			durationMS = int(time.Since(startAgent).Milliseconds())
+			if aerr != nil {
+				e.log.Warn("agent evaluation failed", "event", "agent_eval_failed", "instrument", cand.Key, "error", aerr)
+				continue
+			}
+			action = strings.ToUpper(strings.TrimSpace(decision.Action))
+			confidence = decision.Confidence
+			score = decision.Score
+			source = "agent"
+		}
+
 		if action == "PASS" || action == "HOLD" || action == "" {
 			continue
 		}
@@ -420,6 +463,11 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 		targetPrice := math.Round(cand.LTP*(1.0+targetPct/100.0)*100) / 100
 		stopLossPrice := math.Round(cand.LTP*(1.0-stopLossPct/100.0)*100) / 100
 
+		stateSnap := stateJSON
+		if source == "agent" {
+			stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, e.cfg.Agent.Model)
+		}
+
 		eval := store.Evaluation{
 			Timestamp:     time.Now(),
 			InstrumentKey: cand.Key,
@@ -427,10 +475,10 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 			SpotPrice:     spot,
 			OptionLTP:     cand.LTP,
 			Action:        action,
-			Confidence:    jevRes.Confidence,
-			Score:         jevRes.Score,
+			Confidence:    confidence,
+			Score:         score,
 			DurationMS:    durationMS,
-			StateSnapshot: stateJSON,
+			StateSnapshot: stateSnap,
 			Shadow:        shadowMode,
 			TargetPrice:   targetPrice,
 			StopLossPrice: stopLossPrice,
@@ -463,10 +511,10 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 			atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
 			e.activeMu.Unlock()
 
-			e.log.Info("new high conviction jev call tracked", "event", "ai_call_detected",
+			e.log.Info("new high conviction call tracked", "event", "ai_call_detected",
 				"id", eval.ID, "action", eval.Action, "instrument", eval.InstrumentKey,
 				"entry", eval.OptionLTP, "target", eval.TargetPrice, "stop", eval.StopLossPrice,
-				"score", eval.Score, "conf", eval.Confidence)
+				"score", eval.Score, "conf", eval.Confidence, "source", source)
 
 			if e.onNewCall != nil {
 				e.onNewCall(eval)
@@ -560,13 +608,13 @@ type ContractSetup struct {
 	OptionLTP     float64 `json:"option_ltp"`
 }
 
-// EvaluateContract performs on-demand evaluation of a specified contract using Jev and tracks it.
+// EvaluateContract performs on-demand evaluation of a specified contract using Jev or Agent and tracks it.
 func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (store.Evaluation, error) {
 	if e == nil {
 		return store.Evaluation{}, errors.New("evaluator: nil instance")
 	}
-	if e.jevClient == nil {
-		return store.Evaluation{}, errors.New("evaluator: jev client not configured")
+	if e.jevClient == nil && e.agentClient == nil {
+		return store.Evaluation{}, errors.New("evaluator: neither jev nor agent client is configured")
 	}
 	if setup.OptionLTP <= 0 {
 		return store.Evaluation{}, errors.New("evaluator: option LTP must be greater than zero")
@@ -623,10 +671,47 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 	stateJSON, _ := snapshot.ToJSON()
 
 	start := time.Now()
-	jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
-	durationMS := int(time.Since(start).Milliseconds())
-	if jerr != nil {
-		return store.Evaluation{}, fmt.Errorf("evaluator: jev evaluation failed: %w", jerr)
+	var action string
+	var confidence float64
+	var score int
+	var durationMS int
+	source := "jev"
+
+	if e.jevClient != nil {
+		jevRes, jerr := e.jevClient.EvaluateSetup(ctx, stateJSON)
+		durationMS = int(time.Since(start).Milliseconds())
+		if jerr != nil {
+			e.log.Warn("jev evaluation failed, trying agent fallback", "event", "jev_eval_fallback", "instrument", setup.InstrumentKey, "error", jerr)
+		} else {
+			action = strings.ToUpper(strings.TrimSpace(jevRes.Action))
+			confidence = jevRes.Confidence
+			score = jevRes.Score
+		}
+	}
+
+	if action == "" && e.agentClient != nil {
+		startAgent := time.Now()
+		decision, aerr := e.agentClient.EvaluateContract(ctx, agent.ContractSetup{
+			Underlying:    setup.Underlying,
+			SpotPrice:     spot,
+			OptionType:    setup.OptionType,
+			Strike:        setup.Strike,
+			OptionLTP:     setup.OptionLTP,
+			MacroBias:     agentBias,
+			OrderBookDesc: "real-time market depth",
+		})
+		durationMS = int(time.Since(startAgent).Milliseconds())
+		if aerr != nil {
+			return store.Evaluation{}, fmt.Errorf("evaluator: agent evaluation failed: %w", aerr)
+		}
+		action = strings.ToUpper(strings.TrimSpace(decision.Action))
+		confidence = decision.Confidence
+		score = decision.Score
+		source = "agent"
+	}
+
+	if action == "" {
+		return store.Evaluation{}, errors.New("evaluator: no decision returned by AI models")
 	}
 
 	e.cfgMu.RLock()
@@ -642,7 +727,6 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		stopLossPct = 5.0
 	}
 
-	action := strings.ToUpper(strings.TrimSpace(jevRes.Action))
 	if action == "BUY" {
 		if setup.OptionType == "CE" {
 			action = "BUY_CE"
@@ -654,6 +738,11 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 	targetPrice := math.Round(setup.OptionLTP*(1.0+targetPct/100.0)*100) / 100
 	stopLossPrice := math.Round(setup.OptionLTP*(1.0-stopLossPct/100.0)*100) / 100
 
+	stateSnap := stateJSON
+	if source == "agent" {
+		stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, e.cfg.Agent.Model)
+	}
+
 	eval := store.Evaluation{
 		Timestamp:     time.Now(),
 		InstrumentKey: setup.InstrumentKey,
@@ -661,10 +750,10 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		SpotPrice:     spot,
 		OptionLTP:     setup.OptionLTP,
 		Action:        action,
-		Confidence:    jevRes.Confidence,
-		Score:         jevRes.Score,
+		Confidence:    confidence,
+		Score:         score,
 		DurationMS:    durationMS,
-		StateSnapshot: stateJSON,
+		StateSnapshot: stateSnap,
 		Shadow:        shadowMode,
 		TargetPrice:   targetPrice,
 		StopLossPrice: stopLossPrice,
@@ -678,9 +767,9 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 		}
 	}
 
-	if action == "BUY_CE" || action == "BUY_PE" || action == "BUY" {
+	if eval.TargetPrice > 0 {
 		e.TrackEvaluation(eval)
-		if e.onNewCall != nil {
+		if e.onNewCall != nil && (action == "BUY_CE" || action == "BUY_PE" || action == "BUY") {
 			e.onNewCall(eval)
 		}
 	}
@@ -694,6 +783,14 @@ func (e *Evaluator) JevClient() *jev.Client {
 		return nil
 	}
 	return e.jevClient
+}
+
+// AgentClient returns the configured Agent LLM client.
+func (e *Evaluator) AgentClient() *agent.Client {
+	if e == nil {
+		return nil
+	}
+	return e.agentClient
 }
 
 // TrackEvaluation registers an evaluation into the live tick outcome tracker.
@@ -720,10 +817,22 @@ func (e *Evaluator) TrackEvaluation(eval store.Evaluation) {
 
 func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 	defer close(e.scanDone)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
 	e.log.Info("ai evaluator periodic scanner started", "event", "ai_scanner_started", "interval", interval)
+
+	// Trigger initial scan shortly after startup (after feeds/scrips stabilize)
+	go func() {
+		select {
+		case <-time.After(5 * time.Second):
+			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			_, _ = e.ScanNow(scanCtx, "NIFTY")
+		case <-ctx.Done():
+		}
+	}()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -731,7 +840,7 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 			e.log.Info("ai evaluator periodic scanner stopped", "event", "ai_scanner_stopped")
 			return
 		case <-ticker.C:
-			scanCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 			_, _ = e.ScanNow(scanCtx, "NIFTY")
 			cancel()
 		}

@@ -4402,6 +4402,9 @@ function initChartQuickOrder() {
     if (S.quickOrder) updateQuickOrderPrice(S.quickOrder.price + 0.05);
   });
 
+  $("cqo-price")?.addEventListener("focus", (e: any) => {
+    e.target?.select?.();
+  });
   $("cqo-price")?.addEventListener("input", (e) => {
     const val = num(e.target.value);
     if (Number.isFinite(val) && val > 0 && S.quickOrder) {
@@ -4443,35 +4446,59 @@ function initChartQuickOrder() {
 
   $("cqo-target-dec")?.addEventListener("click", () => {
     if (!S.quickOrder) return;
-    const newPts = Math.max(0.5, S.quickOrder.targetPts - 1);
+    const currentPts = S.quickOrder.targetPts || 0.5;
+    const newPts = Math.max(0.05, Math.round((currentPts - 0.5) * 20) / 20);
     updateQuickOrderTargetPts(newPts);
   });
 
   $("cqo-target-inc")?.addEventListener("click", () => {
     if (!S.quickOrder) return;
-    updateQuickOrderTargetPts(S.quickOrder.targetPts + 1);
+    const currentPts = S.quickOrder.targetPts || 0.5;
+    const newPts = Math.round((currentPts + 0.5) * 20) / 20;
+    updateQuickOrderTargetPts(newPts);
   });
 
-  $("cqo-target-price")?.addEventListener("input", (e) => {
+  $("cqo-target-price")?.addEventListener("focus", (e: any) => {
+    e.target?.select?.();
+  });
+
+  $("cqo-target-price")?.addEventListener("input", (e: any) => {
     if (!S.quickOrder) return;
-    const val = num(e.target.value);
-    if (Number.isFinite(val) && val > 0) {
+    const rawVal = e.target.value;
+    const val = parseFloat(rawVal);
+    if (!isNaN(val) && val > 0) {
       S.quickOrder.targetPrice = val;
-      const pts = Math.max(0.05, Math.round((val - S.quickOrder.price) * 20) / 20);
-      S.quickOrder.targetPts = pts;
-      try { localStorage.setItem("scalper-target-pts", String(pts)); } catch (_) {}
-      renderQuickOrderTarget();
-      if (S.quickOrder.targetEnabled) {
-        S.charts[S.quickOrder.pane]?.showTargetPreview(val, "TARGET");
+      if (val > S.quickOrder.price) {
+        const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
+        S.quickOrder.targetPts = Math.max(0.05, pts);
+        try { localStorage.setItem("scalper-target-pts", String(S.quickOrder.targetPts)); } catch (_) {}
+        const shares = S.quickOrder.lotsCount * S.quickOrder.lot;
+        const pnl = Math.round(pts * shares);
+        const ptsEl = $("cqo-target-pts");
+        if (ptsEl) ptsEl.textContent = `+${pts.toFixed(2)} pts`;
+        const pnlEl = $("cqo-target-pnl");
+        if (pnlEl) pnlEl.textContent = `(Est. +₹${pnl.toLocaleString("en-IN")})`;
+        if (S.quickOrder.targetEnabled) {
+          S.charts[S.quickOrder.pane]?.showTargetPreview(val, "TARGET");
+        }
+      } else {
+        const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
+        const ptsEl = $("cqo-target-pts");
+        if (ptsEl) ptsEl.textContent = `${pts >= 0 ? "+" : ""}${pts.toFixed(2)} pts`;
+        const pnlEl = $("cqo-target-pnl");
+        if (pnlEl) pnlEl.textContent = "(Est. —)";
       }
     }
   });
 
-  $("cqo-target-price")?.addEventListener("change", (e) => {
+  $("cqo-target-price")?.addEventListener("change", (e: any) => {
     if (!S.quickOrder) return;
-    const val = num(e.target.value);
-    if (Number.isFinite(val) && val > 0) {
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val) && val > S.quickOrder.price) {
       updateQuickOrderTargetPrice(val);
+    } else {
+      const fallbackPts = Math.max(0.5, S.quickOrder.targetPts || 0.5);
+      updateQuickOrderTargetPts(fallbackPts);
     }
   });
 
@@ -4882,7 +4909,9 @@ function renderQuickOrderTarget() {
 
   const targetPriceEl = $("cqo-target-price");
   if (targetPriceEl) {
-    targetPriceEl.value = targetPrice.toFixed(2);
+    if (document.activeElement !== targetPriceEl) {
+      targetPriceEl.value = targetPrice.toFixed(2);
+    }
     targetPriceEl.disabled = !targetEnabled;
   }
 
@@ -4895,10 +4924,10 @@ function renderQuickOrderTarget() {
   if (summaryEl) summaryEl.style.opacity = targetEnabled ? "1" : "0.35";
 
   const ptsEl = $("cqo-target-pts");
-  if (ptsEl) ptsEl.textContent = `+${targetPts.toFixed(2)} pts`;
+  if (ptsEl) ptsEl.textContent = `${targetPts >= 0 ? "+" : ""}${targetPts.toFixed(2)} pts`;
 
   const pnlEl = $("cqo-target-pnl");
-  if (pnlEl) pnlEl.textContent = `(Est. +₹${pnl.toLocaleString("en-IN")})`;
+  if (pnlEl) pnlEl.textContent = `(Est. ${pnl >= 0 ? "+" : "−"}₹${Math.abs(pnl).toLocaleString("en-IN")})`;
 }
 
 function updateQuickOrderTargetPts(newPts) {
@@ -4909,6 +4938,10 @@ function updateQuickOrderTargetPts(newPts) {
   try {
     localStorage.setItem("scalper-target-pts", String(pts));
   } catch (_) {}
+  const targetPriceEl = $("cqo-target-price");
+  if (targetPriceEl) {
+    targetPriceEl.value = S.quickOrder.targetPrice.toFixed(2);
+  }
   renderQuickOrderTarget();
   if (S.quickOrder.targetEnabled) {
     S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
@@ -4924,6 +4957,10 @@ function updateQuickOrderTargetPrice(newTargetPrice) {
   try {
     localStorage.setItem("scalper-target-pts", String(pts));
   } catch (_) {}
+  const targetPriceEl = $("cqo-target-price");
+  if (targetPriceEl) {
+    targetPriceEl.value = tp.toFixed(2);
+  }
   renderQuickOrderTarget();
   if (S.quickOrder.targetEnabled) {
     S.charts[S.quickOrder.pane]?.showTargetPreview(tp, "TARGET");
@@ -4975,7 +5012,9 @@ async function submitQuickOrder(action) {
   const inputPrice = num($("cqo-price")?.value);
   const price = Number.isFinite(inputPrice) && inputPrice > 0 ? inputPrice : S.quickOrder.price;
   const shares = lotsCount * lot;
-  const autoTarget = (targetEnabled && action === "buy" && targetPrice > price) ? targetPrice : 0;
+  const inputTarget = num($("cqo-target-price")?.value);
+  const tp = Number.isFinite(inputTarget) && inputTarget > 0 ? inputTarget : targetPrice;
+  const autoTarget = (targetEnabled && action === "buy" && tp > price) ? tp : 0;
 
   closeChartQuickOrder();
   await onLimitTrade(action, type, price, shares, autoTarget);
