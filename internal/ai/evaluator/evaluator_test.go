@@ -304,4 +304,21 @@ func TestEvaluatorScannerStatus(t *testing.T) {
 	if status.NextScanUnix != 0 {
 		t.Errorf("expected NextScanUnix 0 after stop, got %d", status.NextScanUnix)
 	}
+
+	// Test UpdateConfig with cancelled context doesn't kill background scanner
+	ev.Start(context.Background())
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	reqCancel() // simulate HTTP request context being cancelled on request finish
+
+	cfg.ScanIntervalMinutes = 5
+	ev.UpdateConfig(reqCtx, cfg)
+
+	status = ev.ScannerStatus()
+	if !status.Running {
+		t.Error("expected scanner to remain running after UpdateConfig with cancelled context")
+	}
+	if status.IntervalMinutes != 5 {
+		t.Errorf("expected interval 5, got %d", status.IntervalMinutes)
+	}
+	ev.Stop()
 }

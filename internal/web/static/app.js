@@ -9842,6 +9842,19 @@ function renderAIScannerTimer() {
     }
     return;
   }
+  if (scanner.scanning) {
+    if (headerEl) {
+      headerEl.textContent = "\u23F1 Scanning\u2026";
+      headerEl.title = "AI background scanner is actively evaluating market setups\u2026";
+      headerEl.style.color = "var(--accent, #f59e0b)";
+      headerEl.style.opacity = "1";
+    }
+    if (modalValEl) {
+      modalValEl.textContent = "Scanning\u2026";
+      modalValEl.style.color = "var(--accent, #f59e0b)";
+    }
+    return;
+  }
   const nextUnix = Number(scanner.next_scan_unix || 0);
   if (!nextUnix || nextUnix <= 0) {
     if (headerEl) {
@@ -9873,11 +9886,7 @@ function renderAIScannerTimer() {
   }
   if (modalValEl) {
     modalValEl.textContent = formatted;
-    if (remaining <= 0) {
-      modalValEl.style.color = "var(--accent, #f59e0b)";
-    } else {
-      modalValEl.style.color = "var(--accent, #f59e0b)";
-    }
+    modalValEl.style.color = "var(--accent, #f59e0b)";
   }
   if (remaining === 0 && !S.aiScanRefreshTriggered) {
     S.aiScanRefreshTriggered = true;
@@ -9887,7 +9896,7 @@ function renderAIScannerTimer() {
       if (isAISignalsModalOpen()) {
         refreshAISignalsModal();
       }
-    }, 4500);
+    }, 2500);
   }
 }
 async function updateAIWinRateChip() {

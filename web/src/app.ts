@@ -6149,6 +6149,21 @@ function renderAIScannerTimer() {
     return;
   }
 
+  // If backend reports an active scan in progress
+  if (scanner.scanning) {
+    if (headerEl) {
+      headerEl.textContent = "⏱ Scanning…";
+      headerEl.title = "AI background scanner is actively evaluating market setups…";
+      headerEl.style.color = "var(--accent, #f59e0b)";
+      headerEl.style.opacity = "1";
+    }
+    if (modalValEl) {
+      modalValEl.textContent = "Scanning…";
+      modalValEl.style.color = "var(--accent, #f59e0b)";
+    }
+    return;
+  }
+
   const nextUnix = Number(scanner.next_scan_unix || 0);
   if (!nextUnix || nextUnix <= 0) {
     if (headerEl) {
@@ -6184,11 +6199,7 @@ function renderAIScannerTimer() {
 
   if (modalValEl) {
     modalValEl.textContent = formatted;
-    if (remaining <= 0) {
-      modalValEl.style.color = "var(--accent, #f59e0b)";
-    } else {
-      modalValEl.style.color = "var(--accent, #f59e0b)";
-    }
+    modalValEl.style.color = "var(--accent, #f59e0b)";
   }
 
   // Auto-refresh when countdown hits zero to sync the next scan cycle and any new calls
@@ -6200,7 +6211,7 @@ function renderAIScannerTimer() {
       if (isAISignalsModalOpen()) {
         refreshAISignalsModal();
       }
-    }, 4500);
+    }, 2500);
   }
 }
 

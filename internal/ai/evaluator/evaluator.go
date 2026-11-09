@@ -80,6 +80,8 @@ type Evaluator struct {
 	scanCancel context.CancelFunc
 	scanDone   chan struct{}
 	running    atomic.Bool
+	isScanning atomic.Bool
+	baseCtx    context.Context
 
 	scanMu       sync.RWMutex
 	nextScanTime time.Time
@@ -162,11 +164,17 @@ func (e *Evaluator) Start(ctx context.Context) {
 		intervalMin = 15
 	}
 
+	if ctx != nil && ctx.Err() == nil {
+		e.baseCtx = ctx
+	} else if e.baseCtx == nil || e.baseCtx.Err() != nil {
+		e.baseCtx = context.Background()
+	}
+
 	if e.running.Swap(true) {
 		return // already running
 	}
 
-	scanCtx, cancel := context.WithCancel(ctx)
+	scanCtx, cancel := context.WithCancel(e.baseCtx)
 	e.scanCancel = cancel
 	e.scanDone = make(chan struct{})
 
@@ -197,6 +205,7 @@ func (e *Evaluator) Stop() {
 type ScannerStatus struct {
 	Enabled          bool      `json:"enabled"`
 	Running          bool      `json:"running"`
+	Scanning         bool      `json:"scanning"`
 	IntervalMinutes  int       `json:"interval_minutes"`
 	NextScanTime     time.Time `json:"next_scan_time,omitempty"`
 	NextScanUnix     int64     `json:"next_scan_unix"`
@@ -219,6 +228,7 @@ func (e *Evaluator) ScannerStatus() ScannerStatus {
 	e.cfgMu.RUnlock()
 
 	running := e.running.Load()
+	scanning := e.isScanning.Load()
 
 	e.scanMu.RLock()
 	next := e.nextScanTime
@@ -244,6 +254,7 @@ func (e *Evaluator) ScannerStatus() ScannerStatus {
 	return ScannerStatus{
 		Enabled:          enabled,
 		Running:          running,
+		Scanning:         scanning,
 		IntervalMinutes:  interval,
 		NextScanTime:     next,
 		NextScanUnix:     nextUnix,
@@ -262,6 +273,10 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 	oldCfg := e.cfg
 	e.cfg = newCfg
 	e.cfgMu.Unlock()
+
+	if ctx != nil && ctx.Err() == nil {
+		e.baseCtx = ctx
+	}
 
 	// Update Jev client if URL or key changed
 	if newCfg.Jev.BaseURL != oldCfg.Jev.BaseURL || newCfg.Jev.APIKey != oldCfg.Jev.APIKey || newCfg.Jev.Model != oldCfg.Jev.Model {
@@ -290,7 +305,7 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 		e.Stop()
 	} else if nowEnabled && (!wasEnabled || newCfg.ScanIntervalMinutes != oldCfg.ScanIntervalMinutes) {
 		e.Stop()
-		e.Start(ctx)
+		e.Start(e.baseCtx)
 	}
 }
 
@@ -397,6 +412,9 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 	if underlying == "" {
 		underlying = "NIFTY"
 	}
+
+	e.isScanning.Store(true)
+	defer e.isScanning.Store(false)
 
 	e.scanMu.Lock()
 	e.lastScanTime = time.Now()
@@ -895,35 +913,37 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 
 	e.log.Info("ai evaluator periodic scanner started", "event", "ai_scanner_started", "interval", interval)
 
-	tickerInterval := interval
-	nextTicker := time.Now().Add(tickerInterval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	e.scanMu.Lock()
-	e.nextScanTime = time.Now().Add(5 * time.Second)
-	e.scanMu.Unlock()
+	doScan := func() {
+		e.scanMu.Lock()
+		e.nextScanTime = time.Now().Add(interval)
+		e.scanMu.Unlock()
+
+		scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		evals, err := e.ScanNow(scanCtx, "NIFTY")
+		cancel()
+
+		e.scanMu.Lock()
+		e.lastScanTime = time.Now()
+		e.scanMu.Unlock()
+
+		if err != nil {
+			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", err)
+		} else {
+			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(evals))
+		}
+	}
 
 	// Trigger initial scan shortly after startup (after feeds/scrips stabilize)
 	go func() {
 		select {
 		case <-time.After(5 * time.Second):
-			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			_, _ = e.ScanNow(scanCtx, "NIFTY")
-			cancel()
-
-			e.scanMu.Lock()
-			e.lastScanTime = time.Now()
-			if time.Now().Before(nextTicker) {
-				e.nextScanTime = nextTicker
-			} else {
-				e.nextScanTime = time.Now().Add(tickerInterval)
-			}
-			e.scanMu.Unlock()
+			doScan()
 		case <-ctx.Done():
 		}
 	}()
-
-	ticker := time.NewTicker(tickerInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -931,18 +951,7 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 			e.log.Info("ai evaluator periodic scanner stopped", "event", "ai_scanner_stopped")
 			return
 		case <-ticker.C:
-			nextTicker = time.Now().Add(tickerInterval)
-			e.scanMu.Lock()
-			e.nextScanTime = nextTicker
-			e.scanMu.Unlock()
-
-			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			_, _ = e.ScanNow(scanCtx, "NIFTY")
-			cancel()
-
-			e.scanMu.Lock()
-			e.lastScanTime = time.Now()
-			e.scanMu.Unlock()
+			doScan()
 		}
 	}
 }

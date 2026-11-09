@@ -370,7 +370,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		s.revokeAllServeSessions()
 	}
 	if s.evaluator != nil {
-		s.evaluator.UpdateConfig(r.Context(), newCfg.AI)
+		s.evaluator.UpdateConfig(s.feedCtx, newCfg.AI)
 	}
 	restartRequired := restartRequiredFields(oldCfg, newCfg)
 
