@@ -69,6 +69,19 @@ type Market struct {
 	Chain       Chain       `yaml:"chain" json:"chain"`
 	Depth       Depth       `yaml:"depth" json:"depth"`
 	Holidays    []string    `yaml:"holidays" json:"holidays"`
+
+	Background BackgroundCollection `yaml:"background_collection" json:"background_collection"`
+}
+
+// BackgroundCollection configures the TOTP-free REST poller that keeps candle
+// history and paper-position tracking alive when the SFeed is unavailable.
+type BackgroundCollection struct {
+	Enabled              bool     `yaml:"enabled" json:"enabled"`
+	IntervalSeconds      int      `yaml:"interval_seconds" json:"interval_seconds"`
+	Underlyings          []string `yaml:"underlyings" json:"underlyings"`
+	StrikeWindow         int      `yaml:"strike_window" json:"strike_window"`
+	IncludeOpenPositions bool     `yaml:"include_open_positions" json:"include_open_positions"`
+	PersistLastSelection bool     `yaml:"persist_last_selection" json:"persist_last_selection"`
 }
 
 // Commodity is an option underlying traded on a commodity exchange.
@@ -309,6 +322,14 @@ func Default() Config {
 				VisiblePriority: true,
 			},
 			Depth: Depth{Enabled: true, Mode: "poll"},
+			Background: BackgroundCollection{
+				Enabled:              false,
+				IntervalSeconds:      1,
+				Underlyings:          []string{"NIFTY", "SENSEX", "CRUDEOIL"},
+				StrikeWindow:         1,
+				IncludeOpenPositions: true,
+				PersistLastSelection: true,
+			},
 		},
 		Charts: Charts{
 			BaseTimeframe:    "1m",

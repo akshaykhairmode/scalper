@@ -254,6 +254,18 @@ func (c Config) validateMarket() error {
 	if c.Market.Chain.BatchSize < 1 || c.Market.Chain.BatchSize > 500 {
 		return fieldErr("market.chain.batch_size", "must be between 1 and 500")
 	}
+	bg := c.Market.Background
+	if bg.IntervalSeconds < 1 || bg.IntervalSeconds > 60 {
+		return fieldErr("market.background_collection.interval_seconds", "must be between 1 and 60, got %d", bg.IntervalSeconds)
+	}
+	if bg.StrikeWindow < 0 || bg.StrikeWindow > 5 {
+		return fieldErr("market.background_collection.strike_window", "must be between 0 and 5, got %d", bg.StrikeWindow)
+	}
+	for i, underlying := range bg.Underlyings {
+		if strings.TrimSpace(underlying) == "" {
+			return fieldErr(fmt.Sprintf("market.background_collection.underlyings[%d]", i), "must not be empty")
+		}
+	}
 	switch c.Market.Depth.Mode {
 	case "poll", "websocket":
 	default:

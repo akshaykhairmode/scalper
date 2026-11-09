@@ -154,6 +154,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err := s.hsm.Subscribe(command.Keys); err != nil {
 				s.log.Warn("HSM subscription failed", "event", "hsm_subscribe_failed", "keys", command.Keys, "error", err)
 			}
+			s.scheduleWatchlistSave()
 		case "unsubscribe":
 			if s.hsm == nil {
 				continue
@@ -171,6 +172,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err := s.hsm.Unsubscribe(keys); err != nil {
 				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "keys", keys, "error", err)
 			}
+			s.scheduleWatchlistSave()
 		default:
 			s.log.Warn("unknown browser feed command", "event", "websocket_command_invalid", "type", command.Type)
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,18 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 		return firstErr
 	}
 	return nil
+}
+
+// SubscribedKeys returns a sorted copy of the current instrument subscription set.
+func (f *HSMFeed) SubscribedKeys() []string {
+	f.mu.RLock()
+	keys := make([]string, 0, len(f.subs))
+	for key := range f.subs {
+		keys = append(keys, key)
+	}
+	f.mu.RUnlock()
+	sort.Strings(keys)
+	return keys
 }
 
 // Unsubscribe removes instrument keys from the feed subscription set.

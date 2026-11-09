@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -63,6 +64,12 @@ type CandleStore interface {
 	CandleSyncAt(ctx context.Context, instrumentKey, timeframe, sessionDate string) (int64, bool, error)
 	MarkCandlesSynced(ctx context.Context, instrumentKey, timeframe, sessionDate string, syncedAt int64) error
 	AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targetTf string) ([]market.Candle, error)
+}
+
+// WatchlistStore persists the last selected instruments for the background poller.
+type WatchlistStore interface {
+	SaveWatchlist(ctx context.Context, keys []string) error
+	LoadWatchlist(ctx context.Context) ([]string, error)
 }
 
 // AIStore persists AI playbooks and decision evaluations in SQLite.
@@ -138,19 +145,27 @@ type Server struct {
 	bootstrap    template.JS
 
 	// Auth is the authentication handler.
-	a             *auth.Server
-	market        MarketAPI
-	hsm           *market.HSMFeed
-	kotak         *kotakapi.Client
-	orderFeed     *orderfeed.Client
-	bracketEngine *bracket.Engine
-	aiStore       AIStore
-	evaluator     *evaluator.Evaluator
-	agentClient   *agent.Client
-	candleAgg     *candleAggregator
-	consumerKey   string
-	books         *booksCache
-	risk          *riskState
+	a                  *auth.Server
+	market             MarketAPI
+	hsm                *market.HSMFeed
+	kotak              *kotakapi.Client
+	orderFeed          *orderfeed.Client
+	bracketEngine      *bracket.Engine
+	aiStore            AIStore
+	watchlistStore     WatchlistStore
+	evaluator          *evaluator.Evaluator
+	agentClient        *agent.Client
+	candleAgg          *candleAggregator
+	watchlistMu        sync.RWMutex
+	watchlist          []string
+	watchlistSaveMu    sync.Mutex
+	watchlistSaveTimer *time.Timer
+	bgContractsMu      sync.Mutex
+	bgContracts        map[string]backgroundContractSet
+	bgLastStatus       atomic.Bool
+	consumerKey        string
+	books              *booksCache
+	risk               *riskState
 
 	feedMu      sync.RWMutex
 	feedClients map[*feedClient]struct{}
@@ -340,6 +355,10 @@ func New(opts Options) (*Server, error) {
 			aiSt = as
 		}
 	}
+	var watchlistStore WatchlistStore
+	if ws, ok := opts.DB.(WatchlistStore); ok {
+		watchlistStore = ws
+	}
 	s := &Server{
 		log:                 opts.Logger,
 		cfg:                 opts.Config,
@@ -348,6 +367,7 @@ func New(opts Options) (*Server, error) {
 		candleStore:         opts.CandleStore,
 		deviceStore:         devStore,
 		aiStore:             aiSt,
+		watchlistStore:      watchlistStore,
 		webauthnChallenges:  make(map[string]webauthnStoredChallenge),
 		webauthnPairTokens:  make(map[string]time.Time),
 		loginIPAttempts:     make(map[string][]time.Time),
@@ -499,6 +519,7 @@ func New(opts Options) (*Server, error) {
 				s.log.Warn("failed to subscribe ai paper call instrument",
 					"event", "ai_track_subscribe_failed", "instrument", key, "error", err)
 			}
+			s.scheduleWatchlistSave()
 		},
 		OnScanStatus: func(status evaluator.ScannerStatus) {
 			s.broadcast(map[string]any{
@@ -513,6 +534,8 @@ func New(opts Options) (*Server, error) {
 		s.candleAgg = newCandleAggregator(s.candleStore, s.log, s.configSnapshot().Charts.RetentionDays)
 		go s.candleAgg.Run(s.feedCtx)
 	}
+	s.initWatchlist()
+	go s.runBackgroundPoller(s.feedCtx)
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -576,6 +599,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/devices/pair-token", s.handleCreatePairToken)
 	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 	mux.HandleFunc("GET /api/session/status", s.handleSessionStatus)
+	mux.HandleFunc("GET /api/system/storage", s.handleStorageInfo)
 	mux.HandleFunc("GET /api/version/check", s.handleVersionCheck)
 	mux.HandleFunc("GET /api/indices", s.handleIndices)
 	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
@@ -1440,6 +1464,13 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 		if err := s.hsm.Start(cfg.Kotak.UCC, session.BrokerSID, session.FeedURL); err != nil {
 			s.log.Error("start Kotak HSM feed", "event", "hsm_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
+		}
+		// Restore the persisted background watchlist now that the Scrip Master
+		// is available and the feed client is created.
+		if keys := s.watchlistSnapshot(); cfg.Market.Background.PersistLastSelection && len(keys) > 0 {
+			if err := s.hsm.Subscribe(keys); err != nil {
+				s.log.Debug("failed to restore watchlist subscriptions", "event", "watchlist_restore_failed", "error", err)
+			}
 		}
 	}
 	if s.orderFeed != nil {

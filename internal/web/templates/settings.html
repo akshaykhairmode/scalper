@@ -423,9 +423,95 @@
             </table>
           </div>
         </div>
-      </section>
 
-      <!-- TAB 3: Logging -->
+        <div class="card">
+          <div class="card-header">
+            <h2>Background Data Collection</h2>
+            <p class="card-desc">TOTP-free REST polling that keeps candle history and paper positions filling while the SFeed is unavailable or the terminal is closed.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group checkbox-group" data-field="market.background_collection.enabled" style="grid-column: 1 / -1;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-bg-enabled">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Enable Background Collection</strong>
+                  <span class="form-help">Polls selected contracts with REST quotes when the live SFeed is not connected.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="market.background_collection.interval_seconds">
+              <label for="f-bg-interval">Poll Interval</label>
+              <div class="input-unit">
+                <input type="number" id="f-bg-interval" min="1" max="60" step="1" placeholder="1">
+                <span class="unit-suffix">sec</span>
+              </div>
+              <span class="form-help">REST quote polling cadence (1–60s).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="market.background_collection.strike_window">
+              <label for="f-bg-strike-window">Strike Window</label>
+              <div class="input-unit">
+                <input type="number" id="f-bg-strike-window" min="0" max="5" step="1" placeholder="1">
+                <span class="unit-suffix">ATM ±</span>
+              </div>
+              <span class="form-help">Resolve this many strikes around ATM for the configured underlyings.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="market.background_collection.underlyings">
+              <label for="f-bg-underlyings">Underlyings</label>
+              <input type="text" id="f-bg-underlyings" placeholder="NIFTY, SENSEX, CRUDEOIL">
+              <span class="form-help">Comma-separated keys from the configured indices/commodities.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="market.background_collection.include_open_positions">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-bg-include-positions">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Include Open Positions</strong>
+                  <span class="form-help">Always poll contracts with open paper positions.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="market.background_collection.persist_last_selection">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-bg-persist">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Remember Last Selection</strong>
+                  <span class="form-help">Persist the browser's last spot/CE/PE selection so polling resumes after a restart.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header card-header-flex">
+            <div>
+              <h2>Storage</h2>
+              <p class="card-desc">SQLite database footprint on disk.</p>
+            </div>
+            <button type="button" class="btn small ghost" id="db-size-refresh">↻ Refresh</button>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Database Size</label>
+              <div id="db-size-value" style="font-family:var(--mono, monospace); font-size:18px; font-weight:700;">—</div>
+              <span class="form-help" id="db-size-detail">Loading…</span>
+            </div>
+          </div>
+        </div>
+      </section>
       <section class="tab-panel" id="panel-logging" role="tabpanel" aria-labelledby="tab-logging">
         <div class="card">
           <div class="card-header">

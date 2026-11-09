@@ -92,6 +92,13 @@ market:
   depth:
     enabled: true
     mode: "poll"             # poll | websocket
+  background_collection:
+    enabled: false           # TOTP-free REST poller; fills candles when SFeed is unavailable
+    interval_seconds: 1      # poll cadence per batch (1-60)
+    underlyings: ["NIFTY", "SENSEX", "CRUDEOIL"]
+    strike_window: 1         # ATM +/- N strikes
+    include_open_positions: true
+    persist_last_selection: true
   holidays: []               # e.g. ["2026-10-02"]
 
 charts:

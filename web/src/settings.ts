@@ -55,6 +55,8 @@
     setupModals();
     setupActions();
     setupDevices();
+    loadStorageInfo();
+    document.getElementById('db-size-refresh')?.addEventListener('click', loadStorageInfo);
 
     // Check embedded initial data first for instantaneous render
     const initialConfigEl = document.getElementById('initial-config-data');
@@ -317,6 +319,14 @@
     setVal('f-full-poll', c.full_poll_ms || 5000);
     setVal('f-chain-batch-size', c.batch_size || 40);
 
+    const bg = mkt.background_collection || {};
+    setChecked('f-bg-enabled', !!bg.enabled);
+    setVal('f-bg-interval', bg.interval_seconds !== undefined ? bg.interval_seconds : 1);
+    setVal('f-bg-strike-window', bg.strike_window !== undefined ? bg.strike_window : 1);
+    setVal('f-bg-underlyings', (bg.underlyings || []).join(', '));
+    setChecked('f-bg-include-positions', bg.include_open_positions !== undefined ? !!bg.include_open_positions : true);
+    setChecked('f-bg-persist', bg.persist_last_selection !== undefined ? !!bg.persist_last_selection : true);
+
     setChecked('f-vix-enabled', !!vix.enabled);
     setVal('f-vix-segment', vix.exchange_segment || 'nse_cm');
     setVal('f-vix-symbol', vix.symbol || 'INDIA VIX');
@@ -408,6 +418,11 @@
       { id: 'f-visible-poll', path: ['market', 'chain', 'visible_poll_ms'], type: 'int' },
       { id: 'f-full-poll', path: ['market', 'chain', 'full_poll_ms'], type: 'int' },
       { id: 'f-chain-batch-size', path: ['market', 'chain', 'batch_size'], type: 'int' },
+      { id: 'f-bg-enabled', path: ['market', 'background_collection', 'enabled'], type: 'bool' },
+      { id: 'f-bg-interval', path: ['market', 'background_collection', 'interval_seconds'], type: 'int' },
+      { id: 'f-bg-strike-window', path: ['market', 'background_collection', 'strike_window'], type: 'int' },
+      { id: 'f-bg-include-positions', path: ['market', 'background_collection', 'include_open_positions'], type: 'bool' },
+      { id: 'f-bg-persist', path: ['market', 'background_collection', 'persist_last_selection'], type: 'bool' },
       { id: 'f-vix-enabled', path: ['market', 'india_vix', 'enabled'], type: 'bool' },
       { id: 'f-vix-segment', path: ['market', 'india_vix', 'exchange_segment'], type: 'string' },
       { id: 'f-vix-symbol', path: ['market', 'india_vix', 'symbol'], type: 'string' },
@@ -474,6 +489,16 @@
         markDirty(true);
       });
     });
+
+    const bgUnderlyings = document.getElementById('f-bg-underlyings') as HTMLInputElement | null;
+    if (bgUnderlyings) {
+      bgUnderlyings.addEventListener('input', () => {
+        const values = bgUnderlyings.value.split(',').map((value) => value.trim()).filter(Boolean);
+        currentYAML = setYamlBackgroundUnderlyings(currentYAML, values);
+        yamlEditor.value = currentYAML;
+        markDirty(true);
+      });
+    }
   }
 
   // Indices Table Rendering
@@ -1461,6 +1486,100 @@
     }
 
     return yaml + '\nai:\n' + newLines.join('\n') + '\n';
+  }
+
+  function setYamlBackgroundUnderlyings(yaml: string, underlyings: string[]): string {
+    const lines = yaml.split('\n');
+    let mktIdx = -1;
+    let bgIdx = -1;
+    let uStart = -1;
+    let uEnd = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('market:')) {
+        mktIdx = i;
+        break;
+      }
+    }
+
+    if (mktIdx !== -1) {
+      for (let i = mktIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) break;
+        if (line.trim() === 'background_collection:') {
+          bgIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (bgIdx !== -1) {
+      for (let i = bgIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          const indent = line.search(/\S/);
+          if (indent <= 2) {
+            uEnd = i;
+            break;
+          }
+        }
+        if (trimmed.startsWith('underlyings:')) {
+          uStart = i;
+          for (let j = i + 1; j < lines.length; j++) {
+            const child = lines[j];
+            const childTrimmed = child.trim();
+            if (childTrimmed && !childTrimmed.startsWith('#')) {
+              const indent = child.search(/\S/);
+              if (indent <= 4) {
+                uEnd = j;
+                break;
+              }
+            }
+          }
+          if (uEnd === -1) uEnd = lines.length;
+          break;
+        }
+      }
+    }
+
+    const newLines = ['    underlyings:'];
+    underlyings.forEach((u) => newLines.push(`      - "${u}"`));
+
+    if (uStart !== -1) {
+      lines.splice(uStart, uEnd - uStart, ...newLines);
+      return lines.join('\n');
+    }
+    if (bgIdx !== -1) {
+      lines.splice(bgIdx + 1, 0, ...newLines);
+      return lines.join('\n');
+    }
+    if (mktIdx !== -1) {
+      lines.splice(mktIdx + 1, 0, '  background_collection:', ...newLines);
+      return lines.join('\n');
+    }
+    return yaml + '\nmarket:\n  background_collection:\n' + newLines.join('\n') + '\n';
+  }
+
+  async function loadStorageInfo() {
+    const value = document.getElementById('db-size-value');
+    const detail = document.getElementById('db-size-detail');
+    if (!value) return;
+    try {
+      const res = await fetch('/api/system/storage');
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      value.textContent = data.total_human || data.size_human || '—';
+      const parts: string[] = [];
+      if (data.size_human) parts.push(`main ${data.size_human}`);
+      if (data.wal_bytes > 0) parts.push(`WAL ${data.wal_human}`);
+      if (data.shm_bytes > 0) parts.push(`SHM ${data.shm_human}`);
+      if (data.path) parts.push(data.path);
+      detail.textContent = parts.join(' · ') || 'Database size unavailable';
+    } catch (err: any) {
+      value.textContent = '—';
+      detail.textContent = `Unable to read database size: ${err.message || err}`;
+    }
   }
 
   function escapeHtml(str) {
