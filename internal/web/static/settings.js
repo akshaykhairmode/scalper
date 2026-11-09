@@ -317,6 +317,7 @@
     setVal("f-agent-model", ag.model || "nvidia/nemotron-3.5-lightning:free");
     setVal("f-agent-api-key", ag.api_key || "");
     setVal("f-agent-timeout-ms", ag.timeout_ms || 3e4);
+    renderScannedUnderlyings(cfg);
   }
   function setVal(id, val) {
     const el2 = document.getElementById(id);
@@ -562,6 +563,7 @@
       indices.push(newIdx);
     }
     renderIndicesTable(indices);
+    renderScannedUnderlyings(currentConfig);
     currentYAML = setYamlIndices(currentYAML, indices);
     yamlEditor.value = currentYAML;
     markDirty(true);
@@ -576,6 +578,7 @@
     if (!confirm(`Are you sure you want to remove index "${key}"?`)) return;
     currentConfig.market.indices = currentConfig.market.indices.filter((i) => i.key !== key);
     renderIndicesTable(currentConfig.market.indices);
+    renderScannedUnderlyings(currentConfig);
     currentYAML = setYamlIndices(currentYAML, currentConfig.market.indices);
     yamlEditor.value = currentYAML;
     markDirty(true);
@@ -633,6 +636,7 @@
       commodities.push(newCmd);
     }
     renderCommoditiesTable(commodities);
+    renderScannedUnderlyings(currentConfig);
     currentYAML = setYamlCommodities(currentYAML, commodities);
     yamlEditor.value = currentYAML;
     markDirty(true);
@@ -643,9 +647,67 @@
     if (!confirm(`Are you sure you want to remove commodity "${key}"?`)) return;
     currentConfig.market.commodities = currentConfig.market.commodities.filter((c) => c.key !== key);
     renderCommoditiesTable(currentConfig.market.commodities);
+    renderScannedUnderlyings(currentConfig);
     currentYAML = setYamlCommodities(currentYAML, currentConfig.market.commodities);
     yamlEditor.value = currentYAML;
     markDirty(true);
+  }
+  function renderScannedUnderlyings(cfg) {
+    const container = document.getElementById("ai-underlyings-list");
+    if (!container) return;
+    container.innerHTML = "";
+    const indices = cfg.market && cfg.market.indices || [];
+    const commodities = cfg.market && cfg.market.commodities || [];
+    const scanned = cfg.ai && cfg.ai.scanned_underlyings && cfg.ai.scanned_underlyings.length > 0 ? cfg.ai.scanned_underlyings : ["NIFTY", "SENSEX"];
+    const items = [];
+    indices.forEach((idx) => {
+      items.push({
+        key: idx.key,
+        displayName: idx.display_name || idx.key,
+        segment: idx.exchange_segment || "nse_fo",
+        isMCX: false
+      });
+    });
+    commodities.forEach((cmd) => {
+      items.push({
+        key: cmd.key,
+        displayName: cmd.display_name || cmd.key,
+        segment: cmd.exchange_segment || "mcx_fo",
+        isMCX: true
+      });
+    });
+    if (items.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-dim);font-size:12px;">No indices or commodities configured.</span>';
+      return;
+    }
+    items.forEach((item) => {
+      const isChecked = scanned.includes(item.key);
+      const hoursBadge = item.isMCX ? "MCX \xB7 09:00\u201323:55" : "NSE/BSE \xB7 09:15\u201315:30";
+      const label = document.createElement("label");
+      label.className = "checkbox-label scanned-underlying-item";
+      label.innerHTML = `
+        <input type="checkbox" value="${escapeHtml(item.key)}" ${isChecked ? "checked" : ""}>
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-text">
+          <strong>${escapeHtml(item.key)}</strong>
+          <span class="form-help">${escapeHtml(item.displayName)} <code style="font-size:10px;margin-left:4px;opacity:0.8;">${hoursBadge}</code></span>
+        </span>
+      `;
+      const input = label.querySelector("input");
+      input.addEventListener("change", () => {
+        const selected = [];
+        container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+          if (cb.checked && cb.value) selected.push(cb.value);
+        });
+        if (currentConfig && currentConfig.ai) {
+          currentConfig.ai.scanned_underlyings = selected;
+        }
+        currentYAML = setYamlScannedUnderlyings(currentYAML, selected);
+        yamlEditor.value = currentYAML;
+        markDirty(true);
+      });
+      container.appendChild(label);
+    });
   }
   function setupEditor() {
     yamlEditor.addEventListener("input", () => {
@@ -1113,6 +1175,53 @@
       return lines.join("\n");
     }
     return yaml + "\nmarket:\n" + newLines.join("\n") + "\n";
+  }
+  function setYamlScannedUnderlyings(yaml, underlyings) {
+    const lines = yaml.split("\n");
+    let aiIdx = -1;
+    let suStart = -1;
+    let suEnd = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith("ai:")) {
+        aiIdx = i;
+        break;
+      }
+    }
+    if (aiIdx !== -1) {
+      for (let i = aiIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith("  scanned_underlyings:")) {
+          suStart = i;
+          for (let j = i + 1; j < lines.length; j++) {
+            const l = lines[j];
+            const trimmed = l.trim();
+            if (trimmed && !trimmed.startsWith("#")) {
+              const indent = l.search(/\S/);
+              if (indent <= 2) {
+                suEnd = j;
+                break;
+              }
+            }
+          }
+          if (suEnd === -1) suEnd = lines.length;
+          break;
+        } else if (line.length > 0 && !line.startsWith(" ") && !line.startsWith("#")) {
+          break;
+        }
+      }
+    }
+    const newLines = ["  scanned_underlyings:"];
+    underlyings.forEach((u) => {
+      newLines.push(`    - "${u}"`);
+    });
+    if (suStart !== -1 && suEnd !== -1) {
+      lines.splice(suStart, suEnd - suStart, ...newLines);
+      return lines.join("\n");
+    } else if (aiIdx !== -1) {
+      lines.splice(aiIdx + 1, 0, ...newLines);
+      return lines.join("\n");
+    }
+    return yaml + "\nai:\n" + newLines.join("\n") + "\n";
   }
   function escapeHtml(str) {
     if (!str) return "";

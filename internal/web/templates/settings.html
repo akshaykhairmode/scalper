@@ -568,6 +568,15 @@
               <span class="field-error"></span>
             </div>
 
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="ai.scanned_underlyings">
+              <label>Scanned Underlyings</label>
+              <span class="form-help">Select which indices and commodities the AI scanner evaluates. Equity markets (NSE/BSE) scan 09:15–15:30 IST; MCX commodities scan 09:00–23:55 IST. Default: NIFTY, SENSEX.</span>
+              <div id="ai-underlyings-list" class="scanned-underlyings-grid">
+                <!-- Dynamically populated with checkboxes for configured indices and commodities -->
+              </div>
+              <span class="field-error"></span>
+            </div>
+
             <div class="form-group" data-field="ai.target_pct">
               <label for="f-ai-target-pct">Call Profit Target (+%)</label>
               <div class="input-unit">

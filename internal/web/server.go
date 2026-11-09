@@ -621,10 +621,35 @@ func (s *Server) configSnapshot() config.Config {
 	return s.cfg
 }
 
-// isMarketOpen reports whether Indian markets are currently in session according to
-// configured trading hours, weekend rules, and market holidays.
-func (s *Server) isMarketOpen(now time.Time) bool {
+// isMCX reports whether an underlying key or instrument belongs to MCX.
+func (s *Server) isMCX(underlying string) bool {
 	cfg := s.configSnapshot()
+	uUpper := strings.ToUpper(strings.TrimSpace(underlying))
+	if strings.HasPrefix(strings.ToLower(underlying), "mcx_") {
+		return true
+	}
+	for _, cmd := range cfg.Market.Commodities {
+		if strings.EqualFold(cmd.Key, uUpper) || strings.EqualFold(cmd.ScripName, uUpper) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUnderlyingMarketOpen reports whether an underlying's market is open right now.
+// For MCX commodities, market hours are 09:00 to 23:55 IST.
+// For NSE/BSE equities/derivatives, market hours are 09:15 to 15:30 IST.
+// Weekends and market holidays are closed.
+func (s *Server) IsUnderlyingMarketOpen(underlying string) bool {
+	return s.isUnderlyingMarketOpen(underlying, time.Now())
+}
+
+// isUnderlyingMarketOpen checks whether an underlying is open for trading at a given time.
+func (s *Server) isUnderlyingMarketOpen(underlying string, now time.Time) bool {
+	cfg := s.configSnapshot()
+	if cfg.Trading.Session.AllowOutsideHours {
+		return true
+	}
 	loc := cfg.Location()
 	if loc != nil {
 		now = now.In(loc)
@@ -639,6 +664,15 @@ func (s *Server) isMarketOpen(now time.Time) bool {
 			return false
 		}
 	}
+
+	if s.isMCX(underlying) {
+		// MCX Commodity trading window: 09:00 to 23:55 IST
+		openAt := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, now.Location())
+		closeAt := time.Date(now.Year(), now.Month(), now.Day(), 23, 55, 0, 0, now.Location())
+		return !now.Before(openAt) && now.Before(closeAt)
+	}
+
+	// Equity / Indices: configured session or default 09:15 - 15:30 IST
 	openTime, errOpen := time.Parse("15:04", cfg.Trading.Session.Open)
 	closeTime, errClose := time.Parse("15:04", cfg.Trading.Session.Close)
 	if errOpen != nil || errClose != nil {
@@ -647,6 +681,12 @@ func (s *Server) isMarketOpen(now time.Time) bool {
 	openAt := time.Date(now.Year(), now.Month(), now.Day(), openTime.Hour(), openTime.Minute(), 0, 0, now.Location())
 	closeAt := time.Date(now.Year(), now.Month(), now.Day(), closeTime.Hour(), closeTime.Minute(), 0, 0, now.Location())
 	return !now.Before(openAt) && now.Before(closeAt)
+}
+
+// isMarketOpen reports whether Indian markets are currently in session according to
+// configured trading hours, weekend rules, and market holidays.
+func (s *Server) isMarketOpen(now time.Time) bool {
+	return s.isUnderlyingMarketOpen("NIFTY", now)
 }
 
 // Close stops the server's feed event forwarding and WebSocket clients.

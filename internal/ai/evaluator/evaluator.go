@@ -217,15 +217,18 @@ func (e *Evaluator) Stop() {
 
 // ScannerStatus represents the current state and timing of the background evaluation scanner.
 type ScannerStatus struct {
-	Enabled          bool      `json:"enabled"`
-	Running          bool      `json:"running"`
-	Scanning         bool      `json:"scanning"`
-	IntervalMinutes  int       `json:"interval_minutes"`
-	NextScanTime     time.Time `json:"next_scan_time,omitempty"`
-	NextScanUnix     int64     `json:"next_scan_unix"`
-	SecondsUntilNext int       `json:"seconds_until_next"`
-	LastScanTime     time.Time `json:"last_scan_time,omitempty"`
-	LastScanUnix     int64     `json:"last_scan_unix"`
+	Enabled           bool      `json:"enabled"`
+	Running           bool      `json:"running"`
+	Scanning          bool      `json:"scanning"`
+	IntervalMinutes   int       `json:"interval_minutes"`
+	NextScanTime      time.Time `json:"next_scan_time,omitempty"`
+	NextScanUnix      int64     `json:"next_scan_unix"`
+	SecondsUntilNext  int       `json:"seconds_until_next"`
+	LastScanTime      time.Time `json:"last_scan_time,omitempty"`
+	LastScanUnix      int64     `json:"last_scan_unix"`
+	AnyMarketOpen     bool      `json:"any_market_open"`
+	OpenUnderlyings   []string  `json:"open_underlyings,omitempty"`
+	ClosedUnderlyings []string  `json:"closed_underlyings,omitempty"`
 }
 
 // ScannerStatus returns a snapshot of the periodic evaluation scanner state and timing.
@@ -265,16 +268,45 @@ func (e *Evaluator) ScannerStatus() ScannerStatus {
 		lastUnix = last.Unix()
 	}
 
+	var configured []string
+	if uProvider, ok := e.quoteProvider.(interface{ GetConfiguredUnderlyings() []string }); ok {
+		configured = uProvider.GetConfiguredUnderlyings()
+	}
+	if len(configured) == 0 {
+		configured = []string{"NIFTY", "SENSEX"}
+	}
+
+	var openUnderlyings []string
+	var closedUnderlyings []string
+	anyOpen := false
+
+	if checker, ok := e.quoteProvider.(interface{ IsUnderlyingMarketOpen(string) bool }); ok {
+		for _, u := range configured {
+			if checker.IsUnderlyingMarketOpen(u) {
+				openUnderlyings = append(openUnderlyings, u)
+				anyOpen = true
+			} else {
+				closedUnderlyings = append(closedUnderlyings, u)
+			}
+		}
+	} else {
+		openUnderlyings = configured
+		anyOpen = true
+	}
+
 	return ScannerStatus{
-		Enabled:          enabled,
-		Running:          running,
-		Scanning:         scanning,
-		IntervalMinutes:  interval,
-		NextScanTime:     next,
-		NextScanUnix:     nextUnix,
-		SecondsUntilNext: secUntil,
-		LastScanTime:     last,
-		LastScanUnix:     lastUnix,
+		Enabled:           enabled,
+		Running:           running,
+		Scanning:          scanning,
+		IntervalMinutes:   interval,
+		NextScanTime:      next,
+		NextScanUnix:      nextUnix,
+		SecondsUntilNext:  secUntil,
+		LastScanTime:      last,
+		LastScanUnix:      lastUnix,
+		AnyMarketOpen:     anyOpen,
+		OpenUnderlyings:   openUnderlyings,
+		ClosedUnderlyings: closedUnderlyings,
 	}
 }
 
@@ -320,6 +352,8 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 	} else if nowEnabled && (!wasEnabled || newCfg.ScanIntervalMinutes != oldCfg.ScanIntervalMinutes) {
 		e.Stop()
 		e.Start(e.baseCtx)
+	} else if nowEnabled && e.onScanStatus != nil {
+		e.onScanStatus(e.ScannerStatus())
 	}
 }
 
@@ -936,15 +970,19 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 		e.nextScanTime = time.Now().Add(interval)
 		e.scanMu.Unlock()
 
+		status := e.ScannerStatus()
 		if e.onScanStatus != nil {
-			e.onScanStatus(e.ScannerStatus())
+			e.onScanStatus(status)
 		}
 
-		underlyings := []string{"NIFTY"}
-		if uProvider, ok := e.quoteProvider.(interface{ GetConfiguredUnderlyings() []string }); ok {
-			if configured := uProvider.GetConfiguredUnderlyings(); len(configured) > 0 {
-				underlyings = configured
-			}
+		if !status.AnyMarketOpen {
+			e.log.Info("periodic ai scan skipped: all configured markets closed", "event", "ai_periodic_scan_markets_closed", "closed", status.ClosedUnderlyings)
+			return
+		}
+
+		underlyings := status.OpenUnderlyings
+		if len(underlyings) == 0 {
+			return
 		}
 
 		var totalEvals []store.Evaluation
@@ -967,7 +1005,7 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 		if scanErr != nil && len(totalEvals) == 0 {
 			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", scanErr)
 		} else {
-			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(totalEvals))
+			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(totalEvals), "scanned", underlyings)
 		}
 
 		if e.onScanStatus != nil {

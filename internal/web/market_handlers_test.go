@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/market"
 )
 
@@ -82,6 +83,45 @@ func TestIsMarketOpen(t *testing.T) {
 	mondayAfter := time.Date(2026, 11, 9, 16, 0, 0, 0, loc)
 	if s.isMarketOpen(mondayAfter) {
 		t.Errorf("expected closed after close, got open")
+	}
+}
+
+func TestIsUnderlyingMarketOpen(t *testing.T) {
+	cfg := testConfig()
+	cfg.App.Timezone = "Asia/Kolkata"
+	cfg.Trading.Session.Open = "09:15"
+	cfg.Trading.Session.Close = "15:30"
+	cfg.Market.Commodities = []config.Commodity{
+		{Key: "CRUDEOIL", ScripName: "CRUDEOIL", ExchangeSegment: "mcx_fo"},
+		{Key: "NATURALGAS", ScripName: "NATURALGAS", ExchangeSegment: "mcx_fo"},
+	}
+	s := &Server{cfg: cfg}
+	loc := s.cfg.Location()
+
+	mondayEvening := time.Date(2026, 11, 9, 16, 30, 0, 0, loc)
+	if s.isUnderlyingMarketOpen("NIFTY", mondayEvening) {
+		t.Errorf("NIFTY should be closed at 16:30 IST")
+	}
+	if !s.isUnderlyingMarketOpen("CRUDEOIL", mondayEvening) {
+		t.Errorf("CRUDEOIL should be open at 16:30 IST")
+	}
+	if !s.isUnderlyingMarketOpen("NATURALGAS", mondayEvening) {
+		t.Errorf("NATURALGAS should be open at 16:30 IST")
+	}
+
+	mondayNight := time.Date(2026, 11, 9, 23, 50, 0, 0, loc)
+	if !s.isUnderlyingMarketOpen("CRUDEOIL", mondayNight) {
+		t.Errorf("CRUDEOIL should be open at 23:50 IST")
+	}
+
+	mondayMidnight := time.Date(2026, 11, 9, 23, 56, 0, 0, loc)
+	if s.isUnderlyingMarketOpen("CRUDEOIL", mondayMidnight) {
+		t.Errorf("CRUDEOIL should be closed at 23:56 IST")
+	}
+
+	sundayEvening := time.Date(2026, 11, 8, 16, 30, 0, 0, loc)
+	if s.isUnderlyingMarketOpen("CRUDEOIL", sundayEvening) {
+		t.Errorf("CRUDEOIL should be closed on Sunday")
 	}
 }
 

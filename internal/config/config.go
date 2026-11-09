@@ -211,6 +211,7 @@ type AI struct {
 	ShadowMode          bool        `yaml:"shadow_mode" json:"shadow_mode"`
 	PeriodicScan        bool        `yaml:"periodic_scan" json:"periodic_scan"`
 	ScanIntervalMinutes int         `yaml:"scan_interval_minutes" json:"scan_interval_minutes"`
+	ScannedUnderlyings  []string    `yaml:"scanned_underlyings,omitempty" json:"scanned_underlyings"`
 	TargetPct           float64     `yaml:"target_pct" json:"target_pct"`
 	StopLossPct         float64     `yaml:"stop_loss_pct" json:"stop_loss_pct"`
 	MinConfidence       float64     `yaml:"min_confidence" json:"min_confidence"`
@@ -355,6 +356,7 @@ func Default() Config {
 			ShadowMode:          true,
 			PeriodicScan:        true,
 			ScanIntervalMinutes: 15,
+			ScannedUnderlyings:  []string{"NIFTY", "SENSEX"},
 			TargetPct:           8.0,
 			StopLossPct:         5.0,
 			MinConfidence:       0.75,
@@ -560,6 +562,14 @@ func (c *Config) applyEnv() {
 	if v, ok := os.LookupEnv("AI_SCAN_INTERVAL_MINUTES"); ok {
 		if val, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && val > 0 {
 			c.AI.ScanIntervalMinutes = val
+		}
+	}
+	if v, ok := os.LookupEnv("AI_SCANNED_UNDERLYINGS"); ok && strings.TrimSpace(v) != "" {
+		c.AI.ScannedUnderlyings = nil
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				c.AI.ScannedUnderlyings = append(c.AI.ScannedUnderlyings, strings.ToUpper(s))
+			}
 		}
 	}
 }

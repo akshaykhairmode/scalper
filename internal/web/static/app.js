@@ -9865,6 +9865,22 @@ function renderAIScannerTimer() {
     }
     return;
   }
+  if (scanner.any_market_open === false) {
+    const closedList2 = (scanner.closed_underlyings || []).join(", ");
+    const tip = closedList2 ? `Markets are closed for ${closedList2}. Scanner will resume at next market session.` : "Selected markets are currently closed. Scanner will resume at next market session.";
+    if (headerEl) {
+      headerEl.textContent = "\u23F1 Closed";
+      headerEl.title = tip;
+      headerEl.style.color = "var(--text-muted, #888)";
+      headerEl.style.opacity = "0.75";
+    }
+    if (modalValEl) {
+      modalValEl.textContent = "Closed";
+      modalValEl.style.color = "var(--text-muted, #888)";
+    }
+    if (modalBadgeEl) modalBadgeEl.title = tip;
+    return;
+  }
   if (scanner.scanning) {
     if (headerEl) {
       headerEl.textContent = "\u23F1 Scanning\u2026";
@@ -9897,9 +9913,17 @@ function renderAIScannerTimer() {
     const secs = remaining % 60;
     formatted = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
+  const openList = (scanner.open_underlyings || []).join(", ");
+  const closedList = (scanner.closed_underlyings || []).join(", ");
+  let scopeTip = `interval: ${scanner.interval_minutes || 15}m`;
+  if (openList && closedList) {
+    scopeTip += ` \xB7 Active: ${openList} | Closed: ${closedList}`;
+  } else if (openList) {
+    scopeTip += ` \xB7 Active: ${openList}`;
+  }
   if (headerEl) {
     headerEl.textContent = remaining <= 0 ? "\u23F1 Scanning\u2026" : `\u23F1 ${formatted}`;
-    headerEl.title = `Next AI background scan in ${remaining}s (interval: ${scanner.interval_minutes || 15}m)`;
+    headerEl.title = remaining <= 0 ? "AI scan in progress\u2026" : `Next AI background scan in ${remaining}s (${scopeTip})`;
     headerEl.style.opacity = "1";
     if (remaining <= 0) {
       headerEl.style.color = "var(--accent, #f59e0b)";
@@ -9910,6 +9934,9 @@ function renderAIScannerTimer() {
   if (modalValEl) {
     modalValEl.textContent = formatted;
     modalValEl.style.color = "var(--accent, #f59e0b)";
+  }
+  if (modalBadgeEl) {
+    modalBadgeEl.title = `Next scan in ${remaining}s (${scopeTip})`;
   }
   if (remaining === 0 && !S.aiScanRefreshTriggered) {
     S.aiScanRefreshTriggered = true;

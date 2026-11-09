@@ -27,7 +27,7 @@ func clearScalperEnv(t *testing.T) {
 		"SCALPER_SERVE_USERNAME", "SERVE_AUTH_USERNAME", "SCALPER_BASIC_AUTH_USERNAME",
 		"SCALPER_SERVE_PASSWORD", "SERVE_AUTH_PASSWORD", "SCALPER_BASIC_AUTH_PASSWORD",
 		"TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "AI_AGENT_API_KEY",
-		"AI_ENABLED", "AI_SHADOW_MODE", "AI_AGENT_PROVIDER", "AI_AGENT_MODEL", "AI_JEV_MODEL",
+		"AI_ENABLED", "AI_SHADOW_MODE", "AI_AGENT_PROVIDER", "AI_AGENT_MODEL", "AI_JEV_MODEL", "AI_SCANNED_UNDERLYINGS",
 	} {
 		key := key
 		old, ok := os.LookupEnv(key)
@@ -81,6 +81,9 @@ func TestLoadBytesDefaults(t *testing.T) {
 	if cfg.Kotak.MobileNumber != "" {
 		t.Fatalf("default mobile = %q, want empty", cfg.Kotak.MobileNumber)
 	}
+	if len(cfg.AI.ScannedUnderlyings) != 2 || cfg.AI.ScannedUnderlyings[0] != "NIFTY" || cfg.AI.ScannedUnderlyings[1] != "SENSEX" {
+		t.Fatalf("default ai.scanned_underlyings = %v, want [NIFTY SENSEX]", cfg.AI.ScannedUnderlyings)
+	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("defaults without kotak identity should fail validation")
 	}
@@ -106,6 +109,7 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("AI_AGENT_PROVIDER", "gemini")
 	t.Setenv("AI_AGENT_MODEL", "gemini-2.5-flash")
 	t.Setenv("AI_JEV_MODEL", "jev-custom")
+	t.Setenv("AI_SCANNED_UNDERLYINGS", "NIFTY, SENSEX, CRUDEOIL")
 
 	cfg, err := LoadBytes([]byte("{}"), "inline")
 	if err != nil {
@@ -149,6 +153,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.AI.Jev.Model != "jev-custom" {
 		t.Fatalf("ai.jev.model = %q, want jev-custom", cfg.AI.Jev.Model)
+	}
+	if len(cfg.AI.ScannedUnderlyings) != 3 || cfg.AI.ScannedUnderlyings[2] != "CRUDEOIL" {
+		t.Fatalf("ai.scanned_underlyings = %v, want [NIFTY SENSEX CRUDEOIL]", cfg.AI.ScannedUnderlyings)
 	}
 }
 

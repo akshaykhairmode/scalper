@@ -151,6 +151,9 @@ ai:
   shadow_mode: true          # Log evaluations to SQLite without sending broker orders
   periodic_scan: false       # Automatically query Jev for periodic option setups
   scan_interval_minutes: 15  # Periodic scan interval (5, 15, 30, 60m)
+  scanned_underlyings:       # List of underlyings evaluated by background scanner (default: NIFTY, SENSEX)
+    - "NIFTY"
+    - "SENSEX"
   target_pct: 8.0            # Target profit percentage for call tracking (+8%)
   stop_loss_pct: 5.0         # Stop-loss risk percentage for call tracking (-5%)
   min_confidence: 0.75       # Minimum Noul probability cutoff (0.0 to 1.0)

@@ -177,6 +177,13 @@ func (s *Server) handleTriggerAIScan(w http.ResponseWriter, r *http.Request) {
 		underlying = "NIFTY"
 	}
 
+	cfg := s.configSnapshot()
+	if !cfg.Trading.Session.AllowOutsideHours && !s.IsUnderlyingMarketOpen(underlying) {
+		s.writeRouteError(w, r, http.StatusBadRequest,
+			fmt.Sprintf("market is closed for %s; trading hours are 09:15-15:30 IST (09:00-23:55 IST for MCX)", underlying), nil)
+		return
+	}
+
 	evals, err := s.evaluator.ScanNow(r.Context(), underlying)
 	if err != nil {
 		s.log.Error("manual ai scan failed", "event", "ai_scan_trigger_failed", "underlying", underlying, "error", err,

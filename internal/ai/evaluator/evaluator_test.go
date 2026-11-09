@@ -322,3 +322,59 @@ func TestEvaluatorScannerStatus(t *testing.T) {
 	}
 	ev.Stop()
 }
+
+type mockQuoteProviderWithHours struct {
+	mockQuoteProvider
+	openMap map[string]bool
+}
+
+func (m *mockQuoteProviderWithHours) IsUnderlyingMarketOpen(u string) bool {
+	return m.openMap[u]
+}
+
+func (m *mockQuoteProviderWithHours) GetConfiguredUnderlyings() []string {
+	return []string{"NIFTY", "SENSEX", "NATURALGAS"}
+}
+
+func TestScannerStatusMarketHours(t *testing.T) {
+	qp := &mockQuoteProviderWithHours{
+		openMap: map[string]bool{
+			"NIFTY":      false,
+			"SENSEX":     false,
+			"NATURALGAS": true,
+		},
+	}
+
+	ev := New(Options{
+		Config: config.AI{
+			Enabled:             true,
+			PeriodicScan:        true,
+			ScanIntervalMinutes: 15,
+		},
+		QuoteProvider: qp,
+	})
+
+	status := ev.ScannerStatus()
+	if !status.AnyMarketOpen {
+		t.Error("expected AnyMarketOpen to be true since NATURALGAS is open")
+	}
+	if len(status.OpenUnderlyings) != 1 || status.OpenUnderlyings[0] != "NATURALGAS" {
+		t.Errorf("expected OpenUnderlyings [NATURALGAS], got %v", status.OpenUnderlyings)
+	}
+	if len(status.ClosedUnderlyings) != 2 {
+		t.Errorf("expected 2 closed underlyings, got %v", status.ClosedUnderlyings)
+	}
+
+	// Now close all
+	qp.openMap["NATURALGAS"] = false
+	status = ev.ScannerStatus()
+	if status.AnyMarketOpen {
+		t.Error("expected AnyMarketOpen to be false when all closed")
+	}
+	if len(status.OpenUnderlyings) != 0 {
+		t.Errorf("expected 0 open underlyings, got %v", status.OpenUnderlyings)
+	}
+	if len(status.ClosedUnderlyings) != 3 {
+		t.Errorf("expected 3 closed underlyings, got %v", status.ClosedUnderlyings)
+	}
+}
