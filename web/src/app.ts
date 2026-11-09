@@ -973,18 +973,10 @@ function buildCharts() {
     b.classList.toggle("active", savedPatterns);
     b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
   });
-  const initSpotInst = activeSpotInstrument();
-  const initIsCashIndex = !activeCommodity() && (initSpotInst.startsWith("nse_cm|") || initSpotInst.startsWith("bse_cm|"));
   $$('button[data-chart-action="dom"]').forEach((b) => {
-    const isSpotBtn = b.dataset.chart === "underlying" || b.dataset.chart === "spot";
-    if (isSpotBtn && initIsCashIndex) {
-      b.classList.remove("active");
-      b.setAttribute("aria-pressed", "false");
-      b.title = "Depth of Market (DOM) · Not available for cash indices (visible on Call/Put charts)";
-    } else {
-      b.classList.toggle("active", savedDOM);
-      b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
-    }
+    b.classList.toggle("active", savedDOM);
+    b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
+    b.title = "Order Flow DOM · Fixed-interval Buyer & Seller volume ladder on chart";
   });
   $$('button[data-chart-action="ma"]').forEach((b) => {
     const pane = b.dataset.chart;
@@ -2610,14 +2602,9 @@ function renderPaneHeaders() {
   if (spotInst && S.depths?.[spotInst]) {
     S.charts.spot?.setDepth?.(S.depths[spotInst]);
   }
-  const isCashIndex = !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
-  $$('button[data-chart="underlying"][data-chart-action="dom"]').forEach((b) => {
-    if (isCashIndex) {
-      b.classList.remove("active");
-      b.setAttribute("aria-pressed", "false");
-      b.title = "Depth of Market (DOM) · Not available for cash indices (visible on Call/Put charts)";
-    }
-  });
+  if (S.chain && S.chain.length) {
+    S.charts.spot?.setChainData?.(S.chain);
+  }
 
   renderOrderPad();
 }
@@ -2766,6 +2753,9 @@ function renderChain(preserveScroll = false) {
   $("strike-meta").textContent = `${S.chain.length} strikes${pcrSummary} · ${expiryText(S.expiry)}`;
   renderChainMoreControls();
   renderPCR();
+  if (S.chain && S.chain.length) {
+    S.charts.spot?.setChainData?.(S.chain);
+  }
 
   body.scrollTop = scrollTop;
   applyStrikeFilter();
@@ -6293,24 +6283,13 @@ function bindEvents() {
         return;
       }
       if (action === "dom") {
-        const isSpot = chartKey === "underlying" || chartKey === "spot";
-        const spotInst = activeSpotInstrument();
-        const hasSpotDepth = isSpot && Boolean(S.depths?.[spotInst]?.bids?.length || S.depths?.[spotInst]?.asks?.length);
-        const isCashIndex = isSpot && !hasSpotDepth && !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
-
-        if (isCashIndex) {
-          button.classList.remove("active");
-          button.setAttribute("aria-pressed", "false");
-          chart.toggleDepth(false);
-          toast("Depth of Market (DOM) is not available for index spots. Visible on Call & Put option charts.", "warn", 3500);
-          return;
-        }
-
         const nextState = chart.toggleDepth();
         button.classList.toggle("active", nextState);
         button.setAttribute("aria-pressed", nextState ? "true" : "false");
 
         if (nextState) {
+          const isSpot = chartKey === "underlying" || chartKey === "spot";
+          const spotInst = activeSpotInstrument();
           let depth = null;
           if (chartKey === "ce") {
             const ceInst = chartInstrument("CE");
@@ -6320,19 +6299,22 @@ function bindEvents() {
             depth = S.depths?.[peInst] || (selectedOption("PE")?.bids?.length || selectedOption("PE")?.asks?.length ? { bids: selectedOption("PE").bids, asks: selectedOption("PE").asks } : null);
           } else if (isSpot) {
             depth = S.depths?.[spotInst] || null;
+            if (S.chain && S.chain.length) {
+              chart.setChainData?.(S.chain);
+            }
           }
           if (depth) {
             chart.setDepth(depth);
+          } else {
+            chart.refreshDepth();
           }
         }
 
         try {
           localStorage.setItem("scalper-show-dom", String(nextState));
-        } catch {
-          // ignore
-        }
+        } catch (_) {}
         const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
-        toast(nextState ? `DOM price bars enabled (${label})` : `DOM price bars hidden (${label})`, "ok", 1500);
+        toast(nextState ? `Order Flow DOM enabled (${label})` : `Order Flow DOM hidden (${label})`, "ok", 1500);
         return;
       }
       if (action === "sr") {

@@ -1596,6 +1596,154 @@ function findClosestCandle(candles, timestampMs) {
   }
   return best;
 }
+function formatDOMQty(q) {
+  const n = Number(q || 0);
+  if (n <= 0) return "";
+  if (n >= 1e7) return `${(n / 1e7).toFixed(1)}Cr`;
+  if (n >= 1e5) return `${(n / 1e5).toFixed(1)}L`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+function computeDOMInterval(minPrice, maxPrice, heightPx = 500) {
+  const span = maxPrice - minPrice;
+  if (!Number.isFinite(span) || span <= 0) return 5;
+  const desiredRows = Math.max(6, Math.min(22, Math.floor(heightPx / 26)));
+  const rawStep = span / desiredRows;
+  const candidateSteps = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 500];
+  for (const step of candidateSteps) {
+    if (step >= rawStep) {
+      return step;
+    }
+  }
+  return candidateSteps[candidateSteps.length - 1];
+}
+function calculateOrderFlowBuckets(candles, depthData, chainData, minPrice, maxPrice, step) {
+  const buckets = /* @__PURE__ */ new Map();
+  const startP = Math.floor((minPrice - step) / step) * step;
+  const endP = Math.ceil((maxPrice + step) / step) * step;
+  for (let p = startP; p <= endP + 1e-6; p = Math.round((p + step) * 100) / 100) {
+    const key = Math.round(p * 100) / 100;
+    buckets.set(key, {
+      price: key,
+      buyVol: 0,
+      sellVol: 0,
+      buyOrders: 0,
+      sellOrders: 0
+    });
+  }
+  const recent = Array.isArray(candles) ? candles.slice(-80) : [];
+  for (const c of recent) {
+    const low = Number(c.low);
+    const high = Number(c.high);
+    const open = Number(c.open);
+    const close = Number(c.close);
+    const vol = Number(c.volume || 0);
+    if (!low || !high || high <= 0 || low <= 0) continue;
+    const range = Math.max(0.01, high - low);
+    let buyRatio = 0.5;
+    if (high > low) {
+      buyRatio = Math.max(0.1, Math.min(0.9, (close - low) / range));
+    } else if (close > open) {
+      buyRatio = 0.75;
+    } else if (close < open) {
+      buyRatio = 0.25;
+    }
+    const cBuyVol = vol > 0 ? vol * buyRatio : buyRatio >= 0.5 ? Math.round(buyRatio * 25) : Math.round(buyRatio * 8);
+    const cSellVol = vol > 0 ? vol * (1 - buyRatio) : buyRatio < 0.5 ? Math.round((1 - buyRatio) * 25) : Math.round((1 - buyRatio) * 8);
+    const cBuyOrd = buyRatio >= 0.5 ? Math.max(1, Math.round(buyRatio * 6)) : 1;
+    const cSellOrd = 1 - buyRatio >= 0.5 ? Math.max(1, Math.round((1 - buyRatio) * 6)) : 1;
+    const bStart = Math.floor(low / step) * step;
+    const bEnd = Math.ceil(high / step) * step;
+    for (let p = bStart; p <= bEnd + 1e-6; p = Math.round((p + step) * 100) / 100) {
+      const bKey = Math.round(p * 100) / 100;
+      const b = buckets.get(bKey);
+      if (!b) continue;
+      const overlapLow = Math.max(low, p - step / 2);
+      const overlapHigh = Math.min(high, p + step / 2);
+      const overlapLen = Math.max(0, overlapHigh - overlapLow);
+      const weight = overlapLen / range;
+      if (weight > 0) {
+        b.buyVol += cBuyVol * weight;
+        b.sellVol += cSellVol * weight;
+        b.buyOrders += cBuyOrd * weight;
+        b.sellOrders += cSellOrd * weight;
+      }
+    }
+  }
+  if (Array.isArray(chainData) && chainData.length) {
+    for (const row of chainData) {
+      const strike = Number(row.strike || 0);
+      if (strike <= 0) continue;
+      const bKey = Math.round(Math.round(strike / step) * step * 100) / 100;
+      const b = buckets.get(bKey);
+      if (!b) continue;
+      const callVol = Number(row.call?.volume || 0);
+      const putVol = Number(row.put?.volume || 0);
+      const callOI = Number(row.call?.oi || 0);
+      const putOI = Number(row.put?.oi || 0);
+      const spotBull = callVol + putOI * 0.1;
+      const spotBear = putVol + callOI * 0.1;
+      if (spotBull > 0) {
+        b.buyVol += spotBull * 0.2;
+        b.buyOrders += Math.max(1, Math.round(spotBull / 500));
+      }
+      if (spotBear > 0) {
+        b.sellVol += spotBear * 0.2;
+        b.sellOrders += Math.max(1, Math.round(spotBear / 500));
+      }
+    }
+  }
+  if (depthData) {
+    const bids = Array.isArray(depthData.bids) ? depthData.bids : [];
+    const asks = Array.isArray(depthData.asks) ? depthData.asks : [];
+    for (const bid of bids) {
+      const px = Number(bid.price || 0);
+      const qty = Number(bid.quantity || 0);
+      const ord = Number(bid.orders || 1);
+      if (px <= 0 || qty <= 0) continue;
+      const bKey = Math.round(Math.round(px / step) * step * 100) / 100;
+      let b = buckets.get(bKey);
+      if (!b && bKey >= startP && bKey <= endP) {
+        b = { price: bKey, buyVol: 0, sellVol: 0, buyOrders: 0, sellOrders: 0 };
+        buckets.set(bKey, b);
+      }
+      if (b) {
+        b.buyVol += qty;
+        b.buyOrders += ord;
+      }
+    }
+    for (const ask of asks) {
+      const px = Number(ask.price || 0);
+      const qty = Number(ask.quantity || 0);
+      const ord = Number(ask.orders || 1);
+      if (px <= 0 || qty <= 0) continue;
+      const bKey = Math.round(Math.round(px / step) * step * 100) / 100;
+      let b = buckets.get(bKey);
+      if (!b && bKey >= startP && bKey <= endP) {
+        b = { price: bKey, buyVol: 0, sellVol: 0, buyOrders: 0, sellOrders: 0 };
+        buckets.set(bKey, b);
+      }
+      if (b) {
+        b.sellVol += qty;
+        b.sellOrders += ord;
+      }
+    }
+  }
+  const result = [];
+  let maxVol = 1;
+  for (const b of buckets.values()) {
+    b.buyVol = Math.round(b.buyVol);
+    b.sellVol = Math.round(b.sellVol);
+    b.buyOrders = Math.round(b.buyOrders);
+    b.sellOrders = Math.round(b.sellOrders);
+    const total = Math.max(b.buyVol, b.sellVol);
+    if (total > maxVol) maxVol = total;
+    if (b.buyVol > 0 || b.sellVol > 0) {
+      result.push(b);
+    }
+  }
+  return { buckets: result, maxVol, step };
+}
 var overlaysRegistered = false;
 function registerCustomOverlays() {
   const kc = window.klinecharts;
@@ -1717,12 +1865,136 @@ function registerCustomOverlays() {
       const coord = coordinates[0];
       if (!coord || !Number.isFinite(coord.y)) return [];
       const y = coord.y;
+      const height = bounding?.height || 500;
+      if (y < -20 || y > height + 20) return [];
+      const width = bounding?.width || 800;
       const data = overlay.extendData || {};
+      if (data.buyVol != null || data.sellVol != null) {
+        const buyVol = Number(data.buyVol || 0);
+        const sellVol = Number(data.sellVol || 0);
+        const maxVol = Number(data.maxVol || Math.max(buyVol, sellVol, 1));
+        const panelWidth = Math.min(240, Math.max(150, Math.round(width * 0.28)));
+        const xRight = width - 4;
+        const xLeft = xRight - panelWidth;
+        const xCenter = Math.round(xLeft + panelWidth * 0.5);
+        const halfWidth = Math.round((panelWidth - 14) * 0.48);
+        const barHeight2 = 14;
+        const yTop2 = y - barHeight2 / 2;
+        const yBottom2 = y + barHeight2 / 2;
+        const figures2 = [];
+        figures2.push({
+          type: "line",
+          attrs: {
+            coordinates: [
+              { x: xCenter, y: yTop2 - 1 },
+              { x: xCenter, y: yBottom2 + 1 }
+            ]
+          },
+          styles: { style: "solid", size: 1.5, color: "rgba(255, 255, 255, 0.22)" },
+          ignoreEvent: true
+        });
+        if (buyVol > 0) {
+          const buyRatio = Math.max(0.05, Math.min(1, buyVol / maxVol));
+          const buyBarW = Math.max(6, Math.round(buyRatio * halfWidth));
+          const xBuyRight = xCenter - 3;
+          const xBuyLeft = xBuyRight - buyBarW;
+          figures2.push({
+            type: "polygon",
+            attrs: {
+              coordinates: [
+                { x: xBuyLeft, y: yTop2 },
+                { x: xBuyRight, y: yTop2 },
+                { x: xBuyRight, y: yBottom2 },
+                { x: xBuyLeft, y: yBottom2 }
+              ]
+            },
+            styles: { style: "fill", color: "rgba(34, 197, 94, 0.35)" },
+            ignoreEvent: true
+          });
+          figures2.push({
+            type: "line",
+            attrs: {
+              coordinates: [
+                { x: xBuyLeft, y: yTop2 },
+                { x: xBuyLeft, y: yBottom2 }
+              ]
+            },
+            styles: { style: "solid", size: 2.5, color: "#22c55e" },
+            ignoreEvent: true
+          });
+          const buyText = formatDOMQty(buyVol);
+          figures2.push({
+            type: "text",
+            attrs: {
+              x: xBuyRight - 4,
+              y,
+              text: buyText,
+              align: "right",
+              baseline: "middle"
+            },
+            styles: {
+              color: "#86efac",
+              size: 9,
+              weight: "bold",
+              family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+            },
+            ignoreEvent: true
+          });
+        }
+        if (sellVol > 0) {
+          const sellRatio = Math.max(0.05, Math.min(1, sellVol / maxVol));
+          const sellBarW = Math.max(6, Math.round(sellRatio * halfWidth));
+          const xSellLeft = xCenter + 3;
+          const xSellRight = xSellLeft + sellBarW;
+          figures2.push({
+            type: "polygon",
+            attrs: {
+              coordinates: [
+                { x: xSellLeft, y: yTop2 },
+                { x: xSellRight, y: yTop2 },
+                { x: xSellRight, y: yBottom2 },
+                { x: xSellLeft, y: yBottom2 }
+              ]
+            },
+            styles: { style: "fill", color: "rgba(239, 68, 68, 0.35)" },
+            ignoreEvent: true
+          });
+          figures2.push({
+            type: "line",
+            attrs: {
+              coordinates: [
+                { x: xSellRight, y: yTop2 },
+                { x: xSellRight, y: yBottom2 }
+              ]
+            },
+            styles: { style: "solid", size: 2.5, color: "#ef4444" },
+            ignoreEvent: true
+          });
+          const sellText = formatDOMQty(sellVol);
+          figures2.push({
+            type: "text",
+            attrs: {
+              x: xSellLeft + 4,
+              y,
+              text: sellText,
+              align: "left",
+              baseline: "middle"
+            },
+            styles: {
+              color: "#fca5a5",
+              size: 9,
+              weight: "bold",
+              family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+            },
+            ignoreEvent: true
+          });
+        }
+        return figures2;
+      }
       const isBuy = data.side === "BUY" || data.side === "B";
       const orders = Number(data.orders || 0);
       const qty = Number(data.quantity || 0);
       const maxQty = Number(data.maxQty || qty || 1);
-      const width = bounding?.width || 800;
       const baseColor = isBuy ? "#29b360" : "#f05a5a";
       const fillColor = isBuy ? "rgba(41, 179, 96, 0.35)" : "rgba(240, 90, 90, 0.35)";
       const barHeight = 16;
@@ -1759,7 +2031,7 @@ function registerCustomOverlays() {
         ignoreEvent: true
       });
       const orderLabel = orders > 0 ? `${orders}o \xB7 ` : "";
-      const qtyLabel = qty >= 1e5 ? `${(qty / 1e5).toFixed(1)}L` : qty >= 1e3 ? `${(qty / 1e3).toFixed(1)}K` : String(qty);
+      const qtyLabel = formatDOMQty(qty) || String(qty);
       const label = `${orderLabel}${qtyLabel}`;
       figures.push({
         type: "text",
@@ -2725,6 +2997,8 @@ var CandleChart = class {
     this.showDepth = Boolean(showDepth);
     this.depthOverlayIds = [];
     this.depthData = null;
+    this.chainData = [];
+    this._depthTimer = null;
     this.patternConfig = { candlestick: true, geometric: true, harmonic: true, liquidity: true };
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
@@ -2811,6 +3085,11 @@ var CandleChart = class {
         console.warn("createIndicator MA:", e);
       }
     }
+    if (this.container) {
+      this.container.addEventListener("wheel", () => {
+        if (this.showDepth) this.debounceDepthRefresh();
+      }, { passive: true });
+    }
   }
   formatCandle(c) {
     if (!c || !Number.isFinite(c.time)) return null;
@@ -2896,59 +3175,76 @@ var CandleChart = class {
     }
     this.depthOverlayIds = [];
   }
+  getVisiblePriceRange() {
+    if (!this.chart || !this.container) return null;
+    try {
+      const height = this.container.clientHeight || 500;
+      const topRes = this.chart.convertFromPixel({ x: 50, y: 15 });
+      const bottomRes = this.chart.convertFromPixel({ x: 50, y: height - 40 });
+      if (topRes && bottomRes && Number.isFinite(topRes.value) && Number.isFinite(bottomRes.value)) {
+        const maxP = Math.max(topRes.value, bottomRes.value);
+        const minP = Math.min(topRes.value, bottomRes.value);
+        if (maxP > minP && minP > 0) {
+          return { min: minP, max: maxP, height };
+        }
+      }
+    } catch (_) {
+    }
+    if (this.data && this.data.length) {
+      const slice = this.data.slice(-50);
+      let minP = Infinity;
+      let maxP = -Infinity;
+      for (const c of slice) {
+        if (c.low > 0 && c.low < minP) minP = c.low;
+        if (c.high > maxP) maxP = c.high;
+      }
+      if (Number.isFinite(minP) && Number.isFinite(maxP) && maxP > minP) {
+        const pad = (maxP - minP) * 0.08;
+        return { min: Math.max(0.1, minP - pad), max: maxP + pad, height: this.container.clientHeight || 500 };
+      }
+    }
+    return null;
+  }
+  debounceDepthRefresh() {
+    if (this._depthTimer) clearTimeout(this._depthTimer);
+    this._depthTimer = setTimeout(() => {
+      this._depthTimer = null;
+      if (this.showDepth) this.refreshDepth();
+    }, 120);
+  }
   setDepth(depth) {
     this.depthData = depth || null;
-    this.refreshDepth();
+    this.debounceDepthRefresh();
+  }
+  setChainData(chain) {
+    this.chainData = Array.isArray(chain) ? chain : [];
+    if (this.showDepth) this.debounceDepthRefresh();
   }
   refreshDepth() {
     this.clearDepth();
-    if (!this.showDepth || !this.chart || !this.depthData) return;
-    const bids = Array.isArray(this.depthData.bids) ? this.depthData.bids : [];
-    const asks = Array.isArray(this.depthData.asks) ? this.depthData.asks : [];
-    if (!bids.length && !asks.length) return;
-    let maxQty = 1;
-    for (const b of bids) {
-      const q = Number(b.quantity || 0);
-      if (q > maxQty) maxQty = q;
-    }
-    for (const a of asks) {
-      const q = Number(a.quantity || 0);
-      if (q > maxQty) maxQty = q;
-    }
-    for (const b of bids) {
-      const price = Number(b.price || 0);
-      if (!price || price <= 0) continue;
+    if (!this.showDepth || !this.chart) return;
+    if (!this.data.length && !this.depthData) return;
+    const range = this.getVisiblePriceRange();
+    if (!range || range.max <= range.min) return;
+    const step = computeDOMInterval(range.min, range.max, range.height);
+    const { buckets, maxVol } = calculateOrderFlowBuckets(this.data, this.depthData, this.chainData, range.min, range.max, step);
+    if (!buckets.length) return;
+    for (const b of buckets) {
+      if (b.price <= 0 || b.buyVol <= 0 && b.sellVol <= 0) continue;
       try {
         const id = this.chart.createOverlay({
           name: "depthLevelBar",
           groupId: "depth_bars",
-          points: [{ value: price }],
+          points: [{ value: b.price }],
           lock: true,
           extendData: {
-            side: "BUY",
-            orders: Number(b.orders || 0),
-            quantity: Number(b.quantity || 0),
-            maxQty
-          }
-        });
-        if (id) this.depthOverlayIds.push(id);
-      } catch (_) {
-      }
-    }
-    for (const a of asks) {
-      const price = Number(a.price || 0);
-      if (!price || price <= 0) continue;
-      try {
-        const id = this.chart.createOverlay({
-          name: "depthLevelBar",
-          groupId: "depth_bars",
-          points: [{ value: price }],
-          lock: true,
-          extendData: {
-            side: "SELL",
-            orders: Number(a.orders || 0),
-            quantity: Number(a.quantity || 0),
-            maxQty
+            price: b.price,
+            buyVol: b.buyVol,
+            sellVol: b.sellVol,
+            buyOrders: b.buyOrders,
+            sellOrders: b.sellOrders,
+            maxVol,
+            step
           }
         });
         if (id) this.depthOverlayIds.push(id);
@@ -3637,17 +3933,27 @@ var CandleChart = class {
     if (formatted && this.subscriberCallback) {
       this.subscriberCallback(formatted);
     }
+    if (this.showDepth) {
+      this.debounceDepthRefresh();
+    }
   }
   zoomIn() {
-    if (this.chart) this.chart.zoomAtCoordinate(1.25);
+    if (this.chart) {
+      this.chart.zoomAtCoordinate(1.25);
+      if (this.showDepth) this.debounceDepthRefresh();
+    }
   }
   zoomOut() {
-    if (this.chart) this.chart.zoomAtCoordinate(0.8);
+    if (this.chart) {
+      this.chart.zoomAtCoordinate(0.8);
+      if (this.showDepth) this.debounceDepthRefresh();
+    }
   }
   resetView() {
     if (this.chart) {
       this.resetPriceScale();
       this.chart.scrollToRealTime();
+      if (this.showDepth) this.debounceDepthRefresh();
     }
   }
   applyTheme() {
@@ -3667,6 +3973,10 @@ var CandleChart = class {
     if (this.chart) this.chart.resize();
   }
   destroy() {
+    if (this._depthTimer) {
+      clearTimeout(this._depthTimer);
+      this._depthTimer = null;
+    }
     this.clearOrderPreview();
     this.clearTargetPreview();
     this.clearOpenOrders();
@@ -4800,18 +5110,10 @@ function buildCharts() {
     b.classList.toggle("active", savedPatterns);
     b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
   });
-  const initSpotInst = activeSpotInstrument();
-  const initIsCashIndex = !activeCommodity() && (initSpotInst.startsWith("nse_cm|") || initSpotInst.startsWith("bse_cm|"));
   $$('button[data-chart-action="dom"]').forEach((b) => {
-    const isSpotBtn = b.dataset.chart === "underlying" || b.dataset.chart === "spot";
-    if (isSpotBtn && initIsCashIndex) {
-      b.classList.remove("active");
-      b.setAttribute("aria-pressed", "false");
-      b.title = "Depth of Market (DOM) \xB7 Not available for cash indices (visible on Call/Put charts)";
-    } else {
-      b.classList.toggle("active", savedDOM);
-      b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
-    }
+    b.classList.toggle("active", savedDOM);
+    b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
+    b.title = "Order Flow DOM \xB7 Fixed-interval Buyer & Seller volume ladder on chart";
   });
   $$('button[data-chart-action="ma"]').forEach((b) => {
     const pane = b.dataset.chart;
@@ -6297,14 +6599,9 @@ function renderPaneHeaders() {
   if (spotInst && S.depths?.[spotInst]) {
     S.charts.spot?.setDepth?.(S.depths[spotInst]);
   }
-  const isCashIndex = !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
-  $$('button[data-chart="underlying"][data-chart-action="dom"]').forEach((b) => {
-    if (isCashIndex) {
-      b.classList.remove("active");
-      b.setAttribute("aria-pressed", "false");
-      b.title = "Depth of Market (DOM) \xB7 Not available for cash indices (visible on Call/Put charts)";
-    }
-  });
+  if (S.chain && S.chain.length) {
+    S.charts.spot?.setChainData?.(S.chain);
+  }
   renderOrderPad();
 }
 function renderOptionStrikeSelect(type, selected) {
@@ -6438,6 +6735,9 @@ function renderChain(preserveScroll = false) {
   $("strike-meta").textContent = `${S.chain.length} strikes${pcrSummary} \xB7 ${expiryText(S.expiry)}`;
   renderChainMoreControls();
   renderPCR();
+  if (S.chain && S.chain.length) {
+    S.charts.spot?.setChainData?.(S.chain);
+  }
   body.scrollTop = scrollTop;
   applyStrikeFilter();
   if (!S.chainScrolled) {
@@ -9643,21 +9943,12 @@ function bindEvents() {
         return;
       }
       if (action === "dom") {
-        const isSpot = chartKey === "underlying" || chartKey === "spot";
-        const spotInst = activeSpotInstrument();
-        const hasSpotDepth = isSpot && Boolean(S.depths?.[spotInst]?.bids?.length || S.depths?.[spotInst]?.asks?.length);
-        const isCashIndex = isSpot && !hasSpotDepth && !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
-        if (isCashIndex) {
-          button.classList.remove("active");
-          button.setAttribute("aria-pressed", "false");
-          chart.toggleDepth(false);
-          toast("Depth of Market (DOM) is not available for index spots. Visible on Call & Put option charts.", "warn", 3500);
-          return;
-        }
         const nextState = chart.toggleDepth();
         button.classList.toggle("active", nextState);
         button.setAttribute("aria-pressed", nextState ? "true" : "false");
         if (nextState) {
+          const isSpot = chartKey === "underlying" || chartKey === "spot";
+          const spotInst = activeSpotInstrument();
           let depth = null;
           if (chartKey === "ce") {
             const ceInst = chartInstrument("CE");
@@ -9667,17 +9958,22 @@ function bindEvents() {
             depth = S.depths?.[peInst] || (selectedOption("PE")?.bids?.length || selectedOption("PE")?.asks?.length ? { bids: selectedOption("PE").bids, asks: selectedOption("PE").asks } : null);
           } else if (isSpot) {
             depth = S.depths?.[spotInst] || null;
+            if (S.chain && S.chain.length) {
+              chart.setChainData?.(S.chain);
+            }
           }
           if (depth) {
             chart.setDepth(depth);
+          } else {
+            chart.refreshDepth();
           }
         }
         try {
           localStorage.setItem("scalper-show-dom", String(nextState));
-        } catch {
+        } catch (_) {
         }
         const label = chartKey === "ce" ? "CALL" : chartKey === "pe" ? "PUT" : "UNDERLYING";
-        toast(nextState ? `DOM price bars enabled (${label})` : `DOM price bars hidden (${label})`, "ok", 1500);
+        toast(nextState ? `Order Flow DOM enabled (${label})` : `Order Flow DOM hidden (${label})`, "ok", 1500);
         return;
       }
       if (action === "sr") {
