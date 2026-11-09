@@ -26,6 +26,9 @@ type OutcomeCallback func(eval store.Evaluation)
 // NewCallCallback is invoked when a new high-conviction Jev call is detected.
 type NewCallCallback func(eval store.Evaluation)
 
+// ScanStatusCallback is invoked when periodic scanner timing or execution status updates.
+type ScanStatusCallback func(status ScannerStatus)
+
 // ActiveCall tracks an open Jev recommendation awaiting market outcome.
 type ActiveCall struct {
 	ID            int64
@@ -74,8 +77,9 @@ type Evaluator struct {
 	ringMu    sync.RWMutex
 	tickRings map[string]*features.TickRing
 
-	onOutcome OutcomeCallback
-	onNewCall NewCallCallback
+	onOutcome    OutcomeCallback
+	onNewCall    NewCallCallback
+	onScanStatus ScanStatusCallback
 
 	scanCancel context.CancelFunc
 	scanDone   chan struct{}
@@ -98,6 +102,7 @@ type Options struct {
 	Logger        *slog.Logger
 	OnOutcome     OutcomeCallback
 	OnNewCall     NewCallCallback
+	OnScanStatus  ScanStatusCallback
 }
 
 // New creates an Evaluator ready to start scanning and tracking.
@@ -118,6 +123,7 @@ func New(opts Options) *Evaluator {
 		tickRings:     make(map[string]*features.TickRing),
 		onOutcome:     opts.OnOutcome,
 		onNewCall:     opts.OnNewCall,
+		onScanStatus:  opts.OnScanStatus,
 	}
 
 	// Load existing PENDING calls from store on boot
@@ -182,6 +188,10 @@ func (e *Evaluator) Start(ctx context.Context) {
 	e.nextScanTime = time.Now().Add(5 * time.Second)
 	e.scanMu.Unlock()
 
+	if e.onScanStatus != nil {
+		e.onScanStatus(e.ScannerStatus())
+	}
+
 	go e.runScanner(scanCtx, time.Duration(intervalMin)*time.Minute)
 }
 
@@ -199,6 +209,10 @@ func (e *Evaluator) Stop() {
 	e.scanMu.Lock()
 	e.nextScanTime = time.Time{}
 	e.scanMu.Unlock()
+
+	if e.onScanStatus != nil {
+		e.onScanStatus(e.ScannerStatus())
+	}
 }
 
 // ScannerStatus represents the current state and timing of the background evaluation scanner.
@@ -921,6 +935,10 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 		e.nextScanTime = time.Now().Add(interval)
 		e.scanMu.Unlock()
 
+		if e.onScanStatus != nil {
+			e.onScanStatus(e.ScannerStatus())
+		}
+
 		scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		evals, err := e.ScanNow(scanCtx, "NIFTY")
 		cancel()
@@ -933,6 +951,10 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", err)
 		} else {
 			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(evals))
+		}
+
+		if e.onScanStatus != nil {
+			e.onScanStatus(e.ScannerStatus())
 		}
 	}
 

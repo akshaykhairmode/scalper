@@ -478,6 +478,12 @@ func New(opts Options) (*Server, error) {
 				"data": eval,
 			})
 		},
+		OnScanStatus: func(status evaluator.ScannerStatus) {
+			s.broadcast(map[string]any{
+				"type": "ai_scanner_status",
+				"data": status,
+			})
+		},
 	})
 	s.evaluator.Start(s.feedCtx)
 

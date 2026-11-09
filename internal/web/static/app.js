@@ -5908,7 +5908,7 @@ function handleSocketEvent(event) {
     handleBracketUpdate(data);
     return;
   }
-  if (event.type === "ai_call_outcome" || event.type === "ai_call_new") {
+  if (event.type === "ai_call_outcome" || event.type === "ai_call_new" || event.type === "ai_scanner_status") {
     handleAICallEvent(event.type, data);
     return;
   }
@@ -9993,6 +9993,10 @@ async function refreshAISignalsModal() {
   }
 }
 function handleAICallEvent(eventType, data) {
+  if (eventType === "ai_scanner_status" && data) {
+    updateAIScannerStatus(data);
+    return;
+  }
   updateAIWinRateChip();
   if (isAISignalsModalOpen()) {
     refreshAISignalsModal();
