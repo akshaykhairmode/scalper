@@ -55,6 +55,22 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	return candles, nil
 }
 
+// PruneCandles deletes bars older than the given Unix timestamp and returns
+// the number of rows removed.
+func (s *Store) PruneCandles(ctx context.Context, before int64) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("store: database not open")
+	}
+	if before <= 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM candles WHERE ts < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("store: prune candles: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // WriteCandles inserts or replaces historical bars without creating duplicate
 // rows when a provider refreshes an overlapping date range.
 func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe string, candles []market.Candle) error {

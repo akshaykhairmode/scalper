@@ -1,0 +1,24 @@
+{{define "ai-signals-rows"}}
+{{- if .Rows -}}
+{{- range .Rows }}
+<tr style="border-bottom:1px solid var(--border,#333);">
+  <td style="padding:8px 10px; font-family:var(--mono);">{{.Time}}</td>
+  <td style="padding:8px 10px; font-weight:600;">{{.Setup}}</td>
+  <td style="padding:8px 10px; font-size:11px; color:{{.SourceColor}};">{{.SourceLabel}}</td>
+  <td style="padding:8px 10px; font-weight:700; color:{{.ActionColor}};">{{.Action}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono);">{{.Entry}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono);">{{.LiveExit}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono); color:var(--green,#22c55e);">{{.Target}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono); color:var(--red,#ef4444);">{{.Stop}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono);">{{.Score}}</td>
+  <td style="padding:8px 10px; font-family:var(--mono);">{{.Pnl}}</td>
+  <td style="padding:8px 10px; text-align:center;">{{.Status}}</td>
+  <td style="padding:8px 10px; text-align:center;">{{.RemoveButton}}</td>
+</tr>
+{{- end -}}
+{{- else -}}
+<tr>
+  <td colspan="12" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI paper calls yet. The scanner runs automatically on its interval, or click “Scan Now”.</td>
+</tr>
+{{- end -}}
+{{end}}

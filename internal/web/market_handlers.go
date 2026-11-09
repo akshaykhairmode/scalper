@@ -44,41 +44,48 @@ func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
 		return
 	}
-	// Serialise cold-cache calls so simultaneous tabs share one upstream call.
-	s.indicesMu.Lock()
-	if s.indicesRaw != nil && time.Since(s.indicesAt) < indicesTTL {
-		payload := s.indicesRaw
-		s.indicesMu.Unlock()
+	writeCached := func(payload json.RawMessage) {
+		if payload == nil {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if _, err := w.Write(payload); err != nil {
 			s.log.Warn("write cached indices", "event", "http_write_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
+	}
+	if payload, ok := s.cachedIndicesPayload(); ok {
+		writeCached(payload)
+		return
+	}
+
+	// Serialise cold-cache fetches so simultaneous tabs share one upstream call.
+	// The cache lock itself is only held briefly for reads/writes.
+	s.indicesFetchMu.Lock()
+	if payload, ok := s.cachedIndicesPayload(); ok {
+		s.indicesFetchMu.Unlock()
+		writeCached(payload)
 		return
 	}
 	result, err := s.market.Indices(r.Context(), s.marketBaseURL())
 	if err != nil {
-		if s.indicesRaw != nil {
-			payload := s.indicesRaw
-			s.indicesMu.Unlock()
+		s.indicesFetchMu.Unlock()
+		if payload, ok := s.cachedIndicesAny(); ok {
 			s.log.Warn("Kotak indices refresh failed; serving cached indices",
 				"event", "indices_refresh_failed",
 				"error", err,
 				"request_id", logging.RequestID(r.Context()))
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(payload)
+			writeCached(payload)
 			return
 		}
-		s.indicesMu.Unlock()
 		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
 		return
 	}
 	payload, encodeErr := json.Marshal(map[string]any{"indices": result})
 	if encodeErr == nil {
-		s.indicesRaw = payload
-		s.indicesAt = time.Now()
+		s.storeIndicesPayload(payload)
 	}
-	s.indicesMu.Unlock()
+	s.indicesFetchMu.Unlock()
 	for _, index := range result {
 		if !index.QuoteAvailable {
 			s.log.Warn("Kotak did not return a quote for a configured underlying",
@@ -88,7 +95,36 @@ func (s *Server) handleIndices(w http.ResponseWriter, r *http.Request) {
 				"request_id", logging.RequestID(r.Context()))
 		}
 	}
-	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"indices": result})
+	if encodeErr != nil {
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"indices": result})
+		return
+	}
+	writeCached(payload)
+}
+
+func (s *Server) cachedIndicesPayload() (json.RawMessage, bool) {
+	s.indicesMu.RLock()
+	defer s.indicesMu.RUnlock()
+	if s.indicesRaw != nil && time.Since(s.indicesAt) < indicesTTL {
+		return s.indicesRaw, true
+	}
+	return nil, false
+}
+
+func (s *Server) cachedIndicesAny() (json.RawMessage, bool) {
+	s.indicesMu.RLock()
+	defer s.indicesMu.RUnlock()
+	return s.indicesRaw, s.indicesRaw != nil
+}
+
+func (s *Server) storeIndicesPayload(payload json.RawMessage) {
+	if len(payload) == 0 {
+		return
+	}
+	s.indicesMu.Lock()
+	s.indicesRaw = payload
+	s.indicesAt = time.Now()
+	s.indicesMu.Unlock()
 }
 
 func (s *Server) handleExpiries(w http.ResponseWriter, r *http.Request) {
@@ -180,9 +216,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		}
 		payload, encodeErr := json.Marshal(page)
 		if encodeErr == nil {
-			s.chainCacheMu.Lock()
-			s.chainCache[cacheKey] = chainCacheEntry{payload: payload, fetchedAt: time.Now()}
-			s.chainCacheMu.Unlock()
+			s.storeChainCache(cacheKey, payload)
 		}
 		s.writeRouteJSON(w, r, http.StatusOK, page)
 		return
@@ -218,11 +252,23 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, encodeErr := json.Marshal(map[string]any{"rows": rows})
 	if encodeErr == nil {
-		s.chainCacheMu.Lock()
-		s.chainCache[cacheKey] = chainCacheEntry{payload: payload, fetchedAt: time.Now()}
-		s.chainCacheMu.Unlock()
+		s.storeChainCache(cacheKey, payload)
 	}
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
+}
+
+const maxChainCacheEntries = 128
+
+func (s *Server) storeChainCache(key string, payload []byte) {
+	s.chainCacheMu.Lock()
+	if len(s.chainCache) >= maxChainCacheEntries {
+		for existing := range s.chainCache {
+			delete(s.chainCache, existing)
+			break
+		}
+	}
+	s.chainCache[key] = chainCacheEntry{payload: payload, fetchedAt: time.Now()}
+	s.chainCacheMu.Unlock()
 }
 
 type candleFetchResult struct {
@@ -471,11 +517,15 @@ func (s *Server) handleCandlesBatch(w http.ResponseWriter, r *http.Request) {
 	if peKey != "" {
 		response["pe"] = fetchAndRecord(peKey)
 	}
-	for _, inst := range extraInstruments {
-		fetchAndRecord(inst)
+	// Only extra instruments (beyond spot/ce/pe) are returned under "results";
+	// duplicating the named panes doubled the JSON payload for every chart poll.
+	if len(extraInstruments) > 0 {
+		extra := make(map[string]candleFetchResult, len(extraInstruments))
+		for _, inst := range extraInstruments {
+			extra[inst] = fetchAndRecord(inst)
+		}
+		response["results"] = extra
 	}
-
-	response["results"] = results
 	s.writeRouteJSON(w, r, http.StatusOK, response)
 }
 

@@ -206,7 +206,7 @@ func (s *Server) forwardHSMEvents() {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
-	pendingTicks := make(map[string]map[string]any)
+	pendingTicks := make(map[string]*tickPayload)
 	keyCache := make(map[string]string)
 	lastDepth := make(map[string]time.Time)
 
@@ -216,20 +216,14 @@ func (s *Server) forwardHSMEvents() {
 		}
 		if len(pendingTicks) == 1 {
 			for _, t := range pendingTicks {
-				s.broadcast(map[string]any{
-					"type": "tick",
-					"data": t,
-				})
+				s.broadcast(tickMessage{Type: "tick", Data: t})
 			}
 		} else {
-			ticks := make([]map[string]any, 0, len(pendingTicks))
+			ticks := make([]*tickPayload, 0, len(pendingTicks))
 			for _, t := range pendingTicks {
 				ticks = append(ticks, t)
 			}
-			s.broadcast(map[string]any{
-				"type": "ticks",
-				"data": ticks,
-			})
+			s.broadcast(tickMessage{Type: "ticks", Data: ticks})
 		}
 		clear(pendingTicks)
 	}
@@ -267,6 +261,15 @@ func (s *Server) forwardHSMEvents() {
 				}
 				keyCache[cacheKey] = key
 			}
+			ts := time.Now()
+			if event.Quote.Timestamp > 0 {
+				if event.Quote.Timestamp > 1e12 {
+					ts = time.UnixMilli(event.Quote.Timestamp)
+				} else {
+					ts = time.Unix(event.Quote.Timestamp, 0)
+				}
+			}
+			s.setLiveQuote(key, event.Quote, ts)
 			if s.bracketEngine != nil {
 				s.bracketEngine.OnTick(s.feedCtx, key, event.Quote.LTP)
 				if event.Quote.InstrumentKey != key {
@@ -280,41 +283,139 @@ func (s *Server) forwardHSMEvents() {
 				}
 			}
 			if s.candleAgg != nil {
-				ts := time.Now()
-				if event.Quote.Timestamp > 0 {
-					if event.Quote.Timestamp > 1e12 {
-						ts = time.UnixMilli(event.Quote.Timestamp)
-					} else {
-						ts = time.Unix(event.Quote.Timestamp, 0)
-					}
-				}
 				s.candleAgg.OnTick(key, event.Quote.LTP, event.Quote.Volume, event.Quote.OI, ts)
 			}
-			tickData := map[string]any{
-				"key": key, "ltp": event.Quote.LTP,
-				"prev_close": event.Quote.PreviousClose,
-				"change":     event.Quote.Change,
-				"change_pct": event.Quote.ChangePct,
-				"volume":     event.Quote.Volume,
-				"bid":        event.Quote.Bid,
-				"ask":        event.Quote.Ask,
-				"timestamp":  event.Quote.Timestamp,
+
+			tp := pendingTicks[key]
+			if tp == nil {
+				tp = &tickPayload{Key: key}
+				pendingTicks[key] = tp
 			}
+			tp.LTP = event.Quote.LTP
+			tp.PrevClose = event.Quote.PreviousClose
+			tp.Change = event.Quote.Change
+			tp.ChangePct = event.Quote.ChangePct
+			tp.Volume = event.Quote.Volume
+			tp.Bid = event.Quote.Bid
+			tp.Ask = event.Quote.Ask
+			tp.Timestamp = event.Quote.Timestamp
 			if event.Quote.OI >= 0 && event.Quote.OI <= 100_000_000 {
-				tickData["oi"] = event.Quote.OI
+				oi := event.Quote.OI
+				tp.OI = &oi
+			} else {
+				tp.OI = nil
 			}
 			if len(event.Quote.Bids) > 0 || len(event.Quote.Asks) > 0 {
 				// Depth is only needed by the depth tab/chart. Throttle it to
 				// 1 Hz instead of shipping 5 levels on every 250 ms tick.
 				if now := time.Now(); now.Sub(lastDepth[key]) >= time.Second {
-					tickData["bids"] = event.Quote.Bids
-					tickData["asks"] = event.Quote.Asks
+					tp.Bids = event.Quote.Bids
+					tp.Asks = event.Quote.Asks
 					lastDepth[key] = now
 				}
 			}
-			pendingTicks[key] = tickData
 		}
 	}
+}
+
+type tickMessage struct {
+	Type string `json:"type"`
+	Data any    `json:"data"`
+}
+
+type tickPayload struct {
+	Key       string           `json:"key"`
+	LTP       float64          `json:"ltp"`
+	PrevClose float64          `json:"prev_close"`
+	Change    float64          `json:"change"`
+	ChangePct float64          `json:"change_pct"`
+	Volume    int64            `json:"volume"`
+	Bid       float64          `json:"bid"`
+	Ask       float64          `json:"ask"`
+	Timestamp int64            `json:"timestamp"`
+	OI        *int64           `json:"oi,omitempty"`
+	Bids      []hsm.DepthLevel `json:"bids,omitempty"`
+	Asks      []hsm.DepthLevel `json:"asks,omitempty"`
+}
+
+// liveQuote is a small in-memory quote cache fed by the HSM stream. It lets
+// order pricing, depth and AI LTP lookups avoid a REST round trip when a fresh
+// tick is already available.
+type liveQuote struct {
+	LTP     float64
+	Bid     float64
+	Ask     float64
+	Bids    []hsm.DepthLevel
+	Asks    []hsm.DepthLevel
+	At      time.Time
+	DepthAt time.Time
+}
+
+func (s *Server) setLiveQuote(key string, q *hsm.Quote, at time.Time) {
+	if s == nil || key == "" || q == nil {
+		return
+	}
+	s.liveMu.Lock()
+	if s.liveQuotes == nil {
+		s.liveQuotes = make(map[string]liveQuote)
+	}
+	lq, ok := s.liveQuotes[key]
+	if !ok && len(s.liveQuotes) >= 2048 {
+		for k := range s.liveQuotes {
+			delete(s.liveQuotes, k)
+			break
+		}
+	}
+	lq.LTP = q.LTP
+	lq.Bid = q.Bid
+	lq.Ask = q.Ask
+	lq.At = at
+	// Depth only needs to be fresh enough for order/scan lookups; copying 5
+	// levels on every tick is unnecessary.
+	if (len(q.Bids) > 0 || len(q.Asks) > 0) && (lq.DepthAt.IsZero() || at.Sub(lq.DepthAt) >= time.Second) {
+		lq.Bids = append([]hsm.DepthLevel(nil), q.Bids...)
+		lq.Asks = append([]hsm.DepthLevel(nil), q.Asks...)
+		lq.DepthAt = at
+	}
+	s.liveQuotes[key] = lq
+	s.liveMu.Unlock()
+}
+
+func (s *Server) cachedLTP(key string, maxAge time.Duration) (float64, bool) {
+	if s == nil || key == "" {
+		return 0, false
+	}
+	s.liveMu.RLock()
+	lq, ok := s.liveQuotes[key]
+	s.liveMu.RUnlock()
+	if !ok || lq.LTP <= 0 || time.Since(lq.At) > maxAge {
+		return 0, false
+	}
+	return lq.LTP, true
+}
+
+func (s *Server) cachedDepth(key string, maxAge time.Duration) ([]hsm.DepthLevel, []hsm.DepthLevel, bool) {
+	if s == nil || key == "" {
+		return nil, nil, false
+	}
+	s.liveMu.RLock()
+	lq, ok := s.liveQuotes[key]
+	s.liveMu.RUnlock()
+	if !ok || (len(lq.Bids) == 0 && len(lq.Asks) == 0) || time.Since(lq.DepthAt) > maxAge {
+		return nil, nil, false
+	}
+	return lq.Bids, lq.Asks, true
+}
+
+func toMarketDepth(levels []hsm.DepthLevel) []market.DepthLevel {
+	if len(levels) == 0 {
+		return nil
+	}
+	out := make([]market.DepthLevel, len(levels))
+	for i, level := range levels {
+		out[i] = market.DepthLevel{Price: level.Price, Quantity: level.Quantity, Orders: level.Orders}
+	}
+	return out
 }
 
 func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {

@@ -45,6 +45,7 @@ type snapshot struct {
 	byTrdSymbol         map[string]Option
 	byUnderlyingExpiry  map[string][]Option
 	optionsByUnderlying map[string][]Option
+	expiryDates         map[string][]string
 	spotByKey           map[string]Spot
 	spotByFeed          map[string]Spot
 	syncedAt            time.Time
@@ -290,6 +291,7 @@ func (m *Manager) apply(options []Option, spots []Spot, syncedAt time.Time, sour
 		byTrdSymbol:         make(map[string]Option, len(options)),
 		byUnderlyingExpiry:  make(map[string][]Option),
 		optionsByUnderlying: make(map[string][]Option),
+		expiryDates:         make(map[string][]string),
 		spotByKey:           make(map[string]Spot, len(spots)),
 		spotByFeed:          make(map[string]Spot, len(spots)),
 		syncedAt:            syncedAt,
@@ -302,6 +304,23 @@ func (m *Manager) apply(options []Option, spots []Spot, syncedAt time.Time, sour
 		ueKey := opt.Underlying + "|" + opt.Expiry
 		snap.byUnderlyingExpiry[ueKey] = append(snap.byUnderlyingExpiry[ueKey], opt)
 		snap.optionsByUnderlying[opt.Underlying] = append(snap.optionsByUnderlying[opt.Underlying], opt)
+	}
+	expirySets := make(map[string]map[string]struct{})
+	for _, opt := range snap.options {
+		set := expirySets[opt.Underlying]
+		if set == nil {
+			set = make(map[string]struct{})
+			expirySets[opt.Underlying] = set
+		}
+		set[opt.Expiry] = struct{}{}
+	}
+	for underlying, set := range expirySets {
+		dates := make([]string, 0, len(set))
+		for date := range set {
+			dates = append(dates, date)
+		}
+		sort.Strings(dates)
+		snap.expiryDates[underlying] = dates
 	}
 	for _, spot := range snap.spots {
 		snap.spotByKey[spot.InstrumentKey] = spot
@@ -402,9 +421,17 @@ func (m *Manager) Expiries(underlying string) []ExpiryInfo {
 		m.mu.RUnlock()
 		return nil
 	}
+	dates := m.snap.expiryDates[underlying]
 	opts := m.snap.optionsByUnderlying[underlying]
 	m.mu.RUnlock()
-	return BuildExpiries(opts, underlying, m.now())
+	if len(dates) == 0 {
+		// Fallback for a snapshot without the precomputed date index.
+		if len(opts) == 0 {
+			return nil
+		}
+		return BuildExpiries(opts, underlying, m.now())
+	}
+	return buildExpiryInfos(dates, m.now())
 }
 
 // NearestExpiry returns the first non-expired expiry for an underlying.

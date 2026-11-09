@@ -15,6 +15,10 @@ type candleWriter interface {
 	WriteCandles(ctx context.Context, instrumentKey, timeframe string, candles []market.Candle) error
 }
 
+type candlePruner interface {
+	PruneCandles(ctx context.Context, before int64) (int64, error)
+}
+
 // candleTimeframes are the bars maintained from live ticks. The chart only
 // requests configured timeframes; extra bars are harmless.
 var candleTimeframes = []struct {
@@ -34,12 +38,13 @@ const istOffsetSeconds = 5*60*60 + 30*60
 // persists them. This is what allows MCX charts (which have no Kotak
 // historical endpoint) to survive a page refresh.
 type candleAggregator struct {
-	mu       sync.Mutex
-	store    candleWriter
-	log      *slog.Logger
-	now      func() time.Time
-	builders map[string]*candleBuilder // instrument + "\x00" + timeframe
-	pending  []pendingCandle
+	mu            sync.Mutex
+	store         candleWriter
+	log           *slog.Logger
+	now           func() time.Time
+	retentionDays int
+	builders      map[string]*candleBuilder // instrument + "\x00" + timeframe
+	pending       []pendingCandle
 }
 
 type candleBuilder struct {
@@ -58,15 +63,16 @@ type pendingCandle struct {
 	candle     market.Candle
 }
 
-func newCandleAggregator(store candleWriter, log *slog.Logger) *candleAggregator {
+func newCandleAggregator(store candleWriter, log *slog.Logger, retentionDays int) *candleAggregator {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &candleAggregator{
-		store:    store,
-		log:      log,
-		now:      time.Now,
-		builders: make(map[string]*candleBuilder),
+		store:         store,
+		log:           log,
+		now:           time.Now,
+		retentionDays: retentionDays,
+		builders:      make(map[string]*candleBuilder),
 	}
 }
 
@@ -154,6 +160,8 @@ func (a *candleAggregator) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	pruneTicker := time.NewTicker(time.Hour)
+	defer pruneTicker.Stop()
 
 	for {
 		select {
@@ -166,7 +174,30 @@ func (a *candleAggregator) Run(ctx context.Context) {
 			flushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			a.flush(flushCtx)
 			cancel()
+		case <-pruneTicker.C:
+			pruneCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			a.prune(pruneCtx)
+			cancel()
 		}
+	}
+}
+
+func (a *candleAggregator) prune(ctx context.Context) {
+	if a == nil || a.retentionDays <= 0 {
+		return
+	}
+	pruner, ok := a.store.(candlePruner)
+	if !ok {
+		return
+	}
+	before := a.now().AddDate(0, 0, -a.retentionDays).Unix()
+	rows, err := pruner.PruneCandles(ctx, before)
+	if err != nil {
+		a.log.Warn("failed to prune old candles", "event", "candle_prune_failed", "error", err)
+		return
+	}
+	if rows > 0 {
+		a.log.Info("pruned old candles", "event", "candle_pruned", "rows", rows, "retention_days", a.retentionDays)
 	}
 }
 

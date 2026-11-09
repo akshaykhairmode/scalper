@@ -157,9 +157,12 @@ type Server struct {
 	feedCtx     context.Context
 	feedCancel  context.CancelFunc
 
-	indicesMu           sync.Mutex
+	indicesMu           sync.RWMutex
+	indicesFetchMu      sync.Mutex
 	indicesRaw          json.RawMessage
 	indicesAt           time.Time
+	liveMu              sync.RWMutex
+	liveQuotes          map[string]liveQuote
 	chainCacheMu        sync.Mutex
 	chainCache          map[string]chainCacheEntry
 	serveMode           bool
@@ -294,7 +297,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Started.IsZero() {
 		opts.Started = opts.Now()
 	}
-	tmpl, err := template.ParseFS(templateFS, "templates/index.html")
+	tmpl, err := template.ParseFS(templateFS, "templates/index.html", "templates/ai_signals_rows.html")
 	if err != nil {
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
@@ -507,7 +510,7 @@ func New(opts Options) (*Server, error) {
 	s.evaluator.Start(s.feedCtx)
 
 	if s.candleStore != nil {
-		s.candleAgg = newCandleAggregator(s.candleStore, s.log)
+		s.candleAgg = newCandleAggregator(s.candleStore, s.log, s.configSnapshot().Charts.RetentionDays)
 		go s.candleAgg.Run(s.feedCtx)
 	}
 
@@ -609,6 +612,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/ai/playbook", s.handleGetAIPlaybook)
 	mux.HandleFunc("POST /api/ai/playbook", s.handleSaveAIPlaybook)
 	mux.HandleFunc("GET /api/ai/evaluations", s.handleListAIEvaluations)
+	mux.HandleFunc("GET /partials/ai/signals-rows", s.handleAISignalsRows)
 	mux.HandleFunc("DELETE /api/ai/evaluations/{id}", s.handleDeleteAIEvaluation)
 	mux.HandleFunc("GET /api/ai/evaluations/stats", s.handleGetAIEvaluationStats)
 	mux.HandleFunc("POST /api/ai/evaluations/scan", s.handleTriggerAIScan)

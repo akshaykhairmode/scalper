@@ -1501,7 +1501,7 @@ async function loadBooksFromAPI(includePositions = true) {
   renderHeader();
   renderTab();
   renderOrderPad();
-  updateChartTrades();
+  scheduleChartTrades();
   checkAutoTargets();
 }
 
@@ -1728,7 +1728,6 @@ function handleTickData(data, { batch = false } = {}) {
       renderHeader();
       renderPaneHeaders();
       renderOrderPad();
-      renderPCR();
     }
     return { spot: true };
   }
@@ -1751,7 +1750,7 @@ function handleTickData(data, { batch = false } = {}) {
   if (updatedPosition && !batch) {
     renderHeader();
     updateLiveTabQuotes(data.key);
-    updateChartTrades();
+    scheduleChartTrades();
   }
   let hadChain = false;
   let hadSelected = false;
@@ -1851,7 +1850,7 @@ function handleSocketEvent(event) {
       }
       handleBrokerOrderSound(data);
       checkAutoTargets(data);
-      updateChartTrades();
+      scheduleChartTrades();
       renderTab();
     }
     scheduleBooksRefresh(400);
@@ -1888,7 +1887,7 @@ function handleSocketEvent(event) {
       for (const k of posKeys) {
         updateLiveTabQuotes(k);
       }
-      updateChartTrades();
+      scheduleChartTrades();
     }
     if (hadChain) {
       renderPCR();
@@ -2252,6 +2251,16 @@ function matchesContract(item, option) {
   if (item.instrumentKey && option.instrumentKey && item.instrumentKey === option.instrumentKey) return true;
   if (sym && option.instrumentKey && sym === option.instrumentKey) return true;
   return false;
+}
+
+let chartTradesTimer: number | null = null;
+
+function scheduleChartTrades() {
+  if (chartTradesTimer !== null) return;
+  chartTradesTimer = window.setTimeout(() => {
+    chartTradesTimer = null;
+    updateChartTrades();
+  }, 500);
 }
 
 function updateChartTrades() {
@@ -4100,7 +4109,7 @@ function applyServerBrackets(data) {
 
   saveAutoTargets();
   renderTab();
-  updateChartTrades();
+  scheduleChartTrades();
 }
 
 async function fetchBrackets() {
@@ -4135,7 +4144,7 @@ function handleBracketUpdate(data) {
   }
   saveAutoTargets();
   renderTab();
-  updateChartTrades();
+  scheduleChartTrades();
 }
 
 function getInstrumentLTP(b) {
@@ -6371,16 +6380,15 @@ async function updateAIWinRateChip() {
 }
 
 async function refreshAISignalsModal(silent = false) {
-  let roundTripCostPct = 0;
   try {
-    const [statsRes, evalsRes] = await Promise.allSettled([
+    const [statsRes, rowsRes] = await Promise.allSettled([
       getJSON("/api/ai/evaluations/stats"),
-      getJSON("/api/ai/evaluations?limit=50")
+      fetch("/partials/ai/signals-rows", { headers: { Accept: "text/html" }, cache: "no-store" }).then(async (resp) => {
+        if (!resp.ok) throw new Error((await resp.text()).trim() || `HTTP ${resp.status}`);
+        return resp.text();
+      })
     ]);
 
-    if (statsRes.status === "fulfilled" && statsRes.value) {
-      roundTripCostPct = Number(statsRes.value.round_trip_cost_pct || 0);
-    }
     if (statsRes.status === "fulfilled" && statsRes.value?.stats) {
       const s = statsRes.value.stats;
       if (statsRes.value?.scanner) {
@@ -6424,74 +6432,9 @@ async function refreshAISignalsModal(silent = false) {
       }
     }
 
-    if (evalsRes.status === "fulfilled") {
-      const evals = evalsRes.value?.evaluations || [];
+    if (rowsRes.status === "fulfilled") {
       const tbody = $("ai-calls-tbody");
-      if (!tbody) return;
-
-      if (!evals.length) {
-        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI paper calls yet. The scanner runs automatically on its interval, or click “Scan Now”.</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = evals.map((e: any) => {
-        const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "—";
-        const parts = (e.instrument_key || "").split("|");
-        const strikeVal = parts.length >= 4 ? parts[3] : "";
-        const optType = parts.length >= 5 ? parts[4] : "";
-        const strikeLabel = `${e.underlying || ""}${strikeVal ? " " + strikeVal : ""}${optType ? " " + optType : ""}`.trim() || e.instrument_key || "—";
-
-        const source = String(e.source || "jev");
-        const sourceLabel = source === "agent+jev" ? "🤝 Agent+Jev" : source === "agent" ? "🧠 Agent" : source === "manual" ? "✍️ Manual" : "⚡ Jev";
-        const sourceColor = source.includes("agent") ? "var(--accent,#f59e0b)" : "var(--text-muted,#888)";
-
-        let statusBadge = `<span class="ai-status-pill ai-status-pending">PENDING</span>`;
-        if (e.status === "TARGET_HIT") {
-          statusBadge = `<span class="ai-status-pill ai-status-target">TARGET HIT</span>`;
-        } else if (e.status === "SL_HIT") {
-          statusBadge = `<span class="ai-status-pill ai-status-sl">SL HIT</span>`;
-        } else if (e.status === "EXPIRED") {
-          statusBadge = `<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">EXPIRED</span>`;
-        } else if (e.status === "REJECTED") {
-          statusBadge = `<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">REJECTED</span>`;
-        }
-
-        const isPending = String(e.status || "").toUpperCase() === "PENDING";
-        const currentPrice = Number(e.current_price || 0);
-        let liveExit = "—";
-        if (isPending) {
-          liveExit = currentPrice > 0 ? `<span style="color:var(--accent,#f59e0b);">₹${fmt(currentPrice, 2)}</span>` : "—";
-        } else if (e.exit_price) {
-          liveExit = `₹${fmt(e.exit_price, 2)}`;
-        }
-
-        let pnlPct = Number(e.pnl_pct ?? 0);
-        if (isPending && currentPrice > 0 && Number(e.option_ltp) > 0) {
-          pnlPct = ((currentPrice - Number(e.option_ltp)) / Number(e.option_ltp)) * 100 - roundTripCostPct;
-        }
-        const pnlStr = (isPending && currentPrice <= 0)
-          ? "—"
-          : `<span style="font-weight:700; color:${pnlPct >= 0 ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)'};${isPending ? ' opacity:0.85;' : ''}">${pnlPct > 0 ? '+' : ''}${fmt(pnlPct, 2)}%</span>`;
-
-        const scoreStr = e.score ? `${e.score}/5 <span style="color:var(--text-muted,#888);">· ${Math.round(Number(e.confidence || 0) * 100)}%</span>` : "—";
-
-        const removeBtn = `<button type="button" class="ai-call-remove" data-ai-eval-id="${e.id}" data-ai-eval-label="${esc(strikeLabel)}" title="Remove this call (stop tracking)" aria-label="Remove call ${esc(strikeLabel)}">✕</button>`;
-
-        return `<tr style="border-bottom:1px solid var(--border,#333);">
-          <td style="padding:8px 10px; font-family:var(--mono);">${timeStr}</td>
-          <td style="padding:8px 10px; font-weight:600;">${strikeLabel}</td>
-          <td style="padding:8px 10px; font-size:11px; color:${sourceColor};">${sourceLabel}</td>
-          <td style="padding:8px 10px; font-weight:700; color:${e.action?.includes('PE') ? 'var(--red,#ef4444)' : 'var(--green,#22c55e)'};">${e.action || "—"}</td>
-          <td style="padding:8px 10px; font-family:var(--mono);">₹${fmt(e.option_ltp, 2)}</td>
-          <td style="padding:8px 10px; font-family:var(--mono);">${liveExit}</td>
-          <td style="padding:8px 10px; font-family:var(--mono); color:var(--green,#22c55e);">₹${fmt(e.target_price, 2)}</td>
-          <td style="padding:8px 10px; font-family:var(--mono); color:var(--red,#ef4444);">₹${fmt(e.stop_loss_price, 2)}</td>
-          <td style="padding:8px 10px; font-family:var(--mono);">${scoreStr}</td>
-          <td style="padding:8px 10px; font-family:var(--mono);">${pnlStr}</td>
-          <td style="padding:8px 10px; text-align:center;">${statusBadge}</td>
-          <td style="padding:8px 10px; text-align:center;">${removeBtn}</td>
-        </tr>`;
-      }).join("");
+      if (tbody) tbody.innerHTML = rowsRes.value;
     }
   } catch (err: any) {
     if (!silent) {

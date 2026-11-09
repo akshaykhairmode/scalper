@@ -33,6 +33,8 @@ type Engine struct {
 	onChange           func(b Bracket)
 	activeInPos        atomic.Int64
 	activeByInstrument map[string]map[string]*Bracket
+	activeKeys         sync.Map
+	lastTrailPersist   map[string]time.Time
 	asyncExecution     bool
 	unmatchedOrders    map[string]parsedOrder
 }
@@ -61,6 +63,7 @@ func NewEngine(
 		log:                log,
 		brackets:           make(map[string]*Bracket),
 		activeByInstrument: make(map[string]map[string]*Bracket),
+		lastTrailPersist:   make(map[string]time.Time),
 		unmatchedOrders:    make(map[string]parsedOrder),
 	}
 
@@ -108,6 +111,7 @@ func (e *Engine) indexActiveInPosition(b *Bracket) {
 		m[b.ID] = b
 		e.activeInPos.Add(1)
 	}
+	e.activeKeys.Store(b.InstrumentKey, struct{}{})
 }
 
 func (e *Engine) unindexActiveInPosition(b *Bracket) {
@@ -116,8 +120,10 @@ func (e *Engine) unindexActiveInPosition(b *Bracket) {
 			delete(m, b.ID)
 			if len(m) == 0 {
 				delete(e.activeByInstrument, b.InstrumentKey)
+				e.activeKeys.Delete(b.InstrumentKey)
 			}
 			e.activeInPos.Add(-1)
+			delete(e.lastTrailPersist, b.ID)
 		}
 	}
 }
@@ -777,6 +783,9 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 	if e.activeInPos.Load() == 0 {
 		return
 	}
+	if _, active := e.activeKeys.Load(instrumentKey); !active {
+		return
+	}
 
 	var triggers []tickTrigger
 
@@ -816,10 +825,18 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 				}
 			}
 			if trailed && e.store != nil {
-				cp := *b
-				go func(br Bracket) {
-					_ = e.store.UpdateBracket(context.Background(), br)
-				}(cp)
+				// Coalesce trailing-stop persistence: the in-memory stop is
+				// updated every tick, but SQLite writes are capped at 2s per
+				// bracket to avoid a goroutine + write per tick.
+				if time.Since(e.lastTrailPersist[b.ID]) >= 2*time.Second {
+					e.lastTrailPersist[b.ID] = time.Now()
+					cp := *b
+					go func(br Bracket) {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_ = e.store.UpdateBracket(ctx, br)
+					}(cp)
+				}
 			}
 		}
 

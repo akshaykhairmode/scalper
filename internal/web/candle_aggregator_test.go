@@ -28,7 +28,7 @@ func (f *fakeCandleWriter) WriteCandles(_ context.Context, instrumentKey, timefr
 
 func TestCandleAggregatorBuildsAndPersistsBars(t *testing.T) {
 	writer := &fakeCandleWriter{}
-	agg := newCandleAggregator(writer, testLogger())
+	agg := newCandleAggregator(writer, testLogger(), 0)
 	ist := time.FixedZone("IST", 5*60*60+30*60)
 
 	t0 := time.Date(2026, 11, 9, 9, 15, 5, 0, ist)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
+	"html/template"
 	"math"
 	"net/http"
 	"strconv"
@@ -102,25 +104,16 @@ func (s *Server) handleSaveAIPlaybook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request) {
+func (s *Server) loadAIEvaluations(ctx context.Context, limit int) ([]store.Evaluation, error) {
 	if s.aiStore == nil {
-		s.writeRouteJSON(w, r, http.StatusOK, evaluationsResponse{Evaluations: []store.Evaluation{}})
-		return
+		return []store.Evaluation{}, nil
 	}
-
-	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
-			limit = parsed
-		}
+	if limit <= 0 {
+		limit = 50
 	}
-
-	evals, err := s.aiStore.ListEvaluations(r.Context(), limit)
+	evals, err := s.aiStore.ListEvaluations(ctx, limit)
 	if err != nil {
-		s.log.Error("failed to list ai evaluations", "event", "ai_evaluations_list_failed", "error", err,
-			"request_id", logging.RequestID(r.Context()))
-		s.writeRouteError(w, r, http.StatusInternalServerError, "failed to list evaluations: "+err.Error(), nil)
-		return
+		return nil, err
 	}
 	if evals == nil {
 		evals = []store.Evaluation{}
@@ -143,8 +136,230 @@ func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
+	return evals, nil
+}
+
+func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request) {
+	if s.aiStore == nil {
+		s.writeRouteJSON(w, r, http.StatusOK, evaluationsResponse{Evaluations: []store.Evaluation{}})
+		return
+	}
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+
+	evals, err := s.loadAIEvaluations(r.Context(), limit)
+	if err != nil {
+		s.log.Error("failed to list ai evaluations", "event", "ai_evaluations_list_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		s.writeRouteError(w, r, http.StatusInternalServerError, "failed to list evaluations: "+err.Error(), nil)
+		return
+	}
 
 	s.writeRouteJSON(w, r, http.StatusOK, evaluationsResponse{Evaluations: evals})
+}
+
+type aiSignalRow struct {
+	Time         string
+	Setup        string
+	SourceLabel  string
+	SourceColor  template.CSS
+	Action       string
+	ActionColor  template.CSS
+	Entry        string
+	LiveExit     template.HTML
+	Target       string
+	Stop         string
+	Score        template.HTML
+	Pnl          template.HTML
+	Status       template.HTML
+	RemoveButton template.HTML
+}
+
+type aiSignalsRowsData struct {
+	Rows []aiSignalRow
+}
+
+// handleAISignalsRows renders the AI calls table body server-side. The modal
+// still uses the JSON stats endpoint for the metric cards, but the expensive
+// 50-row table no longer has to be rebuilt in JavaScript.
+func (s *Server) handleAISignalsRows(w http.ResponseWriter, r *http.Request) {
+	evals, err := s.loadAIEvaluations(r.Context(), 50)
+	if err != nil {
+		s.log.Error("failed to load ai evaluations for partial", "event", "ai_signals_partial_failed",
+			"error", err, "request_id", logging.RequestID(r.Context()))
+		http.Error(w, "failed to load evaluations", http.StatusInternalServerError)
+		return
+	}
+	cfg := s.configSnapshot()
+	loc := cfg.Location()
+	if loc == nil {
+		loc = time.UTC
+	}
+	rows := make([]aiSignalRow, 0, len(evals))
+	for _, eval := range evals {
+		rows = append(rows, buildAISignalRow(eval, loc, cfg.AI.RoundTripCostPct))
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := s.tmpl.ExecuteTemplate(w, "ai-signals-rows", aiSignalsRowsData{Rows: rows}); err != nil {
+		s.log.Error("render ai signals rows", "event", "ai_signals_render_failed", "error", err)
+	}
+}
+
+func buildAISignalRow(e store.Evaluation, loc *time.Location, costPct float64) aiSignalRow {
+	timeStr := "—"
+	if !e.Timestamp.IsZero() {
+		timeStr = e.Timestamp.In(loc).Format("15:04:05")
+	}
+
+	parts := strings.Split(e.InstrumentKey, "|")
+	strikeVal, optType := "", ""
+	if len(parts) >= 4 {
+		strikeVal = parts[3]
+	}
+	if len(parts) >= 5 {
+		optType = parts[4]
+	}
+	setup := strings.TrimSpace(e.Underlying + " " + strikeVal + " " + optType)
+	if setup == "" {
+		setup = e.InstrumentKey
+	}
+
+	source := strings.ToLower(strings.TrimSpace(e.Source))
+	sourceLabel := "⚡ Jev"
+	sourceColor := template.CSS("var(--text-muted,#888)")
+	switch {
+	case strings.Contains(source, "agent+jev"):
+		sourceLabel = "🤝 Agent+Jev"
+		sourceColor = template.CSS("var(--accent,#f59e0b)")
+	case strings.Contains(source, "agent"):
+		sourceLabel = "🧠 Agent"
+		sourceColor = template.CSS("var(--accent,#f59e0b)")
+	case strings.Contains(source, "manual"):
+		sourceLabel = "✍️ Manual"
+	}
+
+	actionColor := template.CSS("var(--green,#22c55e)")
+	if strings.Contains(strings.ToUpper(e.Action), "PE") {
+		actionColor = template.CSS("var(--red,#ef4444)")
+	}
+
+	pending := strings.EqualFold(e.Status, "PENDING")
+	current := e.CurrentPrice
+	liveExit := template.HTML("—")
+	if pending {
+		if current > 0 {
+			liveExit = template.HTML("₹" + formatIndian(current)) // #nosec G203 -- server-formatted number
+		}
+	} else if e.ExitPrice > 0 {
+		liveExit = template.HTML("₹" + formatIndian(e.ExitPrice)) // #nosec G203 -- server-formatted number
+	}
+
+	pnlValue := e.PnLPct
+	if pending && current > 0 && e.OptionLTP > 0 {
+		pnlValue = ((current-e.OptionLTP)/e.OptionLTP)*100 - costPct
+	}
+	pnlHTML := template.HTML("—")
+	if (pending && current > 0) || (!pending && e.PnLPct != 0) {
+		color := "var(--green,#22c55e)"
+		if pnlValue < 0 {
+			color = "var(--red,#ef4444)"
+		}
+		prefix := ""
+		if pnlValue > 0 {
+			prefix = "+"
+		}
+		opacity := ""
+		if pending {
+			opacity = " opacity:0.85;"
+		}
+		pnlSpan := fmt.Sprintf(
+			`<span style="font-weight:700; color:%s;%s">%s%s%%</span>`,
+			color, opacity, prefix, formatIndian(pnlValue))
+		pnlHTML = template.HTML(pnlSpan) // #nosec G203 -- server-formatted number and CSS
+	}
+
+	scoreHTML := template.HTML("—")
+	if e.Score > 0 {
+		scoreSpan := fmt.Sprintf(`%d/5 <span style="color:var(--text-muted,#888);">· %d%%</span>`,
+			e.Score, int(math.Round(e.Confidence*100)))
+		scoreHTML = template.HTML(scoreSpan) // #nosec G203 -- integers from the database
+	}
+
+	label := html.EscapeString(setup)
+	removeHTML := fmt.Sprintf(
+		`<button type="button" class="ai-call-remove" data-ai-eval-id="%d" data-ai-eval-label="%s" title="Remove this call (stop tracking)" aria-label="Remove call %s">✕</button>`,
+		e.ID, label, label)
+	removeButton := template.HTML(removeHTML) // #nosec G203 -- label is HTML-escaped above
+
+	return aiSignalRow{
+		Time:         timeStr,
+		Setup:        setup,
+		SourceLabel:  sourceLabel,
+		SourceColor:  sourceColor,
+		Action:       e.Action,
+		ActionColor:  actionColor,
+		Entry:        "₹" + formatIndian(e.OptionLTP),
+		LiveExit:     liveExit,
+		Target:       "₹" + formatIndian(e.TargetPrice),
+		Stop:         "₹" + formatIndian(e.StopLossPrice),
+		Score:        scoreHTML,
+		Pnl:          pnlHTML,
+		Status:       aiStatusBadge(e.Status),
+		RemoveButton: removeButton,
+	}
+}
+
+func aiStatusBadge(status string) template.HTML {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "TARGET_HIT":
+		return template.HTML(`<span class="ai-status-pill ai-status-target">TARGET HIT</span>`)
+	case "SL_HIT":
+		return template.HTML(`<span class="ai-status-pill ai-status-sl">SL HIT</span>`)
+	case "EXPIRED":
+		return template.HTML(`<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">EXPIRED</span>`)
+	case "REJECTED":
+		return template.HTML(`<span class="ai-status-pill" style="background:rgba(148,163,184,0.15); color:var(--text-muted,#888);">REJECTED</span>`)
+	default:
+		return template.HTML(`<span class="ai-status-pill ai-status-pending">PENDING</span>`)
+	}
+}
+
+// formatIndian formats a number with Indian digit grouping (12,34,567.89).
+func formatIndian(v float64) string {
+	raw := strconv.FormatFloat(v, 'f', 2, 64)
+	neg := strings.HasPrefix(raw, "-")
+	if neg {
+		raw = raw[1:]
+	}
+	intPart, frac := raw, ""
+	if i := strings.IndexByte(raw, '.'); i >= 0 {
+		intPart, frac = raw[:i], raw[i:]
+	}
+	if len(intPart) > 3 {
+		last3 := intPart[len(intPart)-3:]
+		rest := intPart[:len(intPart)-3]
+		var groups []string
+		for len(rest) > 2 {
+			groups = append([]string{rest[len(rest)-2:]}, groups...)
+			rest = rest[:len(rest)-2]
+		}
+		if rest != "" {
+			groups = append([]string{rest}, groups...)
+		}
+		intPart = strings.Join(groups, ",") + "," + last3
+	}
+	out := intPart + frac
+	if neg {
+		out = "-" + out
+	}
+	return out
 }
 
 type deleteEvaluationResponse struct {

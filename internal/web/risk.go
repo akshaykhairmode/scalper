@@ -158,6 +158,9 @@ func (s *Server) orderPrice(ctx context.Context, o kotakapi.Order) (float64, err
 	if s.market == nil {
 		return 0, fmt.Errorf("market data is not configured")
 	}
+	if ltp, ok := s.cachedLTP(option.InstrumentKey, 3*time.Second); ok {
+		return ltp, nil
+	}
 	quote, err := s.market.Quote(ctx, s.marketBaseURL(), option.InstrumentKey)
 	if err != nil {
 		return 0, err

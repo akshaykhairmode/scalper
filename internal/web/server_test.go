@@ -232,8 +232,8 @@ func TestCandlesBatchRoute(t *testing.T) {
 	if len(response.PE.Candles) != 1 || response.PE.Candles[0].Close != 101 {
 		t.Fatalf("pe candles = %+v", response.PE.Candles)
 	}
-	if len(response.Results) != 3 {
-		t.Fatalf("results count = %d, want 3", len(response.Results))
+	if len(response.Results) != 0 {
+		t.Fatalf("results should be omitted for named panes, got %d", len(response.Results))
 	}
 }
 

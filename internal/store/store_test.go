@@ -402,3 +402,30 @@ func TestCandleSyncTracking(t *testing.T) {
 		t.Fatalf("CandleSyncAt = %d (ok=%v), want %d", syncedAt, ok, now)
 	}
 }
+
+func TestPruneCandles(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	base := time.Now().Unix()
+	err := s.WriteCandles(ctx, "prune_inst", "1m", []market.Candle{
+		{Time: base - 100000, Open: 1, High: 1, Low: 1, Close: 1},
+		{Time: base, Open: 2, High: 2, Low: 2, Close: 2},
+	})
+	if err != nil {
+		t.Fatalf("WriteCandles: %v", err)
+	}
+	rows, err := s.PruneCandles(ctx, base-10)
+	if err != nil {
+		t.Fatalf("PruneCandles: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("pruned rows = %d, want 1", rows)
+	}
+	got, err := s.ReadCandles(ctx, "prune_inst", "1m")
+	if err != nil {
+		t.Fatalf("ReadCandles: %v", err)
+	}
+	if len(got) != 1 || got[0].Close != 2 {
+		t.Fatalf("remaining candles = %+v", got)
+	}
+}

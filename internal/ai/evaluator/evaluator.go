@@ -111,8 +111,7 @@ type Evaluator struct {
 	activeCalls map[int64]*ActiveCall
 	activeCount int64 // atomic fast-path counter for OnTick
 
-	ringMu    sync.RWMutex
-	tickRings map[string]*features.TickRing
+	ringShards [ringShardCount]tickRingShard
 
 	lastSignalMu sync.Mutex
 	lastSignal   map[string]time.Time
@@ -171,7 +170,6 @@ func New(opts Options) *Evaluator {
 		quoteProvider: opts.QuoteProvider,
 		log:           logger,
 		activeCalls:   make(map[int64]*ActiveCall),
-		tickRings:     make(map[string]*features.TickRing),
 		lastSignal:    make(map[string]time.Time),
 		onOutcome:     opts.OnOutcome,
 		onNewCall:     opts.OnNewCall,
@@ -180,6 +178,9 @@ func New(opts Options) *Evaluator {
 	}
 
 	e.restorePendingCalls()
+	for i := range e.ringShards {
+		e.ringShards[i].rings = make(map[string]*features.TickRing)
+	}
 	return e
 }
 
@@ -523,22 +524,40 @@ func (e *Evaluator) OnTick(ctx context.Context, instrumentKey string, ltp float6
 	}
 }
 
+const ringShardCount = 16
+
+type tickRingShard struct {
+	mu    sync.RWMutex
+	rings map[string]*features.TickRing
+}
+
+func ringShardIndex(key string) int {
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h % ringShardCount)
+}
+
 func (e *Evaluator) pushTick(instrumentKey string, ltp float64, now time.Time) {
-	e.ringMu.Lock()
-	ring, ok := e.tickRings[instrumentKey]
+	shard := &e.ringShards[ringShardIndex(instrumentKey)]
+	shard.mu.Lock()
+	ring, ok := shard.rings[instrumentKey]
 	if !ok {
-		// Bound memory: evict an arbitrary old instrument when the ring map grows.
-		if len(e.tickRings) >= 1024 {
-			for key := range e.tickRings {
-				delete(e.tickRings, key)
+		// Bound memory per shard: evict an arbitrary old instrument when the
+		// shard grows too large.
+		if len(shard.rings) >= 128 {
+			for key := range shard.rings {
+				delete(shard.rings, key)
 				break
 			}
 		}
 		ring = features.NewTickRing(240)
-		e.tickRings[instrumentKey] = ring
+		shard.rings[instrumentKey] = ring
 	}
 	ring.Push(features.Tick{Price: ltp, Timestamp: now.UnixMilli()})
-	e.ringMu.Unlock()
+	shard.mu.Unlock()
 }
 
 // ScanNow triggers an on-demand evaluation of active ATM strikes.
@@ -1227,9 +1246,10 @@ func (e *Evaluator) pollActivePositions(ctx context.Context) {
 func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap, ema9, ema21, rsi14, atr14 float64, hasTicks bool) {
 	var ring *features.TickRing
 	if e != nil {
-		e.ringMu.RLock()
-		ring = e.tickRings[instrumentKey]
-		e.ringMu.RUnlock()
+		shard := &e.ringShards[ringShardIndex(instrumentKey)]
+		shard.mu.RLock()
+		ring = shard.rings[instrumentKey]
+		shard.mu.RUnlock()
 	}
 
 	if ring != nil && ring.Len() > 0 {

@@ -233,7 +233,6 @@ func symbolExpiry(trdSymbol string) (int, time.Month, bool) {
 // expiry in a calendar month is monthly; all expiries also appear in the weekly
 // list, matching the plan's de-duplication rule.
 func BuildExpiries(options []Option, underlying string, now time.Time) []ExpiryInfo {
-	today := now.In(ist).Format("2006-01-02")
 	seen := make(map[string]bool)
 	var dates []string
 	for _, opt := range options {
@@ -244,6 +243,14 @@ func BuildExpiries(options []Option, underlying string, now time.Time) []ExpiryI
 		dates = append(dates, opt.Expiry)
 	}
 	sort.Strings(dates)
+	return buildExpiryInfos(dates, now)
+}
+
+// buildExpiryInfos turns a sorted list of expiry dates into ExpiryInfo values.
+// It is split out so Manager can precompute the date list and only recompute
+// the time-dependent Expired flag per call.
+func buildExpiryInfos(dates []string, now time.Time) []ExpiryInfo {
+	today := now.In(ist).Format("2006-01-02")
 
 	lastInMonth := make(map[string]string, len(dates))
 	for _, date := range dates {

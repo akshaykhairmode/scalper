@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -409,5 +410,58 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	}
 	if spotPrice != 24500.0 {
 		t.Errorf("expected spot price 24500.0, got %f", spotPrice)
+	}
+}
+
+func TestAISignalsRowsPartial(t *testing.T) {
+	mockStore := &mockAIStore{}
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	defer s.Close()
+	s.aiStore = mockStore
+
+	_, err := mockStore.SaveEvaluation(context.Background(), store.Evaluation{
+		Timestamp:     time.Now(),
+		InstrumentKey: "mcx_fo|CRUDEOIL|2026-11-18|8200|CE",
+		Underlying:    "CRUDEOIL",
+		OptionLTP:     100,
+		Action:        "BUY_CE",
+		Confidence:    0.8,
+		Score:         4,
+		TargetPrice:   108,
+		StopLossPrice: 95,
+		Status:        "PENDING",
+		Source:        "agent+jev",
+	})
+	if err != nil {
+		t.Fatalf("save evaluation: %v", err)
+	}
+
+	rec := do(t, s, localRequest(http.MethodGet, "/partials/ai/signals-rows"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Agent", "Jev", "BUY_CE", "₹100.00", "ai-call-remove", "CRUDEOIL 8200 CE"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("partial missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestFormatIndian(t *testing.T) {
+	cases := map[float64]string{
+		0:          "0.00",
+		100:        "100.00",
+		1234.5:     "1,234.50",
+		1234567.89: "12,34,567.89",
+		-1234.5:    "-1,234.50",
+	}
+	for value, want := range cases {
+		if got := formatIndian(value); got != want {
+			t.Errorf("formatIndian(%v) = %q, want %q", value, got, want)
+		}
 	}
 }

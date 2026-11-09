@@ -18,7 +18,7 @@ import (
 // GetSpotPrice retrieves the latest spot price of an underlying index (e.g. NIFTY).
 func (s *Server) GetSpotPrice(ctx context.Context, underlying string) (float64, error) {
 	// 1. Try cached indices first if fresh
-	s.indicesMu.Lock()
+	s.indicesMu.RLock()
 	if s.indicesRaw != nil {
 		var cached struct {
 			Indices []market.IndexQuote `json:"indices"`
@@ -27,14 +27,14 @@ func (s *Server) GetSpotPrice(ctx context.Context, underlying string) (float64, 
 			for _, idx := range cached.Indices {
 				if strings.EqualFold(idx.Key, underlying) || strings.EqualFold(idx.DisplayName, underlying) {
 					if idx.LTP > 0 {
-						s.indicesMu.Unlock()
+						s.indicesMu.RUnlock()
 						return idx.LTP, nil
 					}
 				}
 			}
 		}
 	}
-	s.indicesMu.Unlock()
+	s.indicesMu.RUnlock()
 
 	if s.market == nil {
 		return 0, errors.New("market API not configured")
@@ -43,6 +43,9 @@ func (s *Server) GetSpotPrice(ctx context.Context, underlying string) (float64, 
 	// 2. Fetch live indices via market service using valid marketBaseURL
 	indices, err := s.market.Indices(ctx, s.marketBaseURL())
 	if err == nil {
+		if payload, merr := json.Marshal(map[string]any{"indices": indices}); merr == nil {
+			s.storeIndicesPayload(payload)
+		}
 		for _, idx := range indices {
 			if strings.EqualFold(idx.Key, underlying) || strings.EqualFold(idx.DisplayName, underlying) {
 				if idx.LTP > 0 {
@@ -116,6 +119,11 @@ func (s *Server) GetATMStrikes(ctx context.Context, underlying string) (ceKey, p
 
 // GetMarketDepth extracts L2 bid/ask microstructure metrics for an instrument.
 func (s *Server) GetMarketDepth(ctx context.Context, instrumentKey string) (features.OrderBookMetrics, error) {
+	if ltp, ok := s.cachedLTP(instrumentKey, 5*time.Second); ok {
+		if bids, asks, dok := s.cachedDepth(instrumentKey, 5*time.Second); dok {
+			return features.CalculateOrderBookMetrics(ltp, toMarketDepth(bids), toMarketDepth(asks)), nil
+		}
+	}
 	if s.market == nil {
 		return features.OrderBookMetrics{}, errors.New("market API not configured")
 	}
@@ -174,6 +182,9 @@ func (s *Server) GetMarketSnapshot(ctx context.Context, instrumentKey string) (f
 // used as a REST fallback when the live feed stops delivering ticks for a
 // tracked paper position.
 func (s *Server) GetOptionLTP(ctx context.Context, instrumentKey string) (float64, error) {
+	if ltp, ok := s.cachedLTP(instrumentKey, 5*time.Second); ok {
+		return ltp, nil
+	}
 	if s.market == nil {
 		return 0, errors.New("market API not configured")
 	}
@@ -194,7 +205,7 @@ func (s *Server) GetUnderlyingContext(ctx context.Context, underlying string) (f
 	out := features.UnderlyingContext{}
 
 	var quotes []market.IndexQuote
-	s.indicesMu.Lock()
+	s.indicesMu.RLock()
 	if s.indicesRaw != nil {
 		var cached struct {
 			Indices []market.IndexQuote `json:"indices"`
@@ -203,11 +214,14 @@ func (s *Server) GetUnderlyingContext(ctx context.Context, underlying string) (f
 			quotes = cached.Indices
 		}
 	}
-	s.indicesMu.Unlock()
+	s.indicesMu.RUnlock()
 
 	if len(quotes) == 0 && s.market != nil {
 		if fetched, err := s.market.Indices(ctx, s.marketBaseURL()); err == nil {
 			quotes = fetched
+			if payload, merr := json.Marshal(map[string]any{"indices": fetched}); merr == nil {
+				s.storeIndicesPayload(payload)
+			}
 		}
 	}
 
