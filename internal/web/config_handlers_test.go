@@ -594,3 +594,56 @@ func TestConfigCrossOriginProtection(t *testing.T) {
 		t.Errorf("expected 403 Forbidden for cross-origin host, got %d", rec.Code)
 	}
 }
+
+// TestSaveConfigDoesNotDeadlockWithActiveEvaluator guards against a regression
+// where handleUpdateConfig held configMu while evaluator.UpdateConfig called
+// back into configSnapshot(), self-deadlocking the whole server.
+func TestSaveConfigDoesNotDeadlockWithActiveEvaluator(t *testing.T) {
+	cfg := config.Default()
+	cfg.Kotak.MobileNumber = "+919999999999"
+	cfg.Kotak.UCC = "TESTUCC"
+	cfg.AI.Enabled = true
+	cfg.AI.PeriodicScan = true
+	cfg.AI.ScanIntervalMinutes = 5
+	cfg.AI.ScannedUnderlyings = []string{"NIFTY", "SENSEX", "CRUDEOIL"}
+	cfg.Web.BasicAuth.Username = "admin"
+	cfg.Web.BasicAuth.Password = "adminpass"
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+	_ = enc.Close()
+	yamlStr := buf.String()
+
+	tmpPath := writeTempConfigFile(t, yamlStr)
+	s := newTestServer(t, serverOpts{db: fakeDB{}, cfg: &cfg, configPath: tmpPath})
+	defer s.Close()
+
+	payload, err := json.Marshal(map[string]any{"yaml": yamlStr})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := newLocalRequest(http.MethodPost, "/api/config", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	done := make(chan struct{})
+	go func() {
+		s.Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("config save deadlocked: handler did not return")
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

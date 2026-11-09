@@ -182,7 +182,8 @@ func (e *Evaluator) Start(ctx context.Context) {
 
 	scanCtx, cancel := context.WithCancel(e.baseCtx)
 	e.scanCancel = cancel
-	e.scanDone = make(chan struct{})
+	done := make(chan struct{})
+	e.scanDone = done
 
 	e.scanMu.Lock()
 	e.nextScanTime = time.Now().Add(5 * time.Second)
@@ -192,8 +193,11 @@ func (e *Evaluator) Start(ctx context.Context) {
 		e.onScanStatus(e.ScannerStatus())
 	}
 
-	go e.runScanner(scanCtx, time.Duration(intervalMin)*time.Minute)
+	go e.runScanner(scanCtx, time.Duration(intervalMin)*time.Minute, done)
 }
+
+// scannerStopTimeout bounds how long Stop waits for an in-flight scanner run.
+const scannerStopTimeout = 20 * time.Second
 
 // Stop cleanly terminates the periodic evaluation scanner.
 func (e *Evaluator) Stop() {
@@ -204,7 +208,13 @@ func (e *Evaluator) Stop() {
 		e.scanCancel()
 	}
 	if e.scanDone != nil {
-		<-e.scanDone
+		// Bound the wait so a slow quote provider can never wedge config saves.
+		select {
+		case <-e.scanDone:
+		case <-time.After(scannerStopTimeout):
+			e.log.Warn("ai evaluator scanner stop timed out", "event", "ai_scanner_stop_timeout",
+				"timeout", scannerStopTimeout)
+		}
 	}
 	e.scanMu.Lock()
 	e.nextScanTime = time.Time{}
@@ -474,6 +484,7 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 	targetPct := e.cfg.TargetPct
 	stopLossPct := e.cfg.StopLossPct
 	shadowMode := e.cfg.ShadowMode
+	agentModel := e.cfg.Agent.Model
 	e.cfgMu.RUnlock()
 
 	if targetPct <= 0 {
@@ -606,7 +617,7 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 
 		stateSnap := stateJSON
 		if source == "agent" {
-			stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, e.cfg.Agent.Model)
+			stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel)
 		}
 
 		eval := store.Evaluation{
@@ -860,6 +871,7 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 	targetPct := e.cfg.TargetPct
 	stopLossPct := e.cfg.StopLossPct
 	shadowMode := e.cfg.ShadowMode
+	agentModel := e.cfg.Agent.Model
 	e.cfgMu.RUnlock()
 
 	if targetPct <= 0 {
@@ -882,7 +894,7 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 
 	stateSnap := stateJSON
 	if source == "agent" {
-		stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, e.cfg.Agent.Model)
+		stateSnap = fmt.Sprintf(`{"agent_model":"%s","source":"agent"}`, agentModel)
 	}
 
 	eval := store.Evaluation{
@@ -971,8 +983,8 @@ func (e *Evaluator) UntrackEvaluation(id int64) {
 	e.activeMu.Unlock()
 }
 
-func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
-	defer close(e.scanDone)
+func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration, done chan struct{}) {
+	defer close(done)
 
 	e.log.Info("ai evaluator periodic scanner started", "event", "ai_scanner_started", "interval", interval)
 

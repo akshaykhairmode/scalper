@@ -326,9 +326,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Safe write: lock to prevent race conditions
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
+	// 4. Safe write: serialize concurrent saves, but never hold configMu while
+	// doing disk I/O or invoking callbacks that read the config.
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 
 	cleanPath := filepath.Clean(cfgPath)
 
@@ -361,12 +362,18 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4c. Update runtime active server configuration
+	s.configMu.Lock()
 	oldCfg := s.cfg
 	s.cfg = newCfg
 	if boot, berr := newBootstrap(newCfg, s.mpin != ""); berr == nil {
 		s.bootstrap = boot
 	}
-	if oldCfg.Web.BasicAuth != newCfg.Web.BasicAuth {
+	authChanged := oldCfg.Web.BasicAuth != newCfg.Web.BasicAuth
+	s.configMu.Unlock()
+
+	// These run outside configMu: evaluator.ScannerStatus() calls back into
+	// Server.configSnapshot(), which would self-deadlock if the write lock were held.
+	if authChanged {
 		s.revokeAllServeSessions()
 	}
 	if s.evaluator != nil {

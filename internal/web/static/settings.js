@@ -864,11 +864,14 @@
     saveBtn.disabled = true;
     saveSpinner.hidden = false;
     saveLabel.textContent = "Saving...";
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 9e4);
     try {
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ yaml: yamlToSend, validate_only: false })
+        body: JSON.stringify({ yaml: yamlToSend, validate_only: false }),
+        signal: controller.signal
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -889,8 +892,10 @@
         showToast("warn", `Restart required to apply: ${data.restart_required.join(", ")}`, 8e3);
       }
     } catch (err) {
-      showToast("error", `Failed to save configuration: ${err.message}`);
+      const message = err && err.name === "AbortError" ? "Request timed out. The server may still be applying changes \u2014 reload the page to check." : err.message;
+      showToast("error", `Failed to save configuration: ${message}`);
     } finally {
+      window.clearTimeout(timeoutId);
       saveBtn.disabled = false;
       saveSpinner.hidden = true;
       saveLabel.textContent = "Save Configuration";

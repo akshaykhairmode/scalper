@@ -168,7 +168,11 @@ type Server struct {
 	serveUnlockFailures map[string]serveUnlockFailure
 
 	configPath string
-	configMu   sync.RWMutex
+	// configMu guards the in-memory config/bundle pointers. Never call code that
+	// may read the config (e.g. evaluator callbacks) while holding the write lock.
+	configMu sync.RWMutex
+	// configSaveMu serializes config file writes without blocking readers on disk I/O.
+	configSaveMu sync.Mutex
 
 	deviceStore          DeviceStore
 	webauthnChallengesMu sync.Mutex

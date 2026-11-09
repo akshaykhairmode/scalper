@@ -1017,11 +1017,16 @@
     saveSpinner.hidden = false;
     saveLabel.textContent = 'Saving...';
 
+    // Never leave the button stuck on "Saving..." if the server wedges.
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 90000);
+
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ yaml: yamlToSend, validate_only: false })
+        body: JSON.stringify({ yaml: yamlToSend, validate_only: false }),
+        signal: controller.signal,
       });
 
       const data = await res.json();
@@ -1048,8 +1053,12 @@
         showToast('warn', `Restart required to apply: ${data.restart_required.join(', ')}`, 8000);
       }
     } catch (err) {
-      showToast('error', `Failed to save configuration: ${err.message}`);
+      const message = err && err.name === 'AbortError'
+        ? 'Request timed out. The server may still be applying changes — reload the page to check.'
+        : err.message;
+      showToast('error', `Failed to save configuration: ${message}`);
     } finally {
+      window.clearTimeout(timeoutId);
       saveBtn.disabled = false;
       saveSpinner.hidden = true;
       saveLabel.textContent = 'Save Configuration';
