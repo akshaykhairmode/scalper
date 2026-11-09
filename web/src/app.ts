@@ -973,9 +973,18 @@ function buildCharts() {
     b.classList.toggle("active", savedPatterns);
     b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
   });
+  const initSpotInst = activeSpotInstrument();
+  const initIsCashIndex = !activeCommodity() && (initSpotInst.startsWith("nse_cm|") || initSpotInst.startsWith("bse_cm|"));
   $$('button[data-chart-action="dom"]').forEach((b) => {
-    b.classList.toggle("active", savedDOM);
-    b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
+    const isSpotBtn = b.dataset.chart === "underlying" || b.dataset.chart === "spot";
+    if (isSpotBtn && initIsCashIndex) {
+      b.classList.remove("active");
+      b.setAttribute("aria-pressed", "false");
+      b.title = "Depth of Market (DOM) · Not available for cash indices (visible on Call/Put charts)";
+    } else {
+      b.classList.toggle("active", savedDOM);
+      b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
+    }
   });
   $$('button[data-chart-action="ma"]').forEach((b) => {
     const pane = b.dataset.chart;
@@ -2409,15 +2418,29 @@ async function loadCharts(forceRefresh = false) {
             : 5_000;
           S.historicalCache.set(cacheKey, { retryAt: Date.now() + retryDelay, error: new Error(result.error) });
         } else {
+          const rawCandles = (result.candles || []).map((c: any) => ({
+            time: num(c.time ?? c.ts),
+            open: num(c.open),
+            high: num(c.high),
+            low: num(c.low),
+            close: num(c.close),
+            volume: num(c.volume),
+          }));
+          const validCandles = rawCandles.map((c: any) => {
+            if (c.low <= 0 && (c.open > 0 || c.close > 0 || c.high > 0)) {
+              const pos = [c.open, c.close, c.high].filter((v: number) => v > 0);
+              c.low = pos.length ? Math.min(...pos) : 0;
+            }
+            if (c.open <= 0) c.open = c.low > 0 ? c.low : c.close;
+            if (c.close <= 0) c.close = c.open > 0 ? c.open : c.low;
+            if (c.high <= 0 || c.high < Math.max(c.open, c.close, c.low)) {
+              c.high = Math.max(c.open, c.close, c.low);
+            }
+            return c;
+          }).filter((c: any) => c.time > 0 && c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.high >= c.low);
+
           const parsed = {
-            candles: (result.candles || []).map((c) => ({
-              time: num(c.time ?? c.ts),
-              open: num(c.open),
-              high: num(c.high),
-              low: num(c.low),
-              close: num(c.close),
-              volume: num(c.volume),
-            })),
+            candles: validCandles,
             warning: result.warning || "",
           };
           S.historicalCache.set(cacheKey, parsed);
@@ -2574,17 +2597,27 @@ function renderPaneHeaders() {
   renderPCR();
 
   const ceInst = chartInstrument("CE");
-  if (ceInst && S.depths?.[ceInst]) {
-    S.charts.ce?.setDepth?.(S.depths[ceInst]);
+  if (ceInst) {
+    const ceDepth = S.depths?.[ceInst] || (selectedOption("CE")?.bids?.length || selectedOption("CE")?.asks?.length ? { bids: selectedOption("CE").bids, asks: selectedOption("CE").asks } : null);
+    if (ceDepth) S.charts.ce?.setDepth?.(ceDepth);
   }
   const peInst = chartInstrument("PE");
-  if (peInst && S.depths?.[peInst]) {
-    S.charts.pe?.setDepth?.(S.depths[peInst]);
+  if (peInst) {
+    const peDepth = S.depths?.[peInst] || (selectedOption("PE")?.bids?.length || selectedOption("PE")?.asks?.length ? { bids: selectedOption("PE").bids, asks: selectedOption("PE").asks } : null);
+    if (peDepth) S.charts.pe?.setDepth?.(peDepth);
   }
   const spotInst = activeSpotInstrument();
   if (spotInst && S.depths?.[spotInst]) {
     S.charts.spot?.setDepth?.(S.depths[spotInst]);
   }
+  const isCashIndex = !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
+  $$('button[data-chart="underlying"][data-chart-action="dom"]').forEach((b) => {
+    if (isCashIndex) {
+      b.classList.remove("active");
+      b.setAttribute("aria-pressed", "false");
+      b.title = "Depth of Market (DOM) · Not available for cash indices (visible on Call/Put charts)";
+    }
+  });
 
   renderOrderPad();
 }
@@ -6260,15 +6293,46 @@ function bindEvents() {
         return;
       }
       if (action === "dom") {
+        const isSpot = chartKey === "underlying" || chartKey === "spot";
+        const spotInst = activeSpotInstrument();
+        const hasSpotDepth = isSpot && Boolean(S.depths?.[spotInst]?.bids?.length || S.depths?.[spotInst]?.asks?.length);
+        const isCashIndex = isSpot && !hasSpotDepth && !activeCommodity() && (spotInst.startsWith("nse_cm|") || spotInst.startsWith("bse_cm|"));
+
+        if (isCashIndex) {
+          button.classList.remove("active");
+          button.setAttribute("aria-pressed", "false");
+          chart.toggleDepth(false);
+          toast("Depth of Market (DOM) is not available for index spots. Visible on Call & Put option charts.", "warn", 3500);
+          return;
+        }
+
         const nextState = chart.toggleDepth();
         button.classList.toggle("active", nextState);
         button.setAttribute("aria-pressed", nextState ? "true" : "false");
+
+        if (nextState) {
+          let depth = null;
+          if (chartKey === "ce") {
+            const ceInst = chartInstrument("CE");
+            depth = S.depths?.[ceInst] || (selectedOption("CE")?.bids?.length || selectedOption("CE")?.asks?.length ? { bids: selectedOption("CE").bids, asks: selectedOption("CE").asks } : null);
+          } else if (chartKey === "pe") {
+            const peInst = chartInstrument("PE");
+            depth = S.depths?.[peInst] || (selectedOption("PE")?.bids?.length || selectedOption("PE")?.asks?.length ? { bids: selectedOption("PE").bids, asks: selectedOption("PE").asks } : null);
+          } else if (isSpot) {
+            depth = S.depths?.[spotInst] || null;
+          }
+          if (depth) {
+            chart.setDepth(depth);
+          }
+        }
+
         try {
           localStorage.setItem("scalper-show-dom", String(nextState));
         } catch {
           // ignore
         }
-        toast(nextState ? "DOM price bars enabled" : "DOM price bars hidden", "ok", 1500);
+        const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
+        toast(nextState ? `DOM price bars enabled (${label})` : `DOM price bars hidden (${label})`, "ok", 1500);
         return;
       }
       if (action === "sr") {

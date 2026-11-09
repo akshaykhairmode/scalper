@@ -479,10 +479,14 @@ func candleRefreshDue(now time.Time, openText, closeText string, syncedAt int64)
 func mergeCandles(cached, fetched []market.Candle) []market.Candle {
 	byTime := make(map[int64]market.Candle, len(cached)+len(fetched))
 	for _, candle := range cached {
-		byTime[candle.Time] = candle
+		if isValidCandle(candle) {
+			byTime[candle.Time] = candle
+		}
 	}
 	for _, candle := range fetched {
-		byTime[candle.Time] = candle
+		if isValidCandle(candle) {
+			byTime[candle.Time] = candle
+		}
 	}
 	out := make([]market.Candle, 0, len(byTime))
 	for _, candle := range byTime {
@@ -490,6 +494,10 @@ func mergeCandles(cached, fetched []market.Candle) []market.Candle {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Time < out[j].Time })
 	return out
+}
+
+func isValidCandle(c market.Candle) bool {
+	return c.Time > 0 && c.Open > 0 && c.High > 0 && c.Low > 0 && c.Close > 0 && c.High >= c.Low
 }
 
 func (s *Server) writeRouteJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
@@ -534,9 +542,17 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, target any) error {
 	return nil
 }
 
-// isMalformedCandleRun detects upstream provider anomalies where multiple consecutive bars
-// are clamped to static day-high and day-close values (e.g. barcode pattern).
+// isMalformedCandleRun detects upstream provider anomalies such as non-positive prices (e.g. low=0)
+// or multiple consecutive bars clamped to static day-high and day-close values (barcode pattern).
 func isMalformedCandleRun(candles []market.Candle) bool {
+	if len(candles) == 0 {
+		return false
+	}
+	for _, c := range candles {
+		if c.Low <= 0 || c.Open <= 0 || c.High <= 0 || c.Close <= 0 || c.High < c.Low {
+			return true
+		}
+	}
 	if len(candles) < 5 {
 		return false
 	}

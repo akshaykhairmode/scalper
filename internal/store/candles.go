@@ -82,6 +82,10 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 			!finite(candle.Low) || !finite(candle.Close) || candle.Volume < 0 {
 			return fmt.Errorf("store: invalid candle at timestamp %d", candle.Time)
 		}
+		if candle.Open <= 0 || candle.High <= 0 || candle.Low <= 0 || candle.Close <= 0 {
+			// Skip corrupt candle with non-positive prices from upstream anomalies
+			continue
+		}
 		if _, err := stmt.ExecContext(ctx, instrumentKey, timeframe, candle.Time,
 			candle.Open, candle.High, candle.Low, candle.Close, candle.Volume); err != nil {
 			return fmt.Errorf("store: write candle at %d: %w", candle.Time, err)
@@ -145,7 +149,7 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts ASC) AS rn_first,
 				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts DESC) AS rn_last
 			FROM candles
-			WHERE instrument_key = ? AND timeframe = '1m'
+			WHERE instrument_key = ? AND timeframe = '1m' AND open > 0 AND high > 0 AND low > 0 AND close > 0
 		)
 		SELECT
 			b_ts,

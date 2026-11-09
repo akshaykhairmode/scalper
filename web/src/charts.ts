@@ -592,8 +592,8 @@ function registerCustomOverlays() {
       const width = bounding?.width || 800;
 
       const baseColor = isBuy ? "#29b360" : "#f05a5a";
-      const fillColor = isBuy ? "rgba(41, 179, 96, 0.22)" : "rgba(240, 90, 90, 0.22)";
-      const barHeight = 15;
+      const fillColor = isBuy ? "rgba(41, 179, 96, 0.35)" : "rgba(240, 90, 90, 0.35)";
+      const barHeight = 16;
 
       const ratio = Math.max(0.08, Math.min(1.0, qty / (maxQty || 1)));
       const maxBarWidth = Math.min(220, Math.max(90, width * 0.26));
@@ -635,7 +635,7 @@ function registerCustomOverlays() {
       });
 
       // Text badge with orders and quantity
-      const orderLabel = orders > 0 ? `${orders} ord · ` : "";
+      const orderLabel = orders > 0 ? `${orders}o · ` : "";
       const qtyLabel = qty >= 1e5 ? `${(qty / 1e5).toFixed(1)}L` : (qty >= 1e3 ? `${(qty / 1e3).toFixed(1)}K` : String(qty));
       const label = `${orderLabel}${qtyLabel}`;
 
@@ -650,6 +650,12 @@ function registerCustomOverlays() {
         },
         styles: {
           color: "#ffffff",
+          backgroundColor: isBuy ? "rgba(16, 80, 42, 0.88)" : "rgba(127, 29, 29, 0.88)",
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1,
+          paddingBottom: 1,
+          borderRadius: 2,
           size: 9,
           weight: "bold",
           family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
@@ -1787,14 +1793,32 @@ export class CandleChart {
   formatCandle(c) {
     if (!c || !Number.isFinite(c.time)) return null;
     const ts = c.time > 1e11 ? c.time : c.time * 1000;
+    let o = Number(c.open);
+    let h = Number(c.high);
+    let l = Number(c.low);
+    let cl = Number(c.close);
+
+    if (!Number.isFinite(o) || !Number.isFinite(h) || !Number.isFinite(l) || !Number.isFinite(cl)) return null;
+    if (o <= 0 && h <= 0 && l <= 0 && cl <= 0) return null;
+
+    // Sanitize zero / non-positive prices from upstream broker glitches
+    if (l <= 0) {
+      const pos = [o, h, cl].filter(v => v > 0);
+      l = pos.length ? Math.min(...pos) : 0;
+    }
+    if (o <= 0) o = l > 0 ? l : cl;
+    if (cl <= 0) cl = o > 0 ? o : l;
+    if (h <= 0 || h < Math.max(o, l, cl)) h = Math.max(o, l, cl);
+    if (l <= 0 || o <= 0 || cl <= 0 || h <= 0) return null;
+
     return {
       timestamp: ts,
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number.isFinite(c.volume) ? Number(c.volume) : 0,
-      turnover: Number.isFinite(c.turnover) ? Number(c.turnover) : 0,
+      open: o,
+      high: Math.max(h, o, cl),
+      low: Math.min(l, o, cl),
+      close: cl,
+      volume: Number.isFinite(c.volume) && c.volume >= 0 ? Number(c.volume) : 0,
+      turnover: Number.isFinite(c.turnover) && c.turnover >= 0 ? Number(c.turnover) : 0,
       dayVolume: c.dayVolume,
     };
   }
@@ -1804,7 +1828,9 @@ export class CandleChart {
     const result = [];
     for (const c of candles) {
       const item = this.formatCandle(c);
-      if (item) result.push(item);
+      if (item && item.low > 0 && item.open > 0 && item.close > 0 && item.high >= item.low) {
+        result.push(item);
+      }
     }
     return result;
   }
@@ -1886,6 +1912,7 @@ export class CandleChart {
           name: "depthLevelBar",
           groupId: "depth_bars",
           points: [{ value: price }],
+          lock: true,
           extendData: {
             side: "BUY",
             orders: Number(b.orders || 0),
@@ -1905,6 +1932,7 @@ export class CandleChart {
           name: "depthLevelBar",
           groupId: "depth_bars",
           points: [{ value: price }],
+          lock: true,
           extendData: {
             side: "SELL",
             orders: Number(a.orders || 0),
@@ -2094,7 +2122,6 @@ export class CandleChart {
   }
 
   refreshPatterns() {
-    this.clearDepth();
     this.clearPatterns();
     if (!this.showPatterns || !this.data.length || !this.chart) return;
 
@@ -2412,6 +2439,7 @@ export class CandleChart {
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
+    this.refreshDepth();
   }
 
   setTrades(trades, { isSpot = false } = {}) {
@@ -2661,6 +2689,7 @@ export class CandleChart {
     this.refreshSRLines();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
+    this.refreshDepth();
   }
 
   schedule() {

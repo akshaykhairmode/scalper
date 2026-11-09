@@ -443,6 +443,40 @@ func decodeHistoricalCandle(row []json.RawMessage) (Candle, error) {
 		}
 		candle.OpenInterest = int64(oi)
 	}
+	if candle.Open <= 0 && candle.High <= 0 && candle.Low <= 0 && candle.Close <= 0 {
+		return Candle{}, errors.New("candle prices are all non-positive")
+	}
+	// Sanitize zero or non-positive prices from upstream broker glitch
+	if candle.Low <= 0 {
+		pos := []float64{}
+		if candle.Open > 0 {
+			pos = append(pos, candle.Open)
+		}
+		if candle.Close > 0 {
+			pos = append(pos, candle.Close)
+		}
+		if candle.High > 0 {
+			pos = append(pos, candle.High)
+		}
+		if len(pos) > 0 {
+			minVal := pos[0]
+			for _, v := range pos {
+				if v < minVal {
+					minVal = v
+				}
+			}
+			candle.Low = minVal
+		}
+	}
+	if candle.Open <= 0 {
+		candle.Open = candle.Low
+	}
+	if candle.Close <= 0 {
+		candle.Close = candle.Open
+	}
+	if candle.High <= 0 || candle.High < math.Max(candle.Open, math.Max(candle.Close, candle.Low)) {
+		candle.High = math.Max(candle.Open, math.Max(candle.Close, candle.Low))
+	}
 	if candle.Low > candle.High {
 		candle.Low, candle.High = candle.High, candle.Low
 	}
