@@ -78,6 +78,9 @@ const S: any = {
   chainMore: { above: false, below: false },
   chainLoading: false,
   spots: new Map(),
+  aiScanner: null,
+  aiScanRefreshTriggered: false,
+  aiScannerIntervalStarted: false,
   selected: { type: "CE", CE: null, PE: null },
   strikeSearchTarget: "CE",
   qty: { CE: 1, PE: 1 },
@@ -716,6 +719,7 @@ function init() {
   registerServiceWorker();
   initPWAInstallPrompt();
   updateClock();
+  ensureAIScannerTicker();
   updateAIWinRateChip();
   window.setInterval(() => {
     updateClock();
@@ -6098,10 +6102,115 @@ function closeAISignalsModal() {
   }
 }
 
+function updateAIScannerStatus(scanner: any) {
+  if (!scanner) return;
+  S.aiScanner = scanner;
+  renderAIScannerTimer();
+  ensureAIScannerTicker();
+}
+
+function ensureAIScannerTicker() {
+  if (S.aiScannerIntervalStarted) return;
+  S.aiScannerIntervalStarted = true;
+  window.setInterval(renderAIScannerTimer, 1000);
+}
+
+function renderAIScannerTimer() {
+  const headerEl = $("ai-header-timer");
+  const modalValEl = $("ai-modal-timer-val");
+  const modalBadgeEl = $("ai-modal-scanner-badge");
+  if (!headerEl && !modalValEl) return;
+
+  const scanner = S.aiScanner;
+  if (!scanner || !scanner.enabled) {
+    if (headerEl) {
+      headerEl.textContent = "⏱ Off";
+      headerEl.title = "AI background scanner is disabled in settings";
+      headerEl.style.opacity = "0.6";
+    }
+    if (modalValEl) {
+      modalValEl.textContent = "Off";
+      modalValEl.style.color = "var(--text-muted, #888)";
+    }
+    if (modalBadgeEl) modalBadgeEl.title = "AI background scanner is disabled in settings";
+    return;
+  }
+
+  if (!scanner.running) {
+    if (headerEl) {
+      headerEl.textContent = "⏱ Paused";
+      headerEl.title = "AI background scanner is paused";
+      headerEl.style.opacity = "0.7";
+    }
+    if (modalValEl) {
+      modalValEl.textContent = "Paused";
+      modalValEl.style.color = "var(--text-muted, #888)";
+    }
+    return;
+  }
+
+  const nextUnix = Number(scanner.next_scan_unix || 0);
+  if (!nextUnix || nextUnix <= 0) {
+    if (headerEl) {
+      headerEl.textContent = "⏱ --:--";
+      headerEl.style.opacity = "0.7";
+    }
+    if (modalValEl) modalValEl.textContent = "--:--";
+    return;
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const remaining = Math.max(0, nextUnix - nowSec);
+
+  let formatted = "";
+  if (remaining <= 0) {
+    formatted = "Scanning…";
+  } else {
+    const mins = Math.floor(remaining / 60);
+    const secs = remaining % 60;
+    formatted = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+
+  if (headerEl) {
+    headerEl.textContent = remaining <= 0 ? "⏱ Scanning…" : `⏱ ${formatted}`;
+    headerEl.title = `Next AI background scan in ${remaining}s (interval: ${scanner.interval_minutes || 15}m)`;
+    headerEl.style.opacity = "1";
+    if (remaining <= 0) {
+      headerEl.style.color = "var(--accent, #f59e0b)";
+    } else {
+      headerEl.style.color = "inherit";
+    }
+  }
+
+  if (modalValEl) {
+    modalValEl.textContent = formatted;
+    if (remaining <= 0) {
+      modalValEl.style.color = "var(--accent, #f59e0b)";
+    } else {
+      modalValEl.style.color = "var(--accent, #f59e0b)";
+    }
+  }
+
+  // Auto-refresh when countdown hits zero to sync the next scan cycle and any new calls
+  if (remaining === 0 && !S.aiScanRefreshTriggered) {
+    S.aiScanRefreshTriggered = true;
+    setTimeout(() => {
+      S.aiScanRefreshTriggered = false;
+      updateAIWinRateChip();
+      if (isAISignalsModalOpen()) {
+        refreshAISignalsModal();
+      }
+    }, 4500);
+  }
+}
+
 async function updateAIWinRateChip() {
   try {
     const res = await getJSON("/api/ai/evaluations/stats");
     const stats = res?.stats;
+    if (res?.scanner) {
+      updateAIScannerStatus(res.scanner);
+    }
     const chip = $("ai-winrate-chip");
     if (!chip || !stats) return;
 
@@ -6130,6 +6239,9 @@ async function refreshAISignalsModal() {
 
     if (statsRes.status === "fulfilled" && statsRes.value?.stats) {
       const s = statsRes.value.stats;
+      if (statsRes.value?.scanner) {
+        updateAIScannerStatus(statsRes.value.scanner);
+      }
       const winRateEl = $("ai-modal-winrate");
       if (winRateEl) {
         if (s.target_hits + s.stop_loss_hits > 0) {
@@ -6795,6 +6907,9 @@ function bindEvents() {
     try {
       const underlying = S.activeIndex || "NIFTY";
       const res = await postJSON(`/api/ai/evaluations/scan?underlying=${encodeURIComponent(underlying)}`, {});
+      if (res && res.scanner) {
+        updateAIScannerStatus(res.scanner);
+      }
       if (res && res.success) {
         toast(res.message || "Scan completed", "success");
       } else {

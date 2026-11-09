@@ -130,30 +130,40 @@ func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request)
 }
 
 type evaluationStatsResponse struct {
-	Stats store.EvaluationStats `json:"stats"`
+	Stats   store.EvaluationStats    `json:"stats"`
+	Scanner *evaluator.ScannerStatus `json:"scanner,omitempty"`
 }
 
 func (s *Server) handleGetAIEvaluationStats(w http.ResponseWriter, r *http.Request) {
-	if s.aiStore == nil {
-		s.writeRouteJSON(w, r, http.StatusOK, evaluationStatsResponse{Stats: store.EvaluationStats{}})
-		return
+	var stats store.EvaluationStats
+	if s.aiStore != nil {
+		var err error
+		stats, err = s.aiStore.GetEvaluationStats(r.Context())
+		if err != nil {
+			s.log.Error("failed to get ai evaluation stats", "event", "ai_evaluation_stats_failed", "error", err,
+				"request_id", logging.RequestID(r.Context()))
+			s.writeRouteError(w, r, http.StatusInternalServerError, "failed to get evaluation stats: "+err.Error(), nil)
+			return
+		}
 	}
 
-	stats, err := s.aiStore.GetEvaluationStats(r.Context())
-	if err != nil {
-		s.log.Error("failed to get ai evaluation stats", "event", "ai_evaluation_stats_failed", "error", err,
-			"request_id", logging.RequestID(r.Context()))
-		s.writeRouteError(w, r, http.StatusInternalServerError, "failed to get evaluation stats: "+err.Error(), nil)
-		return
+	var scannerStatus *evaluator.ScannerStatus
+	if s.evaluator != nil {
+		st := s.evaluator.ScannerStatus()
+		scannerStatus = &st
 	}
 
-	s.writeRouteJSON(w, r, http.StatusOK, evaluationStatsResponse{Stats: stats})
+	s.writeRouteJSON(w, r, http.StatusOK, evaluationStatsResponse{
+		Stats:   stats,
+		Scanner: scannerStatus,
+	})
 }
 
 type triggerScanResponse struct {
-	Success     bool               `json:"success"`
-	Evaluations []store.Evaluation `json:"evaluations"`
-	Message     string             `json:"message,omitempty"`
+	Success     bool                     `json:"success"`
+	Evaluations []store.Evaluation       `json:"evaluations"`
+	Scanner     *evaluator.ScannerStatus `json:"scanner,omitempty"`
+	Message     string                   `json:"message,omitempty"`
 }
 
 func (s *Server) handleTriggerAIScan(w http.ResponseWriter, r *http.Request) {
@@ -179,9 +189,16 @@ func (s *Server) handleTriggerAIScan(w http.ResponseWriter, r *http.Request) {
 		evals = []store.Evaluation{}
 	}
 
+	var scannerStatus *evaluator.ScannerStatus
+	if s.evaluator != nil {
+		st := s.evaluator.ScannerStatus()
+		scannerStatus = &st
+	}
+
 	s.writeRouteJSON(w, r, http.StatusOK, triggerScanResponse{
 		Success:     true,
 		Evaluations: evals,
+		Scanner:     scannerStatus,
 		Message:     fmt.Sprintf("Scan completed for %s: %d setups evaluated", underlying, len(evals)),
 	})
 }

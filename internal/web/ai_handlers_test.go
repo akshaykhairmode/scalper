@@ -213,6 +213,9 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	if statsResp.Stats.TotalCalls != 1 {
 		t.Errorf("total_calls = %d, want 1", statsResp.Stats.TotalCalls)
 	}
+	if statsResp.Scanner == nil {
+		t.Error("expected Scanner status in stats response")
+	}
 
 	// 7. Verify 503 when evaluator and agent are nil
 	s.evaluator = nil

@@ -43,7 +43,7 @@
       <span class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" role="button" tabindex="0" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></span>
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
-      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span></button>
+      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
       <a href="/logs" target="_blank" rel="noopener noreferrer" class="ghost small button" id="logs-button" title="View Live Server Logs (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Logs</a>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">LIVE</span>
@@ -615,7 +615,11 @@
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
           <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Recent Jev Setups &amp; Execution Outcomes</h3>
-          <div style="display:flex; gap:8px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="badge-pill" id="ai-modal-scanner-badge" style="display:inline-flex; align-items:center; gap:5px; font-family:var(--mono, monospace); font-size:11px; padding:3px 8px; border:1px solid var(--border,#333); border-radius:4px; background:rgba(255,255,255,0.03);" title="Next periodic AI scanner execution">
+              <span style="color:var(--text-muted,#888);">⏱ Next Scan:</span>
+              <strong id="ai-modal-timer-val" style="color:var(--accent,#f59e0b); font-variant-numeric:tabular-nums;">--:--</strong>
+            </span>
             <button type="button" class="accent small" id="ai-scan-now-btn">⚡ Scan Now (Jev)</button>
             <button type="button" class="ghost small" id="ai-refresh-stats-btn">↻ Refresh</button>
           </div>

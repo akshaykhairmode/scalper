@@ -256,3 +256,52 @@ func TestEvaluatorScanNow(t *testing.T) {
 		t.Fatal("expected positive TotalCalls in stats")
 	}
 }
+
+func TestEvaluatorScannerStatus(t *testing.T) {
+	cfg := config.AI{
+		Enabled:             true,
+		PeriodicScan:        true,
+		ScanIntervalMinutes: 10,
+	}
+	ev := New(Options{
+		Config: cfg,
+	})
+
+	// Before Start, running is false
+	status := ev.ScannerStatus()
+	if !status.Enabled {
+		t.Error("expected scanner to be enabled")
+	}
+	if status.Running {
+		t.Error("expected scanner not to be running before Start")
+	}
+	if status.IntervalMinutes != 10 {
+		t.Errorf("expected interval 10, got %d", status.IntervalMinutes)
+	}
+
+	// Start scanner with context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ev.Start(ctx)
+
+	status = ev.ScannerStatus()
+	if !status.Running {
+		t.Error("expected scanner to be running after Start")
+	}
+	if status.NextScanUnix <= 0 {
+		t.Error("expected NextScanUnix > 0")
+	}
+	if status.SecondsUntilNext < 0 {
+		t.Errorf("expected non-negative SecondsUntilNext, got %d", status.SecondsUntilNext)
+	}
+
+	// Stop scanner
+	ev.Stop()
+	status = ev.ScannerStatus()
+	if status.Running {
+		t.Error("expected scanner not running after Stop")
+	}
+	if status.NextScanUnix != 0 {
+		t.Errorf("expected NextScanUnix 0 after stop, got %d", status.NextScanUnix)
+	}
+}

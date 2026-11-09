@@ -80,6 +80,10 @@ type Evaluator struct {
 	scanCancel context.CancelFunc
 	scanDone   chan struct{}
 	running    atomic.Bool
+
+	scanMu       sync.RWMutex
+	nextScanTime time.Time
+	lastScanTime time.Time
 }
 
 // Options configures the Evaluator instance.
@@ -166,6 +170,10 @@ func (e *Evaluator) Start(ctx context.Context) {
 	e.scanCancel = cancel
 	e.scanDone = make(chan struct{})
 
+	e.scanMu.Lock()
+	e.nextScanTime = time.Now().Add(5 * time.Second)
+	e.scanMu.Unlock()
+
 	go e.runScanner(scanCtx, time.Duration(intervalMin)*time.Minute)
 }
 
@@ -179,6 +187,69 @@ func (e *Evaluator) Stop() {
 	}
 	if e.scanDone != nil {
 		<-e.scanDone
+	}
+	e.scanMu.Lock()
+	e.nextScanTime = time.Time{}
+	e.scanMu.Unlock()
+}
+
+// ScannerStatus represents the current state and timing of the background evaluation scanner.
+type ScannerStatus struct {
+	Enabled          bool      `json:"enabled"`
+	Running          bool      `json:"running"`
+	IntervalMinutes  int       `json:"interval_minutes"`
+	NextScanTime     time.Time `json:"next_scan_time,omitempty"`
+	NextScanUnix     int64     `json:"next_scan_unix"`
+	SecondsUntilNext int       `json:"seconds_until_next"`
+	LastScanTime     time.Time `json:"last_scan_time,omitempty"`
+	LastScanUnix     int64     `json:"last_scan_unix"`
+}
+
+// ScannerStatus returns a snapshot of the periodic evaluation scanner state and timing.
+func (e *Evaluator) ScannerStatus() ScannerStatus {
+	if e == nil {
+		return ScannerStatus{}
+	}
+	e.cfgMu.RLock()
+	enabled := e.cfg.Enabled && e.cfg.PeriodicScan
+	interval := e.cfg.ScanIntervalMinutes
+	if interval <= 0 {
+		interval = 15
+	}
+	e.cfgMu.RUnlock()
+
+	running := e.running.Load()
+
+	e.scanMu.RLock()
+	next := e.nextScanTime
+	last := e.lastScanTime
+	e.scanMu.RUnlock()
+
+	var secUntil int
+	var nextUnix int64
+	if running && !next.IsZero() {
+		nextUnix = next.Unix()
+		diff := int(time.Until(next).Seconds())
+		if diff < 0 {
+			diff = 0
+		}
+		secUntil = diff
+	}
+
+	var lastUnix int64
+	if !last.IsZero() {
+		lastUnix = last.Unix()
+	}
+
+	return ScannerStatus{
+		Enabled:          enabled,
+		Running:          running,
+		IntervalMinutes:  interval,
+		NextScanTime:     next,
+		NextScanUnix:     nextUnix,
+		SecondsUntilNext: secUntil,
+		LastScanTime:     last,
+		LastScanUnix:     lastUnix,
 	}
 }
 
@@ -326,6 +397,10 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 	if underlying == "" {
 		underlying = "NIFTY"
 	}
+
+	e.scanMu.Lock()
+	e.lastScanTime = time.Now()
+	e.scanMu.Unlock()
 
 	e.cfgMu.RLock()
 	minConfidence := e.cfg.MinConfidence
@@ -820,18 +895,34 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 
 	e.log.Info("ai evaluator periodic scanner started", "event", "ai_scanner_started", "interval", interval)
 
+	tickerInterval := interval
+	nextTicker := time.Now().Add(tickerInterval)
+
+	e.scanMu.Lock()
+	e.nextScanTime = time.Now().Add(5 * time.Second)
+	e.scanMu.Unlock()
+
 	// Trigger initial scan shortly after startup (after feeds/scrips stabilize)
 	go func() {
 		select {
 		case <-time.After(5 * time.Second):
 			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			defer cancel()
 			_, _ = e.ScanNow(scanCtx, "NIFTY")
+			cancel()
+
+			e.scanMu.Lock()
+			e.lastScanTime = time.Now()
+			if time.Now().Before(nextTicker) {
+				e.nextScanTime = nextTicker
+			} else {
+				e.nextScanTime = time.Now().Add(tickerInterval)
+			}
+			e.scanMu.Unlock()
 		case <-ctx.Done():
 		}
 	}()
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(tickerInterval)
 	defer ticker.Stop()
 
 	for {
@@ -840,9 +931,18 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 			e.log.Info("ai evaluator periodic scanner stopped", "event", "ai_scanner_stopped")
 			return
 		case <-ticker.C:
+			nextTicker = time.Now().Add(tickerInterval)
+			e.scanMu.Lock()
+			e.nextScanTime = nextTicker
+			e.scanMu.Unlock()
+
 			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 			_, _ = e.ScanNow(scanCtx, "NIFTY")
 			cancel()
+
+			e.scanMu.Lock()
+			e.lastScanTime = time.Now()
+			e.scanMu.Unlock()
 		}
 	}
 }
