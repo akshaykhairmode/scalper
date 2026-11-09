@@ -152,14 +152,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if err := s.hsm.Subscribe(command.Keys); err != nil {
-				s.log.Warn("HSM subscription failed", "event", "hsm_subscribe_failed", "error", err)
+				s.log.Warn("HSM subscription failed", "event", "hsm_subscribe_failed", "keys", command.Keys, "error", err)
 			}
 		case "unsubscribe":
 			if s.hsm == nil {
 				continue
 			}
 			if err := s.hsm.Unsubscribe(command.Keys); err != nil {
-				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "error", err)
+				s.log.Warn("HSM unsubscription failed", "event", "hsm_unsubscribe_failed", "keys", command.Keys, "error", err)
 			}
 		default:
 			s.log.Warn("unknown browser feed command", "event", "websocket_command_invalid", "type", command.Type)
@@ -330,6 +330,24 @@ func (s *Server) resolveHSMKey(quote *hsm.Quote) (string, error) {
 		for _, index := range snap.Market.Indices {
 			if index.IndexSegment == segment && market.IndexQuoteSymbol(index) == token {
 				return index.IndexSegment + "|" + index.ScripName, nil
+			}
+		}
+		if snap.Market.IndiaVIX.Enabled {
+			vix := snap.Market.IndiaVIX
+			vixSymbol := vix.Symbol
+			if vixSymbol == "" {
+				vixSymbol = "India VIX"
+			}
+			vixSeg := vix.ExchangeSegment
+			if vixSeg == "" {
+				vixSeg = "nse_cm"
+			}
+			if vixSeg == segment && (vixSymbol == token || strings.EqualFold(token, "India VIX") || strings.EqualFold(token, "INDIAVIX") || strings.EqualFold(token, "INDIA VIX")) {
+				scripName := vix.ScripName
+				if scripName == "" {
+					scripName = "INDIAVIX"
+				}
+				return vixSeg + "|" + scripName, nil
 			}
 		}
 		return "", errors.New("index symbol is not configured")

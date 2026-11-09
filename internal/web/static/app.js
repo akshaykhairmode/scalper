@@ -5997,7 +5997,7 @@ function updateFeedSubscriptions() {
     selectedOption("PE")?.instrumentKey,
     ...S.positions.map((position) => position.instrument_key),
     ...[...S.spots.values()].map((spot) => spot.spotKey)
-  ].filter(Boolean);
+  ].filter((k) => typeof k === "string" && k.includes("|") && !k.endsWith("|"));
   const desired = [...new Set(keys)];
   if (S.ws?.readyState !== WebSocket.OPEN) return;
   const remove = S.feedSubscriptions.filter((key) => !desired.includes(key));

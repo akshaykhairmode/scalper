@@ -4,6 +4,7 @@ package market
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -124,6 +125,8 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 	var scripTokens, indexTokens []string
 	f.mu.Lock()
 	client := f.client
+	var firstErr error
+	var validCount int
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
 		if key == "" {
@@ -131,9 +134,13 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 		}
 		subscription, err := f.topicForKey(key)
 		if err != nil {
-			f.mu.Unlock()
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			f.log.Debug("skipping HSM subscription for unavailable instrument", "key", key, "error", err)
+			continue
 		}
+		validCount++
 		if _, exists := f.subs[key]; exists {
 			continue
 		}
@@ -159,6 +166,9 @@ func (f *HSMFeed) Subscribe(keys []string) error {
 				f.log.Warn("Kotak HSM depth subscription failed", "event", "hsm_depth_subscribe_failed", "error", err)
 			}
 		}
+	}
+	if len(keys) > 0 && validCount == 0 && firstErr != nil {
+		return firstErr
 	}
 	return nil
 }
@@ -234,10 +244,22 @@ func (f *HSMFeed) connectionLoop(ctx context.Context) {
 			return
 		}
 		f.client = client
-		indexTokens := make([]string, 0, len(f.cfg.Market.Indices))
+		indexTokens := make([]string, 0, len(f.cfg.Market.Indices)+1)
 		scripTokens := make([]string, 0, len(f.subs))
 		for _, index := range f.cfg.Market.Indices {
 			indexTokens = append(indexTokens, index.IndexSegment+"|"+IndexQuoteSymbol(index))
+		}
+		if f.cfg.Market.IndiaVIX.Enabled {
+			vix := f.cfg.Market.IndiaVIX
+			vixSymbol := vix.Symbol
+			if vixSymbol == "" {
+				vixSymbol = "India VIX"
+			}
+			segment := vix.ExchangeSegment
+			if segment == "" {
+				segment = "nse_cm"
+			}
+			indexTokens = append(indexTokens, segment+"|"+vixSymbol)
 		}
 		for _, subscription := range f.subs {
 			if subscription.index {
@@ -344,14 +366,31 @@ func (f *HSMFeed) topicForKey(key string) (hsmSubscription, error) {
 	}
 	for _, index := range f.cfg.Market.Indices {
 		spotKey := index.IndexSegment + "|" + index.ScripName
-		if key == spotKey {
+		if key == spotKey || key == index.IndexSegment+"|"+index.Key || key == index.IndexSegment+"|"+index.IndexSymbol {
 			return hsmSubscription{
 				token: index.IndexSegment + "|" + IndexQuoteSymbol(index),
 				index: true,
 			}, nil
 		}
 	}
-	return hsmSubscription{}, errors.New("instrument is not available for HSM subscription")
+	if f.cfg.Market.IndiaVIX.Enabled {
+		vix := f.cfg.Market.IndiaVIX
+		segment := vix.ExchangeSegment
+		if segment == "" {
+			segment = "nse_cm"
+		}
+		if key == segment+"|"+vix.ScripName || key == segment+"|"+vix.Symbol || key == segment+"|INDIAVIX" || key == segment+"|INDIA VIX" || strings.EqualFold(key, segment+"|India VIX") {
+			symbol := vix.Symbol
+			if symbol == "" {
+				symbol = "India VIX"
+			}
+			return hsmSubscription{
+				token: segment + "|" + symbol,
+				index: true,
+			}, nil
+		}
+	}
+	return hsmSubscription{}, fmt.Errorf("instrument %q is not available for HSM subscription", key)
 }
 
 func (f *HSMFeed) feedEndpoint() string {

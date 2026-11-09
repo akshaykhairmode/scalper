@@ -1902,10 +1902,12 @@ function handleSocketEvent(event) {
 }
 
 function updateFeedSubscriptions() {
-  const keys = [selectedOption("CE")?.instrumentKey, selectedOption("PE")?.instrumentKey,
+  const keys = [
+    selectedOption("CE")?.instrumentKey,
+    selectedOption("PE")?.instrumentKey,
     ...S.positions.map((position) => position.instrument_key),
-    ...[...S.spots.values()].map((spot) => spot.spotKey)]
-    .filter(Boolean);
+    ...[...S.spots.values()].map((spot) => spot.spotKey),
+  ].filter((k) => typeof k === "string" && k.includes("|") && !k.endsWith("|"));
   const desired = [...new Set(keys)];
   if (S.ws?.readyState !== WebSocket.OPEN) return;
   const remove = S.feedSubscriptions.filter((key) => !desired.includes(key));
