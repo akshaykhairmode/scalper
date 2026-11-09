@@ -957,6 +957,20 @@ func (e *Evaluator) TrackEvaluation(eval store.Evaluation) {
 	e.activeMu.Unlock()
 }
 
+// UntrackEvaluation removes an evaluation from the live tick outcome tracker
+// so no further Target / Stop-Loss outcomes are recorded for it.
+func (e *Evaluator) UntrackEvaluation(id int64) {
+	if e == nil || id == 0 {
+		return
+	}
+	e.activeMu.Lock()
+	if _, ok := e.activeCalls[id]; ok {
+		delete(e.activeCalls, id)
+		atomic.StoreInt64(&e.activeCount, int64(len(e.activeCalls)))
+	}
+	e.activeMu.Unlock()
+}
+
 func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 	defer close(e.scanDone)
 

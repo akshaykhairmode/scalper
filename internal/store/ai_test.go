@@ -151,3 +151,66 @@ func TestSaveAndListEvaluations(t *testing.T) {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
+
+func TestDeleteEvaluation(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	now := time.Now().Truncate(time.Second)
+	newEval := func(key, action string) int64 {
+		id, err := s.SaveEvaluation(ctx, Evaluation{
+			Timestamp:     now,
+			InstrumentKey: key,
+			Underlying:    "NIFTY",
+			SpotPrice:     24520.0,
+			OptionLTP:     140.0,
+			Action:        action,
+			TargetPrice:   151.2,
+			StopLossPrice: 133.0,
+			Status:        "PENDING",
+		})
+		if err != nil {
+			t.Fatalf("SaveEvaluation(%s): %v", key, err)
+		}
+		return id
+	}
+
+	deletedID := newEval("NIFTY24500CE", "BUY_CE")
+	keptID := newEval("NIFTY24500PE", "BUY_PE")
+
+	if err := s.DeleteEvaluation(ctx, deletedID); err != nil {
+		t.Fatalf("DeleteEvaluation: %v", err)
+	}
+
+	evals, err := s.ListEvaluations(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListEvaluations: %v", err)
+	}
+	if len(evals) != 1 || evals[0].ID != keptID {
+		t.Fatalf("expected only evaluation %d to remain, got %+v", keptID, evals)
+	}
+
+	active, err := s.GetActiveEvaluations(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveEvaluations: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != keptID {
+		t.Fatalf("expected deleted evaluation to be untracked, got %+v", active)
+	}
+
+	stats, err := s.GetEvaluationStats(ctx)
+	if err != nil {
+		t.Fatalf("GetEvaluationStats: %v", err)
+	}
+	if stats.TotalCalls != 1 || stats.PendingCalls != 1 {
+		t.Fatalf("deleted evaluation still counted in stats: %+v", stats)
+	}
+
+	// Deleting an unknown ID is a no-op and invalid IDs are rejected.
+	if err := s.DeleteEvaluation(ctx, 999999); err != nil {
+		t.Fatalf("DeleteEvaluation unknown id: %v", err)
+	}
+	if err := s.DeleteEvaluation(ctx, 0); err == nil {
+		t.Fatal("expected error for invalid evaluation id")
+	}
+}

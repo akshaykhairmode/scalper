@@ -232,6 +232,23 @@ func (s *Store) UpdateEvaluationOutcome(ctx context.Context, id int64, status st
 	return nil
 }
 
+// DeleteEvaluation removes an AI evaluation by ID so it is no longer listed,
+// counted in win-rate statistics, or tracked against live ticks.
+func (s *Store) DeleteEvaluation(ctx context.Context, id int64) error {
+	if s == nil || s.db == nil {
+		return errors.New("store: database not open")
+	}
+	if id <= 0 {
+		return errors.New("store: invalid evaluation id")
+	}
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM ai_evaluations WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete evaluation: %w", err)
+	}
+	return nil
+}
+
 // GetActiveEvaluations returns all evaluations currently in PENDING status.
 func (s *Store) GetActiveEvaluations(ctx context.Context) ([]Evaluation, error) {
 	if s == nil || s.db == nil {

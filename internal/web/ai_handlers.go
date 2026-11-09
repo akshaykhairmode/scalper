@@ -129,6 +129,43 @@ func (s *Server) handleListAIEvaluations(w http.ResponseWriter, r *http.Request)
 	s.writeRouteJSON(w, r, http.StatusOK, evaluationsResponse{Evaluations: evals})
 }
 
+type deleteEvaluationResponse struct {
+	Success bool  `json:"success"`
+	ID      int64 `json:"id"`
+}
+
+// handleDeleteAIEvaluation removes a stored evaluation and stops the evaluator
+// from tracking it against live ticks.
+func (s *Server) handleDeleteAIEvaluation(w http.ResponseWriter, r *http.Request) {
+	if s.aiStore == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "ai store not configured", nil)
+		return
+	}
+
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil || id <= 0 {
+		s.writeRouteError(w, r, http.StatusBadRequest, "invalid evaluation id", err)
+		return
+	}
+
+	// Stop tick tracking first so no outcome can be recorded after deletion.
+	if s.evaluator != nil {
+		s.evaluator.UntrackEvaluation(id)
+	}
+
+	if err := s.aiStore.DeleteEvaluation(r.Context(), id); err != nil {
+		s.log.Error("failed to delete ai evaluation", "event", "ai_evaluation_delete_failed", "id", id, "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		s.writeRouteError(w, r, http.StatusInternalServerError, "failed to delete evaluation: "+err.Error(), nil)
+		return
+	}
+
+	s.log.Info("ai evaluation deleted", "event", "ai_evaluation_deleted", "id", id,
+		"request_id", logging.RequestID(r.Context()))
+
+	s.writeRouteJSON(w, r, http.StatusOK, deleteEvaluationResponse{Success: true, ID: id})
+}
+
 type evaluationStatsResponse struct {
 	Stats   store.EvaluationStats    `json:"stats"`
 	Scanner *evaluator.ScannerStatus `json:"scanner,omitempty"`

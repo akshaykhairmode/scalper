@@ -6345,7 +6345,7 @@ async function refreshAISignalsModal() {
       if (!tbody) return;
 
       if (!evals.length) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI evaluation calls recorded yet. Click "Scan Now" or use "Ask" on any strike.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--text-muted,#888);">No AI evaluation calls recorded yet. Click "Scan Now" or use "Ask" on any strike.</td></tr>`;
         return;
       }
 
@@ -6364,6 +6364,8 @@ async function refreshAISignalsModal() {
 
         const pnlStr = e.pnl_pct ? `<span style="font-weight:700; color:${e.pnl_pct >= 0 ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)'}">${e.pnl_pct > 0 ? '+' : ''}${fmt(e.pnl_pct, 2)}%</span>` : "—";
 
+        const removeBtn = `<button type="button" class="ai-call-remove" data-ai-eval-id="${e.id}" data-ai-eval-label="${esc(strikeLabel)}" title="Remove this call (stop tracking)" aria-label="Remove call ${esc(strikeLabel)}">✕</button>`;
+
         return `<tr style="border-bottom:1px solid var(--border,#333);">
           <td style="padding:8px 10px; font-family:var(--mono);">${timeStr}</td>
           <td style="padding:8px 10px; font-weight:600;">${strikeLabel}</td>
@@ -6374,11 +6376,31 @@ async function refreshAISignalsModal() {
           <td style="padding:8px 10px; font-family:var(--mono);">${e.exit_price ? '₹' + fmt(e.exit_price, 2) : '—'}</td>
           <td style="padding:8px 10px; font-family:var(--mono);">${pnlStr}</td>
           <td style="padding:8px 10px; text-align:center;">${statusBadge}</td>
+          <td style="padding:8px 10px; text-align:center;">${removeBtn}</td>
         </tr>`;
       }).join("");
     }
   } catch (err: any) {
     toast("Failed to refresh AI signals: " + (err?.message || String(err)), "error");
+  }
+}
+
+async function removeAICall(id: string, label: string): Promise<void> {
+  const callID = Number(id);
+  if (!Number.isFinite(callID) || callID <= 0) return;
+
+  const ok = window.confirm(
+    `Remove ${label} from AI signals?\n\nThe backend will stop tracking this call and it will no longer count toward win-rate stats.`
+  );
+  if (!ok) return;
+
+  try {
+    await requestJSON(`/api/ai/evaluations/${callID}`, { method: "DELETE" });
+    toast(`Removed ${label} from AI signals`, "success", 3500);
+    updateAIWinRateChip();
+    await refreshAISignalsModal();
+  } catch (err: any) {
+    toast("Failed to remove call: " + (err?.message || String(err)), "error");
   }
 }
 
@@ -6975,6 +6997,14 @@ function bindEvents() {
   });
   $("ai-refresh-stats-btn")?.addEventListener("click", () => {
     refreshAISignalsModal();
+  });
+  $("ai-calls-tbody")?.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    const btn = target?.closest(".ai-call-remove") as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.disabled = true;
+    void removeAICall(btn.dataset.aiEvalId || "", btn.dataset.aiEvalLabel || "this call")
+      .finally(() => { btn.disabled = false; });
   });
   $("ai-scan-now-btn")?.addEventListener("click", async () => {
     const btn = $("ai-scan-now-btn") as HTMLButtonElement | null;

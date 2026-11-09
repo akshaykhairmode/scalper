@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,6 +56,16 @@ func (m *mockAIStore) SaveEvaluation(_ context.Context, e store.Evaluation) (int
 	}
 	m.evaluations = append(m.evaluations, e)
 	return e.ID, nil
+}
+
+func (m *mockAIStore) DeleteEvaluation(_ context.Context, id int64) error {
+	for i := range m.evaluations {
+		if m.evaluations[i].ID == id {
+			m.evaluations = append(m.evaluations[:i], m.evaluations[i+1:]...)
+			return nil
+		}
+	}
+	return nil
 }
 
 func (m *mockAIStore) GetActiveEvaluations(_ context.Context) ([]store.Evaluation, error) {
@@ -199,6 +210,47 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	}
 	if evalResp.Evaluations[0].Action != "BUY" {
 		t.Errorf("action = %q, want BUY", evalResp.Evaluations[0].Action)
+	}
+
+	// 5b. DELETE /api/ai/evaluations/{id} removes the call
+	extraID, err := mockStore.SaveEvaluation(context.Background(), store.Evaluation{
+		InstrumentKey: "NIFTY24500PE",
+		Underlying:    "NIFTY",
+		SpotPrice:     24520.0,
+		Action:        "HOLD",
+		Status:        "PENDING",
+	})
+	if err != nil {
+		t.Fatalf("save extra evaluation: %v", err)
+	}
+
+	delRec := do(t, s, localRequest(http.MethodDelete, fmt.Sprintf("/api/ai/evaluations/%d", extraID)))
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 deleting evaluation, got %d: %s", delRec.Code, delRec.Body.String())
+	}
+	var delResp deleteEvaluationResponse
+	if err := json.NewDecoder(delRec.Body).Decode(&delResp); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if !delResp.Success || delResp.ID != extraID {
+		t.Fatalf("unexpected delete response: %+v", delResp)
+	}
+
+	afterDelRec := do(t, s, localRequest(http.MethodGet, "/api/ai/evaluations?limit=10"))
+	if afterDelRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", afterDelRec.Code)
+	}
+	var afterDelResp evaluationsResponse
+	if err := json.NewDecoder(afterDelRec.Body).Decode(&afterDelResp); err != nil {
+		t.Fatalf("decode evaluations after delete: %v", err)
+	}
+	if len(afterDelResp.Evaluations) != 1 || afterDelResp.Evaluations[0].ID == extraID {
+		t.Fatalf("expected only the original evaluation after delete, got %+v", afterDelResp.Evaluations)
+	}
+
+	// Invalid IDs must be rejected.
+	if invalidRec := do(t, s, localRequest(http.MethodDelete, "/api/ai/evaluations/not-a-number")); invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid evaluation id, got %d", invalidRec.Code)
 	}
 
 	// 6. GET /api/ai/evaluations/stats returns stats

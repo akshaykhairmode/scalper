@@ -156,6 +156,37 @@ func TestEvaluatorOnTick(t *testing.T) {
 	}
 }
 
+func TestEvaluatorUntrackEvaluation(t *testing.T) {
+	ev := New(Options{Config: config.AI{Enabled: true}})
+
+	ev.TrackEvaluation(store.Evaluation{
+		ID:            42,
+		Timestamp:     time.Now(),
+		InstrumentKey: "NIFTY24500CE",
+		Underlying:    "NIFTY",
+		Action:        "BUY_CE",
+		OptionLTP:     100.0,
+		TargetPrice:   108.0,
+		StopLossPrice: 95.0,
+		Score:         5,
+		Confidence:    0.9,
+	})
+	if ev.ActiveCallsCount() != 1 {
+		t.Fatalf("expected 1 active call, got %d", ev.ActiveCallsCount())
+	}
+
+	ev.UntrackEvaluation(42)
+	if ev.ActiveCallsCount() != 0 {
+		t.Fatalf("expected 0 active calls after untrack, got %d", ev.ActiveCallsCount())
+	}
+
+	// Untracking an unknown ID must be a no-op.
+	ev.UntrackEvaluation(9999)
+	if ev.ActiveCallsCount() != 0 {
+		t.Fatalf("expected 0 active calls after unknown untrack, got %d", ev.ActiveCallsCount())
+	}
+}
+
 func TestEvaluatorScanNow(t *testing.T) {
 	// Setup mock Jev server
 	jevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

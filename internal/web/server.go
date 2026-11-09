@@ -71,6 +71,7 @@ type AIStore interface {
 	GetLatestPlaybook(ctx context.Context) (*store.Playbook, error)
 	GetPlaybookByDate(ctx context.Context, date string) (*store.Playbook, error)
 	SaveEvaluation(ctx context.Context, e store.Evaluation) (int64, error)
+	DeleteEvaluation(ctx context.Context, id int64) error
 	ListEvaluations(ctx context.Context, limit int) ([]store.Evaluation, error)
 	GetActiveEvaluations(ctx context.Context) ([]store.Evaluation, error)
 	UpdateEvaluationOutcome(ctx context.Context, id int64, status string, exitPrice, pnlPct float64, exitTime time.Time) error
@@ -585,6 +586,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/ai/playbook", s.handleGetAIPlaybook)
 	mux.HandleFunc("POST /api/ai/playbook", s.handleSaveAIPlaybook)
 	mux.HandleFunc("GET /api/ai/evaluations", s.handleListAIEvaluations)
+	mux.HandleFunc("DELETE /api/ai/evaluations/{id}", s.handleDeleteAIEvaluation)
 	mux.HandleFunc("GET /api/ai/evaluations/stats", s.handleGetAIEvaluationStats)
 	mux.HandleFunc("POST /api/ai/evaluations/scan", s.handleTriggerAIScan)
 	mux.HandleFunc("POST /api/ai/evaluations/ask", s.handleAskAIEvaluation)
