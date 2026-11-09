@@ -340,4 +340,17 @@ func TestAIPlaybookAndEvaluationHandlers(t *testing.T) {
 	if fallbackResp.AgentAnalysis != "Agent fallback scalp setup" {
 		t.Errorf("agent analysis = %q", fallbackResp.AgentAnalysis)
 	}
+
+	// 10. Test GetSpotPrice from cache and case-insensitive matching
+	s.indicesMu.Lock()
+	s.indicesRaw = []byte(`{"indices":[{"key":"NIFTY","display_name":"Nifty 50","ltp":24500.0}]}`)
+	s.indicesMu.Unlock()
+
+	spotPrice, err := s.GetSpotPrice(context.Background(), "nifty")
+	if err != nil {
+		t.Fatalf("GetSpotPrice failed: %v", err)
+	}
+	if spotPrice != 24500.0 {
+		t.Errorf("expected spot price 24500.0, got %f", spotPrice)
+	}
 }

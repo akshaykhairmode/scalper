@@ -9289,13 +9289,12 @@ async function onAskAI(type) {
     const action = resp.action || "PASS";
     const score = resp.score ?? "\u2014";
     const conf = resp.confidence ? `${Math.round(resp.confidence * 100)}%` : "\u2014";
-    const target = resp.target_price ? `\u20B9${fmt(resp.target_price, 2)} (+${resp.target_pct || 8}%)` : "";
-    const sl = resp.stop_loss_price ? `\u20B9${fmt(resp.stop_loss_price, 2)} (-${resp.stop_loss_pct || 5}%)` : "";
-    const note = resp.agent_analysis || resp.reasoning || "";
+    const tgtText = resp.target_price ? ` \xB7 Tgt \u20B9${fmt(resp.target_price, 2)}` : "";
+    const slText = resp.stop_loss_price ? ` \xB7 SL \u20B9${fmt(resp.stop_loss_price, 2)}` : "";
     if (action.startsWith("BUY")) {
-      toast(`\u{1F3AF} JEV: ${action} (Score: ${score}/5, Conf: ${conf}) | Target: ${target}, SL: ${sl}. ${note}`, "success", 8e3);
+      toast(`\u{1F3AF} ${action} \xB7 Score ${score}/5 (${conf})${tgtText}${slText}`, "success", 4500);
     } else {
-      toast(`\u270B JEV: ${action} (Score: ${score}/5, Conf: ${conf}). ${note}`, "info", 6e3);
+      toast(`\u270B ${action} \xB7 Score ${score}/5 (${conf})`, "info", 3500);
     }
     updateAIWinRateChip();
     if (isAISignalsModalOpen()) {

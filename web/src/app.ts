@@ -5936,14 +5936,13 @@ async function onAskAI(type: string) {
     const action = resp.action || "PASS";
     const score = resp.score ?? "—";
     const conf = resp.confidence ? `${Math.round(resp.confidence * 100)}%` : "—";
-    const target = resp.target_price ? `₹${fmt(resp.target_price, 2)} (+${resp.target_pct || 8}%)` : "";
-    const sl = resp.stop_loss_price ? `₹${fmt(resp.stop_loss_price, 2)} (-${resp.stop_loss_pct || 5}%)` : "";
-    const note = resp.agent_analysis || resp.reasoning || "";
+    const tgtText = resp.target_price ? ` · Tgt ₹${fmt(resp.target_price, 2)}` : "";
+    const slText = resp.stop_loss_price ? ` · SL ₹${fmt(resp.stop_loss_price, 2)}` : "";
 
     if (action.startsWith("BUY")) {
-      toast(`🎯 JEV: ${action} (Score: ${score}/5, Conf: ${conf}) | Target: ${target}, SL: ${sl}. ${note}`, "success", 8000);
+      toast(`🎯 ${action} · Score ${score}/5 (${conf})${tgtText}${slText}`, "success", 4500);
     } else {
-      toast(`✋ JEV: ${action} (Score: ${score}/5, Conf: ${conf}). ${note}`, "info", 6000);
+      toast(`✋ ${action} · Score ${score}/5 (${conf})`, "info", 3500);
     }
 
     updateAIWinRateChip();

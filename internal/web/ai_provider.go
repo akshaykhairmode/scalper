@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,11 +14,31 @@ import (
 
 // GetSpotPrice retrieves the latest spot price of an underlying index (e.g. NIFTY).
 func (s *Server) GetSpotPrice(ctx context.Context, underlying string) (float64, error) {
+	// 1. Try cached indices first if fresh
+	s.indicesMu.Lock()
+	if s.indicesRaw != nil {
+		var cached struct {
+			Indices []market.IndexQuote `json:"indices"`
+		}
+		if err := json.Unmarshal(s.indicesRaw, &cached); err == nil {
+			for _, idx := range cached.Indices {
+				if strings.EqualFold(idx.Key, underlying) || strings.EqualFold(idx.DisplayName, underlying) {
+					if idx.LTP > 0 {
+						s.indicesMu.Unlock()
+						return idx.LTP, nil
+					}
+				}
+			}
+		}
+	}
+	s.indicesMu.Unlock()
+
 	if s.market == nil {
 		return 0, errors.New("market API not configured")
 	}
 
-	indices, err := s.market.Indices(ctx, "nse_cm")
+	// 2. Fetch live indices via market service using valid marketBaseURL
+	indices, err := s.market.Indices(ctx, s.marketBaseURL())
 	if err == nil {
 		for _, idx := range indices {
 			if strings.EqualFold(idx.Key, underlying) || strings.EqualFold(idx.DisplayName, underlying) {
@@ -28,14 +49,12 @@ func (s *Server) GetSpotPrice(ctx context.Context, underlying string) (float64, 
 		}
 	}
 
-	// Try BSE if not found on NSE
-	bseIndices, err := s.market.Indices(ctx, "bse_cm")
-	if err == nil {
-		for _, idx := range bseIndices {
-			if strings.EqualFold(idx.Key, underlying) || strings.EqualFold(idx.DisplayName, underlying) {
-				if idx.LTP > 0 {
-					return idx.LTP, nil
-				}
+	// 3. Fallback: if spot quote is unavailable (e.g. off-market or sandbox), derive from nearest option chain strike
+	if expiries, eerr := s.market.Expiries(underlying); eerr == nil && len(expiries) > 0 {
+		if chainRows, cerr := s.market.Chain(ctx, s.marketBaseURL(), underlying, expiries[0].Date); cerr == nil && len(chainRows) > 0 {
+			mid := chainRows[len(chainRows)/2].Strike
+			if mid > 0 {
+				return mid, nil
 			}
 		}
 	}
@@ -54,13 +73,8 @@ func (s *Server) GetATMStrikes(ctx context.Context, underlying string) (ceKey, p
 		return "", "", 0, 0, fmt.Errorf("no expiries available for %q: %w", underlying, err)
 	}
 
-	segment := "nse_fo"
-	if strings.EqualFold(underlying, "SENSEX") || strings.EqualFold(underlying, "BANKEX") {
-		segment = "bse_fo"
-	}
-
 	nearestExpiry := expiries[0].Date
-	chainRows, err := s.market.Chain(ctx, segment, underlying, nearestExpiry)
+	chainRows, err := s.market.Chain(ctx, s.marketBaseURL(), underlying, nearestExpiry)
 	if err != nil || len(chainRows) == 0 {
 		return "", "", 0, 0, fmt.Errorf("option chain empty for %q %s: %w", underlying, nearestExpiry, err)
 	}
@@ -102,12 +116,7 @@ func (s *Server) GetMarketDepth(ctx context.Context, instrumentKey string) (feat
 		return features.OrderBookMetrics{}, errors.New("market API not configured")
 	}
 
-	segment := "nse_fo"
-	if strings.Contains(instrumentKey, "bse_fo") {
-		segment = "bse_fo"
-	}
-
-	q, err := s.market.Quote(ctx, segment, instrumentKey)
+	q, err := s.market.Quote(ctx, s.marketBaseURL(), instrumentKey)
 	if err != nil {
 		return features.OrderBookMetrics{}, err
 	}
