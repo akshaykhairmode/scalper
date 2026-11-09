@@ -39,7 +39,11 @@ func WithSessionStore(store SessionStore) ServerOption {
 		if s.sm != nil {
 			s.sm.SetStore(store)
 		}
-		s.restoreSessionFromStore()
+		// On scalper startup or restart, require fresh 2FA (TOTP) authentication by
+		// revoking all previous persistent sessions.
+		if store != nil {
+			_ = store.RevokeAllSessions(context.Background())
+		}
 	}
 }
 
@@ -65,30 +69,6 @@ func NewServerWithAuthenticator(log *slog.Logger, kotak KotakAuthenticator, opts
 		opt(s)
 	}
 	return s
-}
-
-func (a *Server) restoreSessionFromStore() {
-	if a.store == nil {
-		return
-	}
-	sess, err := a.store.GetLatestSession(context.Background())
-	if err != nil {
-		a.log.Warn("failed to load persistent session", "event", "session_restore_failed", "error", err)
-		return
-	}
-	if sess == nil {
-		return
-	}
-	now := time.Now()
-	if !sess.TokenExpiry.IsZero() && !now.Before(sess.TokenExpiry) {
-		return
-	}
-	a.sm.RestoreSession(sess)
-	a.log.Info("restored active Kotak session from database",
-		"event", "session_restored",
-		"login_method", sess.LoginMethod,
-		"expires_in_min", int(time.Until(sess.TokenExpiry).Minutes()),
-	)
 }
 
 // BeginLogin exchanges the TOTP and stores the short-lived view session on the

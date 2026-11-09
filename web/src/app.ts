@@ -1761,9 +1761,9 @@ function handleTickData(data, { batch = false } = {}) {
       cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
       cell.classList.toggle("up", opt.changePct > 0);
       cell.classList.toggle("down", opt.changePct < 0);
-      if (!batch) renderPCR();
       hadChain = true;
     }
+    if (!batch) renderPCR();
     if (selectedOption(type)?.instrumentKey === data.key) {
       if (!batch) {
         renderPaneHeaders();
@@ -1978,7 +1978,12 @@ function computePCR() {
 
 function computeStrikePCR(strike) {
   if (!strike || !Array.isArray(S.chain) || !S.chain.length) return null;
-  const row = S.chain.find((r) => r.strike === strike);
+  const numStrike = normalizeStrike(strike);
+  if (!numStrike) return null;
+  const row = S.chain.find((r) => {
+    const s = normalizeStrike(r.strike);
+    return s === numStrike || Math.abs(s - numStrike) < 0.01;
+  });
   if (!row) return null;
   const callOI = num(row.call?.oi);
   const putOI = num(row.put?.oi);
@@ -1991,6 +1996,10 @@ function computeStrikePCR(strike) {
     if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
       pcrOI = ratio;
     }
+  } else if (putOI > 0 && callOI === 0) {
+    pcrOI = 50;
+  } else if (callOI > 0 && putOI === 0) {
+    pcrOI = 0.01;
   }
 
   let pcrVol = null;
@@ -1999,10 +2008,14 @@ function computeStrikePCR(strike) {
     if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
       pcrVol = ratio;
     }
+  } else if (putVol > 0 && callVol === 0) {
+    pcrVol = 50;
+  } else if (callVol > 0 && putVol === 0) {
+    pcrVol = 0.01;
   }
 
   return {
-    strike,
+    strike: numStrike,
     pcrOI,
     pcrVol,
     callOI,
@@ -3905,7 +3918,9 @@ function loadAutoTargets() {
     if (!raw) return [];
     const list = JSON.parse(raw);
     const now = Date.now();
-    return Array.isArray(list) ? list.filter((t) => t && (now - (t.createdAt || 0)) < 86400000) : [];
+    return Array.isArray(list)
+      ? list.map(normalizeBracket).filter((t) => t && (now - (t.createdAt || 0)) < 86400000)
+      : [];
   } catch (_) {
     return [];
   }
@@ -3946,15 +3961,28 @@ function normalizeBracket(raw) {
   const filledQty = num(raw.filled_qty ?? raw.filledQty ?? raw.filled_quantity ?? raw.FilledQty);
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.LTP ?? 0);
 
+  const sym = String(raw.trading_symbol || raw.tradingSymbol || raw.symbol || raw.Symbol || "").trim();
+  let strike = num(raw.strike ?? raw.Strike);
+  let type = String(raw.option_type || raw.type || raw.Type || "").toUpperCase();
+
+  // If strike or type is missing, parse from trading_symbol (e.g. NIFTY26N0925000CE)
+  if ((!strike || !type) && sym) {
+    const match = /(?:CE|PE)?.*?(\d{4,6})\s*(CE|PE)$/i.exec(sym);
+    if (match) {
+      if (!strike) strike = Number(match[1]);
+      if (!type) type = match[2].toUpperCase();
+    }
+  }
+
   return {
     id,
     orderId: String(raw.order_id ?? raw.orderId ?? raw.OrderId ?? ""),
-    symbol: raw.symbol || raw.Symbol || "",
+    symbol: sym,
     instrumentKey: raw.instrument_key || raw.instrumentKey || raw.InstrumentKey || "",
     exchangeSegment: raw.exchange_segment || raw.exchangeSegment || raw.ExchangeSegment || "NSE_FO",
     underlying: raw.underlying || raw.Underlying || S.activeIndex || "",
-    strike: num(raw.strike ?? raw.Strike),
-    type: String(raw.option_type || raw.type || raw.Type || "").toUpperCase(),
+    strike,
+    type,
     action,
     entryPrice,
     targetPrice,
@@ -3975,7 +4003,21 @@ function upsertBracket(bracket) {
   if (idx !== -1) {
     const existing = S.autoTargets[idx];
     if (!bracket.ltp && existing.ltp) bracket.ltp = existing.ltp;
-    S.autoTargets[idx] = { ...existing, ...bracket };
+    const merged = {
+      ...existing,
+      ...bracket,
+      symbol: bracket.symbol || existing.symbol || "",
+      strike: bracket.strike || existing.strike || 0,
+      type: bracket.type || existing.type || "",
+    };
+    if ((!merged.strike || !merged.type) && merged.symbol) {
+      const match = /(?:CE|PE)?.*?(\d{4,6})\s*(CE|PE)$/i.exec(merged.symbol);
+      if (match) {
+        if (!merged.strike) merged.strike = Number(match[1]);
+        if (!merged.type) merged.type = match[2].toUpperCase();
+      }
+    }
+    S.autoTargets[idx] = merged;
   } else {
     S.autoTargets.unshift(bracket);
   }
@@ -4114,8 +4156,12 @@ function bracketsHTML() {
     const sideClass = b.action === "buy" ? "up" : "down";
     const targetDiff = (b.targetPrice - b.entryPrice) * (b.action === "buy" ? 1 : -1);
 
+    const contractDisplay = (b.strike && b.type)
+      ? `${b.underlying || S.activeIndex} ${fmtStrike(b.strike)} ${b.type}`
+      : (b.symbol || `${b.underlying || S.activeIndex}`);
+
     html += `<tr data-bracket-id="${esc(b.id)}">
-      <td class="sym font-bold">${esc(b.symbol || `${b.underlying || S.activeIndex} ${b.strike} ${b.type}`)}</td>
+      <td class="sym font-bold" title="${esc(b.symbol)}">${esc(contractDisplay)}</td>
       <td class="${sideClass} font-bold">${sideLabel}</td>
       <td>${b.shares}</td>
       <td class="font-bold">₹${fmt(b.entryPrice)}</td>

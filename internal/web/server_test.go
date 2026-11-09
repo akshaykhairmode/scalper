@@ -1567,7 +1567,8 @@ func TestPersistentSessionAcrossRestartsAndExpiration(t *testing.T) {
 		t.Errorf("expected valid expiry info, got %+v", status2)
 	}
 
-	// 4. Simulate daemon restart: close s1 and start s2 with same SQLite DB
+	// 4. Simulate daemon restart: close s1 and start s2 with same SQLite DB.
+	// Restarting scalper must revoke persistent sessions and require TOTP again.
 	s1.Close()
 
 	s2 := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
@@ -1584,58 +1585,25 @@ func TestPersistentSessionAcrossRestartsAndExpiration(t *testing.T) {
 	if err := json.Unmarshal(statusRec3.Body.Bytes(), &status3); err != nil {
 		t.Fatalf("unmarshal status3: %v", err)
 	}
-	if !status3.Authenticated {
-		t.Fatalf("expected session to survive restart and be authenticated, got %+v", status3)
+	if status3.Authenticated {
+		t.Fatalf("expected session to require TOTP again on restart, got %+v", status3)
 	}
-	if s2.a.CurrentSession() == nil {
-		t.Fatal("expected CurrentSession to be non-nil on s2")
-	}
-
-	// 5. Test expiration (> 3 hours): clear and save an expired session into the store
-	if err := st.RevokeAllSessions(context.Background()); err != nil {
-		t.Fatalf("RevokeAllSessions: %v", err)
-	}
-	now := time.Now()
-	expiredSess := auth.Session{
-		AccessToken: "expired-token",
-		BrokerToken: "tok",
-		BrokerSID:   "sid",
-		BaseURL:     "https://api.example.com",
-		FeedURL:     "wss://api.example.com",
-		LoginMethod: auth.LoginMethodMPIN,
-		CreatedAt:   now.Add(-4 * time.Hour),
-		TokenExpiry: now.Add(-1 * time.Hour), // expired 1h ago
-	}
-	if err := st.SaveSession(context.Background(), expiredSess); err != nil {
-		t.Fatalf("save expired session: %v", err)
+	if s2.a.CurrentSession() != nil {
+		t.Fatal("expected CurrentSession to be nil on s2 after restart")
 	}
 
-	sExpired := newTestServer(t, serverOpts{db: st, sessionStore: st, authClient: client})
-	defer sExpired.Close()
-
-	statusRecExp := do(t, sExpired, localRequest(http.MethodGet, "/api/session"))
-	var statusExp struct {
-		Authenticated bool `json:"authenticated"`
-	}
-	if err := json.Unmarshal(statusRecExp.Body.Bytes(), &statusExp); err != nil {
-		t.Fatalf("unmarshal statusExp: %v", err)
-	}
-	if statusExp.Authenticated {
-		t.Fatalf("expected authenticated = false after expiration, got %+v", statusExp)
-	}
-
-	// 6. Test logout removes persistent session from SQLite
+	// 5. Test login on s2 and verify logout removes persistent session from SQLite
 	totpReq2 := localRequest(http.MethodPost, "/api/auth/totp")
 	totpReq2.Header.Set("Content-Type", "application/json")
 	totpReq2.Body = io.NopCloser(strings.NewReader(`{"totp":"123456"}`))
-	totpRec2 := do(t, sExpired, totpReq2)
+	totpRec2 := do(t, s2, totpReq2)
 	cookies2 := totpRec2.Result().Cookies()
 
 	mpinReq2 := localRequest(http.MethodPost, "/api/auth/mpin")
 	mpinReq2.Header.Set("Content-Type", "application/json")
 	mpinReq2.Body = io.NopCloser(strings.NewReader(`{"mpin":"654321"}`))
 	mpinReq2.AddCookie(cookies2[0])
-	do(t, sExpired, mpinReq2)
+	do(t, s2, mpinReq2)
 
 	latestBeforeLogout, err := st.GetLatestSession(context.Background())
 	if err != nil || latestBeforeLogout == nil {
@@ -1643,7 +1611,7 @@ func TestPersistentSessionAcrossRestartsAndExpiration(t *testing.T) {
 	}
 
 	logoutReq := localRequest(http.MethodPost, "/api/auth/logout")
-	logoutRec := do(t, sExpired, logoutReq)
+	logoutRec := do(t, s2, logoutReq)
 	if logoutRec.Code != http.StatusOK {
 		t.Fatalf("logout status = %d", logoutRec.Code)
 	}

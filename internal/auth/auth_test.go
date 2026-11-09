@@ -487,31 +487,20 @@ func TestServerPersistentSessionFlow(t *testing.T) {
 		t.Fatalf("status expiry fields invalid: %+v", status)
 	}
 
-	// Simulate restart: create a new server with the same store
+	// Simulate restart: create a new server with the same store.
+	// Restarting scalper must revoke persistent sessions and require TOTP again.
 	server2 := NewServerWithAuthenticator(slog.Default(), client, WithSessionStore(store))
 	defer server2.Close()
 
-	restored := server2.CurrentSession()
-	if restored == nil {
-		t.Fatal("expected restored session on startup, got nil")
-	}
-	if restored.AccessToken != sess.AccessToken {
-		t.Fatalf("restored token = %q, want %q", restored.AccessToken, sess.AccessToken)
+	if server2.CurrentSession() != nil {
+		t.Fatal("expected nil session on startup so TOTP is required again")
 	}
 	status2 := server2.SessionStatus()
-	if !status2.Authenticated {
-		t.Fatalf("restored server status unauthenticated: %+v", status2)
-	}
-
-	// Test RevokeAll removes from store
-	if err := server2.RevokeAll(context.Background()); err != nil {
-		t.Fatalf("RevokeAll: %v", err)
-	}
-	if server2.CurrentSession() != nil {
-		t.Fatal("CurrentSession should be nil after RevokeAll")
+	if status2.Authenticated {
+		t.Fatalf("expected unauthenticated status on restart: %+v", status2)
 	}
 	if store.latest != nil {
-		t.Fatal("store session should be cleared after RevokeAll")
+		t.Fatal("store session should be cleared on restart")
 	}
 }
 
