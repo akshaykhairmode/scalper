@@ -554,8 +554,8 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 			source = "agent"
 		}
 
-		if action == "PASS" || action == "HOLD" || action == "" {
-			continue
+		if action == "" {
+			action = "HOLD"
 		}
 
 		// Normalize to BUY_CE or BUY_PE
@@ -592,15 +592,16 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 			Status:        "PENDING",
 		}
 
-		// Filter for high-conviction setups only
-		if eval.Score >= minScore && eval.Confidence >= minConfidence {
-			if e.store != nil {
-				id, serr := e.store.SaveEvaluation(ctx, eval)
-				if serr == nil {
-					eval.ID = id
-				}
+		// Always persist evaluations in the store so recent JEV setups show in the UI table
+		if e.store != nil {
+			id, serr := e.store.SaveEvaluation(ctx, eval)
+			if serr == nil {
+				eval.ID = id
 			}
+		}
 
+		// Filter for high-conviction setups only to track win/loss against live ticks
+		if eval.Score >= minScore && eval.Confidence >= minConfidence && strings.HasPrefix(eval.Action, "BUY") {
 			// Add to in-memory active call tracker
 			e.activeMu.Lock()
 			e.activeCalls[eval.ID] = &ActiveCall{
@@ -622,10 +623,10 @@ func (e *Evaluator) ScanNow(ctx context.Context, underlying string) ([]store.Eva
 				"id", eval.ID, "action", eval.Action, "instrument", eval.InstrumentKey,
 				"entry", eval.OptionLTP, "target", eval.TargetPrice, "stop", eval.StopLossPrice,
 				"score", eval.Score, "conf", eval.Confidence, "source", source)
+		}
 
-			if e.onNewCall != nil {
-				e.onNewCall(eval)
-			}
+		if e.onNewCall != nil {
+			e.onNewCall(eval)
 		}
 
 		results = append(results, eval)
@@ -939,18 +940,34 @@ func (e *Evaluator) runScanner(ctx context.Context, interval time.Duration) {
 			e.onScanStatus(e.ScannerStatus())
 		}
 
-		scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		evals, err := e.ScanNow(scanCtx, "NIFTY")
-		cancel()
+		underlyings := []string{"NIFTY"}
+		if uProvider, ok := e.quoteProvider.(interface{ GetConfiguredUnderlyings() []string }); ok {
+			if configured := uProvider.GetConfiguredUnderlyings(); len(configured) > 0 {
+				underlyings = configured
+			}
+		}
+
+		var totalEvals []store.Evaluation
+		var scanErr error
+		for _, u := range underlyings {
+			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			evals, err := e.ScanNow(scanCtx, u)
+			cancel()
+			if err != nil {
+				scanErr = err
+			} else {
+				totalEvals = append(totalEvals, evals...)
+			}
+		}
 
 		e.scanMu.Lock()
 		e.lastScanTime = time.Now()
 		e.scanMu.Unlock()
 
-		if err != nil {
-			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", err)
+		if scanErr != nil && len(totalEvals) == 0 {
+			e.log.Warn("periodic ai scan failed", "event", "ai_periodic_scan_failed", "error", scanErr)
 		} else {
-			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(evals))
+			e.log.Info("periodic ai scan finished", "event", "ai_periodic_scan_success", "count", len(totalEvals))
 		}
 
 		if e.onScanStatus != nil {

@@ -226,6 +226,23 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 	b.UpdatedAt = now
 
+	if (b.Underlying == "" || b.Strike == 0 || b.OptionType == "") && strings.Contains(b.InstrumentKey, "|") {
+		parts := strings.Split(b.InstrumentKey, "|")
+		if len(parts) >= 5 {
+			if b.Underlying == "" {
+				b.Underlying = parts[1]
+			}
+			if b.Strike == 0 {
+				if s, err := strconv.ParseFloat(parts[3], 64); err == nil {
+					b.Strike = s
+				}
+			}
+			if b.OptionType == "" {
+				b.OptionType = strings.ToUpper(parts[4])
+			}
+		}
+	}
+
 	// Pre-register bracket in memory so fast WebSocket fill events arriving in 10-20ms will match
 	e.mu.Lock()
 	bracketCopy := b
@@ -496,7 +513,24 @@ func (e *Engine) List(limit int) ([]Bracket, error) {
 
 	result := make([]Bracket, 0, len(e.brackets))
 	for _, b := range e.brackets {
-		result = append(result, *b)
+		cp := *b
+		if (cp.Underlying == "" || cp.Strike == 0 || cp.OptionType == "") && strings.Contains(cp.InstrumentKey, "|") {
+			parts := strings.Split(cp.InstrumentKey, "|")
+			if len(parts) >= 5 {
+				if cp.Underlying == "" {
+					cp.Underlying = parts[1]
+				}
+				if cp.Strike == 0 {
+					if s, err := strconv.ParseFloat(parts[3], 64); err == nil {
+						cp.Strike = s
+					}
+				}
+				if cp.OptionType == "" {
+					cp.OptionType = strings.ToUpper(parts[4])
+				}
+			}
+		}
+		result = append(result, cp)
 	}
 
 	sort.Slice(result, func(i, j int) bool {

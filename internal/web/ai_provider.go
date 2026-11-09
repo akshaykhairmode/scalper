@@ -123,3 +123,21 @@ func (s *Server) GetMarketDepth(ctx context.Context, instrumentKey string) (feat
 
 	return features.CalculateOrderBookMetrics(q.LTP, q.Bids, q.Asks), nil
 }
+
+// GetConfiguredUnderlyings returns the list of active index keys configured in market.indices.
+func (s *Server) GetConfiguredUnderlyings() []string {
+	if len(s.cfg.Market.Indices) == 0 {
+		return []string{"NIFTY", "BANKNIFTY", "SENSEX"}
+	}
+	var res []string
+	for _, idx := range s.cfg.Market.Indices {
+		key := strings.TrimSpace(idx.Key)
+		if key != "" {
+			res = append(res, key)
+		}
+	}
+	if len(res) == 0 {
+		return []string{"NIFTY", "BANKNIFTY", "SENSEX"}
+	}
+	return res
+}

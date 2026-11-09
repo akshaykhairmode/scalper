@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -208,6 +209,16 @@ func scanBracket(s rowScanner) (*bracket.Bracket, error) {
 	}
 	b.CreatedAt = parseDBTime(createdAtStr)
 	b.UpdatedAt = parseDBTime(updatedAtStr)
+	if strings.Contains(b.InstrumentKey, "|") {
+		parts := strings.Split(b.InstrumentKey, "|")
+		if len(parts) >= 5 {
+			b.Underlying = parts[1]
+			if s, err := strconv.ParseFloat(parts[3], 64); err == nil {
+				b.Strike = s
+			}
+			b.OptionType = strings.ToUpper(parts[4])
+		}
+	}
 	return &b, nil
 }
 

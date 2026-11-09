@@ -168,7 +168,7 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 			continue
 		}
 
-		if instType == "OPTIDX" || (segment == SegmentMCXFO && (instType == "OPTFUT" || instType == "OPTFUTIDX")) {
+		if isOptionInstrument(segment, instType) {
 			opt, matched, err := parseOptionRow(segment, record, cols, name, underlyings, cfg)
 			if err != nil {
 				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
@@ -262,6 +262,19 @@ func parseCommodityFutureRow(
 		return Spot{}, "", false, err
 	}
 	return spot, expiry, true, nil
+}
+
+func isOptionInstrument(segment, instType string) bool {
+	switch segment {
+	case SegmentBSEFO:
+		return instType == "IO" || instType == "SO" || instType == "OPTIDX"
+	case SegmentMCXFO:
+		return instType == "OPTFUT" || instType == "OPTFUTIDX" || instType == "OPTIDX"
+	case SegmentNSEFO:
+		return instType == "OPTIDX" || instType == "OPTSTK"
+	default:
+		return instType == "OPTIDX" || instType == "IO" || instType == "OPTFUT"
+	}
 }
 
 func parseOptionRow(

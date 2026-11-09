@@ -3968,10 +3968,22 @@ function normalizeBracket(raw) {
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.LTP ?? 0);
 
   const sym = String(raw.trading_symbol || raw.tradingSymbol || raw.symbol || raw.Symbol || "").trim();
+  const key = String(raw.instrument_key || raw.instrumentKey || raw.InstrumentKey || "").trim();
+  let underlying = String(raw.underlying || raw.Underlying || "").trim();
   let strike = num(raw.strike ?? raw.Strike);
   let type = String(raw.option_type || raw.type || raw.Type || "").toUpperCase();
 
-  // If strike or type is missing, parse from trading_symbol (e.g. NIFTY26N0925000CE)
+  // 1. First priority: parse structured instrument_key (e.g. nse_fo|NIFTY|2026-11-09|24850|PE)
+  if (key.includes("|")) {
+    const parts = key.split("|");
+    if (parts.length >= 5) {
+      if (!underlying) underlying = parts[1];
+      if (!strike) strike = num(parts[3]);
+      if (!type) type = parts[4].toUpperCase();
+    }
+  }
+
+  // 2. Second priority: parse trading_symbol (e.g. NIFTY26N0924850PE or SENSEX26DEC80000CE)
   if ((!strike || !type) && sym) {
     const match = /(?:CE|PE)?.*?(\d{4,6})\s*(CE|PE)$/i.exec(sym);
     if (match) {
@@ -3980,13 +3992,15 @@ function normalizeBracket(raw) {
     }
   }
 
+  if (!underlying) underlying = S.activeIndex || "";
+
   return {
     id,
     orderId: String(raw.order_id ?? raw.orderId ?? raw.OrderId ?? ""),
     symbol: sym,
-    instrumentKey: raw.instrument_key || raw.instrumentKey || raw.InstrumentKey || "",
+    instrumentKey: key,
     exchangeSegment: raw.exchange_segment || raw.exchangeSegment || raw.ExchangeSegment || "NSE_FO",
-    underlying: raw.underlying || raw.Underlying || S.activeIndex || "",
+    underlying,
     strike,
     type,
     action,
@@ -4013,9 +4027,18 @@ function upsertBracket(bracket) {
       ...existing,
       ...bracket,
       symbol: bracket.symbol || existing.symbol || "",
+      underlying: bracket.underlying || existing.underlying || S.activeIndex || "",
       strike: bracket.strike || existing.strike || 0,
       type: bracket.type || existing.type || "",
     };
+    if (merged.instrumentKey && (!merged.strike || !merged.type || !merged.underlying)) {
+      const parts = String(merged.instrumentKey).split("|");
+      if (parts.length >= 5) {
+        if (!merged.underlying || merged.underlying === S.activeIndex) merged.underlying = parts[1];
+        if (!merged.strike) merged.strike = num(parts[3]);
+        if (!merged.type) merged.type = parts[4].toUpperCase();
+      }
+    }
     if ((!merged.strike || !merged.type) && merged.symbol) {
       const match = /(?:CE|PE)?.*?(\d{4,6})\s*(CE|PE)$/i.exec(merged.symbol);
       if (match) {
@@ -4162,7 +4185,7 @@ function bracketsHTML() {
     const sideClass = b.action === "buy" ? "up" : "down";
     const targetDiff = (b.targetPrice - b.entryPrice) * (b.action === "buy" ? 1 : -1);
 
-    const contractDisplay = (b.strike && b.type)
+    const contractDisplay = (b.strike && b.type && b.strike > 0)
       ? `${b.underlying || S.activeIndex} ${fmtStrike(b.strike)} ${b.type}`
       : (b.symbol || `${b.underlying || S.activeIndex}`);
 
@@ -4450,16 +4473,16 @@ function initChartQuickOrder() {
 
   $("cqo-target-dec")?.addEventListener("click", () => {
     if (!S.quickOrder) return;
-    const currentPts = S.quickOrder.targetPts || 0.5;
-    const newPts = Math.max(0.05, Math.round((currentPts - 0.5) * 20) / 20);
-    updateQuickOrderTargetPts(newPts);
+    const currentTarget = num($("cqo-target-price")?.value, S.quickOrder.targetPrice);
+    const newTarget = Math.max(S.quickOrder.price + 0.05, Math.round((currentTarget - 0.50) * 20) / 20);
+    updateQuickOrderTargetPrice(newTarget);
   });
 
   $("cqo-target-inc")?.addEventListener("click", () => {
     if (!S.quickOrder) return;
-    const currentPts = S.quickOrder.targetPts || 0.5;
-    const newPts = Math.round((currentPts + 0.5) * 20) / 20;
-    updateQuickOrderTargetPts(newPts);
+    const currentTarget = num($("cqo-target-price")?.value, S.quickOrder.targetPrice);
+    const newTarget = Math.round((currentTarget + 0.50) * 20) / 20;
+    updateQuickOrderTargetPrice(newTarget);
   });
 
   $("cqo-target-price")?.addEventListener("focus", (e: any) => {
@@ -4472,9 +4495,9 @@ function initChartQuickOrder() {
     const val = parseFloat(rawVal);
     if (!isNaN(val) && val > 0) {
       S.quickOrder.targetPrice = val;
+      const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
+      S.quickOrder.targetPts = Math.max(0.05, pts);
       if (val > S.quickOrder.price) {
-        const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
-        S.quickOrder.targetPts = Math.max(0.05, pts);
         try { localStorage.setItem("scalper-target-pts", String(S.quickOrder.targetPts)); } catch (_) {}
         const shares = S.quickOrder.lotsCount * S.quickOrder.lot;
         const pnl = Math.round(pts * shares);
@@ -4486,7 +4509,6 @@ function initChartQuickOrder() {
           S.charts[S.quickOrder.pane]?.showTargetPreview(val, "TARGET");
         }
       } else {
-        const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
         const ptsEl = $("cqo-target-pts");
         if (ptsEl) ptsEl.textContent = `${pts >= 0 ? "+" : ""}${pts.toFixed(2)} pts`;
         const pnlEl = $("cqo-target-pnl");
@@ -4495,16 +4517,21 @@ function initChartQuickOrder() {
     }
   });
 
-  $("cqo-target-price")?.addEventListener("change", (e: any) => {
+  const commitTargetPrice = (e: any) => {
     if (!S.quickOrder) return;
     const val = parseFloat(e.target.value);
     if (!isNaN(val) && val > S.quickOrder.price) {
       updateQuickOrderTargetPrice(val);
+    } else if (!isNaN(val) && val > 0) {
+      updateQuickOrderTargetPrice(S.quickOrder.price + 0.05);
     } else {
       const fallbackPts = Math.max(0.5, S.quickOrder.targetPts || 0.5);
       updateQuickOrderTargetPts(fallbackPts);
     }
-  });
+  };
+
+  $("cqo-target-price")?.addEventListener("change", commitTargetPrice);
+  $("cqo-target-price")?.addEventListener("blur", commitTargetPrice);
 
   $("cqo-buy-btn")?.addEventListener("click", () => submitQuickOrder("buy"));
   $("cqo-sell-btn")?.addEventListener("click", () => submitQuickOrder("sell"));
@@ -6291,7 +6318,10 @@ async function refreshAISignalsModal() {
 
       tbody.innerHTML = evals.map((e: any) => {
         const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "—";
-        const strikeLabel = `${e.underlying || ""} ${e.instrument_key ? e.instrument_key.split("|")[4] || e.instrument_key : ""}`;
+        const parts = (e.instrument_key || "").split("|");
+        const strikeVal = parts.length >= 4 ? parts[3] : "";
+        const optType = parts.length >= 5 ? parts[4] : "";
+        const strikeLabel = `${e.underlying || ""}${strikeVal ? " " + strikeVal : ""}${optType ? " " + optType : ""}`.trim() || e.instrument_key || "—";
         let statusBadge = `<span class="ai-status-pill ai-status-pending">PENDING</span>`;
         if (e.status === "TARGET_HIT") {
           statusBadge = `<span class="ai-status-pill ai-status-target">TARGET HIT</span>`;

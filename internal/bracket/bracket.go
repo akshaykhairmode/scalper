@@ -35,6 +35,9 @@ type Bracket struct {
 	ExitPrice       float64   `json:"exit_price"`
 	Status          string    `json:"status"`
 	PnL             float64   `json:"pnl"`
+	Underlying      string    `json:"underlying,omitempty"`
+	Strike          float64   `json:"strike,omitempty"`
+	OptionType      string    `json:"option_type,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

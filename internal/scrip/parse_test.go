@@ -29,6 +29,11 @@ func optionCSVRow(segment, name, trd, optionType string, lot int, expiry int64, 
 	})
 }
 
+func bseOptionCSVRow(name, trd, optionType string, lot int, expiry int64, strike string) string {
+	row := optionCSVRow(SegmentBSEFO, name, trd, optionType, lot, expiry, strike)
+	return strings.Replace(row, ",OPTIDX,", ",IO,", 1)
+}
+
 func commodityOptionCSVRow(name, trd, optionType string, lot int, expiry int64, strike string) string {
 	row := optionCSVRow(SegmentMCXFO, name, trd, optionType, lot, expiry, strike)
 	return strings.Replace(row, ",OPTIDX,", ",OPTFUT,", 1)
@@ -131,7 +136,7 @@ func TestParseSegmentBSEExpiryHasNoOffset(t *testing.T) {
 	expiry := time.Date(2026, 12, 24, 20, 0, 0, 0, ist).Unix()
 	body := strings.Join([]string{
 		testHeader,
-		optionCSVRow(SegmentBSEFO, "SENSEX", "SENSEX26DEC80000CE", "CE", 20, expiry, "8e+06"),
+		bseOptionCSVRow("SENSEX", "SENSEX26DEC80000CE", "CE", 20, expiry, "8e+06"),
 		spotCSVRow(SegmentBSECM, "SENSEX", "1"),
 	}, "\n")
 	data, err := ParseSegment(SegmentBSEFO, strings.NewReader(body), ParseConfig{
