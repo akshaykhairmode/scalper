@@ -161,7 +161,15 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	}
 	if hasConsumerKey {
 		go func() {
-			refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			// The snapshot is already loaded from SQLite. Let startup and the
+			// first requests settle before streaming the refresh, and allow a
+			// generous budget because segments are deliberately staggered.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+			}
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
 			if err := scripManager.Refresh(refreshCtx, market.DefaultBaseURL); err != nil {
 				log.Error("initial Scrip Master refresh failed", "event", "scrip_refresh_failed", "error", err)

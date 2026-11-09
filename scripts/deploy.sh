@@ -383,6 +383,18 @@ elif [ -f /swapfile ] && ! swapon --show 2>/dev/null | grep -q '/swapfile'; then
   sudo swapon /swapfile >/dev/null 2>&1 || true
 fi
 
+# dnf metadata refreshes can momentarily consume hundreds of MB. On tiny
+# single-user hosts they compete with the terminal and trigger swap storms, so
+# skip the periodic cache refresh there.
+if [ "\${TOTAL_MEM_MB}" -lt 1024 ]; then
+  if systemctl is-active --quiet dnf-makecache.timer 2>/dev/null || systemctl is-enabled --quiet dnf-makecache.timer 2>/dev/null; then
+    echo ">>> [Memory Check] Disabling dnf metadata cache refresh on \${TOTAL_MEM_MB} MB host..."
+    sudo systemctl stop dnf-makecache.timer 2>/dev/null || true
+    sudo systemctl disable dnf-makecache.timer 2>/dev/null || true
+    sudo systemctl stop dnf-makecache.service 2>/dev/null || true
+  fi
+fi
+
 # Set optimal swappiness (10) so RAM is utilized first and swapping occurs only under genuine pressure
 if [ -f /proc/sys/vm/swappiness ]; then
   CURRENT_SWAPPINESS=\$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60)

@@ -5,16 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
+
+// defaultSegmentPause spaces Scrip Master segment downloads apart so a refresh
+// on a memory-constrained host does not compete with request handling.
+const defaultSegmentPause = 2 * time.Second
 
 // ManagerConfig wires the Scrip Master manager.
 type ManagerConfig struct {
@@ -54,13 +60,14 @@ type snapshot struct {
 
 // Manager owns the parsed snapshot and performs refresh/cache/persist.
 type Manager struct {
-	segments    []string
-	underlyings []Underlying
-	client      *Client
-	repo        Repository
-	cacheDir    string
-	log         *slog.Logger
-	now         func() time.Time
+	segments     []string
+	underlyings  []Underlying
+	client       *Client
+	repo         Repository
+	cacheDir     string
+	log          *slog.Logger
+	now          func() time.Time
+	segmentPause time.Duration
 
 	mu      sync.RWMutex
 	snap    *snapshot
@@ -88,13 +95,14 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		now = time.Now
 	}
 	return &Manager{
-		segments:    segments,
-		underlyings: append([]Underlying(nil), cfg.Underlyings...),
-		client:      cfg.Client,
-		repo:        cfg.Repository,
-		cacheDir:    strings.TrimSpace(cfg.CacheDir),
-		log:         log,
-		now:         now,
+		segments:     segments,
+		underlyings:  append([]Underlying(nil), cfg.Underlyings...),
+		client:       cfg.Client,
+		repo:         cfg.Repository,
+		cacheDir:     strings.TrimSpace(cfg.CacheDir),
+		log:          log,
+		now:          now,
+		segmentPause: defaultSegmentPause,
 	}, nil
 }
 
@@ -213,41 +221,28 @@ func (m *Manager) Refresh(ctx context.Context, baseURL string) error {
 		return err
 	}
 
+	// Release allocations retained by the startup snapshot load before the
+	// streamed refresh starts building new maps.
+	m.freeMemory()
+
 	var options []Option
 	var spots []Spot
 	syncs := make([]SyncRecord, 0, len(m.segments))
-	for _, segment := range m.segments {
-		fileURL := files[segment]
-		data, err := m.client.Download(ctx, fileURL)
-		if err != nil {
-			wrapped := fmt.Errorf("scrip: download %s: %w", segment, err)
-			m.setLastErr(wrapped)
-			m.log.Error("scrip refresh failed",
-				"event", "scrip_refresh_failed", "stage", "download",
-				"segment", segment, "error", err)
-			return wrapped
-		}
-		parsed, err := ParseSegment(segment, bytes.NewReader(data), ParseConfig{
-			Underlyings:  m.underlyings,
-			ExpiryOffset: ExpiryOffsetFor(segment),
-			Now:          m.now(),
-		})
-		if err != nil {
-			wrapped := fmt.Errorf("scrip: parse %s: %w", segment, err)
-			m.setLastErr(wrapped)
-			m.log.Error("scrip refresh failed",
-				"event", "scrip_refresh_failed", "stage", "parse",
-				"segment", segment, "error", err)
-			return wrapped
-		}
-		if m.cacheDir != "" {
-			if err := writeCacheFile(m.cachePath(segment), data); err != nil {
-				// The in-memory snapshot and database remain correct; a cache
-				// write failure only weakens offline startup, so it is logged
-				// and does not fail the refresh.
-				m.log.Warn("scrip cache write failed",
-					"event", "scrip_cache_write_failed", "segment", segment, "error", err)
+	for i, segment := range m.segments {
+		if i > 0 {
+			if err := m.stagger(ctx); err != nil {
+				m.setLastErr(err)
+				return fmt.Errorf("scrip: refresh interrupted: %w", err)
 			}
+		}
+		fileURL := files[segment]
+		parsed, err := m.parseSegmentStream(ctx, segment, fileURL)
+		if err != nil {
+			wrapped := fmt.Errorf("scrip: refresh %s: %w", segment, err)
+			m.setLastErr(wrapped)
+			m.log.Error("scrip refresh failed",
+				"event", "scrip_refresh_failed", "segment", segment, "error", err)
+			return wrapped
 		}
 		options = append(options, parsed.Options...)
 		spots = append(spots, parsed.Spots...)
@@ -262,6 +257,7 @@ func (m *Manager) Refresh(ctx context.Context, baseURL string) error {
 			"event", "scrip_segment_parsed", "segment", segment,
 			"rows", parsed.Rows, "skipped", parsed.Skipped,
 			"options", len(parsed.Options), "spots", len(parsed.Spots))
+		m.freeMemory()
 	}
 	SortOptions(options)
 	SortSpots(spots)
@@ -280,6 +276,128 @@ func (m *Manager) Refresh(ctx context.Context, baseURL string) error {
 		"event", "scrip_refreshed", "options", len(options), "spots", len(spots),
 		"segments", len(m.segments), "duration_ms", m.now().Sub(started).Milliseconds())
 	return nil
+}
+
+// parseSegmentStream downloads and parses one CSV without buffering the whole
+// file. A configured cache is filled best-effort through a tee reader; cache
+// failures never fail the refresh.
+func (m *Manager) parseSegmentStream(ctx context.Context, segment, fileURL string) (SegmentData, error) {
+	body, err := m.client.OpenCSV(ctx, fileURL)
+	if err != nil {
+		return SegmentData{}, fmt.Errorf("download: %w", err)
+	}
+	defer func() {
+		if cerr := body.Close(); cerr != nil {
+			m.log.Debug("failed to close scrip CSV stream",
+				"event", "scrip_csv_close_failed", "segment", segment, "error", cerr)
+		}
+	}()
+
+	var reader io.Reader = body
+	var tee *bestEffortTee
+	var tmp *os.File
+	var tmpName string
+	if m.cacheDir != "" {
+		if err := os.MkdirAll(m.cacheDir, 0o750); err != nil {
+			m.log.Warn("scrip cache directory unavailable",
+				"event", "scrip_cache_dir_failed", "segment", segment, "error", err)
+		} else if f, ferr := os.CreateTemp(m.cacheDir, ".scrip-*.tmp"); ferr != nil {
+			m.log.Warn("scrip cache temp file failed",
+				"event", "scrip_cache_temp_failed", "segment", segment, "error", ferr)
+		} else {
+			tmp, tmpName = f, f.Name()
+			if cerr := tmp.Chmod(0o640); cerr != nil {
+				m.log.Warn("scrip cache chmod failed",
+					"event", "scrip_cache_chmod_failed", "segment", segment, "error", cerr)
+				_ = tmp.Close()
+				_ = os.Remove(tmpName)
+				tmp, tmpName = nil, ""
+			} else {
+				tee = &bestEffortTee{r: body, w: tmp}
+				reader = tee
+			}
+		}
+	}
+
+	parsed, perr := ParseSegment(segment, reader, ParseConfig{
+		Underlyings:  m.underlyings,
+		ExpiryOffset: ExpiryOffsetFor(segment),
+		Now:          m.now(),
+	})
+
+	if tmp != nil {
+		cacheOK := perr == nil && tee != nil && !tee.failed
+		if cacheOK {
+			if err := tmp.Sync(); err != nil {
+				m.log.Warn("scrip cache sync failed",
+					"event", "scrip_cache_write_failed", "segment", segment, "error", err)
+				cacheOK = false
+			}
+		}
+		if err := tmp.Close(); err != nil && cacheOK {
+			m.log.Warn("scrip cache close failed",
+				"event", "scrip_cache_write_failed", "segment", segment, "error", err)
+			cacheOK = false
+		}
+		if cacheOK {
+			if err := os.Rename(tmpName, m.cachePath(segment)); err != nil {
+				m.log.Warn("scrip cache rename failed",
+					"event", "scrip_cache_write_failed", "segment", segment, "error", err)
+				cacheOK = false
+			}
+		}
+		if !cacheOK {
+			if err := os.Remove(tmpName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				m.log.Debug("failed to remove scrip cache temp file",
+					"event", "scrip_cache_temp_remove_failed", "error", err)
+			}
+		}
+	}
+
+	if perr != nil {
+		return SegmentData{}, fmt.Errorf("parse: %w", perr)
+	}
+	return parsed, nil
+}
+
+// bestEffortTee copies CSV bytes to the cache file but swallows write errors so
+// a cache problem cannot abort the in-memory refresh.
+type bestEffortTee struct {
+	r      io.Reader
+	w      io.Writer
+	failed bool
+}
+
+func (t *bestEffortTee) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 && !t.failed {
+		if _, werr := t.w.Write(p[:n]); werr != nil {
+			t.failed = true
+		}
+	}
+	return n, err
+}
+
+// stagger yields briefly between segment downloads, and aborts promptly when
+// the application is shutting down.
+func (m *Manager) stagger(ctx context.Context) error {
+	if m.segmentPause <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(m.segmentPause)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// freeMemory returns unused heap pages to the OS, which matters on the small
+// single-user hosts this terminal targets.
+func (m *Manager) freeMemory() {
+	debug.FreeOSMemory()
 }
 
 func (m *Manager) apply(options []Option, spots []Spot, syncedAt time.Time, source string) {
@@ -597,44 +715,4 @@ func (m *Manager) Search(q Query) []SearchResult {
 
 func (m *Manager) cachePath(segment string) string {
 	return filepath.Join(m.cacheDir, segment+".csv")
-}
-
-// writeCacheFile writes atomically so a crash never leaves a truncated CSV in
-// place of a previously good cache.
-func writeCacheFile(path string, data []byte) (err error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create cache directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".scrip-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if err != nil {
-			if rerr := os.Remove(tmpName); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-				err = errors.Join(err, fmt.Errorf("remove temp cache %s: %w", tmpName, rerr))
-			}
-		}
-	}()
-	if err = tmp.Chmod(0o640); err != nil {
-		cerr := tmp.Close()
-		return errors.Join(fmt.Errorf("chmod temp cache: %w", err), cerr)
-	}
-	if _, err = tmp.Write(data); err != nil {
-		cerr := tmp.Close()
-		return errors.Join(fmt.Errorf("write temp cache: %w", err), cerr)
-	}
-	if err = tmp.Sync(); err != nil {
-		cerr := tmp.Close()
-		return errors.Join(fmt.Errorf("sync temp cache: %w", err), cerr)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("close temp cache: %w", err)
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename temp cache: %w", err)
-	}
-	return nil
 }

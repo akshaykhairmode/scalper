@@ -116,6 +116,66 @@ func (c *Client) ListFiles(ctx context.Context, baseURL string) (FileList, error
 	return FileList{Paths: payload.Data.FilesPaths, BaseFolder: payload.Data.BaseFolder}, nil
 }
 
+// OpenCSV streams one CSV so large Scrip Master segments never have to be held
+// in memory in full. The caller must close the returned reader.
+func (c *Client) OpenCSV(ctx context.Context, fileURL string) (io.ReadCloser, error) {
+	if c == nil || c.HTTP == nil {
+		return nil, fmt.Errorf("scrip: http client is not configured")
+	}
+	u, err := url.Parse(fileURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("scrip: invalid CSV URL %q", fileURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("scrip: build CSV request: %w", err)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("scrip: download %s: %w", fileURL, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			slog.Debug("failed to read scrip CSV download error body", "error", readErr)
+		}
+		if cerr := resp.Body.Close(); cerr != nil {
+			slog.Debug("failed to close scrip CSV download response body", "error", cerr)
+		}
+		return nil, &errs.BrokerError{
+			Op:         "scrip download",
+			StatusCode: resp.StatusCode,
+			Message:    sanitizeMessage(body),
+			Retryable:  retryableStatus(resp.StatusCode),
+			Raw:        body,
+		}
+	}
+	return newBoundedCSVReader(resp.Body, maxCSVBytes), nil
+}
+
+// boundedCSVReader enforces the CSV size cap while streaming, instead of
+// allocating a full-size buffer up front.
+type boundedCSVReader struct {
+	body  io.ReadCloser
+	limit int64
+	read  int64
+}
+
+func newBoundedCSVReader(body io.ReadCloser, limit int64) *boundedCSVReader {
+	return &boundedCSVReader{body: body, limit: limit}
+}
+
+func (r *boundedCSVReader) Read(p []byte) (int, error) {
+	n, err := r.body.Read(p)
+	r.read += int64(n)
+	if r.read > r.limit {
+		return n, fmt.Errorf("scrip: CSV exceeds the %d byte limit", r.limit)
+	}
+	return n, err
+}
+
+func (r *boundedCSVReader) Close() error { return r.body.Close() }
+
 // Download fetches one CSV. The consumer key is deliberately not forwarded:
 // these are broker-provided download URLs and may point at a CDN.
 func (c *Client) Download(ctx context.Context, fileURL string) ([]byte, error) {

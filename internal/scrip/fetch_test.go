@@ -3,6 +3,7 @@ package scrip
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,6 +177,55 @@ func TestClientDownloadEmptyBody(t *testing.T) {
 	_, err := c.Download(context.Background(), srv.URL)
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClientOpenCSV(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/nse_fo.csv" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte("pSymbol\n1\n"))
+	}))
+	defer srv.Close()
+
+	c := NewClient("secret-token")
+	c.HTTP = srv.Client()
+	body, err := c.OpenCSV(context.Background(), srv.URL+"/nse_fo.csv")
+	if err != nil {
+		t.Fatalf("OpenCSV: %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if cerr := body.Close(); cerr != nil {
+		t.Fatalf("close stream: %v", cerr)
+	}
+	if string(data) != "pSymbol\n1\n" {
+		t.Fatalf("data = %q", data)
+	}
+
+	if _, err := c.OpenCSV(context.Background(), srv.URL+"/missing.csv"); err == nil {
+		t.Fatal("expected 404 error")
+	}
+	for _, bad := range []string{"", "ftp://example.test/x.csv", "not a url", "https://"} {
+		if _, err := c.OpenCSV(context.Background(), bad); err == nil {
+			t.Fatalf("OpenCSV(%q) succeeded", bad)
+		}
+	}
+	if _, err := (&Client{}).OpenCSV(context.Background(), srv.URL); err == nil {
+		t.Fatal("nil http should fail")
+	}
+}
+
+func TestBoundedCSVReaderLimit(t *testing.T) {
+	r := newBoundedCSVReader(io.NopCloser(strings.NewReader("1234567890")), 5)
+	defer func() { _ = r.Close() }()
+	_, err := io.ReadAll(r)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want size limit error", err)
 	}
 }
 

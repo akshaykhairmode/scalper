@@ -2,6 +2,13 @@ package scrip
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +184,59 @@ func TestManagerLoadAndQueries(t *testing.T) {
 	ceResults := mgr.Search(Query{Symbol: "NIFTY", OptionType: "CE"})
 	if len(ceResults) != 1 || ceResults[0].OptionType != "CE" {
 		t.Fatalf("expected 1 CE result, got %d", len(ceResults))
+	}
+}
+
+func TestManagerRefreshStreamsAndCaches(t *testing.T) {
+	expiry := nseExpiry(t)
+	csvBody := strings.Join([]string{
+		testHeader,
+		optionCSVRow(SegmentNSEFO, "NIFTY", "NIFTY26NOV24000CE", "CE", 75, expiry, "2400000"),
+		optionCSVRow(SegmentNSEFO, "NIFTY", "NIFTY26NOV24000PE", "PE", 75, expiry, "2400000"),
+	}, "\n")
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case FilePathsPath:
+			_, _ = fmt.Fprintf(w, `{"data":{"filesPaths":[%q]}}`, srv.URL+"/nse_fo.csv")
+		case "/nse_fo.csv":
+			_, _ = io.WriteString(w, csvBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	repo := &fakeRepo{}
+	mgr, err := NewManager(ManagerConfig{
+		Segments:    []string{SegmentNSEFO},
+		Underlyings: testUnderlyings(),
+		Client:      NewClient("token"),
+		Repository:  repo,
+		CacheDir:    cacheDir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.client.HTTP = srv.Client()
+	mgr.segmentPause = 0
+
+	if err := mgr.Refresh(context.Background(), srv.URL); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if st := mgr.Status(); st.Options != 2 || st.Source != "live" {
+		t.Fatalf("Status after refresh = %+v", st)
+	}
+	if len(repo.options) != 2 {
+		t.Fatalf("persisted options = %d, want 2", len(repo.options))
+	}
+	cached, err := os.ReadFile(filepath.Join(cacheDir, SegmentNSEFO+".csv"))
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	if string(cached) != csvBody {
+		t.Fatalf("cache = %q, want streamed CSV", cached)
 	}
 }
