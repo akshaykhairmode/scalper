@@ -1500,6 +1500,7 @@ async function loadFromAPI() {
   const chainRaw = await getJSON(chainURL({ center }));
   if (requestID !== S.chainRequestID || chainIndex !== S.activeIndex || chainExpiry !== S.expiry) return;
   acceptChainPage(chainRaw);
+  await ensureSavedStrikesLoaded();
   await refreshBooksFromAPI();
   selectDefaultStrike();
   S.chainScrolled = false;
@@ -2305,31 +2306,63 @@ function updateLiveTabQuotes(key) {
   }
 }
 
+function savedStrike(type) {
+  if (!S.activeIndex) return 0;
+  const expiryValue = S.expiry
+    ? num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-${type}`))
+    : 0;
+  return expiryValue || num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${type}`));
+}
+
+// The initial chain page only covers a window around spot. A saved strike can
+// sit outside it, and selectDefaultStrike would then fall back to ATM and
+// overwrite the preference. Fetch the missing window(s) before selecting.
+async function ensureSavedStrikesLoaded() {
+  const index = S.activeIndex;
+  const expiry = S.expiry;
+  if (!index || !expiry) return;
+  const requestID = S.chainRequestID;
+  for (const type of ["CE", "PE"]) {
+    const strike = savedStrike(type);
+    if (!strike) continue;
+    const row = S.chain.find((entry) => entry.strike === strike);
+    const option = row?.[type === "CE" ? "call" : "put"];
+    if (option) continue;
+    try {
+      const raw = await getJSON(chainURL({ center: strike }));
+      if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+      acceptChainPage(raw, true);
+    } catch (error) {
+      console.warn("failed to load the saved strike window", error);
+    }
+  }
+}
+
 function selectDefaultStrike() {
   if (!S.chain.length) {
     S.selected = { type: "CE", CE: null, PE: null };
     return;
   }
   const atm = computeATM() ?? S.chain[Math.floor(S.chain.length / 2)].strike;
-  const savedCE = num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-CE`)) ||
-    num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-CE`));
-  const savedPE = num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-PE`)) ||
-    num(localStorage.getItem(`scalper-last-strike-${S.activeIndex}-PE`));
-  const ceStrike = (savedCE && S.chain.some((r) => r.strike === savedCE)) ? savedCE : atm;
-  const peStrike = (savedPE && S.chain.some((r) => r.strike === savedPE)) ? savedPE : atm;
-  selectStrike(ceStrike, "CE", false, false);
-  selectStrike(peStrike, "PE", false, false);
+  const savedCE = savedStrike("CE");
+  const savedPE = savedStrike("PE");
+  const ceRow = S.chain.find((row) => row.strike === savedCE);
+  const peRow = S.chain.find((row) => row.strike === savedPE);
+  const ceStrike = ceRow?.call ? savedCE : atm;
+  const peStrike = peRow?.put ? savedPE : atm;
+  selectStrike(ceStrike, "CE", false, false, false);
+  selectStrike(peStrike, "PE", false, false, false);
   S.selected.type = "CE";
   S.chainScrolled = false;
 }
 
-function selectStrike(strike, type, rerender = true, reloadCharts = true) {
+function selectStrike(strike, type, rerender = true, reloadCharts = true, persist = true) {
   const row = S.chain.find((r) => r.strike === strike);
   const option = row?.[type === "CE" ? "call" : "put"];
   if (!option) return;
   S.selected[type] = option;
   S.selected.type = type;
-  if (S.activeIndex && S.expiry) {
+  if (persist && S.activeIndex && S.expiry) {
     try {
       localStorage.setItem(`scalper-last-strike-${S.activeIndex}-${S.expiry}-${type}`, String(strike));
       localStorage.setItem(`scalper-last-strike-${S.activeIndex}-${type}`, String(strike));
@@ -7698,6 +7731,7 @@ async function switchIndex(key) {
     toast(`Could not load ${key}: ${error.message}`, "error");
     return;
   }
+  await ensureSavedStrikesLoaded();
   selectDefaultStrike();
   renderAll();
   loadCharts();
@@ -7728,6 +7762,7 @@ async function switchExpiry(date) {
     toast(`Could not load expiry: ${error.message}`, "error");
     return;
   }
+  await ensureSavedStrikesLoaded();
   selectDefaultStrike();
   renderAll();
   loadCharts();
