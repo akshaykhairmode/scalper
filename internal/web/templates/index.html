@@ -164,7 +164,8 @@
             <button type="button" data-chart="ce" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="ce" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="ce" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="ce" data-chart-action="ma" title="Moving Averages (MA) · Toggle EMA trend overlay lines on chart" aria-label="Toggle Moving Average">MA</button>
+            <button type="button" data-chart="ce" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
+            <button type="button" data-chart="ce" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="ce" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="ce" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -222,7 +223,8 @@
             <button type="button" data-chart="underlying" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="underlying" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="underlying" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="underlying" data-chart-action="ma" title="Moving Averages (MA) · Toggle EMA trend overlay lines on chart" aria-label="Toggle Moving Average">MA</button>
+            <button type="button" data-chart="underlying" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
+            <button type="button" data-chart="underlying" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
             <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="underlying" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="underlying" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -256,7 +258,8 @@
             <button type="button" data-chart="pe" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
             <button type="button" data-chart="pe" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
             <button type="button" data-chart="pe" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="pe" data-chart-action="ma" title="Moving Averages (MA) · Toggle EMA trend overlay lines on chart" aria-label="Toggle Moving Average">MA</button>
+            <button type="button" data-chart="pe" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
+            <button type="button" data-chart="pe" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="pe" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="pe" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -917,6 +920,30 @@
         <input type="checkbox" id="ptn-filter-liquidity" checked>
         <span>Liquidity &amp; Setups (Wyckoff / QML)</span>
       </label>
+    </div>
+  </div>
+
+  <div class="pattern-popover" id="indicator-popover" style="display: none;" role="dialog" aria-label="Chart indicators">
+    <div class="pattern-popover-header">
+      <span>Chart Indicators</span>
+      <button type="button" class="pattern-popover-close" id="indicator-popover-close" aria-label="Close indicator settings">✕</button>
+    </div>
+    <div class="pattern-popover-body">
+      <label class="pattern-popover-item">
+        <input type="checkbox" id="ind-rsi">
+        <span>RSI (14) pane · 30 / 50 / 70 guides</span>
+      </label>
+      <label class="pattern-popover-item">
+        <input type="checkbox" id="ind-divergence">
+        <span>RSI Divergence (bull / bear)</span>
+      </label>
+      <label class="pattern-popover-item">
+        <input type="checkbox" id="ind-momentum">
+        <span>Momentum Candles (wide body ≥ 1.5×ATR)</span>
+      </label>
+      <div class="pattern-popover-item" style="opacity:.7;cursor:default;">
+        <span style="font-size:10px;">EMA 10/20/200 &amp; cross markers: use the EMA button.</span>
+      </div>
     </div>
   </div>
 

@@ -960,6 +960,68 @@ function buildTimeframes() {
   group.innerHTML = list.map((tf) => `<button type="button" data-tf="${esc(tf)}" class="${tf === S.timeframe ? "active" : ""}">${esc(tf)}</button>`).join("");
 }
 
+function indicatorPrefs() {
+  try {
+    return {
+      rsi: localStorage.getItem("scalper-show-rsi") === "true",
+      divergence: localStorage.getItem("scalper-show-divergence") === "true",
+      momentum: localStorage.getItem("scalper-show-momentum") === "true",
+    };
+  } catch (_) {
+    return { rsi: false, divergence: false, momentum: false };
+  }
+}
+
+function updateIndicatorButtonState() {
+  const prefs = indicatorPrefs();
+  const active = prefs.rsi || prefs.divergence || prefs.momentum;
+  for (const button of $$('button[data-chart-action="ind"]')) {
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function toggleIndicatorPopover(anchor) {
+  const popover = $("indicator-popover");
+  if (!popover) return;
+  if (popover.style.display !== "none") {
+    popover.style.display = "none";
+    return;
+  }
+  const prefs = indicatorPrefs();
+  const rsiBox = $("ind-rsi");
+  const divBox = $("ind-divergence");
+  const momBox = $("ind-momentum");
+  if (rsiBox) rsiBox.checked = prefs.rsi;
+  if (divBox) divBox.checked = prefs.divergence;
+  if (momBox) momBox.checked = prefs.momentum;
+
+  const rect = anchor.getBoundingClientRect();
+  popover.style.display = "block";
+  popover.style.position = "fixed";
+  popover.style.top = `${Math.max(10, Math.min(window.innerHeight - 190, rect.bottom + 4))}px`;
+  popover.style.left = `${Math.max(10, Math.min(window.innerWidth - 300, rect.right - 260))}px`;
+}
+
+function applyIndicatorPrefs() {
+  const prefs = {
+    rsi: Boolean($("ind-rsi")?.checked),
+    divergence: Boolean($("ind-divergence")?.checked),
+    momentum: Boolean($("ind-momentum")?.checked),
+  };
+  try {
+    localStorage.setItem("scalper-show-rsi", String(prefs.rsi));
+    localStorage.setItem("scalper-show-divergence", String(prefs.divergence));
+    localStorage.setItem("scalper-show-momentum", String(prefs.momentum));
+  } catch (_) {}
+  for (const chart of [S.charts.ce, S.charts.spot, S.charts.pe]) {
+    chart?.toggleRSI?.(prefs.rsi);
+    chart?.toggleDivergence?.(prefs.divergence);
+    chart?.toggleMomentumCandles?.(prefs.momentum);
+  }
+  updateIndicatorButtonState();
+}
+
 function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
   const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
@@ -969,11 +1031,15 @@ function buildCharts() {
   const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
   const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
   const savedDOM = localStorage.getItem("scalper-show-dom") !== "false";
+  const savedRSI = localStorage.getItem("scalper-show-rsi") === "true";
+  const savedDivergence = localStorage.getItem("scalper-show-divergence") === "true";
+  const savedMomentum = localStorage.getItem("scalper-show-momentum") === "true";
 
   S.showTrades = savedTrades;
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM });
+  const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -1007,6 +1073,7 @@ function buildCharts() {
     b.classList.toggle("active", active);
     b.setAttribute("aria-pressed", active ? "true" : "false");
   });
+  updateIndicatorButtonState();
 
   let syncingRange = false;
   const syncRange = (sourceChart) => {
@@ -2011,16 +2078,14 @@ function computeStrikePCR(strike) {
   const callVol = num(row.call?.volume);
   const putVol = num(row.put?.volume);
 
+  // A strike PCR is only meaningful when both legs have OI. Never invent a
+  // sentinel ratio (that used to render a fake "PCR 50.00" in the header).
   let pcrOI = null;
   if (callOI > 0 && putOI > 0) {
     const ratio = putOI / callOI;
     if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
       pcrOI = ratio;
     }
-  } else if (putOI > 0 && callOI === 0) {
-    pcrOI = 50;
-  } else if (callOI > 0 && putOI === 0) {
-    pcrOI = 0.01;
   }
 
   let pcrVol = null;
@@ -2029,10 +2094,6 @@ function computeStrikePCR(strike) {
     if (Number.isFinite(ratio) && ratio >= 0.01 && ratio <= 50) {
       pcrVol = ratio;
     }
-  } else if (putVol > 0 && callVol === 0) {
-    pcrVol = 50;
-  } else if (callVol > 0 && putVol === 0) {
-    pcrVol = 0.01;
   }
 
   return {
@@ -2083,6 +2144,9 @@ function renderPanePCR(pane, option, chainPCR, expiryLabel) {
       if (strikePCR.putVol || strikePCR.callVol) {
         tooltip += `  Put Vol: ${fmtCompact(strikePCR.putVol)} · Call Vol: ${fmtCompact(strikePCR.callVol)}${strikePCR.pcrVol != null ? ` (Vol PCR: ${strikePCR.pcrVol.toFixed(2)})` : ""}\n`;
       }
+    }
+    if (!isStrike && strikePCR) {
+      tooltip += `Strike ${fmtStrike(option.strike)} PCR: unavailable (one side has no OI)\n`;
     }
     if (totalPCRVal != null) {
       tooltip += `Total Chain PCR: ${totalPCRVal.toFixed(2)}\n`;
@@ -4820,8 +4884,12 @@ function initChartTooltips() {
       desc: "Detects candlestick patterns (Hammer, Engulfing, Doji, Star). Right-click for pattern settings.",
     },
     ma: {
-      title: "Moving Averages (MA)",
-      desc: "Toggle Moving Average overlays (EMA 9, 21, 50, 200) on candles.",
+      title: "EMA 10 / 20 / 200",
+      desc: "Exponential moving average trend lines with 10-20 crossover markers.",
+    },
+    ind: {
+      title: "Indicators (IND)",
+      desc: "RSI(14) pane with 30/50/70 guides, RSI divergence and momentum candles.",
     },
     in: {
       title: "Zoom In (+)",
@@ -6873,8 +6941,12 @@ function bindEvents() {
         toggleAllChartTrades();
         return;
       }
+      if (action === "ind") {
+        toggleIndicatorPopover(button);
+        return;
+      }
       if (action === "ma") {
-        const nextState = chart.toggleMA();
+        const nextState = chart.toggleEMA();
         button.classList.toggle("active", nextState);
         button.setAttribute("aria-pressed", nextState ? "true" : "false");
         try {
@@ -6886,7 +6958,7 @@ function bindEvents() {
           }
         } catch (_) {}
         const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
-        toast(nextState ? `Moving Average enabled (${label})` : `Moving Average hidden (${label})`, "ok", 1500);
+        toast(nextState ? `EMA 10/20/200 enabled (${label})` : `EMA 10/20/200 hidden (${label})`, "ok", 1500);
         return;
       }
       if (action === "dom") {
@@ -7403,6 +7475,22 @@ function bindEvents() {
       patternPopover.style.top = `${Math.min(window.innerHeight - 200, rect.bottom + 4)}px`;
       patternPopover.style.left = `${Math.max(10, Math.min(window.innerWidth - 260, rect.left - 100))}px`;
     });
+  });
+
+  // Chart indicator popover (RSI / divergence / momentum candles)
+  const indicatorPopover = $("indicator-popover");
+  for (const id of ["ind-rsi", "ind-divergence", "ind-momentum"]) {
+    $(id)?.addEventListener("change", applyIndicatorPrefs);
+  }
+  $("indicator-popover-close")?.addEventListener("click", () => {
+    if (indicatorPopover) indicatorPopover.style.display = "none";
+  });
+  document.addEventListener("click", (e) => {
+    if (indicatorPopover && indicatorPopover.style.display !== "none") {
+      if (!indicatorPopover.contains(e.target as any) && !(e.target as any)?.closest?.('[data-chart-action="ind"]')) {
+        indicatorPopover.style.display = "none";
+      }
+    }
   });
   document.addEventListener("keydown", (event) => {
     const target = event.target;

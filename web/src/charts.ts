@@ -1,4 +1,5 @@
 import * as Patterns from "./chart/patterns";
+import * as Indicators from "./chart/indicators";
 
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
@@ -16,6 +17,8 @@ const chartColors = (element) => {
     accent: color("--accent", "#f0b429"),
   };
 };
+
+const toChartTimestamp = (time) => (time > 1e11 ? time : time * 1000);
 
 const formatVolume = (val) => {
   if (!Number.isFinite(val) || val <= 0) return "0";
@@ -1908,6 +1911,135 @@ function registerCustomOverlays() {
       return figures;
     },
   });
+
+  kc.registerOverlay({
+    name: "signalMarker",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.x) || !Number.isFinite(coord.y)) return [];
+      const data = overlay.extendData || {};
+      const dir = data.dir === "down" ? "down" : "up";
+      const up = dir === "up";
+      const color = data.color || (up ? "#29b360" : "#f05a5a");
+      const offset = Number.isFinite(data.offset) ? data.offset : 10;
+      const size = Number.isFinite(data.size) ? data.size : 4;
+      const tipY = up ? coord.y + offset : coord.y - offset;
+      const baseY = up ? tipY + size * 2 : tipY - size * 2;
+
+      const figures: any[] = [
+        {
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: coord.x, y: tipY },
+              { x: coord.x - size, y: baseY },
+              { x: coord.x + size, y: baseY },
+            ],
+          },
+          styles: { style: "fill", color },
+          ignoreEvent: true,
+        },
+      ];
+
+      if (data.label) {
+        figures.push({
+          type: "text",
+          attrs: {
+            x: coord.x,
+            y: up ? baseY + 2 : baseY - 2,
+            text: String(data.label),
+            align: "center",
+            baseline: up ? "top" : "bottom",
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: color,
+            size: 9,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 4,
+            paddingRight: 4,
+            paddingTop: 1,
+            paddingBottom: 1,
+            borderRadius: 2,
+          },
+          ignoreEvent: true,
+        });
+      }
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "divergenceMarker",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates }) {
+      if (!coordinates || coordinates.length < 2) return [];
+      const [a, b] = coordinates;
+      if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x)) return [];
+      const data = overlay.extendData || {};
+      const isBull = data.kind === "bull";
+      const color = isBull ? "#29b360" : "#f05a5a";
+
+      const figures: any[] = [
+        {
+          type: "line",
+          attrs: {
+            coordinates: [
+              { x: a.x, y: a.y },
+              { x: b.x, y: b.y },
+            ],
+          },
+          styles: { style: "solid", size: 1.5, color },
+          ignoreEvent: true,
+        },
+      ];
+
+      for (const point of [a, b]) {
+        figures.push({
+          type: "circle",
+          attrs: { x: point.x, y: point.y, r: 3 },
+          styles: { style: "fill", color },
+          ignoreEvent: true,
+        });
+      }
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: b.x,
+          y: isBull ? b.y + 16 : b.y - 16,
+          text: isBull ? "BULL DIV" : "BEAR DIV",
+          align: "center",
+          baseline: isBull ? "top" : "bottom",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: isBull ? "#14532d" : "#7f1d1d",
+          size: 9,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 5,
+          paddingRight: 5,
+          paddingTop: 1.5,
+          paddingBottom: 1.5,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
 }
 
 function registerCustomIndicators() {
@@ -1984,6 +2116,38 @@ function registerCustomIndicators() {
         });
         return result;
       });
+    },
+  });
+
+  kc.registerIndicator({
+    name: "RSI14",
+    shortName: "RSI",
+    calcParams: [14],
+    precision: 2,
+    minValue: 0,
+    maxValue: 100,
+    figures: [
+      { key: "rsi", title: "RSI: ", type: "line" },
+      { key: "overbought", title: null, type: "line", styles: { color: "rgba(240,90,90,0.45)", size: 1 } },
+      { key: "mid", title: null, type: "line", styles: { color: "rgba(208,215,222,0.5)", size: 1 } },
+      { key: "oversold", title: null, type: "line", styles: { color: "rgba(41,179,96,0.45)", size: 1 } },
+    ],
+    calc: function(dataList, indicator) {
+      const period = Number(indicator?.calcParams?.[0]) || 14;
+      const candles = (dataList || []).map((candle) => ({
+        time: candle?.timestamp,
+        open: candle?.open,
+        high: candle?.high,
+        low: candle?.low,
+        close: candle?.close,
+      }));
+      const series = Indicators.rsiSeries(candles, period);
+      return series.map((value) => ({
+        rsi: Number.isFinite(value) ? value : null,
+        overbought: 70,
+        mid: 50,
+        oversold: 30,
+      }));
     },
   });
 }
@@ -2080,7 +2244,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showDepth = true } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showDepth = true } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2088,8 +2252,15 @@ export class CandleChart {
     this.showTrades = showTrades;
     this.showAutoTrendlines = showAutoTrendlines;
     this.showPatterns = showPatterns;
-    this.showMA = Boolean(showMA);
+    this.showEMA = Boolean(showEMA ?? showMA);
+    this.showRSI = Boolean(showRSI);
+    this.showDivergence = Boolean(showDivergence);
+    this.showMomentum = Boolean(showMomentum);
     this.showDepth = Boolean(showDepth);
+    this.emaCrossOverlayIds = [];
+    this.divergenceOverlayIds = [];
+    this.momentumOverlayIds = [];
+    this.indicatorSignature = "";
     this.depthOverlayIds = [];
     this.depthData = null;
     this.chainData = [];
@@ -2145,7 +2316,7 @@ export class CandleChart {
     const origCreateIndicator = this.chart.createIndicator.bind(this.chart);
     this.chart.createIndicator = (value, isStack, paneOptions, callback) => {
       let indicator = typeof value === "string" ? { name: value } : Object.assign({}, value);
-      if (indicator.name === "MA" && paneOptions && paneOptions.id && !indicator.paneId) {
+      if ((indicator.name === "MA" || indicator.name === "EMA" || indicator.name === "RSI14") && paneOptions && paneOptions.id && !indicator.paneId) {
         indicator.paneId = paneOptions.id;
       }
       return origCreateIndicator(indicator, isStack, paneOptions, callback);
@@ -2184,16 +2355,20 @@ export class CandleChart {
       }
     }
 
-    if (this.showMA) {
+    if (this.showEMA) {
       try {
         this.chart.createIndicator(
-          { name: "MA", calcParams: [9, 21, 50], paneId: "candle_pane" },
+          { name: "EMA", calcParams: [10, 20, 200], paneId: "candle_pane" },
           true,
           { id: "candle_pane" }
         );
       } catch (e) {
-        console.warn("createIndicator MA:", e);
+        console.warn("createIndicator EMA:", e);
       }
+    }
+
+    if (this.showRSI) {
+      this.ensureRSIIndicator();
     }
 
     if (this.container) {
@@ -2254,27 +2429,208 @@ export class CandleChart {
     return result;
   }
 
-  toggleMA(forceState) {
-    this.showMA = typeof forceState === "boolean" ? forceState : !this.showMA;
-    if (!this.chart) return this.showMA;
-    if (this.showMA) {
+  toggleEMA(forceState) {
+    this.showEMA = typeof forceState === "boolean" ? forceState : !this.showEMA;
+    if (!this.chart) return this.showEMA;
+    if (this.showEMA) {
       try {
         this.chart.createIndicator(
-          { name: "MA", calcParams: [9, 21, 50], paneId: "candle_pane" },
+          { name: "EMA", calcParams: [10, 20, 200], paneId: "candle_pane" },
           true,
           { id: "candle_pane" }
         );
       } catch (e) {
-        console.warn("createIndicator MA:", e);
+        console.warn("createIndicator EMA:", e);
       }
+      this.refreshEMACrosses();
     } else {
       try {
-        this.chart.removeIndicator({ paneId: "candle_pane", name: "MA" });
+        this.chart.removeIndicator({ paneId: "candle_pane", name: "EMA" });
       } catch (e) {
-        console.warn("removeIndicator MA:", e);
+        console.warn("removeIndicator EMA:", e);
+      }
+      this.clearEMACrosses();
+    }
+    return this.showEMA;
+  }
+
+  /** @deprecated use toggleEMA */
+  toggleMA(forceState) {
+    return this.toggleEMA(forceState);
+  }
+
+  ensureRSIIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "RSI14", calcParams: [14], paneId: "pane_rsi" },
+        false,
+        { id: "pane_rsi", height: 110 }
+      );
+    } catch (e) {
+      console.warn("createIndicator RSI:", e);
+    }
+  }
+
+  toggleRSI(forceState) {
+    this.showRSI = typeof forceState === "boolean" ? forceState : !this.showRSI;
+    if (!this.chart) return this.showRSI;
+    if (this.showRSI) {
+      this.ensureRSIIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "pane_rsi", name: "RSI14" });
+      } catch (e) {
+        console.warn("removeIndicator RSI:", e);
       }
     }
-    return this.showMA;
+    return this.showRSI;
+  }
+
+  toggleDivergence(forceState) {
+    this.showDivergence = typeof forceState === "boolean" ? forceState : !this.showDivergence;
+    this.refreshDivergence();
+    return this.showDivergence;
+  }
+
+  clearDivergence() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "rsi_divergence" });
+    } catch (_) {}
+    for (const id of this.divergenceOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.divergenceOverlayIds = [];
+  }
+
+  refreshDivergence() {
+    this.clearDivergence();
+    if (!this.showDivergence || !this.chart || this.data.length < 20) return;
+
+    const rsi = Indicators.rsiSeries(this.data, 14);
+    const divergences = Indicators.detectDivergences(this.data, rsi, { lookback: 150, span: 3, minRsiDelta: 1, max: 4 });
+
+    for (const divergence of divergences) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "divergenceMarker",
+          groupId: "rsi_divergence",
+          points: [
+            { timestamp: toChartTimestamp(divergence.from.time), value: divergence.from.price },
+            { timestamp: toChartTimestamp(divergence.to.time), value: divergence.to.price },
+          ],
+          lock: true,
+          extendData: { kind: divergence.kind },
+        });
+        if (id) this.divergenceOverlayIds.push(id);
+      } catch (_) {}
+    }
+  }
+
+  toggleMomentumCandles(forceState) {
+    this.showMomentum = typeof forceState === "boolean" ? forceState : !this.showMomentum;
+    this.refreshMomentumCandles();
+    return this.showMomentum;
+  }
+
+  clearMomentumCandles() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "momentum_candle" });
+    } catch (_) {}
+    for (const id of this.momentumOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.momentumOverlayIds = [];
+  }
+
+  refreshMomentumCandles() {
+    this.clearMomentumCandles();
+    if (!this.showMomentum || !this.chart || this.data.length < 20) return;
+
+    const atr = Indicators.atrSeries(this.data, 14);
+    const candles = Indicators.detectMomentumCandles(this.data, atr, {
+      lookback: 150,
+      multiplier: 1.5,
+      maxBodyRatio: 0.6,
+      max: 30,
+    });
+
+    for (const candle of candles) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "signalMarker",
+          groupId: "momentum_candle",
+          points: [{ timestamp: toChartTimestamp(candle.time), value: candle.price }],
+          lock: true,
+          extendData: {
+            dir: candle.kind === "bull" ? "up" : "down",
+            color: candle.kind === "bull" ? "#29b360" : "#f05a5a",
+            offset: 8,
+            size: 3,
+          },
+        });
+        if (id) this.momentumOverlayIds.push(id);
+      } catch (_) {}
+    }
+  }
+
+  refreshIndicatorOverlays() {
+    const last = this.data[this.data.length - 1];
+    const signature = `${this.data.length}:${last?.time || 0}:${last?.close || 0}`;
+    if (signature === this.indicatorSignature) return;
+    this.indicatorSignature = signature;
+    this.refreshEMACrosses();
+    this.refreshDivergence();
+    this.refreshMomentumCandles();
+  }
+
+  clearEMACrosses() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "ema_cross" });
+    } catch (_) {}
+    for (const id of this.emaCrossOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.emaCrossOverlayIds = [];
+  }
+
+  refreshEMACrosses() {
+    this.clearEMACrosses();
+    if (!this.showEMA || !this.chart || this.data.length < 25) return;
+
+    const closes = this.data.map((candle) => candle.close);
+    const fast = Indicators.emaSeries(closes, 10);
+    const slow = Indicators.emaSeries(closes, 20);
+    const crosses = Indicators.detectEmaCrosses(this.data, fast, slow, { lookback: 150, max: 12 });
+
+    for (const cross of crosses) {
+      const bull = cross.kind === "bull";
+      try {
+        const id = this.chart.createOverlay({
+          name: "signalMarker",
+          groupId: "ema_cross",
+          points: [{ timestamp: toChartTimestamp(cross.time), value: cross.price }],
+          lock: true,
+          extendData: {
+            dir: bull ? "up" : "down",
+            color: bull ? "#29b360" : "#f05a5a",
+            label: bull ? "10/20 \u2191" : "10/20 \u2193",
+            offset: 12,
+            size: 4,
+          },
+        });
+        if (id) this.emaCrossOverlayIds.push(id);
+      } catch (_) {}
+    }
   }
 
   toggleDepth(forceState) {
@@ -2943,6 +3299,7 @@ export class CandleChart {
       // Rebuild cached bracket overlays for the new symbol.
       this.bracketLevelOverlayIds = [];
       this.bracketLevelsKey = "";
+      this.indicatorSignature = "";
       try {
         this.chart?.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
       } catch (_) {}
@@ -2976,6 +3333,7 @@ export class CandleChart {
     this.refreshSRLines();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
+    this.refreshIndicatorOverlays();
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
