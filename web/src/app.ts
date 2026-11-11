@@ -2277,21 +2277,29 @@ function updateChartTrades() {
   if (S.charts.ce) {
     const ceTrades = ce ? trades.filter((t) => matchesContract(t, ce)) : [];
     let cePos = ce ? positions.find((p) => matchesContract(p, ce) && Math.abs(num(p.quantity)) > 0) : null;
-    const activeCEBracket = ce ? (S.autoTargets || []).find((b) => b.status === "IN_POSITION" && matchesContract(b, ce)) : null;
-    if (activeCEBracket) {
-      const ltp = getInstrumentLTP(activeCEBracket);
-      const isolatedPnL = (ltp - activeCEBracket.entryPrice) * activeCEBracket.shares * (activeCEBracket.action === "buy" ? 1 : -1);
+    const ceBracket = ce ? findChartBracket(ce) : null;
+    if (ceBracket && ceBracket.status === "IN_POSITION") {
+      const ltp = getInstrumentLTP(ceBracket);
+      const isolatedPnL = (ltp - ceBracket.entryPrice) * ceBracket.shares * (ceBracket.action === "buy" ? 1 : -1);
       cePos = {
-        symbol: activeCEBracket.symbol,
-        quantity: activeCEBracket.shares * (activeCEBracket.action === "buy" ? 1 : -1),
-        average_price: activeCEBracket.entryPrice,
+        symbol: ceBracket.symbol,
+        quantity: ceBracket.shares * (ceBracket.action === "buy" ? 1 : -1),
+        average_price: ceBracket.entryPrice,
         unrealised_pnl: isolatedPnL,
         pnl: isolatedPnL,
       };
-      if (activeCEBracket.targetPrice > 0) {
-        S.charts.ce.showTargetPreview?.(activeCEBracket.targetPrice, "TARGET");
-      }
-    } else if (!S.quickOrder || S.quickOrder.pane !== "ce") {
+    }
+    if (ceBracket) {
+      S.charts.ce.showBracketLevels?.({
+        entryPrice: ceBracket.entryPrice,
+        targetPrice: ceBracket.targetPrice,
+        side: ceBracket.action,
+        pending: ceBracket.status === "PENDING_ENTRY",
+      });
+    } else {
+      S.charts.ce.clearBracketLevels?.();
+    }
+    if (!ceBracket && (!S.quickOrder || S.quickOrder.pane !== "ce")) {
       S.charts.ce.clearTargetPreview?.();
     }
     const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
@@ -2305,21 +2313,29 @@ function updateChartTrades() {
   if (S.charts.pe) {
     const peTrades = pe ? trades.filter((t) => matchesContract(t, pe)) : [];
     let pePos = pe ? positions.find((p) => matchesContract(p, pe) && Math.abs(num(p.quantity)) > 0) : null;
-    const activePEBracket = pe ? (S.autoTargets || []).find((b) => b.status === "IN_POSITION" && matchesContract(b, pe)) : null;
-    if (activePEBracket) {
-      const ltp = getInstrumentLTP(activePEBracket);
-      const isolatedPnL = (ltp - activePEBracket.entryPrice) * activePEBracket.shares * (activePEBracket.action === "buy" ? 1 : -1);
+    const peBracket = pe ? findChartBracket(pe) : null;
+    if (peBracket && peBracket.status === "IN_POSITION") {
+      const ltp = getInstrumentLTP(peBracket);
+      const isolatedPnL = (ltp - peBracket.entryPrice) * peBracket.shares * (peBracket.action === "buy" ? 1 : -1);
       pePos = {
-        symbol: activePEBracket.symbol,
-        quantity: activePEBracket.shares * (activePEBracket.action === "buy" ? 1 : -1),
-        average_price: activePEBracket.entryPrice,
+        symbol: peBracket.symbol,
+        quantity: peBracket.shares * (peBracket.action === "buy" ? 1 : -1),
+        average_price: peBracket.entryPrice,
         unrealised_pnl: isolatedPnL,
         pnl: isolatedPnL,
       };
-      if (activePEBracket.targetPrice > 0) {
-        S.charts.pe.showTargetPreview?.(activePEBracket.targetPrice, "TARGET");
-      }
-    } else if (!S.quickOrder || S.quickOrder.pane !== "pe") {
+    }
+    if (peBracket) {
+      S.charts.pe.showBracketLevels?.({
+        entryPrice: peBracket.entryPrice,
+        targetPrice: peBracket.targetPrice,
+        side: peBracket.action,
+        pending: peBracket.status === "PENDING_ENTRY",
+      });
+    } else {
+      S.charts.pe.clearBracketLevels?.();
+    }
+    if (!peBracket && (!S.quickOrder || S.quickOrder.pane !== "pe")) {
       S.charts.pe.clearTargetPreview?.();
     }
     const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
@@ -3949,6 +3965,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
       });
       toast(`🎯 Auto-Target armed: Exit at ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts) once filled.`, "info", 4500);
       renderTab();
+      scheduleChartTrades();
     }
 
     scheduleBooksRefresh(400);
@@ -4131,20 +4148,34 @@ function handleBracketUpdate(data) {
     if (!item) continue;
     const norm = normalizeBracket(item);
     if (!norm || !norm.id) continue;
+    const previous = (S.autoTargets || []).find((b) => b.id === norm.id);
+    const previousStatus = previous?.status || "";
     upsertBracket(norm);
-    if (norm.status === "TARGET_HIT") {
+    // The engine emits several updates for one target hit (trigger + exit fill),
+    // so only announce the status transition to avoid duplicate toasts/sounds.
+    if (norm.status === "TARGET_HIT" && previousStatus !== "TARGET_HIT") {
       playTradeSound("target");
       const pnl = (norm.exitPrice - norm.entryPrice) * norm.shares * (norm.action === "buy" ? 1 : -1);
       toast(`🎯 Bracket Target Hit! Sold ${norm.shares} @ ₹${fmt(norm.exitPrice || norm.targetPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
       S.charts.ce?.clearTargetPreview?.();
       S.charts.pe?.clearTargetPreview?.();
-    } else if (norm.status === "CANCELLED") {
+    } else if (norm.status === "CANCELLED" && previousStatus !== "CANCELLED") {
       toast(`Bracket ${norm.symbol || norm.id} cancelled.`, "warn", 4000);
     }
   }
   saveAutoTargets();
   renderTab();
   scheduleChartTrades();
+}
+
+function findChartBracket(option) {
+  if (!option) return null;
+  const brackets = S.autoTargets || [];
+  return (
+    brackets.find((b) => b.status === "IN_POSITION" && matchesContract(b, option)) ||
+    brackets.find((b) => b.status === "PENDING_ENTRY" && matchesContract(b, option)) ||
+    null
+  );
 }
 
 function getInstrumentLTP(b) {

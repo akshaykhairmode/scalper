@@ -1271,6 +1271,73 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
+    name: "bracketLevelLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const price = Number(data.price || overlay.points?.[0]?.value || 0);
+      const width = bounding?.width || 800;
+      const isTarget = data.kind === "TARGET";
+      const isBuy = data.side === "B" || data.side === "BUY";
+      const lineColor = isTarget ? "#29b360" : isBuy ? "#3b82f6" : "#f97316";
+      const bgColor = isTarget ? "#1e7e44" : isBuy ? "#1d4ed8" : "#c2410c";
+      const label = data.label || `${isTarget ? "TARGET" : "ENTRY"}: ₹${price.toFixed(2)}`;
+
+      const figures = [];
+
+      figures.push({
+        type: "line",
+        attrs: {
+          coordinates: [
+            { x: 0, y },
+            { x: width, y },
+          ],
+        },
+        styles: {
+          style: "dashed",
+          dashedValue: isTarget ? [4, 3] : [6, 4],
+          size: 1.5,
+          color: lineColor,
+        },
+        ignoreEvent: true,
+      });
+
+      figures.push({
+        type: "text",
+        attrs: {
+          x: width - 8,
+          y,
+          text: label,
+          align: "right",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: bgColor,
+          size: 10,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 6,
+          paddingRight: 6,
+          paddingTop: 2,
+          paddingBottom: 2,
+          borderRadius: 3,
+        },
+        ignoreEvent: true,
+      });
+
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
     name: "openOrderLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -2033,6 +2100,8 @@ export class CandleChart {
     this.positionOverlayId = null;
     this.orderPreviewOverlayId = null;
     this.targetPreviewOverlayId = null;
+    this.bracketLevelOverlayIds = [];
+    this.bracketLevelsKey = "";
     this.openOrderOverlayIds = [];
     this.openOrdersData = [];
     this.tradesData = [];
@@ -2781,9 +2850,64 @@ export class CandleChart {
     }
   }
 
+  /**
+   * Draw the persisted entry/target levels of a server-side bracket order.
+   * A pending (resting entry) bracket shows both levels; an in-position
+   * bracket only needs the target because the position line marks the entry.
+   */
+  showBracketLevels({ entryPrice = 0, targetPrice = 0, side = "BUY", pending = false } = {}) {
+    if (!this.chart) return;
+    const entry = Number(entryPrice);
+    const target = Number(targetPrice);
+    const isBuy = side === "B" || side === "BUY" || side === "buy";
+    const levels = [];
+    if (pending && Number.isFinite(entry) && entry > 0) {
+      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} (PENDING)` });
+    }
+    if (Number.isFinite(target) && target > 0) {
+      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)}` });
+    }
+
+    const key = levels.map((l) => `${l.kind}:${l.price}`).join("|") + `|${isBuy ? "B" : "S"}`;
+    if (key === this.bracketLevelsKey && this.bracketLevelOverlayIds.length === levels.length) return;
+
+    this.clearBracketLevels();
+    if (!levels.length) return;
+    this.bracketLevelsKey = key;
+    for (const level of levels) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "bracketLevelLine",
+          groupId: "bracket_levels",
+          points: [{ value: level.price }],
+          lock: true,
+          extendData: { kind: level.kind, price: level.price, label: level.label, side: isBuy ? "B" : "S" },
+        });
+        if (id) this.bracketLevelOverlayIds.push(id);
+      } catch (_) {}
+    }
+  }
+
+  clearBracketLevels() {
+    this.bracketLevelsKey = "";
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "bracket_levels" });
+    } catch (_) {}
+    for (const id of this.bracketLevelOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.bracketLevelOverlayIds = [];
+  }
+
   setData(data, { symbol = "", resetScale = true } = {}) {
     if (symbol && symbol !== this.currentSymbol) {
       this.currentSymbol = symbol;
+      // Rebuild cached bracket overlays for the new symbol.
+      this.bracketLevelOverlayIds = [];
+      this.bracketLevelsKey = "";
       try {
         this.chart?.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
       } catch (_) {}
