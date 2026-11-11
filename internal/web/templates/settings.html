@@ -322,6 +322,16 @@
               <span class="form-help">Number of strikes per REST batch call (1 to 500).</span>
               <span class="field-error"></span>
             </div>
+
+            <div class="form-group" data-field="market.chain.premium_cutoff">
+              <label for="f-chain-premium-cutoff">Initial Chain Premium Cutoff</label>
+              <div class="input-unit">
+                <input type="number" id="f-chain-premium-cutoff" min="0" max="100000" step="1">
+                <span class="unit-suffix">₹</span>
+              </div>
+              <span class="form-help">Load strikes outward until the OTM call (above) or put (below) premium reaches this value. 0 keeps the fixed 19-strike window.</span>
+              <span class="field-error"></span>
+            </div>
           </div>
         </div>
 

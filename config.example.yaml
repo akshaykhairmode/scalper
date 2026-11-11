@@ -89,6 +89,9 @@ market:
     full_poll_ms: 5000
     batch_size: 40
     visible_priority: true
+    # Expand the initial chain outward until the OTM call (above) or put
+    # (below) premium falls to this value. 0 keeps the fixed 19-strike window.
+    premium_cutoff: 30
   depth:
     enabled: true
     mode: "poll"             # poll | websocket

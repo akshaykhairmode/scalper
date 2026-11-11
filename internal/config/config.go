@@ -117,10 +117,11 @@ type IndiaVIX struct {
 
 // Chain holds option-chain polling cadence.
 type Chain struct {
-	VisiblePollMS   int  `yaml:"visible_poll_ms" json:"visible_poll_ms"`
-	FullPollMS      int  `yaml:"full_poll_ms" json:"full_poll_ms"`
-	BatchSize       int  `yaml:"batch_size" json:"batch_size"`
-	VisiblePriority bool `yaml:"visible_priority" json:"visible_priority"`
+	VisiblePollMS   int     `yaml:"visible_poll_ms" json:"visible_poll_ms"`
+	FullPollMS      int     `yaml:"full_poll_ms" json:"full_poll_ms"`
+	BatchSize       int     `yaml:"batch_size" json:"batch_size"`
+	VisiblePriority bool    `yaml:"visible_priority" json:"visible_priority"`
+	PremiumCutoff   float64 `yaml:"premium_cutoff" json:"premium_cutoff"`
 }
 
 // Depth holds market-depth settings.
@@ -320,6 +321,7 @@ func Default() Config {
 				FullPollMS:      5000,
 				BatchSize:       40,
 				VisiblePriority: true,
+				PremiumCutoff:   30,
 			},
 			Depth: Depth{Enabled: true, Mode: "poll"},
 			Background: BackgroundCollection{

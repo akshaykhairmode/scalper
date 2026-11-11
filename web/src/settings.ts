@@ -318,6 +318,7 @@
     setVal('f-visible-poll', c.visible_poll_ms || 1000);
     setVal('f-full-poll', c.full_poll_ms || 5000);
     setVal('f-chain-batch-size', c.batch_size || 40);
+    setVal('f-chain-premium-cutoff', c.premium_cutoff !== undefined ? c.premium_cutoff : 30);
 
     const bg = mkt.background_collection || {};
     setChecked('f-bg-enabled', !!bg.enabled);
@@ -418,6 +419,7 @@
       { id: 'f-visible-poll', path: ['market', 'chain', 'visible_poll_ms'], type: 'int' },
       { id: 'f-full-poll', path: ['market', 'chain', 'full_poll_ms'], type: 'int' },
       { id: 'f-chain-batch-size', path: ['market', 'chain', 'batch_size'], type: 'int' },
+      { id: 'f-chain-premium-cutoff', path: ['market', 'chain', 'premium_cutoff'], type: 'float' },
       { id: 'f-bg-enabled', path: ['market', 'background_collection', 'enabled'], type: 'bool' },
       { id: 'f-bg-interval', path: ['market', 'background_collection', 'interval_seconds'], type: 'int' },
       { id: 'f-bg-strike-window', path: ['market', 'background_collection', 'strike_window'], type: 'int' },

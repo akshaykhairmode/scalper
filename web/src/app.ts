@@ -391,7 +391,7 @@ function chainURL({ center = 0, count = 19, direction = "around" } = {}) {
   return `/api/chain?${query}`;
 }
 
-function acceptChainPage(page, append = false) {
+function acceptChainPage(page, append = false, direction = "") {
   const rows = normalizeChain(page);
   if (append) {
     const byStrike = new Map(S.chain.map((row) => [row.strike, row]));
@@ -400,10 +400,15 @@ function acceptChainPage(page, append = false) {
   } else {
     S.chain = rows;
   }
-  S.chainMore = {
-    above: S.chain.length > 0 && Boolean(page?.has_more_above ?? page?.hasMoreAbove),
-    below: S.chain.length > 0 && Boolean(page?.has_more_below ?? page?.hasMoreBelow),
-  };
+  const pageAbove = S.chain.length > 0 && Boolean(page?.has_more_above ?? page?.hasMoreAbove);
+  const pageBelow = S.chain.length > 0 && Boolean(page?.has_more_below ?? page?.hasMoreBelow);
+  if (append && direction === "above") {
+    S.chainMore = { above: pageAbove, below: S.chainMore.below };
+  } else if (append && direction === "below") {
+    S.chainMore = { above: S.chainMore.above, below: pageBelow };
+  } else {
+    S.chainMore = { above: pageAbove, below: pageBelow };
+  }
   for (const type of ["CE", "PE"]) {
     const current = S.selected[type];
     const refreshed = current && S.chain.find((row) => row.strike === current.strike)?.[type === "CE" ? "call" : "put"];
@@ -415,10 +420,12 @@ function renderChainMoreControls() {
   const above = $("load-more-above");
   const below = $("load-more-below");
   if (!above || !below) return;
-  above.hidden = !S.chainMore.above;
-  below.hidden = !S.chainMore.below;
-  above.disabled = S.chainLoading;
-  below.disabled = S.chainLoading;
+  // The list is ascending, so the top button extends it with lower strikes
+  // and the bottom button with higher strikes.
+  above.hidden = !S.chainMore.below;
+  below.hidden = !S.chainMore.above;
+  above.disabled = S.chainLoading || chainExpanding;
+  below.disabled = S.chainLoading || chainExpanding;
   if (S.chainLoading) {
     (S.chainLoading === "above" ? above : below).textContent = "Loading…";
   } else {
@@ -428,7 +435,7 @@ function renderChainMoreControls() {
 }
 
 async function loadMoreChain(direction) {
-  if (S.chainLoading || !S.chain.length || !S.chainMore[direction]) return;
+  if (chainExpanding || S.chainLoading || !S.chain.length || !S.chainMore[direction === "above" ? "below" : "above"]) return;
   const requestID = S.chainRequestID;
   const index = S.activeIndex;
   const expiry = S.expiry;
@@ -441,7 +448,7 @@ async function loadMoreChain(direction) {
     const apiDirection = direction === "above" ? "below" : "above";
     const page = await getJSON(chainURL({ center: anchor, count: 10, direction: apiDirection }));
     if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
-    acceptChainPage(page, true);
+    acceptChainPage(page, true, apiDirection);
     renderChain(true);
     if (direction === "above") {
       const body = $("chain-body");
@@ -454,6 +461,67 @@ async function loadMoreChain(direction) {
       S.chainLoading = false;
       renderChainMoreControls();
     }
+  }
+}
+
+let chainExpanding = false;
+const CHAIN_PREMIUM_PAGE_SIZE = 10;
+const CHAIN_PREMIUM_MAX_PAGES = 5;
+
+function chainPremiumCutoff() {
+  return num(S.boot?.chainPremiumCutoff, 30);
+}
+
+// Expand one side while the OTM premium at the edge is still above the cutoff.
+function chainNeedsPremiumPage(direction) {
+  if (!S.chain.length) return false;
+  if (direction === "above" ? !S.chainMore.above : !S.chainMore.below) return false;
+  const row = direction === "above" ? S.chain[S.chain.length - 1] : S.chain[0];
+  const option = direction === "above" ? row?.call : row?.put;
+  if (!option) return true;
+  return num(option.ltp) > chainPremiumCutoff();
+}
+
+// The boot page is a fixed +/-9 strikes. Extend it outward until the call
+// premium above (or put premium below) reaches the configured cutoff; the
+// Load more buttons still cover everything beyond that.
+async function expandChainToPremium() {
+  const cutoff = chainPremiumCutoff();
+  if (cutoff <= 0 || chainExpanding || !S.chain.length) return;
+  const index = S.activeIndex;
+  const expiry = S.expiry;
+  if (!index || !expiry) return;
+  const requestID = S.chainRequestID;
+  chainExpanding = true;
+  try {
+    for (let page = 0; page < CHAIN_PREMIUM_MAX_PAGES; page++) {
+      if (S.chainLoading) break;
+      if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+      const directions = ["above", "below"].filter(chainNeedsPremiumPage);
+      if (!directions.length) break;
+      const pages = await Promise.all(directions.map(async (direction) => {
+        const edge = direction === "above" ? S.chain[S.chain.length - 1] : S.chain[0];
+        const raw = await getJSON(chainURL({
+          center: num(edge?.strike),
+          count: CHAIN_PREMIUM_PAGE_SIZE,
+          direction,
+        }));
+        return { direction, raw };
+      }));
+      if (requestID !== S.chainRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+      let grew = false;
+      for (const { direction, raw } of pages) {
+        const before = S.chain.length;
+        acceptChainPage(raw, true, direction);
+        if (S.chain.length > before) grew = true;
+      }
+      if (grew) renderChain(true);
+      if (!grew) break;
+    }
+  } catch (error) {
+    console.warn("chain premium expansion failed", error);
+  } finally {
+    chainExpanding = false;
   }
 }
 
@@ -1506,6 +1574,7 @@ async function loadFromAPI() {
   S.chainScrolled = false;
   renderAll();
   loadCharts();
+  expandChainToPremium();
 }
 
 function applyIndexQuotes(indexRaw) {
@@ -7735,6 +7804,7 @@ async function switchIndex(key) {
   selectDefaultStrike();
   renderAll();
   loadCharts();
+  expandChainToPremium();
 }
 
 async function switchExpiry(date) {
@@ -7766,6 +7836,7 @@ async function switchExpiry(date) {
   selectDefaultStrike();
   renderAll();
   loadCharts();
+  expandChainToPremium();
 }
 
 async function refreshMarket() {

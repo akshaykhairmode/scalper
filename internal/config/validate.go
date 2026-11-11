@@ -254,6 +254,9 @@ func (c Config) validateMarket() error {
 	if c.Market.Chain.BatchSize < 1 || c.Market.Chain.BatchSize > 500 {
 		return fieldErr("market.chain.batch_size", "must be between 1 and 500")
 	}
+	if c.Market.Chain.PremiumCutoff < 0 || c.Market.Chain.PremiumCutoff > 100000 {
+		return fieldErr("market.chain.premium_cutoff", "must be between 0 and 100000")
+	}
 	bg := c.Market.Background
 	if bg.IntervalSeconds < 1 || bg.IntervalSeconds > 60 {
 		return fieldErr("market.background_collection.interval_seconds", "must be between 1 and 60, got %d", bg.IntervalSeconds)

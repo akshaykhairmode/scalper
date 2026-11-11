@@ -277,6 +277,7 @@ func TestValidate(t *testing.T) {
 		{name: "negative risk", mutate: func(c *Config) { c.Trading.Risk.MaxDailyLossINR = -1 }, wantField: "trading.risk.max_daily_loss_inr"},
 		{name: "bad payoff range", mutate: func(c *Config) { c.Trading.RiskView.PayoffRangePct = 0 }, wantField: "trading.risk_view.payoff_range_pct"},
 		{name: "bad payoff points", mutate: func(c *Config) { c.Trading.RiskView.PayoffPoints = 10 }, wantField: "trading.risk_view.payoff_points"},
+		{name: "bad chain premium cutoff", mutate: func(c *Config) { c.Market.Chain.PremiumCutoff = -1 }, wantField: "market.chain.premium_cutoff"},
 		{name: "bad refresh at", mutate: func(c *Config) { c.Scrip.RefreshAt = "8:45" }, wantField: "scrip.refresh_at"},
 		{name: "no segments", mutate: func(c *Config) { c.Scrip.Segments = nil }, wantField: "scrip.segments"},
 		{name: "bad segment", mutate: func(c *Config) { c.Scrip.Segments[0] = "nse_eq" }, wantField: "scrip.segments[0]"},
