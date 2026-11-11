@@ -234,6 +234,7 @@ type bootstrapConfig struct {
 	ExchangeStopSLLOffset     int                  `json:"exchangeStopSLLOffsetTicks"`
 	ExchangeStopCancelRetries int                  `json:"exchangeStopCancelRetries"`
 	ExchangeStopCancelDelayMS int                  `json:"exchangeStopCancelRetryDelayMs"`
+	StopLossMarginPct         float64              `json:"stopLossMarginPct"`
 	PayoffRangePct            int                  `json:"payoffRangePct"`
 	PayoffPoints              int                  `json:"payoffPoints"`
 	ChainPremiumCutoff        float64              `json:"chainPremiumCutoff"`
@@ -280,6 +281,7 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 		ExchangeStopSLLOffset:     cfg.Trading.Bracket.ExchangeStop.SLLOffsetTicks,
 		ExchangeStopCancelRetries: cfg.Trading.Bracket.ExchangeStop.CancelRetries,
 		ExchangeStopCancelDelayMS: cfg.Trading.Bracket.ExchangeStop.CancelRetryDelayMS,
+		StopLossMarginPct:         cfg.Trading.Risk.StopLossMarginPct,
 		PayoffRangePct:            cfg.Trading.RiskView.PayoffRangePct,
 		PayoffPoints:              cfg.Trading.RiskView.PayoffPoints,
 		ChainPremiumCutoff:        cfg.Market.Chain.PremiumCutoff,

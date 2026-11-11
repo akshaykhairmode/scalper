@@ -3482,11 +3482,41 @@ function requestBrokerMargin(type: "CE" | "PE", option: any, shares: number) {
   }, 300);
 }
 
+function stopLossMarginWarnPct(): number {
+  const pct = num(S.boot?.stopLossMarginPct, 1.0);
+  if (!Number.isFinite(pct) || pct <= 0) return 0;
+  return pct;
+}
+
+function availableMarginValue(): number | null {
+  if (!S.limits?.loaded) return null;
+  const available = num(S.limits?.available);
+  if (!Number.isFinite(available) || available <= 0) return null;
+  return available;
+}
+
+/** Informational only: returns a warning when SL risk exceeds the configured
+ *  percent of available margin, otherwise an empty string. */
+function stopLossMarginWarning(risk: number): string {
+  const pct = stopLossMarginWarnPct();
+  const available = availableMarginValue();
+  if (pct <= 0 || available === null || !Number.isFinite(risk) || risk <= 0) return "";
+  const threshold = (available * pct) / 100;
+  if (risk <= threshold) return "";
+  return `SL risk ₹${fmt(risk, 0)} exceeds ${pct.toFixed(2)}% of available margin (₹${fmt(available, 0)}). Informational only.`;
+}
+
 function renderOrderPad() {
   const ce = selectedOption("CE");
   const pe = selectedOption("PE");
   const hasLimits = S.limits?.loaded;
   const available = hasLimits ? num(S.limits?.available) : null;
+  let defaultSlPts = 2.0;
+  try {
+    const savedPts = localStorage.getItem("scalper-sl-pts");
+    if (savedPts) defaultSlPts = num(savedPts, 2.0);
+  } catch (_) {}
+  if (!Number.isFinite(defaultSlPts) || defaultSlPts <= 0) defaultSlPts = 2.0;
   for (const [type, option] of [["CE", ce], ["PE", pe]]) {
     const lot = lotSize(type);
     const isShares = S.unit[type] === "SHARES";
@@ -3512,6 +3542,31 @@ function renderOrderPad() {
       valBtn.textContent = v;
       valBtn.classList.toggle("active", v === "IOC");
       valBtn.title = `Validity: ${v} (Click to toggle DAY/IOC)`;
+    }
+
+    // Informational stop-loss risk estimate for this order pad.
+    const quick = S.quickOrder && S.quickOrder.pane === (type === "CE" ? "ce" : "pe") ? S.quickOrder : null;
+    let assumedSlPts = defaultSlPts;
+    if (quick && quick.slEnabled) {
+      const quickPts = Math.abs(num(quick.price) - num(quick.slPrice));
+      if (quickPts > 0) assumedSlPts = quickPts;
+    }
+    if (!Number.isFinite(assumedSlPts) || assumedSlPts <= 0) assumedSlPts = defaultSlPts;
+    const riskEl = $(`leg-${prefix}-sl-risk`);
+    if (riskEl) {
+      const pct = stopLossMarginWarnPct();
+      const margin = availableMarginValue();
+      const risk = assumedSlPts * shares;
+      if (pct > 0 && margin !== null && risk > (margin * pct) / 100) {
+        const riskPct = (risk / margin) * 100;
+        riskEl.hidden = false;
+        riskEl.textContent = `⚠ SL ${riskPct.toFixed(2)}% > ${pct.toFixed(2)}%`;
+        riskEl.title = `Est. SL risk ₹${fmt(risk, 0)} (${assumedSlPts.toFixed(2)} pts × ${shares} shares) exceeds ${pct.toFixed(2)}% of available margin (₹${fmt(margin, 0)}). Informational only; orders are not blocked.`;
+      } else {
+        riskEl.hidden = true;
+        riskEl.textContent = "";
+        riskEl.title = "";
+      }
     }
 
     const buyEl = $(`leg-${prefix}-margin-buy`);
@@ -3556,6 +3611,7 @@ function renderOrderPad() {
       button.disabled = false;
     });
   }
+  renderQuickOrderSLRiskWarning();
 }
 
 function resolvedShares(lot, type = S.selected.type) {
@@ -5766,6 +5822,24 @@ function computeExchangeStopPrice(price, slPrice, mode = "SL-M") {
   return Math.max(0.05, trigger);
 }
 
+function renderQuickOrderSLRiskWarning() {
+  const el = $("cqo-sl-risk-warning");
+  if (!el || !S.quickOrder) return;
+  const { price, slPrice, slEnabled, exchangeStopEnabled, exchangeStopMode, lotsCount, lot } = S.quickOrder;
+  let stop = 0;
+  if (slEnabled && slPrice > 0 && slPrice < price) {
+    stop = slPrice;
+  } else if (exchangeStopEnabled) {
+    stop = computeExchangeStopPrice(price, 0, exchangeStopMode);
+  }
+  const shares = Math.max(1, lotsCount * lot);
+  const risk = stop > 0 && stop < price ? (price - stop) * shares : 0;
+  const message = stopLossMarginWarning(risk);
+  el.hidden = !message;
+  el.textContent = message ? `⚠ ${message}` : "";
+  el.title = "Informational only. Uses the server stop-loss when enabled, otherwise the exchange backstop.";
+}
+
 function renderQuickOrderExchangeStop() {
   if (!S.quickOrder) return;
   const { exchangeStopEnabled, exchangeStopMode, price, slPrice, slEnabled, lotsCount, lot } = S.quickOrder;
@@ -5786,6 +5860,7 @@ function renderQuickOrderExchangeStop() {
     S.quickOrder.exchangeStopPrice = 0;
     if (priceEl) priceEl.textContent = "Off";
     if (riskEl) riskEl.textContent = "No live sell at Kotak";
+    renderQuickOrderSLRiskWarning();
     return;
   }
 
@@ -5799,6 +5874,7 @@ function renderQuickOrderExchangeStop() {
   if (riskEl) {
     riskEl.textContent = `Catastrophe risk ≈ ₹${risk.toLocaleString("en-IN")} (server SL still active)`;
   }
+  renderQuickOrderSLRiskWarning();
 }
 
 function updateQuickOrderSLPts(newPts) {

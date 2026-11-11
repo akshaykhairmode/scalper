@@ -205,6 +205,9 @@ type Risk struct {
 	MaxOrdersPerMinute     int `yaml:"max_orders_per_minute" json:"max_orders_per_minute"`
 	MaxExitOrdersPerSecond int `yaml:"max_exit_orders_per_second" json:"max_exit_orders_per_second"`
 	BlockOnDataStaleMS     int `yaml:"block_on_data_stale_ms" json:"block_on_data_stale_ms"`
+	// StopLossMarginPct warns (does not block) when the estimated stop-loss
+	// risk exceeds this percent of available margin. 0 disables the warning.
+	StopLossMarginPct float64 `yaml:"stop_loss_margin_pct" json:"stop_loss_margin_pct"`
 }
 
 // RiskView holds payoff chart settings.
@@ -387,6 +390,7 @@ func Default() Config {
 				MaxOrdersPerMinute:     6,
 				MaxExitOrdersPerSecond: 4,
 				BlockOnDataStaleMS:     5000,
+				StopLossMarginPct:      1.0,
 			},
 			RiskView: RiskView{
 				Enabled:        true,

@@ -182,6 +182,7 @@
               <span class="margin-sell" id="leg-call-margin-sell" title="Sell margin">—</span>
             </span>
           </div>
+          <div class="leg-sl-risk" id="leg-call-sl-risk" hidden></div>
           <div class="leg-order-actions">
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="CE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
@@ -276,6 +277,7 @@
               <span class="margin-sell" id="leg-put-margin-sell" title="Sell margin">—</span>
             </span>
           </div>
+          <div class="leg-sl-risk" id="leg-put-sl-risk" hidden></div>
           <div class="leg-order-actions">
             <div class="lot-control">
               <button type="button" class="unit-toggle" data-unit-toggle="PE" title="Click to toggle between Lots and Shares" aria-label="Toggle quantity unit">LOTS</button>
@@ -886,6 +888,7 @@
       <span class="cqo-pts-badge sl" id="cqo-sl-pts">−2.00 pts</span>
       <span class="cqo-target-pnl" id="cqo-sl-pnl">(Risk −₹130)</span>
     </div>
+    <div class="cqo-risk-warning" id="cqo-sl-risk-warning" hidden></div>
     <div class="cqo-row cqo-exchange-stop-row">
       <label class="cqo-checkbox-label">
         <input type="checkbox" id="cqo-exchange-stop-enable">

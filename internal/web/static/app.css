@@ -889,6 +889,30 @@ body[data-theme="light"] .chart-tooltip-desc {
   background: var(--bg-2, #111827);
   color: var(--text, #e5e7eb);
 }
+.cqo-risk-warning,
+.leg-sl-risk {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 4px;
+  line-height: 1.35;
+}
+.cqo-risk-warning {
+  margin: -1px 0 4px;
+  padding: 4px 6px;
+  font-size: 9.5px;
+}
+.leg-sl-risk {
+  margin: 1px 0 3px;
+  padding: 2px 5px;
+  font-family: var(--mono);
+  font-size: 9px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
 .cqo-target-pnl {
   color: var(--muted-2);
 }

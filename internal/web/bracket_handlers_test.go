@@ -279,4 +279,7 @@ func TestBootstrapIncludesExchangeStopDefaults(t *testing.T) {
 	if decoded.ExchangeStopDistanceMode != "multiplier" || decoded.ExchangeStopDistanceVal != 2.5 {
 		t.Fatalf("unexpected distance defaults: %+v", decoded)
 	}
+	if decoded.StopLossMarginPct != 1.0 {
+		t.Fatalf("stopLossMarginPct = %v, want 1.0", decoded.StopLossMarginPct)
+	}
 }

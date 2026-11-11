@@ -141,6 +141,10 @@ trading:
     max_orders_per_minute: 6
     max_exit_orders_per_second: 4
     block_on_data_stale_ms: 5000
+    # Informational only: warn in the order pad and chart trade panel when the
+    # estimated stop-loss risk exceeds this percent of available margin.
+    # Set to 0 to disable the warning.
+    stop_loss_margin_pct: 1.0
   risk_view:
     enabled: true
     payoff_range_pct: 10

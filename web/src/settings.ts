@@ -307,6 +307,7 @@
     setVal('f-max-orders-min', r.max_orders_per_minute !== undefined ? r.max_orders_per_minute : 6);
     setVal('f-max-exit-sec', r.max_exit_orders_per_second !== undefined ? r.max_exit_orders_per_second : 4);
     setVal('f-stale-timeout', r.block_on_data_stale_ms !== undefined ? r.block_on_data_stale_ms : 5000);
+    setVal('f-sl-margin-pct', r.stop_loss_margin_pct !== undefined ? r.stop_loss_margin_pct : 1.0);
     setVal('f-max-lots-order', r.max_lots_per_order !== undefined ? r.max_lots_per_order : 0);
     setVal('f-max-open-lots', r.max_open_lots_per_index !== undefined ? r.max_open_lots_per_index : 0);
     setVal('f-max-order-val', r.max_order_value_inr !== undefined ? r.max_order_value_inr : 0);
@@ -423,6 +424,7 @@
       { id: 'f-max-orders-min', path: ['trading', 'risk', 'max_orders_per_minute'], type: 'int' },
       { id: 'f-max-exit-sec', path: ['trading', 'risk', 'max_exit_orders_per_second'], type: 'int' },
       { id: 'f-stale-timeout', path: ['trading', 'risk', 'block_on_data_stale_ms'], type: 'int' },
+      { id: 'f-sl-margin-pct', path: ['trading', 'risk', 'stop_loss_margin_pct'], type: 'float' },
       { id: 'f-max-lots-order', path: ['trading', 'risk', 'max_lots_per_order'], type: 'int' },
       { id: 'f-max-open-lots', path: ['trading', 'risk', 'max_open_lots_per_index'], type: 'int' },
       { id: 'f-max-order-val', path: ['trading', 'risk', 'max_order_value_inr'], type: 'int' },

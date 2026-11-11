@@ -429,6 +429,9 @@ func validateRisk(r Risk) error {
 			return fieldErr("trading.risk."+v.name, "must be >= 0 (0 disables the cap)")
 		}
 	}
+	if r.StopLossMarginPct < 0 || r.StopLossMarginPct > 100 {
+		return fieldErr("trading.risk.stop_loss_margin_pct", "must be between 0 and 100 (0 disables the warning)")
+	}
 	return nil
 }
 
