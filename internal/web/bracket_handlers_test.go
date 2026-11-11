@@ -72,6 +72,9 @@ func TestBracketHandlers(t *testing.T) {
 	if created.ID != "test-bracket-1" || created.Status != bracket.StatusPendingEntry {
 		t.Fatalf("unexpected created bracket: %+v", created)
 	}
+	if created.TargetPrice != 115.0 || created.StopLossPrice != 90.0 {
+		t.Fatalf("expected target/stoploss to be preserved, got %+v", created)
+	}
 
 	// 3. List brackets again
 	rec = do(t, s, localRequest(http.MethodGet, "/api/brackets"))

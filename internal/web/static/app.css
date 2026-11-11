@@ -874,8 +874,14 @@ body[data-theme="light"] .chart-tooltip-desc {
   color: var(--green, #29b360);
   font-weight: 700;
 }
+.cqo-pts-badge.sl {
+  color: #f05a5a;
+}
 .cqo-target-pnl {
   color: var(--muted-2);
+}
+.cqo-sl-row {
+  margin-top: 2px;
 }
 
 .cqo-actions {
@@ -1306,6 +1312,11 @@ body[data-theme="light"] .cqo-qty-info {
   background: rgba(41, 179, 96, 0.15);
   color: var(--green);
   border: 1px solid rgba(41, 179, 96, 0.3);
+}
+.status-badge.sl-hit {
+  background: rgba(240, 90, 90, 0.15);
+  color: #f05a5a;
+  border: 1px solid rgba(240, 90, 90, 0.3);
 }
 .status-badge.exited {
   background: rgba(148, 163, 184, 0.15);

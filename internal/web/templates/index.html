@@ -868,6 +868,21 @@
       <span class="cqo-pts-badge" id="cqo-target-pts">+10.00 pts</span>
       <span class="cqo-target-pnl" id="cqo-target-pnl">(Est. +₹500)</span>
     </div>
+    <div class="cqo-row cqo-sl-row">
+      <label class="cqo-checkbox-label">
+        <input type="checkbox" id="cqo-sl-enable" checked>
+        <span>Auto Stop-Loss (SL)</span>
+      </label>
+      <div class="cqo-stepper" id="cqo-sl-stepper">
+        <button type="button" id="cqo-sl-dec" title="Widen stop-loss by 0.50 pt" aria-label="Widen stop-loss">−</button>
+        <input type="number" step="0.50" class="cqo-price-input" id="cqo-sl-price" aria-label="Stop-loss price">
+        <button type="button" id="cqo-sl-inc" title="Tighten stop-loss by 0.50 pt" aria-label="Tighten stop-loss">+</button>
+      </div>
+    </div>
+    <div class="cqo-target-summary" id="cqo-sl-summary">
+      <span class="cqo-pts-badge sl" id="cqo-sl-pts">−2.00 pts</span>
+      <span class="cqo-target-pnl" id="cqo-sl-pnl">(Risk −₹130)</span>
+    </div>
     <div class="cqo-actions">
       <button type="button" class="cqo-btn buy" id="cqo-buy-btn">
         <span>▲ BUY LIMIT</span>

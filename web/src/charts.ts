@@ -1285,10 +1285,12 @@ function registerCustomOverlays() {
       const price = Number(data.price || overlay.points?.[0]?.value || 0);
       const width = bounding?.width || 800;
       const isTarget = data.kind === "TARGET";
+      const isStop = data.kind === "STOP";
       const isBuy = data.side === "B" || data.side === "BUY";
-      const lineColor = isTarget ? "#29b360" : isBuy ? "#3b82f6" : "#f97316";
-      const bgColor = isTarget ? "#1e7e44" : isBuy ? "#1d4ed8" : "#c2410c";
-      const label = data.label || `${isTarget ? "TARGET" : "ENTRY"}: ₹${price.toFixed(2)}`;
+      const lineColor = isTarget ? "#29b360" : isStop ? "#f05a5a" : isBuy ? "#3b82f6" : "#f97316";
+      const bgColor = isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
+      const defaultKindLabel = isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
+      const label = data.label || `${defaultKindLabel}: ₹${price.toFixed(2)}`;
 
       const figures = [];
 
@@ -1302,7 +1304,7 @@ function registerCustomOverlays() {
         },
         styles: {
           style: "dashed",
-          dashedValue: isTarget ? [4, 3] : [6, 4],
+          dashedValue: isTarget ? [4, 3] : isStop ? [2, 2] : [6, 4],
           size: 1.5,
           color: lineColor,
         },
@@ -2102,6 +2104,7 @@ export class CandleChart {
     this.targetPreviewOverlayId = null;
     this.bracketLevelOverlayIds = [];
     this.bracketLevelsKey = "";
+    this.stopPreviewOverlayId = null;
     this.openOrderOverlayIds = [];
     this.openOrdersData = [];
     this.tradesData = [];
@@ -2851,14 +2854,15 @@ export class CandleChart {
   }
 
   /**
-   * Draw the persisted entry/target levels of a server-side bracket order.
-   * A pending (resting entry) bracket shows both levels; an in-position
-   * bracket only needs the target because the position line marks the entry.
+   * Draw the persisted entry/target/stop levels of a server-side bracket order.
+   * A pending (resting entry) bracket shows its entry too; an in-position
+   * bracket only needs the target/stop because the position line marks the entry.
    */
-  showBracketLevels({ entryPrice = 0, targetPrice = 0, side = "BUY", pending = false } = {}) {
+  showBracketLevels({ entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = {}) {
     if (!this.chart) return;
     const entry = Number(entryPrice);
     const target = Number(targetPrice);
+    const stop = Number(stopPrice);
     const isBuy = side === "B" || side === "BUY" || side === "buy";
     const levels = [];
     if (pending && Number.isFinite(entry) && entry > 0) {
@@ -2866,6 +2870,9 @@ export class CandleChart {
     }
     if (Number.isFinite(target) && target > 0) {
       levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)}` });
+    }
+    if (Number.isFinite(stop) && stop > 0) {
+      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)}` });
     }
 
     const key = levels.map((l) => `${l.kind}:${l.price}`).join("|") + `|${isBuy ? "B" : "S"}`;
@@ -2900,6 +2907,34 @@ export class CandleChart {
       } catch (_) {}
     }
     this.bracketLevelOverlayIds = [];
+  }
+
+  /** Stop-loss preview while composing a bracket in the quick order panel. */
+  showStopPreview(price, label = "") {
+    this.clearStopPreview();
+    if (!this.chart || !Number.isFinite(price) || price <= 0) return;
+    try {
+      this.stopPreviewOverlayId = this.chart.createOverlay({
+        name: "bracketLevelLine",
+        groupId: "stop_preview",
+        points: [{ value: price }],
+        lock: true,
+        extendData: { kind: "STOP", price, label: label || `SL ₹${price.toFixed(2)}`, side: "B" },
+      });
+    } catch (_) {}
+  }
+
+  clearStopPreview() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "stop_preview" });
+    } catch (_) {}
+    if (this.stopPreviewOverlayId) {
+      try {
+        this.chart.removeOverlay({ id: this.stopPreviewOverlayId });
+      } catch (_) {}
+      this.stopPreviewOverlayId = null;
+    }
   }
 
   setData(data, { symbol = "", resetScale = true } = {}) {

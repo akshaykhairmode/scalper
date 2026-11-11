@@ -2293,6 +2293,7 @@ function updateChartTrades() {
       S.charts.ce.showBracketLevels?.({
         entryPrice: ceBracket.entryPrice,
         targetPrice: ceBracket.targetPrice,
+        stopPrice: ceBracket.stopLossPrice,
         side: ceBracket.action,
         pending: ceBracket.status === "PENDING_ENTRY",
       });
@@ -2329,6 +2330,7 @@ function updateChartTrades() {
       S.charts.pe.showBracketLevels?.({
         entryPrice: peBracket.entryPrice,
         targetPrice: peBracket.targetPrice,
+        stopPrice: peBracket.stopLossPrice,
         side: peBracket.action,
         pending: peBracket.status === "PENDING_ENTRY",
       });
@@ -3861,7 +3863,7 @@ async function onTrade(action, type) {
   }
 }
 
-async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0) {
+async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0, autoStopPrice = 0) {
   const orderMode = tradingMode();
   if (!S.session?.authenticated) {
     openLogin();
@@ -3925,7 +3927,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
     const orderId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
     toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
 
-    if (autoTargetPrice > 0) {
+    if (autoTargetPrice > 0 || autoStopPrice > 0) {
       const newTarget = {
         id: "tgt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
         orderId,
@@ -3938,6 +3940,8 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         action,
         entryPrice: price,
         targetPrice: autoTargetPrice,
+        stopLossPrice: autoStopPrice,
+        trailingStop: 0,
         shares: qty,
         filledQty: 0,
         exitOrderId: "",
@@ -3958,12 +3962,19 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         entry_price: price,
         entry_order_id: orderId,
         target_price: autoTargetPrice,
-        stoploss_price: 0,
+        stoploss_price: autoStopPrice,
         trailing_stop: 0,
       }).catch((err) => {
         console.warn("failed to register server bracket:", err);
       });
-      toast(`🎯 Auto-Target armed: Exit at ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts) once filled.`, "info", 4500);
+      const exits = [];
+      if (autoTargetPrice > 0) {
+        exits.push(`Target ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts)`);
+      }
+      if (autoStopPrice > 0) {
+        exits.push(`SL ₹${autoStopPrice.toFixed(2)} (−${Math.abs(price - autoStopPrice).toFixed(2)} pts)`);
+      }
+      toast(`🎯 Auto exits armed: ${exits.join(" · ")} once filled.`, "info", 4500);
       renderTab();
       scheduleChartTrades();
     }
@@ -4022,6 +4033,8 @@ function normalizeBracket(raw) {
 
   const entryPrice = num(raw.entry_price ?? raw.entryPrice ?? raw.price ?? raw.EntryPrice);
   const targetPrice = num(raw.target_price ?? raw.targetPrice ?? raw.target ?? raw.TargetPrice);
+  const stopLossPrice = num(raw.stoploss_price ?? raw.stopLossPrice ?? raw.stop_loss_price ?? raw.StopLossPrice ?? raw.sl_price ?? 0);
+  const trailingStop = num(raw.trailing_stop ?? raw.trailingStop ?? raw.TrailingStop ?? 0);
   const exitPrice = num(raw.exit_price ?? raw.exitPrice ?? raw.ExitPrice);
   const shares = Math.abs(num(raw.shares ?? raw.quantity ?? raw.qty ?? raw.Shares));
   const filledQty = num(raw.filled_qty ?? raw.filledQty ?? raw.filled_quantity ?? raw.FilledQty);
@@ -4066,6 +4079,8 @@ function normalizeBracket(raw) {
     action,
     entryPrice,
     targetPrice,
+    stopLossPrice,
+    trailingStop,
     shares,
     filledQty,
     exitOrderId: String(raw.exit_order_id ?? raw.exitOrderId ?? raw.ExitOrderId ?? ""),
@@ -4159,6 +4174,12 @@ function handleBracketUpdate(data) {
       toast(`🎯 Bracket Target Hit! Sold ${norm.shares} @ ₹${fmt(norm.exitPrice || norm.targetPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
       S.charts.ce?.clearTargetPreview?.();
       S.charts.pe?.clearTargetPreview?.();
+    } else if (norm.status === "SL_HIT" && previousStatus !== "SL_HIT") {
+      playTradeSound("reject");
+      const pnl = (norm.exitPrice - norm.entryPrice) * norm.shares * (norm.action === "buy" ? 1 : -1);
+      toast(`🛑 Stop-Loss Hit! Sold ${norm.shares} @ ₹${fmt(norm.exitPrice || norm.stopLossPrice)} (P&L: ${fmtSigned(pnl, 0)})`, "warn", 8000);
+      S.charts.ce?.clearTargetPreview?.();
+      S.charts.pe?.clearTargetPreview?.();
     } else if (norm.status === "CANCELLED" && previousStatus !== "CANCELLED") {
       toast(`Bracket ${norm.symbol || norm.id} cancelled.`, "warn", 4000);
     }
@@ -4209,7 +4230,7 @@ function bracketsHTML() {
     </div>
   </div>
   <table class="book"><thead><tr>
-    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target</th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
+    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target</th><th>SL</th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
   </tr></thead><tbody>`;
 
   for (const b of [...brackets].reverse()) {
@@ -4222,11 +4243,11 @@ function bracketsHTML() {
       pnl = (ltp - b.entryPrice) * b.shares * (b.action === "buy" ? 1 : -1);
       pnlClass = directionClass(pnl);
       pnlText = fmtSigned(pnl, 0);
-    } else if (b.status === "TARGET_HIT" || b.status === "EXITED_MANUAL" || b.status === "COMPLETED") {
-      const exitP = b.exitPrice || b.targetPrice;
+    } else if (b.status === "TARGET_HIT" || b.status === "SL_HIT" || b.status === "EXITED_MANUAL" || b.status === "COMPLETED") {
+      const exitP = b.exitPrice || (b.status === "SL_HIT" ? b.stopLossPrice : b.targetPrice);
       pnl = (exitP - b.entryPrice) * b.shares * (b.action === "buy" ? 1 : -1);
       pnlClass = directionClass(pnl);
-      pnlText = fmtSigned(pnl, 0) + (b.status === "TARGET_HIT" ? " 🎯" : "");
+      pnlText = fmtSigned(pnl, 0) + (b.status === "TARGET_HIT" ? " 🎯" : b.status === "SL_HIT" ? " 🛑" : "");
     }
 
     let badgeClass = "pending";
@@ -4237,6 +4258,9 @@ function bracketsHTML() {
     } else if (b.status === "TARGET_HIT") {
       badgeClass = "target-hit";
       badgeLabel = "TARGET HIT";
+    } else if (b.status === "SL_HIT") {
+      badgeClass = "sl-hit";
+      badgeLabel = "SL HIT";
     } else if (b.status === "EXITED_MANUAL") {
       badgeClass = "exited";
       badgeLabel = "MANUAL EXIT";
@@ -4268,7 +4292,8 @@ function bracketsHTML() {
       <td class="${sideClass} font-bold">${sideLabel}</td>
       <td>${b.shares}</td>
       <td class="font-bold">₹${fmt(b.entryPrice)}</td>
-      <td class="up font-bold">₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span></td>
+      <td class="up font-bold">${b.targetPrice > 0 ? `₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span>` : "—"}</td>
+      <td class="down font-bold">${b.stopLossPrice > 0 ? `₹${fmt(b.stopLossPrice)} <span class="muted" style="font-size:9.5px;">(−${Math.abs(b.entryPrice - b.stopLossPrice).toFixed(2)})</span>` : "—"}</td>
       <td class="font-bold" data-bracket-ltp="${esc(b.id)}">₹${fmt(ltp)}</td>
       <td class="${pnlClass} font-bold" data-bracket-pnl="${esc(b.id)}">${pnlText}</td>
       <td><span class="status-badge ${badgeClass}">${badgeLabel}</span></td>
@@ -4450,12 +4475,20 @@ function checkAutoTargets(eventOrder?: any) {
         const exitStatus = String(matchedExit.status || "").toUpperCase();
         const isExitFilled = ["TRAD", "COMPLETE", "EXECUTED", "FILLED"].includes(exitStatus) || (num(matchedExit.filled_quantity) >= target.shares);
         if (isExitFilled) {
-          target.status = "TARGET_HIT";
-          target.exitPrice = num(matchedExit.price) || target.targetPrice;
+          const exitFill = num(matchedExit.price) || target.targetPrice;
+          const stopLevel = num(target.stopLossPrice);
+          const stopHit = stopLevel > 0 && (target.action === "buy" ? exitFill <= stopLevel : exitFill >= stopLevel);
+          target.status = stopHit ? "SL_HIT" : "TARGET_HIT";
+          target.exitPrice = exitFill;
           saveAutoTargets();
-          playTradeSound("target");
           const pnl = (target.exitPrice - target.entryPrice) * target.shares * (target.action === "buy" ? 1 : -1);
-          toast(`🎯 Bracket Target Hit! Sold ${target.shares} @ ₹${fmt(target.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+          if (stopHit) {
+            playTradeSound("reject");
+            toast(`🛑 Stop-Loss Hit! Sold ${target.shares} @ ₹${fmt(target.exitPrice)} (P&L: ${fmtSigned(pnl, 0)})`, "warn", 8000);
+          } else {
+            playTradeSound("target");
+            toast(`🎯 Bracket Target Hit! Sold ${target.shares} @ ₹${fmt(target.exitPrice)} (Profit: +₹${fmt(pnl, 0)})`, "ok", 8000);
+          }
 
           if (target.exitOrderId) {
             const oInState = (S.orders || []).find((o) => String(o.id) === String(target.exitOrderId));
@@ -4517,6 +4550,13 @@ function initChartQuickOrder() {
         S.quickOrder.targetPrice = Math.round((val + S.quickOrder.targetPts) * 20) / 20;
         renderQuickOrderTarget();
         S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
+      }
+      if (S.quickOrder.slEnabled) {
+        const pts = Math.min(S.quickOrder.slPts, Math.max(0.05, val - 0.05));
+        S.quickOrder.slPts = pts;
+        S.quickOrder.slPrice = Math.max(0.05, Math.round((val - pts) * 20) / 20);
+        renderQuickOrderSL();
+        S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
       }
     }
   });
@@ -4606,6 +4646,65 @@ function initChartQuickOrder() {
 
   $("cqo-target-price")?.addEventListener("change", commitTargetPrice);
   $("cqo-target-price")?.addEventListener("blur", commitTargetPrice);
+
+  // Auto Stop-Loss controls
+  $("cqo-sl-enable")?.addEventListener("change", (e) => {
+    if (!S.quickOrder) return;
+    S.quickOrder.slEnabled = e.target.checked;
+    try {
+      localStorage.setItem("scalper-sl-enabled", e.target.checked ? "true" : "false");
+    } catch (_) {}
+    renderQuickOrderSL();
+    if (S.quickOrder.slEnabled) {
+      S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
+    } else {
+      S.charts[S.quickOrder.pane]?.clearStopPreview();
+    }
+  });
+
+  $("cqo-sl-dec")?.addEventListener("click", () => {
+    if (!S.quickOrder) return;
+    updateQuickOrderSLPts(S.quickOrder.slPts + 0.50);
+  });
+
+  $("cqo-sl-inc")?.addEventListener("click", () => {
+    if (!S.quickOrder) return;
+    updateQuickOrderSLPts(S.quickOrder.slPts - 0.50);
+  });
+
+  $("cqo-sl-price")?.addEventListener("focus", (e: any) => {
+    e.target?.select?.();
+  });
+
+  $("cqo-sl-price")?.addEventListener("input", (e: any) => {
+    if (!S.quickOrder) return;
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val) && val > 0 && val < S.quickOrder.price) {
+      S.quickOrder.slPrice = val;
+      S.quickOrder.slPts = Math.max(0.05, Math.round((S.quickOrder.price - val) * 100) / 100);
+      const ptsEl = $("cqo-sl-pts");
+      if (ptsEl) ptsEl.textContent = `−${S.quickOrder.slPts.toFixed(2)} pts`;
+      const risk = Math.round(S.quickOrder.slPts * S.quickOrder.lotsCount * S.quickOrder.lot);
+      const pnlEl = $("cqo-sl-pnl");
+      if (pnlEl) pnlEl.textContent = `(Risk −₹${risk.toLocaleString("en-IN")})`;
+      if (S.quickOrder.slEnabled) {
+        S.charts[S.quickOrder.pane]?.showStopPreview(val, `SL ₹${val.toFixed(2)}`);
+      }
+    }
+  });
+
+  const commitSlPrice = (e: any) => {
+    if (!S.quickOrder) return;
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val) && val > 0 && val < S.quickOrder.price) {
+      updateQuickOrderSLPrice(val);
+    } else {
+      updateQuickOrderSLPts(Math.max(0.05, S.quickOrder.slPts || 2.0));
+    }
+  };
+
+  $("cqo-sl-price")?.addEventListener("change", commitSlPrice);
+  $("cqo-sl-price")?.addEventListener("blur", commitSlPrice);
 
   $("cqo-buy-btn")?.addEventListener("click", () => submitQuickOrder("buy"));
   $("cqo-sell-btn")?.addEventListener("click", () => submitQuickOrder("sell"));
@@ -4924,6 +5023,7 @@ function openChartQuickOrder(pane, price, x, y) {
     if (p !== pane) {
       c?.clearOrderPreview?.();
       c?.clearTargetPreview?.();
+      c?.clearStopPreview?.();
     }
   }
 
@@ -4947,6 +5047,22 @@ function openChartQuickOrder(pane, price, x, y) {
 
   const targetPrice = Math.round((price + defaultPts) * 20) / 20;
 
+  // Default to a 1:1 risk/reward against the target until the user tunes it.
+  let slPts = defaultPts;
+  try {
+    const savedSl = localStorage.getItem("scalper-sl-pts");
+    if (savedSl) slPts = num(savedSl, defaultPts);
+  } catch (_) {}
+  if (!Number.isFinite(slPts) || slPts <= 0) slPts = defaultPts;
+  slPts = Math.min(slPts, Math.max(0.05, price - 0.05));
+
+  let slEnabled = true;
+  try {
+    if (localStorage.getItem("scalper-sl-enabled") === "false") slEnabled = false;
+  } catch (_) {}
+
+  const slPrice = Math.max(0.05, Math.round((price - slPts) * 20) / 20);
+
   S.quickOrder = {
     pane,
     type,
@@ -4957,6 +5073,9 @@ function openChartQuickOrder(pane, price, x, y) {
     targetPts: defaultPts,
     targetPrice,
     targetEnabled,
+    slPts,
+    slPrice,
+    slEnabled,
   };
 
   const widget = $("chart-quick-order");
@@ -4968,13 +5087,15 @@ function openChartQuickOrder(pane, price, x, y) {
   $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
   renderQuickOrderQty();
   renderQuickOrderTarget();
+  renderQuickOrderSL();
 
   const frame = chart.container.closest(".chart-frame") || chart.container;
   frame.appendChild(widget);
+  widget.hidden = false;
 
   const frameRect = frame.getBoundingClientRect();
-  const widgetWidth = 250;
-  const widgetHeight = 160;
+  const widgetWidth = widget.offsetWidth || 250;
+  const widgetHeight = widget.offsetHeight || 160;
 
   let left = x - widgetWidth / 2;
   left = Math.max(10, Math.min(left, frameRect.width - widgetWidth - 10));
@@ -4987,11 +5108,13 @@ function openChartQuickOrder(pane, price, x, y) {
 
   widget.style.left = `${Math.round(left)}px`;
   widget.style.top = `${Math.round(top)}px`;
-  widget.hidden = false;
 
   chart.showOrderPreview(price);
   if (targetEnabled) {
     chart.showTargetPreview(targetPrice, "TARGET");
+  }
+  if (slEnabled) {
+    chart.showStopPreview(slPrice, `SL ₹${slPrice.toFixed(2)}`);
   }
 }
 
@@ -5033,6 +5156,77 @@ function renderQuickOrderTarget() {
 
   const pnlEl = $("cqo-target-pnl");
   if (pnlEl) pnlEl.textContent = `(Est. ${pnl >= 0 ? "+" : "−"}₹${Math.abs(pnl).toLocaleString("en-IN")})`;
+}
+
+function renderQuickOrderSL() {
+  if (!S.quickOrder) return;
+  const { slPts, slPrice, slEnabled, lotsCount, lot } = S.quickOrder;
+  const shares = lotsCount * lot;
+  const risk = Math.round(Math.abs(slPts) * shares);
+
+  const enableEl = $("cqo-sl-enable");
+  if (enableEl) enableEl.checked = slEnabled;
+
+  const slPriceEl = $("cqo-sl-price");
+  if (slPriceEl) {
+    if (document.activeElement !== slPriceEl) {
+      slPriceEl.value = slPrice.toFixed(2);
+    }
+    slPriceEl.disabled = !slEnabled;
+  }
+
+  const decBtn = $("cqo-sl-dec");
+  const incBtn = $("cqo-sl-inc");
+  if (decBtn) decBtn.disabled = !slEnabled;
+  if (incBtn) incBtn.disabled = !slEnabled;
+
+  const summaryEl = $("cqo-sl-summary");
+  if (summaryEl) summaryEl.style.opacity = slEnabled ? "1" : "0.35";
+
+  const ptsEl = $("cqo-sl-pts");
+  if (ptsEl) ptsEl.textContent = `−${Math.abs(slPts).toFixed(2)} pts`;
+
+  const pnlEl = $("cqo-sl-pnl");
+  if (pnlEl) pnlEl.textContent = `(Risk −₹${risk.toLocaleString("en-IN")})`;
+}
+
+function updateQuickOrderSLPts(newPts) {
+  if (!S.quickOrder) return;
+  const maxPts = Math.max(0.05, S.quickOrder.price - 0.05);
+  const pts = Math.min(maxPts, Math.max(0.05, Math.round(num(newPts) * 20) / 20));
+  S.quickOrder.slPts = pts;
+  S.quickOrder.slPrice = Math.max(0.05, Math.round((S.quickOrder.price - pts) * 20) / 20);
+  try {
+    localStorage.setItem("scalper-sl-pts", String(pts));
+  } catch (_) {}
+  const slPriceEl = $("cqo-sl-price");
+  if (slPriceEl) {
+    slPriceEl.value = S.quickOrder.slPrice.toFixed(2);
+  }
+  renderQuickOrderSL();
+  if (S.quickOrder.slEnabled) {
+    S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
+  }
+}
+
+function updateQuickOrderSLPrice(newSlPrice) {
+  if (!S.quickOrder) return;
+  const price = S.quickOrder.price;
+  const sl = Math.min(Math.max(0.05, price - 0.05), Math.max(0.05, Math.round(num(newSlPrice) * 20) / 20));
+  S.quickOrder.slPrice = sl;
+  const pts = Math.max(0.05, Math.round((price - sl) * 20) / 20);
+  S.quickOrder.slPts = pts;
+  try {
+    localStorage.setItem("scalper-sl-pts", String(pts));
+  } catch (_) {}
+  const slPriceEl = $("cqo-sl-price");
+  if (slPriceEl) {
+    slPriceEl.value = sl.toFixed(2);
+  }
+  renderQuickOrderSL();
+  if (S.quickOrder.slEnabled) {
+    S.charts[S.quickOrder.pane]?.showStopPreview(sl, `SL ₹${sl.toFixed(2)}`);
+  }
 }
 
 function updateQuickOrderTargetPts(newPts) {
@@ -5086,6 +5280,14 @@ function updateQuickOrderPrice(newPrice) {
     renderQuickOrderTarget();
     S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
   }
+
+  if (S.quickOrder.slEnabled) {
+    const pts = Math.min(S.quickOrder.slPts, Math.max(0.05, price - 0.05));
+    S.quickOrder.slPts = pts;
+    S.quickOrder.slPrice = Math.max(0.05, Math.round((price - pts) * 20) / 20);
+    renderQuickOrderSL();
+    S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
+  }
 }
 
 function updateQuickOrderLots(delta) {
@@ -5095,6 +5297,7 @@ function updateQuickOrderLots(delta) {
   S.qty[S.quickOrder.type] = S.unit[S.quickOrder.type] === "SHARES" ? newLots * S.quickOrder.lot : newLots;
   renderQuickOrderQty();
   renderQuickOrderTarget();
+  renderQuickOrderSL();
   renderOrderPad();
 }
 
@@ -5102,6 +5305,7 @@ function closeChartQuickOrder() {
   if (S.quickOrder) {
     S.charts[S.quickOrder.pane]?.clearOrderPreview();
     S.charts[S.quickOrder.pane]?.clearTargetPreview();
+    S.charts[S.quickOrder.pane]?.clearStopPreview();
     S.quickOrder = null;
   }
   const widget = $("chart-quick-order");
@@ -5113,17 +5317,20 @@ function closeChartQuickOrder() {
 
 async function submitQuickOrder(action) {
   if (!S.quickOrder) return;
-  const { type, lotsCount, lot, targetEnabled, targetPrice } = S.quickOrder;
+  const { type, lotsCount, lot, targetEnabled, targetPrice, slEnabled, slPrice } = S.quickOrder;
   const inputPrice = num($("cqo-price")?.value);
   const price = Number.isFinite(inputPrice) && inputPrice > 0 ? inputPrice : S.quickOrder.price;
   const shares = lotsCount * lot;
   const inputTarget = num($("cqo-target-price")?.value);
   const tp = Number.isFinite(inputTarget) && inputTarget > 0 ? inputTarget : targetPrice;
   const autoTarget = (targetEnabled && action === "buy" && tp > price) ? tp : 0;
+  const inputSl = num($("cqo-sl-price")?.value);
+  const slp = Number.isFinite(inputSl) && inputSl > 0 ? inputSl : slPrice;
+  const autoStop = (slEnabled && action === "buy" && slp > 0 && slp < price) ? Math.round(slp * 20) / 20 : 0;
 
   closeChartQuickOrder();
-  await onLimitTrade(action, type, price, shares, autoTarget);
-  if (autoTarget > 0) {
+  await onLimitTrade(action, type, price, shares, autoTarget, autoStop);
+  if (autoTarget > 0 || autoStop > 0) {
     S.tab = "brackets";
     renderTab();
   }
