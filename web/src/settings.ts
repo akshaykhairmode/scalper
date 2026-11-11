@@ -55,6 +55,7 @@
     setupModals();
     setupActions();
     setupDevices();
+    setupAppActions();
     loadStorageInfo();
     document.getElementById('db-size-refresh')?.addEventListener('click', loadStorageInfo);
 
@@ -151,6 +152,64 @@
     if (panelId === 'panel-devices') {
       loadSettingsDevices();
     }
+  }
+
+  let deferredInstallPrompt: any = null;
+
+  function setupAppActions() {
+    const installBtn = document.getElementById('settings-install-btn') as HTMLButtonElement | null;
+    const standalone = window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true;
+
+    // The settings page is a separate document; register the same origin-scoped
+    // service worker so the browser can offer the PWA install prompt here too.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+        console.warn('[PWA] service worker registration failed:', err);
+      });
+    }
+
+    const markInstalled = () => {
+      if (!installBtn) return;
+      installBtn.textContent = '✓ Installed';
+      installBtn.disabled = true;
+      installBtn.title = 'Scalper is installed on this device';
+    };
+
+    if (standalone) {
+      markInstalled();
+      return;
+    }
+
+    window.addEventListener('beforeinstallprompt', (event: any) => {
+      event.preventDefault();
+      deferredInstallPrompt = event;
+      if (installBtn) installBtn.disabled = false;
+    });
+
+    window.addEventListener('appinstalled', () => {
+      deferredInstallPrompt = null;
+      markInstalled();
+      showToast('success', 'Scalper installed successfully.');
+    });
+
+    installBtn?.addEventListener('click', async () => {
+      if (!deferredInstallPrompt) {
+        showToast('info', 'Use your browser menu and choose “Install app” or “Add to Home Screen”.', 7000);
+        return;
+      }
+      const prompt = deferredInstallPrompt;
+      deferredInstallPrompt = null;
+      prompt.prompt();
+      try {
+        const choice = await prompt.userChoice;
+        if (choice?.outcome === 'accepted') {
+          showToast('success', 'Installing Scalper…');
+        }
+      } catch (err) {
+        console.warn('[PWA] install prompt failed:', err);
+      }
+    });
   }
 
   function setupDevices() {

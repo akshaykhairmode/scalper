@@ -39,7 +39,6 @@
     </div>
 
     <div class="topbar-right">
-      <button type="button" class="accent small install-btn" id="install-button" title="Install Scalper PWA on your device" hidden>⬇ Install App</button>
       <div class="metric metric-clickable" id="margin-metric" role="button" tabindex="0" title="Click to refresh margin" aria-label="Account margin. Click to refresh.">
         <span class="metric-label">MARGIN</span>
         <span class="metric-value" id="margin-chip">—</span>
@@ -50,7 +49,6 @@
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
       <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
-      <a href="/logs" target="_blank" rel="noopener noreferrer" class="ghost small button" id="logs-button" title="View Live Server Logs (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Logs</a>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">LIVE</span>
       <span class="clock" id="clock">{{.Now}}</span>
@@ -1010,17 +1008,11 @@
           <a href="/settings" target="_blank" rel="noopener noreferrer" class="drawer-action-btn" id="drawer-settings-btn">
             <i>⚙️</i> <span>Settings</span>
           </a>
-          <a href="/logs" target="_blank" rel="noopener noreferrer" class="drawer-action-btn" id="drawer-logs-btn">
-            <i>📜</i> <span>Live Server Logs</span>
-          </a>
           <button type="button" class="drawer-action-btn" id="drawer-theme-btn">
             <i>🌓</i> <span id="drawer-theme-label">Switch Theme</span>
           </button>
           <button type="button" class="drawer-action-btn" id="drawer-unpair-btn">
             <i>🔄</i> <span>Switch / Unpair Server (Scan QR)</span>
-          </button>
-          <button type="button" class="drawer-action-btn" id="drawer-install-btn" hidden>
-            <i>⬇️</i> <span>Install PWA to Home Screen</span>
           </button>
         </div>
 

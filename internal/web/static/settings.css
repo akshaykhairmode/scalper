@@ -138,6 +138,7 @@ body {
   transition: all 0.15s ease;
   user-select: none;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .btn:disabled {
@@ -802,6 +803,20 @@ select:focus {
 }
 
 @media (max-width: 768px) {
+  .settings-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .header-left,
+  .header-right {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .header-right .btn {
+    padding: 5px 9px;
+    font-size: 11px;
+  }
   .settings-container {
     flex-direction: column;
   }

@@ -7844,8 +7844,6 @@ function bindEvents() {
     if (authBtn) authBtn.textContent = S.session?.authenticated ? "Sign Out" : "Sign In";
     const themeLabel = $("drawer-theme-label");
     if (themeLabel) themeLabel.textContent = `Switch to ${document.body.dataset.theme === "light" ? "Dark" : "Light"} Theme`;
-    const installBtn = $("drawer-install-btn");
-    if (installBtn && deferredInstallPrompt) installBtn.hidden = false;
   }
 
   function closeMobileDrawer() {
@@ -7887,13 +7885,6 @@ function bindEvents() {
     closeMobileDrawer();
     if (S.session?.authenticated) logout();
     else openLogin();
-  });
-  $("drawer-install-btn")?.addEventListener("click", () => {
-    closeMobileDrawer();
-    if (deferredInstallPrompt) {
-      deferredInstallPrompt.prompt();
-      deferredInstallPrompt.userChoice.then(() => { deferredInstallPrompt = null; });
-    }
   });
   for (const input of $$("[data-lots]")) {
     input.addEventListener("change", () => updateLotInput(input.dataset.lots, input.value));
