@@ -28,8 +28,15 @@
       <span class="tag">NEO terminal</span>
     </div>
 
-    <div class="spot-strip" id="spot-strip" aria-label="Underlying prices">
-      {{range .Underlyings}}<span class="spot-chip" data-index="{{.Key}}"><span class="spot-name">{{.Label}}</span><span class="spot-price">—</span><span class="spot-change">—</span></span>{{end}}
+    <div class="spot-picker" id="spot-picker">
+      <button type="button" class="spot-current" id="spot-current" aria-haspopup="listbox" aria-expanded="false" aria-controls="spot-menu" title="Switch index">
+        <span class="spot-live-dot" id="spot-current-dot"></span>
+        <span class="spot-current-name" id="spot-current-name">—</span>
+        <span class="spot-current-price" id="spot-current-price">—</span>
+        <span class="spot-current-change" id="spot-current-change">—</span>
+        <span class="spot-current-caret" aria-hidden="true">▾</span>
+      </button>
+      <div class="spot-menu" id="spot-menu" role="listbox" aria-label="Underlying indices" hidden></div>
     </div>
 
     <div class="topbar-right">

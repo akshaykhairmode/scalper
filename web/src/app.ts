@@ -3212,21 +3212,7 @@ function renderAll(preserveChainScroll = false) {
 }
 
 function renderHeader() {
-  const order = [...(S.boot.indices || []), ...(S.boot.commodities || [])].map((i) => i.key);
-  if (S.spots.has("INDIA VIX")) order.push("INDIA VIX");
-  $("spot-strip").innerHTML = order.map((key) => {
-    const spot = S.spots.get(key);
-    if (!spot) {
-      return `<span class="spot-chip${key === S.activeIndex ? " active" : ""}" data-index="${esc(key)}">
-        <span class="spot-name">${esc(key)}</span><span class="spot-price">—</span><span class="spot-change">—</span></span>`;
-    }
-    const cls = directionClass(spot.changePct ?? spot.change);
-    return `<span class="spot-chip${key === S.activeIndex ? " active" : ""}" data-index="${esc(key)}">
-      <span class="spot-name">${esc(spot.displayName || key)}</span>
-      <span class="spot-price">${fmt(spot.ltp)}</span>
-      <span class="spot-change ${cls}">${fmtSigned(spot.change)} · ${fmtSigned(spot.changePct)}%</span>
-    </span>`;
-  }).join("");
+  renderSpotPicker();
 
   const available = num(S.limits?.available);
   $("margin-chip").textContent = S.limits?.loaded ? `₹${fmt(available, 0)}` : (S.limits?.error ? "N/A" : "—");
@@ -3242,6 +3228,97 @@ function renderHeader() {
 
   $("mode-badge").textContent = "LIVE";
   renderFeed();
+}
+
+function spotPickerKeys(): string[] {
+  const order = [...(S.boot.indices || []), ...(S.boot.commodities || [])].map((i) => i.key);
+  if (S.spots.has("INDIA VIX")) order.push("INDIA VIX");
+  return order;
+}
+
+function spotStatus(spot: any): string {
+  if (S.marketOpen === false) return "CLOSED";
+  if (!spot || num(spot.ltp) <= 0) return "WAIT";
+  return "LIVE";
+}
+
+function spotMenuRowHTML(key: string): string {
+  const spot = S.spots.get(key);
+  const selected = key === S.activeIndex;
+  const isStatic = key === "INDIA VIX";
+  return `<button type="button" class="spot-menu-row${selected ? " active" : ""}${isStatic ? " static" : ""}" data-index="${esc(key)}" role="option" aria-selected="${selected}"${isStatic ? ' aria-disabled="true"' : ""}>
+    <span class="spot-row-main">
+      <span class="spot-row-name">${esc(spot?.displayName || key)}</span>
+      <span class="spot-row-sub">${esc(key)}</span>
+    </span>
+    <span class="spot-row-quote">
+      <span class="spot-row-price" data-spot-price>—</span>
+      <span class="spot-row-change" data-spot-change>—</span>
+    </span>
+    <span class="spot-row-badges">
+      <span class="spot-badge active" data-spot-active${selected ? "" : " hidden"}>ACTIVE</span>
+      <span class="spot-badge wait" data-spot-status>WAIT</span>
+    </span>
+  </button>`;
+}
+
+function renderSpotPicker(force = false) {
+  const order = spotPickerKeys();
+  const active = S.spots.get(S.activeIndex);
+
+  const dot = $("spot-current-dot");
+  if (dot) dot.className = `spot-live-dot ${spotStatus(active).toLowerCase()}`;
+  const nameEl = $("spot-current-name");
+  if (nameEl) nameEl.textContent = active?.displayName || S.activeIndex || "—";
+  const priceEl = $("spot-current-price");
+  if (priceEl) priceEl.textContent = active ? fmt(active.ltp) : "—";
+  const changeEl = $("spot-current-change");
+  if (changeEl) {
+    changeEl.textContent = active ? `${fmtSigned(active.change)} · ${fmtSigned(active.changePct)}%` : "—";
+    changeEl.className = `spot-current-change ${active ? directionClass(active.changePct ?? active.change) : ""}`;
+  }
+
+  const menu = $("spot-menu");
+  if (!menu) return;
+  const signature = `${order.join(",")}|${S.activeIndex}`;
+  if (force || menu.dataset.signature !== signature || !menu.childElementCount) {
+    menu.dataset.signature = signature;
+    menu.innerHTML = order.map(spotMenuRowHTML).join("");
+  }
+
+  menu.querySelectorAll(".spot-menu-row").forEach((row) => {
+    const key = row.getAttribute("data-index") || "";
+    const spot = S.spots.get(key);
+    const selected = key === S.activeIndex;
+    row.classList.toggle("active", selected);
+    row.setAttribute("aria-selected", String(selected));
+    const activeBadge = row.querySelector("[data-spot-active]");
+    if (activeBadge) activeBadge.hidden = !selected;
+    const rowName = row.querySelector(".spot-row-name");
+    if (rowName) rowName.textContent = spot?.displayName || key;
+    const rowPrice = row.querySelector("[data-spot-price]");
+    if (rowPrice) rowPrice.textContent = spot ? fmt(spot.ltp) : "—";
+    const rowChange = row.querySelector("[data-spot-change]");
+    if (rowChange) {
+      rowChange.textContent = spot ? `${fmtSigned(spot.change)} · ${fmtSigned(spot.changePct)}%` : "—";
+      rowChange.className = `spot-row-change ${spot ? directionClass(spot.changePct ?? spot.change) : ""}`;
+    }
+    const statusEl = row.querySelector("[data-spot-status]");
+    if (statusEl) {
+      const status = spotStatus(spot);
+      statusEl.textContent = status;
+      statusEl.className = `spot-badge ${status.toLowerCase()}`;
+    }
+  });
+}
+
+function setSpotMenuOpen(open: boolean) {
+  const menu = $("spot-menu");
+  const trigger = $("spot-current");
+  if (!menu || !trigger) return;
+  if (open) renderSpotPicker(true);
+  menu.hidden = !open;
+  trigger.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function renderFeed() {
@@ -7527,12 +7604,32 @@ function bindEvents() {
     });
   }
 
-  $("spot-strip").addEventListener("click", (event) => {
-    const chip = event.target.closest(".spot-chip");
-    if (!chip) return;
-    const key = chip.dataset.index;
-    if (!key || key === "INDIA VIX" || key === S.activeIndex) return;
+  $("spot-current")?.addEventListener("click", () => {
+    const menu = $("spot-menu");
+    setSpotMenuOpen(menu?.hidden !== false);
+  });
+  $("spot-current")?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSpotMenuOpen(true);
+    }
+  });
+  $("spot-menu")?.addEventListener("click", (event) => {
+    const row = event.target.closest(".spot-menu-row");
+    if (!row) return;
+    const key = row.dataset.index;
+    if (!key || key === "INDIA VIX") return;
+    setSpotMenuOpen(false);
+    if (key === S.activeIndex) return;
     switchIndex(key);
+  });
+  document.addEventListener("click", (event) => {
+    const picker = $("spot-picker");
+    if (picker && event.target instanceof Node && picker.contains(event.target)) return;
+    setSpotMenuOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setSpotMenuOpen(false);
   });
 
   $("index-select").addEventListener("change", (event) => switchIndex(event.target.value));
