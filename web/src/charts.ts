@@ -1327,7 +1327,24 @@ function registerCustomOverlays() {
       const bgColor = isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
       const defaultKindLabel = isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
       const label = data.label || `${defaultKindLabel}: ₹${price.toFixed(2)}`;
-      const showRemove = Boolean(data.draggable) && (isTarget || isStop);
+      // Every draggable bracket level exposes a grab handle and a remove badge.
+      // The handle keeps price-badge clicks free for chart interactions while
+      // still giving a clear affordance for moving the level.
+      const showRemove = Boolean(data.draggable);
+      const showGrip = Boolean(data.draggable);
+      const removeX = showRemove ? width - 14 : null;
+      const gripX = showGrip ? (showRemove ? width - 34 : width - 14) : null;
+      let labelX = width - 8;
+      if (showGrip) labelX = gripX - 11;
+      if (!showGrip && showRemove) labelX = removeX - 10;
+      if (showGrip) {
+        data.gripX = gripX;
+        data.gripY = y;
+      }
+      if (showRemove) {
+        data.badgeX = removeX;
+        data.badgeY = y;
+      }
 
       const figures = [];
 
@@ -1351,7 +1368,7 @@ function registerCustomOverlays() {
       figures.push({
         type: "text",
         attrs: {
-          x: showRemove ? width - 28 : width - 8,
+          x: labelX,
           y,
           text: label,
           align: "right",
@@ -1372,15 +1389,37 @@ function registerCustomOverlays() {
         ignoreEvent: true,
       });
 
-      if (showRemove) {
-        // Cache the badge centre so pointer hit-testing uses the same drawing
-        // coordinate space as the overlay renderer.
-        data.badgeX = width - 15;
-        data.badgeY = y;
+      if (showGrip) {
         figures.push({
           type: "text",
           attrs: {
-            x: width - 15,
+            x: gripX,
+            y,
+            text: "⋮⋮",
+            align: "center",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#e2e8f0",
+            backgroundColor: "#334155",
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 3,
+            paddingRight: 3,
+            paddingTop: 2,
+            paddingBottom: 2,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      }
+
+      if (showRemove) {
+        figures.push({
+          type: "text",
+          attrs: {
+            x: removeX,
             y,
             text: "✕",
             align: "center",
@@ -1507,10 +1546,25 @@ function registerCustomOverlays() {
       const priceStr = Number(data.price || 0).toFixed(2);
       const tagText = `OPEN ${sideStr}: ${qty}@ ₹${priceStr}`;
 
+      const showRemove = Boolean(data.draggable);
+      const showGrip = Boolean(data.draggable);
+      const removeX = showRemove ? width - 14 : null;
+      const gripX = showGrip ? (showRemove ? width - 34 : width - 14) : null;
+      let labelX = width - 8;
+      if (showGrip) labelX = gripX - 11;
+      if (showGrip) {
+        data.gripX = gripX;
+        data.gripY = y;
+      }
+      if (showRemove) {
+        data.badgeX = removeX;
+        data.badgeY = y;
+      }
+
       figures.push({
         type: "text",
         attrs: {
-          x: width - 8,
+          x: labelX,
           y,
           text: tagText,
           align: "right",
@@ -1530,6 +1584,58 @@ function registerCustomOverlays() {
         },
         ignoreEvent: true,
       });
+
+      if (showGrip) {
+        figures.push({
+          type: "text",
+          attrs: {
+            x: gripX,
+            y,
+            text: "⋮⋮",
+            align: "center",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#e2e8f0",
+            backgroundColor: "#334155",
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 3,
+            paddingRight: 3,
+            paddingTop: 2,
+            paddingBottom: 2,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      }
+
+      if (showRemove) {
+        figures.push({
+          type: "text",
+          attrs: {
+            x: removeX,
+            y,
+            text: "✕",
+            align: "center",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: "#7f1d1d",
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 3,
+            paddingRight: 3,
+            paddingTop: 1,
+            paddingBottom: 1,
+            borderRadius: 6,
+          },
+          ignoreEvent: true,
+        });
+      }
 
       return figures;
     },
@@ -3280,12 +3386,14 @@ export class CandleChart {
     } catch (_) {}
   }
 
-  getPriceFromPixel(pixelY, pixelX = 50) {
+  getPriceFromPixel(pixelY, pixelX = 50, snapToTick = true) {
     if (!this.chart) return null;
     try {
       const res = this.chart.convertFromPixel({ x: pixelX, y: pixelY });
       if (res && Number.isFinite(res.value) && res.value > 0) {
-        return Math.round(res.value * 20) / 20;
+        // Dragging must follow the pointer continuously; snapping to the
+        // exchange tick only on drop avoids visible jumps on cheap options.
+        return snapToTick ? Math.round(res.value * 20) / 20 : res.value;
       }
     } catch (e) {
       console.warn("getPriceFromPixel:", e);
@@ -3601,6 +3709,7 @@ export class CandleChart {
           lock: true,
           extendData: {
             orderId: o.id,
+            kind: "ENTRY",
             side: o.side,
             qty: o.quantity - (Number(o.filled_quantity) || 0),
             price,
@@ -3646,30 +3755,63 @@ export class CandleChart {
     return [...this.draggableBracketLevels, ...this.draggableOrderLevels];
   }
 
-  hitTestLevel(clientY) {
-    if (!this.showTrades || !this.chart || !this.container) return null;
-    const levels = this.getDraggableLevels();
-    if (!levels.length) return null;
-    const rect = this.container.getBoundingClientRect();
-    const y = clientY - rect.top;
-    if (y < 0 || y > rect.height) return null;
-    const x = Math.max(1, Math.min(rect.width - 1, rect.width / 2));
-    const price = this.getPriceFromPixel(y, x);
-    if (!Number.isFinite(price) || price <= 0) return null;
-    const above = this.getPriceFromPixel(Math.max(0, y - 6), x);
-    const below = this.getPriceFromPixel(Math.min(rect.height - 1, y + 6), x);
-    let tolerance = above && below ? Math.abs(below - above) / 2 : price * 0.0015;
-    tolerance = Math.max(tolerance, 0.05);
-    let best = null;
-    let bestDiff = Infinity;
-    for (const level of levels) {
-      const diff = Math.abs(Number(level.price) - price);
-      if (diff <= tolerance && diff < bestDiff) {
-        best = level;
-        bestDiff = diff;
+  overlayHitTargets() {
+    if (!this.chart) return [];
+    const groups = ["bracket_levels", "open_orders"];
+    const targets = [];
+    for (const groupId of groups) {
+      let overlays = [];
+      try {
+        overlays = this.chart.getOverlays({ groupId });
+      } catch (_) {
+        continue;
+      }
+      for (const overlay of overlays || []) {
+        const data = overlay?.extendData || {};
+        if (!data.draggable) continue;
+        targets.push(data);
       }
     }
-    return best;
+    return targets;
+  }
+
+  resolveDraggableLevel(data) {
+    if (!data) return null;
+    const isOrder = data.orderId !== undefined && data.orderId !== null && data.orderId !== "";
+    const list = isOrder ? this.draggableOrderLevels : this.draggableBracketLevels;
+    const match = list.find((item) => {
+      if (String(item.kind) !== String(data.kind)) return false;
+      if (Math.abs(Number(item.price) - Number(data.price)) >= 1e-6) return false;
+      return isOrder
+        ? String(item.orderId) === String(data.orderId)
+        : String(item.bracketId) === String(data.bracketId);
+    });
+    if (match) return match;
+    return {
+      source: isOrder ? "order" : "bracket",
+      orderId: isOrder ? data.orderId : undefined,
+      bracketId: isOrder ? undefined : data.bracketId,
+      kind: data.kind,
+      price: Number(data.price),
+      side: data.side,
+    };
+  }
+
+  /** Only the drawn grab handle starts a drag; the price badge stays clickable. */
+  hitTestLevel(clientX, clientY) {
+    if (!this.showTrades || !this.chart || !this.container) return null;
+    const rect = this.container.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (y < 0 || y > rect.height) return null;
+    for (const data of this.overlayHitTargets()) {
+      const gripX = Number(data.gripX);
+      const gripY = Number(data.gripY);
+      if (!Number.isFinite(gripX) || !Number.isFinite(gripY)) continue;
+      if (Math.abs(x - gripX) > 10 || Math.abs(y - gripY) > 10) continue;
+      return this.resolveDraggableLevel(data);
+    }
+    return null;
   }
 
   hitTestRemoveBadge(clientX, clientY) {
@@ -3677,31 +3819,12 @@ export class CandleChart {
     const rect = this.container.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
-    let overlays = [];
-    try {
-      overlays = this.chart.getOverlays({ groupId: "bracket_levels" });
-    } catch (_) {
-      return null;
-    }
-    for (const overlay of overlays || []) {
-      const data = overlay?.extendData || {};
-      if (!data.draggable || (data.kind !== "TARGET" && data.kind !== "STOP")) continue;
+    for (const data of this.overlayHitTargets()) {
       const badgeX = Number(data.badgeX);
       const badgeY = Number(data.badgeY);
       if (!Number.isFinite(badgeX) || !Number.isFinite(badgeY)) continue;
       if (Math.abs(x - badgeX) > 12 || Math.abs(y - badgeY) > 12) continue;
-      const level = this.draggableBracketLevels.find(
-        (item) => item.kind === data.kind &&
-          Math.abs(Number(item.price) - Number(data.price)) < 1e-6 &&
-          String(item.bracketId) === String(data.bracketId)
-      );
-      return level || {
-        source: "bracket",
-        bracketId: data.bracketId,
-        kind: data.kind,
-        price: Number(data.price),
-        side: data.side,
-      };
+      return this.resolveDraggableLevel(data);
     }
     return null;
   }
@@ -3709,7 +3832,8 @@ export class CandleChart {
   levelDragLabel(level, price) {
     const kind = String(level?.kind || "ENTRY").toUpperCase();
     const prefix = kind === "TARGET" ? "MOVE TARGET" : kind === "STOP" ? "MOVE SL" : "MOVE ENTRY";
-    return `${prefix}: ₹${Number(price).toFixed(2)}`;
+    const shown = Number(price) < 1 ? Number(price).toFixed(3) : Number(price).toFixed(2);
+    return `${prefix}: ₹${shown}`;
   }
 
   showLevelDragPreview(level, price) {
@@ -3772,7 +3896,7 @@ export class CandleChart {
       }
       return;
     }
-    const level = this.hitTestLevel(event.clientY);
+    const level = this.hitTestLevel(event.clientX, event.clientY);
     if (!level) return;
     event.preventDefault();
     event.stopPropagation();
@@ -3784,7 +3908,7 @@ export class CandleChart {
       price: Number(level.price),
     };
     this.suppressChartClickUntil = Date.now() + 600;
-    this.container.style.cursor = "ns-resize";
+    this.container.style.cursor = "grabbing";
     try {
       this.container.setPointerCapture(event.pointerId);
     } catch (_) {}
@@ -3797,7 +3921,7 @@ export class CandleChart {
       if (this.hitTestRemoveBadge(event.clientX, event.clientY)) {
         this.container.style.cursor = "pointer";
       } else {
-        this.container.style.cursor = this.hitTestLevel(event.clientY) ? "ns-resize" : "";
+        this.container.style.cursor = this.hitTestLevel(event.clientX, event.clientY) ? "grab" : "";
       }
       return;
     }
@@ -3807,9 +3931,12 @@ export class CandleChart {
     const rect = this.container.getBoundingClientRect();
     const y = Math.max(0, Math.min(rect.height - 1, event.clientY - rect.top));
     const x = Math.max(1, Math.min(rect.width - 1, rect.width / 2));
-    const price = this.getPriceFromPixel(y, x);
+    const price = this.getPriceFromPixel(y, x, false);
     if (!Number.isFinite(price) || price <= 0) return;
-    if (Math.abs(event.clientY - this.levelDrag.startY) >= 2) this.levelDrag.moved = true;
+    if (Math.abs(event.clientY - this.levelDrag.startY) >= 2) {
+      this.levelDrag.moved = true;
+      this.container.style.cursor = "grabbing";
+    }
     this.levelDrag.price = price;
     this.updateLevelDragPreview(this.levelDrag.level, price);
   }

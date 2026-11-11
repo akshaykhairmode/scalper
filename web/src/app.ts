@@ -2776,15 +2776,54 @@ async function handleChartLevelDrop(pane, info) {
 async function handleChartLevelRemove(pane, info) {
   if (!info) return;
   const kind = String(info.kind || "").toUpperCase();
-  if (kind !== "TARGET" && kind !== "STOP") return;
+  if (kind !== "TARGET" && kind !== "STOP" && kind !== "ENTRY") return;
   if (!S.session?.authenticated) {
     openLogin();
-    toast("Sign in with Kotak before modifying bracket exits.", "warn");
+    toast("Sign in with Kotak before modifying orders.", "warn");
     return;
   }
   const bracket = info.bracketId
     ? (S.autoTargets || []).find((b) => String(b.id) === String(info.bracketId))
     : null;
+  const order = !bracket && info.orderId
+    ? (S.orders || []).find((o) => String(o.id) === String(info.orderId))
+    : null;
+
+  if (kind === "ENTRY") {
+    if (bracket) {
+      if (bracket.status !== "PENDING_ENTRY") {
+        toast("Only a pending entry can be removed from the chart.", "warn", 3500);
+        return;
+      }
+      if (chartLevelConfirmationsEnabled()) {
+        const ok = await confirmAction({
+          title: "Remove Pending Entry",
+          body: `Cancel the pending entry for <b>${esc(bracket.symbol || chartTradesLabel(tradesPaneKey(pane)))}</b> at <b>₹${fmt(bracket.entryPrice)}</b>?<br><span class="muted">The entry order is cancelled at the broker and its target/stop levels are discarded.</span>`,
+          okLabel: "Cancel Entry",
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      await onCancelBracket(bracket.id);
+      return;
+    }
+    if (order) {
+      if (chartLevelConfirmationsEnabled()) {
+        const ok = await confirmAction({
+          title: "Remove Pending Entry",
+          body: `Cancel order <b>${esc(order.id)}</b> for <b>${esc(order.symbol || chartTradesLabel(tradesPaneKey(pane)))}</b> at <b>₹${fmt(order.price)}</b>?<br><span class="muted">The order is cancelled at the broker.</span>`,
+          okLabel: "Cancel Order",
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      await onCancelOrder(order.id);
+      return;
+    }
+    toast("Could not find the pending order for this chart level.", "error", 4000);
+    return;
+  }
+
   if (!bracket) {
     toast("Could not find the bracket for this chart level.", "error", 4000);
     return;
