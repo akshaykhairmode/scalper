@@ -3236,8 +3236,8 @@ function spotPickerKeys(): string[] {
   return order;
 }
 
-function spotStatus(spot: any): string {
-  if (S.marketOpen === false) return "CLOSED";
+function spotStatus(key: string, spot: any): string {
+  if (!marketOpenForKey(key)) return "CLOSED";
   if (!spot || num(spot.ltp) <= 0) return "WAIT";
   return "LIVE";
 }
@@ -3267,7 +3267,7 @@ function renderSpotPicker(force = false) {
   const active = S.spots.get(S.activeIndex);
 
   const dot = $("spot-current-dot");
-  if (dot) dot.className = `spot-live-dot ${spotStatus(active).toLowerCase()}`;
+  if (dot) dot.className = `spot-live-dot ${spotStatus(S.activeIndex, active).toLowerCase()}`;
   const nameEl = $("spot-current-name");
   if (nameEl) nameEl.textContent = active?.displayName || S.activeIndex || "—";
   const priceEl = $("spot-current-price");
@@ -3305,7 +3305,7 @@ function renderSpotPicker(force = false) {
     }
     const statusEl = row.querySelector("[data-spot-status]");
     if (statusEl) {
-      const status = spotStatus(spot);
+      const status = spotStatus(key, spot);
       statusEl.textContent = status;
       statusEl.className = `spot-badge ${status.toLowerCase()}`;
     }
@@ -8425,21 +8425,27 @@ function updateClock() {
     clock.textContent = `${clockFormatter.format(new Date())} IST`;
   }
   updateSessionCountdown();
+  // Per-underlying statuses change at different times (NSE/BSE vs MCX).
+  renderSpotPicker();
 }
 
-function currentMarketState() {
+function isCommodityKey(key: string): boolean {
+  return (S.boot?.commodities || []).some((commodity) => commodity.key === key);
+}
+
+function marketOpenForKey(key: string): boolean {
   const parts = marketStateFormatter.formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const date = `${values.year}-${values.month}-${values.day}`;
   if (values.weekday === "Sat" || values.weekday === "Sun" ||
-      (S.boot.marketSession?.holidays || []).includes(date)) return false;
+      (S.boot?.marketSession?.holidays || []).includes(date)) return false;
   const toMinutes = (value, fallback) => {
     const match = /^(\d{2}):(\d{2})$/.exec(value || "");
     return match ? Number(match[1]) * 60 + Number(match[2]) : fallback;
   };
   let open;
   let close;
-  if (activeCommodity()) {
+  if (isCommodityKey(key)) {
     open = 9 * 60;
     const year = Number(values.year);
     const firstSunday = (month) => {
@@ -8461,11 +8467,16 @@ function currentMarketState() {
   return now >= open && now < close;
 }
 
+function currentMarketState() {
+  return marketOpenForKey(S.activeIndex);
+}
+
 function updateMarketPhase(reloadOnChange = true) {
   const open = currentMarketState();
   if (S.marketOpen === open) return;
   const wasKnown = S.marketOpen !== null;
   S.marketOpen = open;
+  renderSpotPicker();
   if (!wasKnown || !reloadOnChange || !S.expiry) return;
   if (open) {
     S.candles = {};
