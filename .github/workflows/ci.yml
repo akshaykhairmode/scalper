@@ -195,8 +195,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | while IFS= read -r tag; do
-            if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9]*)$ ]]; then
+          latest="$(git tag --merged "$GITHUB_SHA" --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | while IFS= read -r tag; do
+            # Patch must allow multi-digit values such as v0.25.10.
+            if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
               echo "$tag"
               break
             fi
@@ -215,9 +216,18 @@ jobs:
           fi
 
           if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
-            echo "Tag $version already exists; skipping release."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            if [[ "$(git rev-list -n 1 "refs/tags/$version")" == "$GITHUB_SHA" ]]; then
+              echo "Tag $version already points at $GITHUB_SHA; skipping release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A tag can exist for a different commit when the version base was
+            # mis-detected or a tag was created manually. Never skip silently:
+            # bump to the next free patch so the release still ships.
+            echo "Tag $version exists for another commit; bumping to the next free patch."
+            while git rev-parse -q --verify "refs/tags/$version" >/dev/null; do
+              version="$(printf 'fix: bump\n' | bash ./scripts/next-version.sh "$version")"
+            done
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
