@@ -859,7 +859,7 @@
     <div class="cqo-row cqo-target-row">
       <label class="cqo-checkbox-label">
         <input type="checkbox" id="cqo-target-enable" checked>
-        <span>Auto Target (TP)</span>
+        <span>Auto Target (TP) — server</span>
       </label>
       <div class="cqo-stepper" id="cqo-target-stepper">
         <button type="button" id="cqo-target-dec" title="Decrease target by 0.50 pt" aria-label="Decrease target">−</button>
@@ -874,7 +874,7 @@
     <div class="cqo-row cqo-sl-row">
       <label class="cqo-checkbox-label">
         <input type="checkbox" id="cqo-sl-enable" checked>
-        <span>Auto Stop-Loss (SL)</span>
+        <span>Auto Stop-Loss (SL) — server</span>
       </label>
       <div class="cqo-stepper" id="cqo-sl-stepper">
         <button type="button" id="cqo-sl-dec" title="Widen stop-loss by 0.50 pt" aria-label="Widen stop-loss">−</button>
@@ -885,6 +885,20 @@
     <div class="cqo-target-summary" id="cqo-sl-summary">
       <span class="cqo-pts-badge sl" id="cqo-sl-pts">−2.00 pts</span>
       <span class="cqo-target-pnl" id="cqo-sl-pnl">(Risk −₹130)</span>
+    </div>
+    <div class="cqo-row cqo-exchange-stop-row">
+      <label class="cqo-checkbox-label">
+        <input type="checkbox" id="cqo-exchange-stop-enable">
+        <span>Exchange backstop (EXCH)</span>
+      </label>
+      <select id="cqo-exchange-stop-mode" class="cqo-price-input" aria-label="Exchange stop type">
+        <option value="SL-M">SL-M</option>
+        <option value="SL">SL-L</option>
+      </select>
+    </div>
+    <div class="cqo-target-summary" id="cqo-exchange-stop-summary">
+      <span class="cqo-pts-badge xstop" id="cqo-exchange-stop-price">Off</span>
+      <span class="cqo-target-pnl" id="cqo-exchange-stop-risk">No live sell at Kotak</span>
     </div>
     <div class="cqo-actions">
       <button type="button" class="cqo-btn buy" id="cqo-buy-btn">

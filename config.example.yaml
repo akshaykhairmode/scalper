@@ -146,6 +146,22 @@ trading:
     payoff_range_pct: 10
     payoff_points: 121
     include_preview: true
+  # Optional exchange-side catastrophe stop-loss. Kotak has no native bracket,
+  # so when enabled the server places ONE wide SL-M/SL backstop after the entry
+  # fills. Normal TP/SL stay server-side. The user's per-order choice wins over
+  # this default; "off" keeps the current server-only behaviour.
+  bracket:
+    exchange_stop:
+      mode: "off"                  # off | sl_m | sl_l
+      distance_mode: "multiplier"  # multiplier | percent | points | ticks
+      distance_value: 2.5          # 2.5x the server stop distance by default
+      sl_l_offset_ticks: 2         # limit offset for sl_l
+      place_on_partial_fill: true
+      cancel_retries: 3
+      cancel_retry_delay_ms: 100
+      on_cancel_failure: "alert"   # alert | place_exit_anyway
+      reconcile_on_startup: true
+      allow_chart_edit: false      # v1: exchange stop is read-only on the chart
 
 scrip:
   refresh_at: "08:45"

@@ -2550,6 +2550,9 @@ function updateChartTrades() {
         stopPrice: ceBracket.stopLossPrice,
         side: ceBracket.action,
         pending: ceBracket.status === "PENDING_ENTRY",
+        exchangeStopPrice: ceBracket.exchangeStopPrice,
+        exchangeStopMode: ceBracket.exchangeStopMode,
+        exchangeStopStatus: ceBracket.exchangeStopStatus,
       });
     } else {
       S.charts.ce.clearBracketLevels?.();
@@ -2592,6 +2595,9 @@ function updateChartTrades() {
         stopPrice: peBracket.stopLossPrice,
         side: peBracket.action,
         pending: peBracket.status === "PENDING_ENTRY",
+        exchangeStopPrice: peBracket.exchangeStopPrice,
+        exchangeStopMode: peBracket.exchangeStopMode,
+        exchangeStopStatus: peBracket.exchangeStopStatus,
       });
     } else {
       S.charts.pe.clearBracketLevels?.();
@@ -4332,7 +4338,7 @@ async function onTrade(action, type) {
   }
 }
 
-async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0, autoStopPrice = 0) {
+async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0, autoStopPrice = 0, exchangeStop = null) {
   const orderMode = tradingMode();
   if (!S.session?.authenticated) {
     openLogin();
@@ -4396,7 +4402,8 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
     const orderId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
     toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
 
-    if (autoTargetPrice > 0 || autoStopPrice > 0) {
+    const hasExchangeBackstop = exchangeStop && (exchangeStop.mode === "SL-M" || exchangeStop.mode === "SL");
+    if (autoTargetPrice > 0 || autoStopPrice > 0 || hasExchangeBackstop) {
       const newTarget = {
         id: "tgt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
         orderId,
@@ -4415,6 +4422,10 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         filledQty: 0,
         exitOrderId: "",
         exitPrice: 0,
+        exchangeStopMode: exchangeStop?.mode || "",
+        exchangeStopOrderId: "",
+        exchangeStopPrice: exchangeStop?.price || 0,
+        exchangeStopStatus: "",
         ltp: price,
         status: "PENDING_ENTRY",
         createdAt: Date.now(),
@@ -4433,6 +4444,7 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         target_price: autoTargetPrice,
         stoploss_price: autoStopPrice,
         trailing_stop: 0,
+        exchange_stop_mode: exchangeStop?.mode || "",
       }).catch((err) => {
         console.warn("failed to register server bracket:", err);
       });
@@ -4442,6 +4454,9 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
       }
       if (autoStopPrice > 0) {
         exits.push(`SL ₹${autoStopPrice.toFixed(2)} (−${Math.abs(price - autoStopPrice).toFixed(2)} pts)`);
+      }
+      if (hasExchangeBackstop) {
+        exits.push(`${exchangeStop.mode === "SL" ? "SL-L" : "SL-M"} ₹${Number(exchangeStop.price).toFixed(2)} at EXCH`);
       }
       toast(`🎯 Auto exits armed: ${exits.join(" · ")} once filled.`, "info", 4500);
       renderTab();
@@ -4552,6 +4567,10 @@ function normalizeBracket(raw) {
     trailingStop,
     shares,
     filledQty,
+    exchangeStopMode: String(raw.exchange_stop_mode ?? raw.exchangeStopMode ?? ""),
+    exchangeStopOrderId: String(raw.exchange_stop_order_id ?? raw.exchangeStopOrderId ?? ""),
+    exchangeStopPrice: num(raw.exchange_stop_price ?? raw.exchangeStopPrice ?? 0),
+    exchangeStopStatus: String(raw.exchange_stop_status ?? raw.exchangeStopStatus ?? ""),
     exitOrderId: String(raw.exit_order_id ?? raw.exitOrderId ?? raw.ExitOrderId ?? ""),
     exitPrice,
     ltp: ltp > 0 ? ltp : entryPrice,
@@ -4567,6 +4586,11 @@ function upsertBracket(bracket) {
   if (idx !== -1) {
     const existing = S.autoTargets[idx];
     if (!bracket.ltp && existing.ltp) bracket.ltp = existing.ltp;
+    // A pending bracket has no exchange trigger yet; keep the local preview
+    // until the server computes one from the actual entry fill.
+    if (!bracket.exchangeStopPrice && existing.exchangeStopPrice) {
+      bracket.exchangeStopPrice = existing.exchangeStopPrice;
+    }
     const merged = {
       ...existing,
       ...bracket,
@@ -4699,7 +4723,7 @@ function bracketsHTML() {
     </div>
   </div>
   <table class="book"><thead><tr>
-    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target</th><th>SL</th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
+    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target <span class="muted">SRV</span></th><th>SL <span class="muted">SRV</span></th><th>Backstop <span class="muted">EXCH</span></th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
   </tr></thead><tbody>`;
 
   for (const b of [...brackets].reverse()) {
@@ -4756,6 +4780,20 @@ function bracketsHTML() {
       ? `${b.underlying || S.activeIndex} ${fmtStrike(b.strike)} ${b.type}`
       : (b.symbol || `${b.underlying || S.activeIndex}`);
 
+    const hasBackstop = b.exchangeStopMode && b.exchangeStopMode !== "OFF" && b.exchangeStopPrice > 0;
+    const backstopMode = b.exchangeStopMode === "SL" ? "SL-L" : b.exchangeStopMode;
+    const backstopStatus = String(b.exchangeStopStatus || "").toUpperCase();
+    const backstopText = hasBackstop
+      ? `EXCH ${backstopMode} ₹${fmt(b.exchangeStopPrice)}${backstopStatus ? ` · ${backstopStatus}` : ""}`
+      : "—";
+    const backstopClass = !hasBackstop
+      ? "muted"
+      : backstopStatus === "FILLED"
+        ? "sl-hit"
+        : (backstopStatus === "REJECTED" || backstopStatus === "FAILED")
+          ? "muted"
+          : "pending";
+
     html += `<tr data-bracket-id="${esc(b.id)}">
       <td class="sym font-bold" title="${esc(b.symbol)}">${esc(contractDisplay)}</td>
       <td class="${sideClass} font-bold">${sideLabel}</td>
@@ -4763,6 +4801,7 @@ function bracketsHTML() {
       <td class="font-bold">₹${fmt(b.entryPrice)}</td>
       <td class="up font-bold">${b.targetPrice > 0 ? `₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span>` : "—"}</td>
       <td class="down font-bold">${b.stopLossPrice > 0 ? `₹${fmt(b.stopLossPrice)} <span class="muted" style="font-size:9.5px;">(−${Math.abs(b.entryPrice - b.stopLossPrice).toFixed(2)})</span>` : "—"}</td>
+      <td><span class="status-badge ${backstopClass}">${esc(backstopText)}</span></td>
       <td class="font-bold" data-bracket-ltp="${esc(b.id)}">₹${fmt(ltp)}</td>
       <td class="${pnlClass} font-bold" data-bracket-pnl="${esc(b.id)}">${pnlText}</td>
       <td><span class="status-badge ${badgeClass}">${badgeLabel}</span></td>
@@ -5027,6 +5066,7 @@ function initChartQuickOrder() {
         renderQuickOrderSL();
         S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
       }
+      renderQuickOrderExchangeStop();
     }
   });
   $("cqo-price")?.addEventListener("change", (e) => {
@@ -5159,6 +5199,7 @@ function initChartQuickOrder() {
       if (S.quickOrder.slEnabled) {
         S.charts[S.quickOrder.pane]?.showStopPreview(val, `SL ₹${val.toFixed(2)}`);
       }
+      renderQuickOrderExchangeStop();
     }
   });
 
@@ -5174,6 +5215,25 @@ function initChartQuickOrder() {
 
   $("cqo-sl-price")?.addEventListener("change", commitSlPrice);
   $("cqo-sl-price")?.addEventListener("blur", commitSlPrice);
+
+  // Exchange backstop controls
+  $("cqo-exchange-stop-enable")?.addEventListener("change", (e) => {
+    if (!S.quickOrder) return;
+    S.quickOrder.exchangeStopEnabled = e.target.checked;
+    try {
+      localStorage.setItem("scalper-exchange-stop-enabled", e.target.checked ? "true" : "false");
+    } catch (_) {}
+    renderQuickOrderExchangeStop();
+  });
+
+  $("cqo-exchange-stop-mode")?.addEventListener("change", (e) => {
+    if (!S.quickOrder) return;
+    S.quickOrder.exchangeStopMode = e.target.value === "SL" ? "SL" : "SL-M";
+    try {
+      localStorage.setItem("scalper-exchange-stop-mode", S.quickOrder.exchangeStopMode);
+    } catch (_) {}
+    renderQuickOrderExchangeStop();
+  });
 
   $("cqo-buy-btn")?.addEventListener("click", () => submitQuickOrder("buy"));
   $("cqo-sell-btn")?.addEventListener("click", () => submitQuickOrder("sell"));
@@ -5537,6 +5597,20 @@ function openChartQuickOrder(pane, price, x, y) {
 
   const slPrice = Math.max(0.05, Math.round((price - slPts) * 20) / 20);
 
+  const bootStopMode = String(S.boot?.exchangeStopMode || "off").toLowerCase();
+  let exchangeStopEnabled = bootStopMode === "sl_m" || bootStopMode === "sl_l" || bootStopMode === "sl-m" || bootStopMode === "sl";
+  try {
+    const saved = localStorage.getItem("scalper-exchange-stop-enabled");
+    if (saved === "true") exchangeStopEnabled = true;
+    if (saved === "false") exchangeStopEnabled = false;
+  } catch (_) {}
+  let exchangeStopMode = "SL-M";
+  try {
+    const savedMode = localStorage.getItem("scalper-exchange-stop-mode");
+    if (savedMode === "SL" || savedMode === "SL-L") exchangeStopMode = "SL";
+    else if (savedMode === "SL-M" || savedMode === "SLM") exchangeStopMode = "SL-M";
+  } catch (_) {}
+
   S.quickOrder = {
     pane,
     type,
@@ -5550,6 +5624,9 @@ function openChartQuickOrder(pane, price, x, y) {
     slPts,
     slPrice,
     slEnabled,
+    exchangeStopEnabled,
+    exchangeStopMode,
+    exchangeStopPrice: 0,
   };
 
   const widget = $("chart-quick-order");
@@ -5562,6 +5639,7 @@ function openChartQuickOrder(pane, price, x, y) {
   renderQuickOrderQty();
   renderQuickOrderTarget();
   renderQuickOrderSL();
+  renderQuickOrderExchangeStop();
 
   const frame = chart.container.closest(".chart-frame") || chart.container;
   frame.appendChild(widget);
@@ -5662,6 +5740,65 @@ function renderQuickOrderSL() {
 
   const pnlEl = $("cqo-sl-pnl");
   if (pnlEl) pnlEl.textContent = `(Risk −₹${risk.toLocaleString("en-IN")})`;
+
+  renderQuickOrderExchangeStop();
+}
+
+function computeExchangeStopPrice(price, slPrice, mode = "SL-M") {
+  const p = num(price);
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  const distMode = String(S.boot?.exchangeStopDistanceMode || "multiplier").toLowerCase();
+  const distVal = Math.max(0.01, num(S.boot?.exchangeStopDistanceValue, 2.5));
+  let distance = 0;
+  if (distMode === "percent") {
+    distance = (p * distVal) / 100;
+  } else if (distMode === "points") {
+    distance = distVal;
+  } else if (distMode === "ticks") {
+    distance = distVal * 0.05;
+  } else {
+    const sl = num(slPrice);
+    const normal = sl > 0 && sl < p ? p - sl : 0;
+    distance = normal > 0 ? normal * distVal : (p * distVal) / 100;
+  }
+  if (!Number.isFinite(distance) || distance <= 0) return 0;
+  const trigger = Math.round((p - distance) * 20) / 20;
+  return Math.max(0.05, trigger);
+}
+
+function renderQuickOrderExchangeStop() {
+  if (!S.quickOrder) return;
+  const { exchangeStopEnabled, exchangeStopMode, price, slPrice, slEnabled, lotsCount, lot } = S.quickOrder;
+
+  const enableEl = $("cqo-exchange-stop-enable");
+  if (enableEl) enableEl.checked = !!exchangeStopEnabled;
+  const modeEl = $("cqo-exchange-stop-mode");
+  if (modeEl) {
+    modeEl.value = exchangeStopMode === "SL" ? "SL" : "SL-M";
+    modeEl.disabled = !exchangeStopEnabled;
+  }
+  const summaryEl = $("cqo-exchange-stop-summary");
+  if (summaryEl) summaryEl.style.opacity = exchangeStopEnabled ? "1" : "0.4";
+
+  const priceEl = $("cqo-exchange-stop-price");
+  const riskEl = $("cqo-exchange-stop-risk");
+  if (!exchangeStopEnabled) {
+    S.quickOrder.exchangeStopPrice = 0;
+    if (priceEl) priceEl.textContent = "Off";
+    if (riskEl) riskEl.textContent = "No live sell at Kotak";
+    return;
+  }
+
+  const trigger = computeExchangeStopPrice(price, slEnabled ? slPrice : 0, exchangeStopMode);
+  S.quickOrder.exchangeStopPrice = trigger;
+  const shares = Math.max(1, lotsCount * lot);
+  const risk = Math.max(0, Math.round((price - trigger) * shares));
+  if (priceEl) {
+    priceEl.textContent = `${exchangeStopMode} ₹${trigger.toFixed(2)} · EXCH`;
+  }
+  if (riskEl) {
+    riskEl.textContent = `Catastrophe risk ≈ ₹${risk.toLocaleString("en-IN")} (server SL still active)`;
+  }
 }
 
 function updateQuickOrderSLPts(newPts) {
@@ -5762,6 +5899,7 @@ function updateQuickOrderPrice(newPrice) {
     renderQuickOrderSL();
     S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
   }
+  renderQuickOrderExchangeStop();
 }
 
 function updateQuickOrderLots(delta) {
@@ -5772,6 +5910,7 @@ function updateQuickOrderLots(delta) {
   renderQuickOrderQty();
   renderQuickOrderTarget();
   renderQuickOrderSL();
+  renderQuickOrderExchangeStop();
   renderOrderPad();
 }
 
@@ -5801,10 +5940,29 @@ async function submitQuickOrder(action) {
   const inputSl = num($("cqo-sl-price")?.value);
   const slp = Number.isFinite(inputSl) && inputSl > 0 ? inputSl : slPrice;
   const autoStop = (slEnabled && action === "buy" && slp > 0 && slp < price) ? Math.round(slp * 20) / 20 : 0;
+  const exchangeStopEnabled = Boolean(S.quickOrder.exchangeStopEnabled) && action === "buy";
+  // An explicit per-order "off" must override a global default that is on.
+  const exchangeStopMode = exchangeStopEnabled ? S.quickOrder.exchangeStopMode : "off";
+  const exchangeStopPrice = exchangeStopEnabled
+    ? computeExchangeStopPrice(price, slEnabled ? slp : 0, exchangeStopMode)
+    : 0;
+
+  if (autoTarget === 0 && autoStop === 0 && !(exchangeStopEnabled && exchangeStopMode)) {
+    const proceed = await confirmAction({
+      title: "No exits armed",
+      body: "This order has <b>no server TP</b>, <b>no server SL</b>, and <b>no exchange backstop</b>.<br><span class=\"warn\">The position will be completely unprotected until you exit manually.</span>",
+      okLabel: "Place anyway",
+      danger: true,
+    });
+    if (!proceed) return;
+  }
 
   closeChartQuickOrder();
-  await onLimitTrade(action, type, price, shares, autoTarget, autoStop);
-  if (autoTarget > 0 || autoStop > 0) {
+  await onLimitTrade(action, type, price, shares, autoTarget, autoStop, {
+    mode: exchangeStopMode,
+    price: exchangeStopPrice,
+  });
+  if (autoTarget > 0 || autoStop > 0 || (exchangeStopEnabled && exchangeStopMode)) {
     S.tab = "brackets";
     renderTab();
   }

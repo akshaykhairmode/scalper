@@ -1544,7 +1544,7 @@ function registerCustomOverlays() {
       const sideStr = isBuy ? "BUY" : "SELL";
       const qty = data.qty ? `${data.qty} ` : "";
       const priceStr = Number(data.price || 0).toFixed(2);
-      const tagText = `OPEN ${sideStr}: ${qty}@ ₹${priceStr}`;
+      const tagText = `OPEN ${sideStr}: ${qty}@ ₹${priceStr} · EXCH`;
 
       const showRemove = Boolean(data.draggable);
       const showGrip = Boolean(data.draggable);
@@ -3460,8 +3460,21 @@ export class CandleChart {
    * A pending (resting entry) bracket shows its entry too; an in-position
    * bracket only needs the target/stop because the position line marks the entry.
    */
-  showBracketLevels({ bracketId = "", entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = {}) {
-    this.bracketData = { bracketId, entryPrice, targetPrice, stopPrice, side, pending };
+  showBracketLevels({
+    bracketId = "",
+    entryPrice = 0,
+    targetPrice = 0,
+    stopPrice = 0,
+    side = "BUY",
+    pending = false,
+    exchangeStopPrice = 0,
+    exchangeStopMode = "",
+    exchangeStopStatus = "",
+  } = {}) {
+    this.bracketData = {
+      bracketId, entryPrice, targetPrice, stopPrice, side, pending,
+      exchangeStopPrice, exchangeStopMode, exchangeStopStatus,
+    };
     this.renderBracketLevels();
   }
 
@@ -3470,28 +3483,45 @@ export class CandleChart {
       this.clearBracketOverlays();
       return;
     }
-    const { bracketId = "", entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = this.bracketData;
+    const {
+      bracketId = "", entryPrice = 0, targetPrice = 0, stopPrice = 0,
+      side = "BUY", pending = false, exchangeStopPrice = 0,
+      exchangeStopMode = "", exchangeStopStatus = "",
+    } = this.bracketData;
     const entry = Number(entryPrice);
     const target = Number(targetPrice);
     const stop = Number(stopPrice);
+    const exchangeStop = Number(exchangeStopPrice);
     const isBuy = side === "B" || side === "BUY" || side === "buy";
     const levels = [];
     if (pending && Number.isFinite(entry) && entry > 0) {
-      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} (PENDING)` });
+      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} (PENDING) · EXCH`, placement: "exchange" });
     }
     if (Number.isFinite(target) && target > 0) {
-      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)}` });
+      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)} · SRV`, placement: "server" });
     }
     if (Number.isFinite(stop) && stop > 0) {
-      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)}` });
+      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)} · SRV`, placement: "server" });
+    }
+    if (Number.isFinite(exchangeStop) && exchangeStop > 0) {
+      const type = String(exchangeStopMode || "SL-M").toUpperCase() === "SL" ? "SL-L" : "SL-M";
+      const state = String(exchangeStopStatus || "").toUpperCase();
+      const suffix = state && state !== "WORKING" ? ` · ${state}` : "";
+      levels.push({
+        kind: "EXCHANGE_STOP",
+        price: exchangeStop,
+        label: `${type} ₹${exchangeStop.toFixed(2)} · EXCH${suffix}`,
+        placement: "exchange",
+      });
     }
 
-    const key = levels.map((l) => `${l.kind}:${l.price}`).join("|") + `|${isBuy ? "B" : "S"}|${bracketId}`;
+    const key = levels.map((l) => l.label).join("|") + `|${isBuy ? "B" : "S"}|${bracketId}`;
     if (key === this.bracketLevelsKey && this.bracketLevelOverlayIds.length === levels.length) return;
 
     this.clearBracketOverlays();
     this.bracketLevelsKey = key;
     for (const level of levels) {
+      const draggable = level.kind !== "EXCHANGE_STOP";
       try {
         const id = this.chart.createOverlay({
           name: "bracketLevelLine",
@@ -3503,19 +3533,24 @@ export class CandleChart {
             kind: level.kind,
             price: level.price,
             label: level.label,
-            side: isBuy ? "B" : "S",
-            draggable: true,
+            side: level.kind === "EXCHANGE_STOP"
+              ? (isBuy ? "S" : "B")
+              : (isBuy ? "B" : "S"),
+            placement: level.placement,
+            draggable,
           },
         });
         if (id) {
           this.bracketLevelOverlayIds.push(id);
-          this.draggableBracketLevels.push({
-            source: "bracket",
-            bracketId,
-            kind: level.kind,
-            price: level.price,
-            side: isBuy ? "B" : "S",
-          });
+          if (draggable) {
+            this.draggableBracketLevels.push({
+              source: "bracket",
+              bracketId,
+              kind: level.kind,
+              price: level.price,
+              side: isBuy ? "B" : "S",
+            });
+          }
         }
       } catch (_) {}
     }

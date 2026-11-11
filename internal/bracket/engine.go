@@ -24,20 +24,23 @@ import (
 
 // Engine manages active and historical bracket orders in-memory and persists them to Store.
 type Engine struct {
-	mu                 sync.RWMutex
-	store              Store
-	placeOrder         func(ctx context.Context, o kotakapi.Order) (string, error)
-	cancelOrder        func(ctx context.Context, id string) error
-	modifyOrder        func(ctx context.Context, id string, o kotakapi.Order) error
-	log                *slog.Logger
-	brackets           map[string]*Bracket
-	onChange           func(b Bracket)
-	activeInPos        atomic.Int64
-	activeByInstrument map[string]map[string]*Bracket
-	activeKeys         sync.Map
-	lastTrailPersist   map[string]time.Time
-	asyncExecution     bool
-	unmatchedOrders    map[string]parsedOrder
+	mu                  sync.RWMutex
+	store               Store
+	placeOrder          func(ctx context.Context, o kotakapi.Order) (string, error)
+	cancelOrder         func(ctx context.Context, id string) error
+	modifyOrder         func(ctx context.Context, id string, o kotakapi.Order) error
+	log                 *slog.Logger
+	brackets            map[string]*Bracket
+	onChange            func(b Bracket)
+	activeInPos         atomic.Int64
+	activeByInstrument  map[string]map[string]*Bracket
+	activeKeys          sync.Map
+	lastTrailPersist    map[string]time.Time
+	asyncExecution      bool
+	unmatchedOrders     map[string]parsedOrder
+	exchangeStopCfg     ExchangeStopConfig
+	orderLookup         func(ctx context.Context, orderID, tag string) (string, string, float64, error)
+	exchangeStopRetries map[string]int
 }
 
 // SetAsync configures whether OnTick executes triggers in asynchronous background goroutines.
@@ -66,14 +69,16 @@ func NewEngine(
 		log = slog.Default()
 	}
 	e := &Engine{
-		store:              store,
-		placeOrder:         placeOrder,
-		cancelOrder:        cancelOrder,
-		log:                log,
-		brackets:           make(map[string]*Bracket),
-		activeByInstrument: make(map[string]map[string]*Bracket),
-		lastTrailPersist:   make(map[string]time.Time),
-		unmatchedOrders:    make(map[string]parsedOrder),
+		store:               store,
+		placeOrder:          placeOrder,
+		cancelOrder:         cancelOrder,
+		log:                 log,
+		brackets:            make(map[string]*Bracket),
+		activeByInstrument:  make(map[string]map[string]*Bracket),
+		lastTrailPersist:    make(map[string]time.Time),
+		unmatchedOrders:     make(map[string]parsedOrder),
+		exchangeStopCfg:     DefaultExchangeStopConfig(),
+		exchangeStopRetries: make(map[string]int),
 	}
 
 	if store != nil {
@@ -199,6 +204,14 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 	b.TransactionType = tt
 
+	b.ExchangeStopMode = NormalizeExchangeStopMode(b.ExchangeStopMode)
+	if !validExchangeStopMode(b.ExchangeStopMode) {
+		return nil, fmt.Errorf("bracket: unsupported exchange stop mode %q", b.ExchangeStopMode)
+	}
+	if b.ExchangeStopMode != "" && b.ExchangeStopMode != ExchangeStopOff && b.ExchangeStopPrice < 0 {
+		return nil, errors.New("bracket: exchange stop price cannot be negative")
+	}
+
 	// Validate target and stoploss directional price sanity.
 	if err := validateLevels(b.TransactionType, b.EntryPrice, b.TargetPrice, b.StopLossPrice); err != nil {
 		return nil, err
@@ -318,6 +331,12 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 
 	e.notify(bracketCopy)
+	if bracketCopy.Status == StatusInPosition {
+		e.ensureExchangeStop(ctx, bracketCopy.ID)
+		if updated, ok := e.Get(bracketCopy.ID); ok && updated != nil {
+			bracketCopy = *updated
+		}
+	}
 	return &bracketCopy, nil
 }
 
@@ -325,9 +344,10 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 // leaves the corresponding level unchanged; a zero target or stoploss removes
 // that exit level.
 type LevelUpdates struct {
-	EntryPrice    *float64
-	TargetPrice   *float64
-	StopLossPrice *float64
+	EntryPrice       *float64
+	TargetPrice      *float64
+	StopLossPrice    *float64
+	ExchangeStopMode *string
 }
 
 func validateLevels(transactionType string, entry, target, stop float64) error {
@@ -381,6 +401,16 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 	entry := snapshot.EntryPrice
 	target := snapshot.TargetPrice
 	stop := snapshot.StopLossPrice
+	exchangeStopMode := snapshot.ExchangeStopMode
+	if updates.ExchangeStopMode != nil {
+		if snapshot.ExchangeStopIsWorking() || snapshot.ExchangeStopOrderID != "" {
+			return nil, errors.New("exchange backstop is live at the broker and cannot be changed from the chart")
+		}
+		exchangeStopMode = NormalizeExchangeStopMode(*updates.ExchangeStopMode)
+		if !validExchangeStopMode(exchangeStopMode) {
+			return nil, fmt.Errorf("unsupported exchange stop mode %q", exchangeStopMode)
+		}
+	}
 	if updates.EntryPrice != nil {
 		if snapshot.Status != StatusPendingEntry {
 			return nil, errors.New("cannot change entry price of an active position")
@@ -443,6 +473,7 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 	current.EntryPrice = entry
 	current.TargetPrice = target
 	current.StopLossPrice = stop
+	current.ExchangeStopMode = exchangeStopMode
 	if updates.StopLossPrice != nil {
 		// An explicit stoploss move or removal takes over from trailing logic,
 		// otherwise the next tick would immediately re-tighten it.
@@ -458,6 +489,15 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 		}
 	}
 	e.notify(updated)
+	if updates.ExchangeStopMode != nil && updated.Status == StatusInPosition {
+		if mode := NormalizeExchangeStopMode(updated.ExchangeStopMode); mode == "" || mode == ExchangeStopOff {
+			return &updated, nil
+		}
+		e.ensureExchangeStop(ctx, id)
+		if refreshed, ok := e.Get(id); ok && refreshed != nil {
+			updated = *refreshed
+		}
+	}
 	return &updated, nil
 }
 
@@ -480,11 +520,23 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 	}
 
 	orderToCancel := b.EntryOrderID
+	exchangeStopOrderID := b.ExchangeStopOrderID
 	e.unindexActiveInPosition(b)
 	b.Status = StatusCancelled
 	b.UpdatedAt = time.Now()
 	bracketCopy := *b
 	e.mu.Unlock()
+
+	if exchangeStopOrderID != "" {
+		if filled, price, err := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID); filled {
+			e.markExchangeStopFill(ctx, id, price)
+			return nil
+		} else if err != nil {
+			e.log.Warn("failed to cancel exchange stop on bracket cancel", "id", id, "order_id", exchangeStopOrderID, "error", err)
+		} else {
+			e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
+		}
+	}
 
 	if orderToCancel != "" && e.cancelOrder != nil {
 		if err := e.cancelOrder(ctx, orderToCancel); err != nil {
@@ -511,6 +563,7 @@ func (e *Engine) Disarm(ctx context.Context, id string) error {
 		e.mu.Unlock()
 		return errors.New("bracket not found")
 	}
+	exchangeStopOrderID := b.ExchangeStopOrderID
 	e.unindexActiveInPosition(b)
 	if b.Status == StatusPendingEntry {
 		b.Status = StatusCancelled
@@ -520,6 +573,17 @@ func (e *Engine) Disarm(ctx context.Context, id string) error {
 	b.UpdatedAt = time.Now()
 	bracketCopy := *b
 	e.mu.Unlock()
+
+	if exchangeStopOrderID != "" {
+		if filled, price, err := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID); filled {
+			e.markExchangeStopFill(ctx, id, price)
+			return nil
+		} else if err != nil {
+			e.log.Error("CRITICAL: failed to cancel exchange stop while disarming bracket", "id", id, "order_id", exchangeStopOrderID, "error", err)
+		} else {
+			e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
+		}
+	}
 
 	if e.store != nil {
 		_ = e.store.UpdateBracket(ctx, bracketCopy)
@@ -563,6 +627,10 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	// In position or failed exit: cancel resting exit order if any, and execute market exit
 	e.unindexActiveInPosition(b)
 	restingOrder := b.ExitOrderID
+	exchangeStopOrderID := ""
+	if b.ExchangeStopIsWorking() || b.ExchangeStopOrderID != "" {
+		exchangeStopOrderID = b.ExchangeStopOrderID
+	}
 	b.Status = StatusExitedManual
 	b.UpdatedAt = time.Now()
 
@@ -584,6 +652,32 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	e.mu.Unlock()
 
 	ctx = kotakhttp.WithPriority(ctx)
+
+	if exchangeStopOrderID != "" {
+		filled, price, cancelErr := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID)
+		if filled {
+			e.markExchangeStopFill(ctx, id, price)
+			return nil
+		}
+		if cancelErr != nil {
+			e.log.Error("CRITICAL: failed to cancel exchange backstop before manual exit",
+				"id", id, "order_id", exchangeStopOrderID, "error", cancelErr)
+			e.mu.Lock()
+			if curr, ok := e.brackets[id]; ok {
+				curr.Status = StatusExitFailed
+				curr.UpdatedAt = time.Now()
+				e.indexActiveInPosition(curr)
+				bracketCopy = *curr
+			}
+			e.mu.Unlock()
+			if e.store != nil {
+				_ = e.store.UpdateBracket(ctx, bracketCopy)
+			}
+			e.notify(bracketCopy)
+			return fmt.Errorf("could not cancel exchange backstop before exit: %w", cancelErr)
+		}
+		e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
+	}
 
 	if restingOrder != "" && e.cancelOrder != nil {
 		_ = e.cancelOrder(ctx, restingOrder)
@@ -816,6 +910,7 @@ func isCancelledStatus(status string) bool {
 func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	e.mu.Lock()
 	var updated *Bracket
+	entryFilledID := ""
 	matched := false
 	for _, b := range e.brackets {
 		isEntryMatch := (b.EntryOrderID == ord.OrderID && ord.OrderID != "") || (ord.Tag != "" && ord.Tag == b.ID)
@@ -828,11 +923,33 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 				}
 				b.UpdatedAt = time.Now()
 				e.indexActiveInPosition(b)
+				entryFilledID = b.ID
 				cp := *b
 				updated = &cp
 				break
 			} else if isCancelledStatus(ord.Status) {
 				b.Status = StatusCancelled
+				b.UpdatedAt = time.Now()
+				cp := *b
+				updated = &cp
+				break
+			}
+		}
+
+		isExchangeStopMatch := (b.ExchangeStopOrderID != "" && b.ExchangeStopOrderID == ord.OrderID) ||
+			(ord.Tag != "" && ord.Tag == exchangeStopTag(b.ID))
+		if isExchangeStopMatch {
+			matched = true
+			if isFilledStatus(ord.Status) {
+				e.applyExchangeStopFillLocked(b, ord.FilledPrice)
+				cp := *b
+				updated = &cp
+				break
+			}
+			if terminal := exchangeStopTerminalStatus(ord.Status); terminal != "" {
+				e.log.Error("CRITICAL: exchange backstop was rejected or cancelled by broker",
+					"bracket_id", b.ID, "order_id", ord.OrderID, "status", ord.Status)
+				b.ExchangeStopStatus = terminal
 				b.UpdatedAt = time.Now()
 				cp := *b
 				updated = &cp
@@ -891,19 +1008,23 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 		}
 		e.notify(*updated)
 	}
+	if entryFilledID != "" {
+		e.ensureExchangeStop(ctx, entryFilledID)
+	}
 }
 
 type tickTrigger struct {
-	bracketID    string
-	exitSide     string
-	exitQuantity int64
-	segment      string
-	symbol       string
-	product      string
-	restingOrder string
-	newStatus    string
-	exitPrice    float64
-	pnl          float64
+	bracketID         string
+	exitSide          string
+	exitQuantity      int64
+	segment           string
+	symbol            string
+	product           string
+	restingOrder      string
+	exchangeStopOrder string
+	newStatus         string
+	exitPrice         float64
+	pnl               float64
 }
 
 // OnTick evaluates current market price against active IN_POSITION brackets, triggering target or stoploss exits.
@@ -1006,16 +1127,17 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 		}
 
 		triggers = append(triggers, tickTrigger{
-			bracketID:    b.ID,
-			exitSide:     exitSide,
-			exitQuantity: b.Quantity,
-			segment:      b.ExchangeSegment,
-			symbol:       b.TradingSymbol,
-			product:      b.Product,
-			restingOrder: b.ExitOrderID,
-			newStatus:    hitStatus,
-			exitPrice:    b.ExitPrice,
-			pnl:          b.PnL,
+			bracketID:         b.ID,
+			exitSide:          exitSide,
+			exitQuantity:      b.Quantity,
+			segment:           b.ExchangeSegment,
+			symbol:            b.TradingSymbol,
+			product:           b.Product,
+			restingOrder:      b.ExitOrderID,
+			exchangeStopOrder: b.ExchangeStopOrderID,
+			newStatus:         hitStatus,
+			exitPrice:         b.ExitPrice,
+			pnl:               b.PnL,
 		})
 	}
 	for _, trg := range triggers {
@@ -1041,6 +1163,28 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 		ctx = context.Background()
 	}
 	ctx = kotakhttp.WithPriority(ctx)
+
+	if trg.exchangeStopOrder != "" {
+		filled, price, cancelErr := e.cancelExchangeStopOrder(ctx, trg.exchangeStopOrder)
+		if filled {
+			e.markExchangeStopFill(ctx, trg.bracketID, price)
+			return
+		}
+		if cancelErr != nil {
+			if strings.EqualFold(e.exchangeStopConfig().OnCancelFailure, "place_exit_anyway") {
+				e.log.Warn("placing normal exit despite unconfirmed exchange stop cancellation",
+					"bracket_id", trg.bracketID, "order_id", trg.exchangeStopOrder, "error", cancelErr)
+			} else {
+				e.log.Error("CRITICAL: could not cancel exchange backstop; not placing a second sell",
+					"bracket_id", trg.bracketID, "order_id", trg.exchangeStopOrder, "error", cancelErr)
+				e.failTriggerExit(ctx, trg.bracketID)
+				return
+			}
+		} else {
+			e.setExchangeStopStatus(ctx, trg.bracketID, ExchangeStopCancelled)
+		}
+	}
+
 	if trg.restingOrder != "" && e.cancelOrder != nil {
 		if err := e.cancelOrder(ctx, trg.restingOrder); err != nil {
 			e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)

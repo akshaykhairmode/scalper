@@ -151,6 +151,27 @@ type Trading struct {
 	Session                  Session  `yaml:"session" json:"session"`
 	Risk                     Risk     `yaml:"risk" json:"risk"`
 	RiskView                 RiskView `yaml:"risk_view" json:"risk_view"`
+	Bracket                  Bracket  `yaml:"bracket" json:"bracket"`
+}
+
+// Bracket holds server-side bracket and exchange backstop defaults.
+type Bracket struct {
+	ExchangeStop ExchangeStop `yaml:"exchange_stop" json:"exchange_stop"`
+}
+
+// ExchangeStop configures the optional exchange-side catastrophe stop-loss.
+// Mode is only a default for new orders; the per-order choice wins.
+type ExchangeStop struct {
+	Mode               string  `yaml:"mode" json:"mode"` // off | sl_m | sl_l
+	DistanceMode       string  `yaml:"distance_mode" json:"distance_mode"`
+	DistanceValue      float64 `yaml:"distance_value" json:"distance_value"`
+	SLLOffsetTicks     int     `yaml:"sl_l_offset_ticks" json:"sl_l_offset_ticks"`
+	PlaceOnPartialFill bool    `yaml:"place_on_partial_fill" json:"place_on_partial_fill"`
+	CancelRetries      int     `yaml:"cancel_retries" json:"cancel_retries"`
+	CancelRetryDelayMS int     `yaml:"cancel_retry_delay_ms" json:"cancel_retry_delay_ms"`
+	OnCancelFailure    string  `yaml:"on_cancel_failure" json:"on_cancel_failure"`
+	ReconcileOnStartup bool    `yaml:"reconcile_on_startup" json:"reconcile_on_startup"`
+	AllowChartEdit     bool    `yaml:"allow_chart_edit" json:"allow_chart_edit"`
 }
 
 // Quantity controls the default order quantity and unit.
@@ -372,6 +393,20 @@ func Default() Config {
 				PayoffRangePct: 10,
 				PayoffPoints:   121,
 				IncludePreview: true,
+			},
+			Bracket: Bracket{
+				ExchangeStop: ExchangeStop{
+					Mode:               "off",
+					DistanceMode:       "multiplier",
+					DistanceValue:      2.5,
+					SLLOffsetTicks:     2,
+					PlaceOnPartialFill: true,
+					CancelRetries:      3,
+					CancelRetryDelayMS: 100,
+					OnCancelFailure:    "alert",
+					ReconcileOnStartup: true,
+					AllowChartEdit:     false,
+				},
 			},
 		},
 		Scrip: Scrip{

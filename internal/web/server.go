@@ -218,22 +218,28 @@ type marginCacheEntry struct {
 // bootstrapConfig is rendered into the page so the frontend can start without
 // a round-trip. It contains no secrets: only display settings and the index list.
 type bootstrapConfig struct {
-	Indices                  []bootstrapIndex     `json:"indices"`
-	Commodities              []bootstrapCommodity `json:"commodities,omitempty"`
-	Timeframes               []string             `json:"timeframes"`
-	DefaultTimeframe         string               `json:"defaultTimeframe"`
-	DefaultProduct           string               `json:"defaultProduct"`
-	DefaultLots              int                  `json:"defaultLots"`
-	DefaultUnit              string               `json:"defaultUnit"`
-	AllowShares              bool                 `json:"allowShares"`
-	ConfirmLiveOrders        bool                 `json:"confirmLiveOrders"`
-	ConfirmChartLevelChanges bool                 `json:"confirmChartLevelChanges"`
-	PayoffRangePct           int                  `json:"payoffRangePct"`
-	PayoffPoints             int                  `json:"payoffPoints"`
-	ChainPremiumCutoff       float64              `json:"chainPremiumCutoff"`
-	Version                  string               `json:"version"`
-	MPINConfigured           bool                 `json:"mpinConfigured"`
-	MarketSession            bootstrapSession     `json:"marketSession"`
+	Indices                   []bootstrapIndex     `json:"indices"`
+	Commodities               []bootstrapCommodity `json:"commodities,omitempty"`
+	Timeframes                []string             `json:"timeframes"`
+	DefaultTimeframe          string               `json:"defaultTimeframe"`
+	DefaultProduct            string               `json:"defaultProduct"`
+	DefaultLots               int                  `json:"defaultLots"`
+	DefaultUnit               string               `json:"defaultUnit"`
+	AllowShares               bool                 `json:"allowShares"`
+	ConfirmLiveOrders         bool                 `json:"confirmLiveOrders"`
+	ConfirmChartLevelChanges  bool                 `json:"confirmChartLevelChanges"`
+	ExchangeStopMode          string               `json:"exchangeStopMode"`
+	ExchangeStopDistanceMode  string               `json:"exchangeStopDistanceMode"`
+	ExchangeStopDistanceVal   float64              `json:"exchangeStopDistanceValue"`
+	ExchangeStopSLLOffset     int                  `json:"exchangeStopSLLOffsetTicks"`
+	ExchangeStopCancelRetries int                  `json:"exchangeStopCancelRetries"`
+	ExchangeStopCancelDelayMS int                  `json:"exchangeStopCancelRetryDelayMs"`
+	PayoffRangePct            int                  `json:"payoffRangePct"`
+	PayoffPoints              int                  `json:"payoffPoints"`
+	ChainPremiumCutoff        float64              `json:"chainPremiumCutoff"`
+	Version                   string               `json:"version"`
+	MPINConfigured            bool                 `json:"mpinConfigured"`
+	MarketSession             bootstrapSession     `json:"marketSession"`
 }
 
 type bootstrapSession struct {
@@ -260,19 +266,25 @@ type bootstrapCommodity struct {
 
 func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 	boot := bootstrapConfig{
-		Timeframes:               append([]string(nil), cfg.Charts.Timeframes...),
-		DefaultTimeframe:         cfg.Charts.DefaultTimeframe,
-		DefaultProduct:           cfg.Trading.DefaultProduct,
-		DefaultLots:              cfg.Trading.Quantity.DefaultLots,
-		DefaultUnit:              cfg.Trading.Quantity.DefaultUnit,
-		AllowShares:              cfg.Trading.Quantity.AllowShares,
-		ConfirmLiveOrders:        cfg.Trading.ConfirmLiveOrders,
-		ConfirmChartLevelChanges: cfg.Trading.ConfirmChartLevelChanges,
-		PayoffRangePct:           cfg.Trading.RiskView.PayoffRangePct,
-		PayoffPoints:             cfg.Trading.RiskView.PayoffPoints,
-		ChainPremiumCutoff:       cfg.Market.Chain.PremiumCutoff,
-		Version:                  formatDisplayVersion(version.Version),
-		MPINConfigured:           mpinConfigured,
+		Timeframes:                append([]string(nil), cfg.Charts.Timeframes...),
+		DefaultTimeframe:          cfg.Charts.DefaultTimeframe,
+		DefaultProduct:            cfg.Trading.DefaultProduct,
+		DefaultLots:               cfg.Trading.Quantity.DefaultLots,
+		DefaultUnit:               cfg.Trading.Quantity.DefaultUnit,
+		AllowShares:               cfg.Trading.Quantity.AllowShares,
+		ConfirmLiveOrders:         cfg.Trading.ConfirmLiveOrders,
+		ConfirmChartLevelChanges:  cfg.Trading.ConfirmChartLevelChanges,
+		ExchangeStopMode:          cfg.Trading.Bracket.ExchangeStop.Mode,
+		ExchangeStopDistanceMode:  cfg.Trading.Bracket.ExchangeStop.DistanceMode,
+		ExchangeStopDistanceVal:   cfg.Trading.Bracket.ExchangeStop.DistanceValue,
+		ExchangeStopSLLOffset:     cfg.Trading.Bracket.ExchangeStop.SLLOffsetTicks,
+		ExchangeStopCancelRetries: cfg.Trading.Bracket.ExchangeStop.CancelRetries,
+		ExchangeStopCancelDelayMS: cfg.Trading.Bracket.ExchangeStop.CancelRetryDelayMS,
+		PayoffRangePct:            cfg.Trading.RiskView.PayoffRangePct,
+		PayoffPoints:              cfg.Trading.RiskView.PayoffPoints,
+		ChainPremiumCutoff:        cfg.Market.Chain.PremiumCutoff,
+		Version:                   formatDisplayVersion(version.Version),
+		MPINConfigured:            mpinConfigured,
 		MarketSession: bootstrapSession{
 			Open:     cfg.Trading.Session.Open,
 			Close:    cfg.Trading.Session.Close,
@@ -302,6 +314,40 @@ func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 	}
 	// JSON marshaling escapes script-sensitive characters before template.JS.
 	return template.JS(data), nil // #nosec G203
+}
+
+// applyBracketExchangeStopConfig installs the live exchange-stop defaults.
+func (s *Server) applyBracketExchangeStopConfig(cfg config.Config) {
+	if s.bracketEngine == nil {
+		return
+	}
+	es := cfg.Trading.Bracket.ExchangeStop
+	if strings.TrimSpace(es.DistanceMode) == "" {
+		es.DistanceMode = "multiplier"
+	}
+	if es.DistanceValue <= 0 {
+		es.DistanceValue = 2.5
+	}
+	if es.CancelRetries <= 0 {
+		es.CancelRetries = 3
+	}
+	if es.CancelRetryDelayMS <= 0 {
+		es.CancelRetryDelayMS = 100
+	}
+	if strings.TrimSpace(es.OnCancelFailure) == "" {
+		es.OnCancelFailure = "alert"
+	}
+	s.bracketEngine.SetExchangeStopConfig(bracket.ExchangeStopConfig{
+		Mode:               es.Mode,
+		DistanceMode:       es.DistanceMode,
+		DistanceValue:      es.DistanceValue,
+		SLLOffsetTicks:     es.SLLOffsetTicks,
+		PlaceOnPartialFill: es.PlaceOnPartialFill,
+		CancelRetries:      es.CancelRetries,
+		CancelRetryDelay:   time.Duration(es.CancelRetryDelayMS) * time.Millisecond,
+		OnCancelFailure:    es.OnCancelFailure,
+		ReconcileOnStartup: es.ReconcileOnStartup,
+	})
 }
 
 // New builds the handler. It fails only if the embedded templates cannot be
@@ -468,6 +514,11 @@ func New(opts Options) (*Server, error) {
 	}
 
 	if s.bracketEngine != nil {
+		s.applyBracketExchangeStopConfig(opts.Config)
+		s.bracketEngine.SetOrderLookup(s.lookupBrokerOrder)
+	}
+
+	if s.bracketEngine != nil {
 		s.bracketEngine.SetAsync(true)
 		s.bracketEngine.SetOnChange(func(b bracket.Bracket) {
 			s.broadcast(map[string]any{
@@ -475,6 +526,7 @@ func New(opts Options) (*Server, error) {
 				"data": b,
 			})
 		})
+		go s.reconcileBracketsAfterStart()
 	}
 
 	var jevClient *jev.Client
@@ -1496,6 +1548,13 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 			s.log.Error("start Kotak order feed", "event", "order_feed_start_failed", "error", err,
 				"request_id", logging.RequestID(r.Context()))
 		}
+	}
+	if s.bracketEngine != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+			defer cancel()
+			s.bracketEngine.Reconcile(ctx)
+		}()
 	}
 	if s.serveMode || s.isDeviceBound(r) {
 		s.issueServeSession(w, r)

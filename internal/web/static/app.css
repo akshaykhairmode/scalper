@@ -877,6 +877,18 @@ body[data-theme="light"] .chart-tooltip-desc {
 .cqo-pts-badge.sl {
   color: #f05a5a;
 }
+.cqo-pts-badge.xstop {
+  color: #f59e0b;
+}
+.cqo-exchange-stop-row select {
+  padding: 3px 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2, #111827);
+  color: var(--text, #e5e7eb);
+}
 .cqo-target-pnl {
   color: var(--muted-2);
 }

@@ -15,24 +15,28 @@ func TestStoreBracketsCRUD(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 
 	b := bracket.Bracket{
-		ID:              "brk-test-1",
-		ExchangeSegment: "NSE",
-		TradingSymbol:   "RELIANCE-EQ",
-		InstrumentKey:   "2885",
-		TransactionType: "BUY",
-		Quantity:        50,
-		Product:         "MIS",
-		EntryPrice:      2500.50,
-		EntryOrderID:    "ord-entry-1",
-		TargetPrice:     2550.00,
-		StopLossPrice:   2450.00,
-		TrailingStop:    10.00,
-		ExitOrderID:     "",
-		ExitPrice:       0,
-		Status:          bracket.StatusPendingEntry,
-		PnL:             0,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                  "brk-test-1",
+		ExchangeSegment:     "NSE",
+		TradingSymbol:       "RELIANCE-EQ",
+		InstrumentKey:       "2885",
+		TransactionType:     "BUY",
+		Quantity:            50,
+		Product:             "MIS",
+		EntryPrice:          2500.50,
+		EntryOrderID:        "ord-entry-1",
+		TargetPrice:         2550.00,
+		StopLossPrice:       2450.00,
+		TrailingStop:        10.00,
+		ExitOrderID:         "",
+		ExitPrice:           0,
+		Status:              bracket.StatusPendingEntry,
+		PnL:                 0,
+		ExchangeStopMode:    bracket.ExchangeStopSLM,
+		ExchangeStopOrderID: "xstop-1",
+		ExchangeStopPrice:   2450.00,
+		ExchangeStopStatus:  bracket.ExchangeStopWorking,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	// 1. Create
@@ -50,6 +54,12 @@ func TestStoreBracketsCRUD(t *testing.T) {
 	}
 	if got.EntryPrice != 2500.50 || got.Quantity != 50 {
 		t.Fatalf("unexpected prices or qty: %+v", got)
+	}
+	if got.ExchangeStopMode != bracket.ExchangeStopSLM ||
+		got.ExchangeStopOrderID != "xstop-1" ||
+		got.ExchangeStopPrice != 2450.00 ||
+		got.ExchangeStopStatus != bracket.ExchangeStopWorking {
+		t.Fatalf("exchange stop fields did not round-trip: %+v", got)
 	}
 
 	// 3. Update

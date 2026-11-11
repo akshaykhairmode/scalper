@@ -293,6 +293,16 @@
     setChecked('f-confirm-live-orders', !!t.confirm_live_orders);
     setChecked('f-confirm-chart-levels', t.confirm_chart_level_changes !== false);
 
+    const es = (t.bracket && t.bracket.exchange_stop) || {};
+    setVal('f-exchange-stop-mode', es.mode || 'off');
+    setVal('f-exchange-stop-distance-mode', es.distance_mode || 'multiplier');
+    setVal('f-exchange-stop-distance-value', es.distance_value ?? 2.5);
+    setVal('f-exchange-stop-sll-offset', es.sl_l_offset_ticks ?? 2);
+    setVal('f-exchange-stop-cancel-retries', es.cancel_retries ?? 3);
+    setVal('f-exchange-stop-cancel-delay', es.cancel_retry_delay_ms ?? 100);
+    setVal('f-exchange-stop-on-cancel-failure', es.on_cancel_failure || 'alert');
+    setChecked('f-exchange-stop-reconcile', es.reconcile_on_startup !== false);
+
     setVal('f-max-daily-loss', r.max_daily_loss_inr !== undefined ? r.max_daily_loss_inr : 5000);
     setVal('f-max-orders-min', r.max_orders_per_minute !== undefined ? r.max_orders_per_minute : 6);
     setVal('f-max-exit-sec', r.max_exit_orders_per_second !== undefined ? r.max_exit_orders_per_second : 4);
@@ -401,6 +411,14 @@
       { id: 'f-allow-shares', path: ['trading', 'quantity', 'allow_shares'], type: 'bool' },
       { id: 'f-confirm-live-orders', path: ['trading', 'confirm_live_orders'], type: 'bool' },
       { id: 'f-confirm-chart-levels', path: ['trading', 'confirm_chart_level_changes'], type: 'bool' },
+      { id: 'f-exchange-stop-mode', path: ['trading', 'bracket', 'exchange_stop', 'mode'], type: 'string' },
+      { id: 'f-exchange-stop-distance-mode', path: ['trading', 'bracket', 'exchange_stop', 'distance_mode'], type: 'string' },
+      { id: 'f-exchange-stop-distance-value', path: ['trading', 'bracket', 'exchange_stop', 'distance_value'], type: 'float' },
+      { id: 'f-exchange-stop-sll-offset', path: ['trading', 'bracket', 'exchange_stop', 'sl_l_offset_ticks'], type: 'int' },
+      { id: 'f-exchange-stop-cancel-retries', path: ['trading', 'bracket', 'exchange_stop', 'cancel_retries'], type: 'int' },
+      { id: 'f-exchange-stop-cancel-delay', path: ['trading', 'bracket', 'exchange_stop', 'cancel_retry_delay_ms'], type: 'int' },
+      { id: 'f-exchange-stop-on-cancel-failure', path: ['trading', 'bracket', 'exchange_stop', 'on_cancel_failure'], type: 'string' },
+      { id: 'f-exchange-stop-reconcile', path: ['trading', 'bracket', 'exchange_stop', 'reconcile_on_startup'], type: 'bool' },
       { id: 'f-max-daily-loss', path: ['trading', 'risk', 'max_daily_loss_inr'], type: 'int' },
       { id: 'f-max-orders-min', path: ['trading', 'risk', 'max_orders_per_minute'], type: 'int' },
       { id: 'f-max-exit-sec', path: ['trading', 'risk', 'max_exit_orders_per_second'], type: 'int' },

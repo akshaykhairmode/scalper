@@ -190,3 +190,93 @@ func TestBracketCreateEnforcesRiskLimits(t *testing.T) {
 		t.Fatalf("expected 409 Conflict risk block status, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+func TestBracketHandlersExchangeStop(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}})
+	defer s.Close()
+
+	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+		return "ord-exit-ok", nil
+	}, nil, testLogger())
+	engine.SetExchangeStopConfig(bracket.ExchangeStopConfig{
+		Mode:               "sl_m",
+		DistanceMode:       "multiplier",
+		DistanceValue:      2.5,
+		CancelRetries:      1,
+		ReconcileOnStartup: true,
+	})
+	s.bracketEngine = engine
+
+	base := bracket.Bracket{
+		ID:                "test-xstop-1",
+		ExchangeSegment:   "nse_fo",
+		TradingSymbol:     "NIFTY26OCT26000CE",
+		InstrumentKey:     "nse_fo|12345",
+		TransactionType:   "BUY",
+		Quantity:          50,
+		Product:           "MIS",
+		EntryPrice:        100.5,
+		TargetPrice:       115.0,
+		StopLossPrice:     90.0,
+		EntryOrderID:      "ord-1234",
+		ExchangeStopMode:  "SL-M",
+		ExchangeStopPrice: 80.0,
+	}
+	body, _ := json.Marshal(base)
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created bracket.Bracket
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.ExchangeStopMode != bracket.ExchangeStopSLM || created.ExchangeStopPrice != 80 {
+		t.Fatalf("exchange stop not accepted: %+v", created)
+	}
+
+	// Trigger closer than the server stop is rejected.
+	tooClose := base
+	tooClose.ID = "test-xstop-2"
+	tooClose.ExchangeStopPrice = 95
+	body, _ = json.Marshal(tooClose)
+	rec = do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a trigger inside the server SL, got %d", rec.Code)
+	}
+
+	// Invalid mode is rejected.
+	badMode := base
+	badMode.ID = "test-xstop-3"
+	badMode.ExchangeStopMode = "banana"
+	body, _ = json.Marshal(badMode)
+	rec = do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an invalid mode, got %d", rec.Code)
+	}
+
+	// v1 refuses to move the exchange stop from the chart.
+	patchBody, _ := json.Marshal(map[string]any{"exchange_stop_price": 70})
+	rec = do(t, s, localRequestWithBody(http.MethodPatch, "/api/brackets/test-xstop-1", patchBody))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for chart-editing the exchange stop, got %d", rec.Code)
+	}
+}
+
+func TestBootstrapIncludesExchangeStopDefaults(t *testing.T) {
+	cfg := config.Default()
+	boot, err := newBootstrap(cfg, false)
+	if err != nil {
+		t.Fatalf("newBootstrap: %v", err)
+	}
+	var decoded bootstrapConfig
+	if err := json.Unmarshal([]byte(boot), &decoded); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if decoded.ExchangeStopMode != "off" {
+		t.Fatalf("exchangeStopMode = %q, want off", decoded.ExchangeStopMode)
+	}
+	if decoded.ExchangeStopDistanceMode != "multiplier" || decoded.ExchangeStopDistanceVal != 2.5 {
+		t.Fatalf("unexpected distance defaults: %+v", decoded)
+	}
+}

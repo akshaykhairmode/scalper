@@ -229,6 +229,11 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 		s.writeRiskError(w, r, err)
 		return
 	}
+	// A manual order opposite an open bracket is an exit: cancel the exchange
+	// backstop first so two sells are never live at the broker.
+	if s.bracketEngine != nil {
+		s.bracketEngine.CancelExchangeStopsForInstrument(r.Context(), req.ExchangeSegment, req.TradingSymbol, req.TransactionType)
+	}
 	raw, err := s.kotak.PlaceOrder(r.Context(), session, req.Order)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
@@ -364,6 +369,11 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 	if !req.Confirm {
 		s.writeRouteError(w, r, http.StatusBadRequest, "explicit confirmation is required to square off all positions", nil)
 		return
+	}
+	// Cancel exchange backstops first: otherwise square-off sells would race
+	// live SL-M orders and could create unintended shorts.
+	if s.bracketEngine != nil {
+		s.bracketEngine.CancelAllExchangeStops(r.Context())
 	}
 	raw, err := s.getBook(r.Context(), bookPositions, session)
 	if err != nil {

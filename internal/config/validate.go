@@ -374,6 +374,40 @@ func (c Config) validateTrading() error {
 	if c.Trading.RiskView.PayoffPoints < 20 || c.Trading.RiskView.PayoffPoints > 1000 {
 		return fieldErr("trading.risk_view.payoff_points", "must be between 20 and 1000")
 	}
+	if err := validateExchangeStop(c.Trading.Bracket.ExchangeStop); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateExchangeStop(es ExchangeStop) error {
+	switch strings.ToLower(strings.TrimSpace(es.Mode)) {
+	case "", "off", "sl_m", "sl_l":
+	default:
+		return fieldErr("trading.bracket.exchange_stop.mode", "must be off|sl_m|sl_l, got %q", es.Mode)
+	}
+	switch strings.ToLower(strings.TrimSpace(es.DistanceMode)) {
+	case "multiplier", "percent", "points", "ticks":
+	default:
+		return fieldErr("trading.bracket.exchange_stop.distance_mode", "must be multiplier|percent|points|ticks, got %q", es.DistanceMode)
+	}
+	if es.DistanceValue <= 0 {
+		return fieldErr("trading.bracket.exchange_stop.distance_value", "must be > 0")
+	}
+	if es.SLLOffsetTicks < 0 {
+		return fieldErr("trading.bracket.exchange_stop.sl_l_offset_ticks", "must be >= 0")
+	}
+	if es.CancelRetries < 1 || es.CancelRetries > 20 {
+		return fieldErr("trading.bracket.exchange_stop.cancel_retries", "must be between 1 and 20")
+	}
+	if es.CancelRetryDelayMS < 0 || es.CancelRetryDelayMS > 10000 {
+		return fieldErr("trading.bracket.exchange_stop.cancel_retry_delay_ms", "must be between 0 and 10000")
+	}
+	switch strings.ToLower(strings.TrimSpace(es.OnCancelFailure)) {
+	case "alert", "place_exit_anyway":
+	default:
+		return fieldErr("trading.bracket.exchange_stop.on_cancel_failure", "must be alert|place_exit_anyway, got %q", es.OnCancelFailure)
+	}
 	return nil
 }
 

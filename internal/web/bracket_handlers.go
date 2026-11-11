@@ -1,9 +1,12 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
@@ -34,6 +37,10 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 	var b bracket.Bracket
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket payload: "+err.Error(), err)
+		return
+	}
+	if err := normalizeBracketExchangeStop(&b); err != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
 		return
 	}
 
@@ -69,10 +76,12 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 }
 
 type bracketUpdateRequest struct {
-	EntryPrice    *float64 `json:"entry_price"`
-	TargetPrice   *float64 `json:"target_price"`
-	StopLossPrice *float64 `json:"stop_loss_price"`
-	Confirm       bool     `json:"confirm"`
+	EntryPrice        *float64 `json:"entry_price"`
+	TargetPrice       *float64 `json:"target_price"`
+	StopLossPrice     *float64 `json:"stop_loss_price"`
+	ExchangeStopMode  *string  `json:"exchange_stop_mode"`
+	ExchangeStopPrice *float64 `json:"exchange_stop_price"`
+	Confirm           bool     `json:"confirm"`
 }
 
 func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +99,11 @@ func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket update payload: "+err.Error(), err)
 		return
 	}
-	if req.EntryPrice == nil && req.TargetPrice == nil && req.StopLossPrice == nil {
+	if req.ExchangeStopPrice != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, "exchange backstop price is managed at the broker; modify or cancel it in Kotak", nil)
+		return
+	}
+	if req.EntryPrice == nil && req.TargetPrice == nil && req.StopLossPrice == nil && req.ExchangeStopMode == nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, "at least one bracket level is required", nil)
 		return
 	}
@@ -126,9 +139,10 @@ func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := s.bracketEngine.UpdateLevels(r.Context(), id, bracket.LevelUpdates{
-		EntryPrice:    req.EntryPrice,
-		TargetPrice:   req.TargetPrice,
-		StopLossPrice: req.StopLossPrice,
+		EntryPrice:       req.EntryPrice,
+		TargetPrice:      req.TargetPrice,
+		StopLossPrice:    req.StopLossPrice,
+		ExchangeStopMode: req.ExchangeStopMode,
 	})
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
@@ -169,4 +183,118 @@ func (s *Server) handleExitBracket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"success": true, "id": id})
+}
+
+// normalizeBracketExchangeStop canonicalises the per-order exchange stop choice
+// and validates an explicitly supplied trigger price.
+func normalizeBracketExchangeStop(b *bracket.Bracket) error {
+	mode := bracket.NormalizeExchangeStopMode(b.ExchangeStopMode)
+	switch mode {
+	case "", bracket.ExchangeStopOff, bracket.ExchangeStopSLM, bracket.ExchangeStopSLL:
+	default:
+		return errors.New("exchange_stop_mode must be off, SL-M, or SL")
+	}
+	b.ExchangeStopMode = mode
+	if mode == bracket.ExchangeStopOff {
+		b.ExchangeStopPrice = 0
+	}
+	if b.ExchangeStopPrice <= 0 || mode == "" || mode == bracket.ExchangeStopOff {
+		return nil
+	}
+	if b.ExchangeStopPrice < 0 {
+		return errors.New("exchange_stop_price cannot be negative")
+	}
+	side := strings.ToUpper(strings.TrimSpace(b.TransactionType))
+	if b.EntryPrice <= 0 {
+		return nil
+	}
+	switch side {
+	case "B":
+		side = "BUY"
+	case "S":
+		side = "SELL"
+	}
+	switch side {
+	case "BUY":
+		if b.ExchangeStopPrice >= b.EntryPrice {
+			return errors.New("exchange stop trigger must be below the entry price for a BUY bracket")
+		}
+		if b.StopLossPrice > 0 && b.ExchangeStopPrice >= b.StopLossPrice {
+			return errors.New("exchange stop trigger must be farther than the server stop-loss for a BUY bracket")
+		}
+	case "SELL":
+		if b.ExchangeStopPrice <= b.EntryPrice {
+			return errors.New("exchange stop trigger must be above the entry price for a SELL bracket")
+		}
+		if b.StopLossPrice > 0 && b.ExchangeStopPrice <= b.StopLossPrice {
+			return errors.New("exchange stop trigger must be farther than the server stop-loss for a SELL bracket")
+		}
+	}
+	return nil
+}
+
+// lookupBrokerOrder resolves an exchange stop order by broker ID or by its
+// client tag. The engine uses it to confirm cancellations and reconcile after
+// a restart.
+func (s *Server) lookupBrokerOrder(ctx context.Context, orderID, tag string) (string, string, float64, error) {
+	if s.kotak == nil {
+		return "", "", 0, errors.New("broker API is not configured")
+	}
+	session, ok := s.brokerSessionValue()
+	if !ok {
+		return "", "", 0, errors.New("kotak session unavailable")
+	}
+	orderID = strings.TrimSpace(orderID)
+	tag = strings.TrimSpace(tag)
+	if orderID == "" && tag == "" {
+		return "", "", 0, errors.New("order id or tag required")
+	}
+	var raw json.RawMessage
+	var err error
+	if orderID != "" {
+		raw, err = s.kotak.Order(ctx, session, orderID)
+	} else {
+		raw, err = s.kotak.Orders(ctx, session)
+	}
+	if err != nil {
+		return "", "", 0, err
+	}
+	rows, err := decodeBookRows(raw)
+	if err != nil {
+		return "", "", 0, err
+	}
+	for _, row := range rows {
+		rowID := stringField(row, "order_id", "nOrdNo", "nordno", "ordId", "ordid", "id")
+		if orderID != "" {
+			if rowID != "" && rowID != orderID {
+				continue
+			}
+		} else {
+			rowTag := stringField(row, "tag", "guiOrdId", "gui_order_id", "tag_id")
+			if rowTag != tag {
+				continue
+			}
+		}
+		status := stringField(row, "status", "ordSt", "ordst", "order_status")
+		price, _ := numberField(row, "avgPrc", "avgprc", "avg_price", "average_price", "price", "prc")
+		return rowID, status, price, nil
+	}
+	return "", "", 0, errors.New("order not found")
+}
+
+func (s *Server) reconcileBracketsAfterStart() {
+	select {
+	case <-s.feedCtx.Done():
+		return
+	case <-time.After(3 * time.Second):
+	}
+	if s.bracketEngine == nil {
+		return
+	}
+	if _, ok := s.brokerSessionValue(); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.feedCtx, 30*time.Second)
+	defer cancel()
+	s.bracketEngine.Reconcile(ctx)
 }

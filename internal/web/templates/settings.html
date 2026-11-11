@@ -145,6 +145,86 @@
 
         <div class="card">
           <div class="card-header">
+            <h2>Exchange Backstop Stop-Loss</h2>
+            <p class="card-desc">Default for new orders. Kotak allows only one live sell per long, so this is a single wide SL-M/SL order placed by the server after the entry fills. The normal TP/SL stay server-side. A per-order choice in the quick order panel always wins.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="trading.bracket.exchange_stop.mode">
+              <label for="f-exchange-stop-mode">Default Mode</label>
+              <select id="f-exchange-stop-mode">
+                <option value="off">Off (server-only TP/SL)</option>
+                <option value="sl_m">SL-M (stop market at Kotak)</option>
+                <option value="sl_l">SL-L (stop limit at Kotak)</option>
+              </select>
+              <span class="form-help">The user can override this for each order; selecting Off never places an exchange order.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.distance_mode">
+              <label for="f-exchange-stop-distance-mode">Distance Mode</label>
+              <select id="f-exchange-stop-distance-mode">
+                <option value="multiplier">Multiplier of server SL</option>
+                <option value="percent">Percent of entry price</option>
+                <option value="points">Absolute points</option>
+                <option value="ticks">Exchange ticks</option>
+              </select>
+              <span class="form-help">Multiplier is the safest default; it keeps the exchange stop wider than the server SL.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.distance_value">
+              <label for="f-exchange-stop-distance-value">Distance Value</label>
+              <input type="number" id="f-exchange-stop-distance-value" min="0.01" step="0.1">
+              <span class="form-help">E.g. 2.5 with multiplier means the exchange trigger is 2.5× the server stop distance.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.sl_l_offset_ticks">
+              <label for="f-exchange-stop-sll-offset">SL-L Limit Offset (ticks)</label>
+              <input type="number" id="f-exchange-stop-sll-offset" min="0" step="1">
+              <span class="form-help">Limit price placed beyond the trigger for SL-L so a gap can still fill.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.cancel_retries">
+              <label for="f-exchange-stop-cancel-retries">Cancel Retries</label>
+              <input type="number" id="f-exchange-stop-cancel-retries" min="1" max="20" step="1">
+              <span class="form-help">The engine never places a second sell until the exchange stop cancellation is confirmed.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.cancel_retry_delay_ms">
+              <label for="f-exchange-stop-cancel-delay">Cancel Retry Delay (ms)</label>
+              <input type="number" id="f-exchange-stop-cancel-delay" min="0" max="10000" step="50">
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.bracket.exchange_stop.on_cancel_failure">
+              <label for="f-exchange-stop-on-cancel-failure">If Cancellation Fails</label>
+              <select id="f-exchange-stop-on-cancel-failure">
+                <option value="alert">Alert and keep the exchange stop</option>
+                <option value="place_exit_anyway">Place server exit anyway (not recommended)</option>
+              </select>
+              <span class="form-help">Alert is recommended: a second live sell may be rejected or treated as a short.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="trading.bracket.exchange_stop.reconcile_on_startup">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-exchange-stop-reconcile">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Reconcile Exchange Stops on Startup</strong>
+                  <span class="form-help">Checks the broker order book for existing backstops and reconciles them instead of placing duplicates.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
             <h2>Risk Caps &amp; Circuit Breakers</h2>
             <p class="card-desc">Self-imposed safety guardrails. Set any limit to <strong>0</strong> to disable that cap.</p>
           </div>
