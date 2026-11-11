@@ -931,6 +931,118 @@ func TestFastFillOrderEventPrecedesHTTP(t *testing.T) {
 	}
 }
 
+func TestEngineUpdateLevels(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+
+	var modifiedID string
+	var modifiedOrder kotakapi.Order
+	var modifyCount atomic.Int32
+	modifyOrder := func(_ context.Context, id string, o kotakapi.Order) error {
+		modifyCount.Add(1)
+		modifiedID = id
+		modifiedOrder = o
+		return nil
+	}
+	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) { return "ord-entry-1", nil }
+
+	engine := NewEngine(store, placeOrder, nil, testLogger())
+	engine.SetModifyOrder(modifyOrder)
+
+	b, err := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE-EQ",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		Product:         "MIS",
+		EntryPrice:      100,
+		TargetPrice:     110,
+		StopLossPrice:   90,
+		TrailingStop:    5,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	target := 112.0
+	updated, err := engine.UpdateLevels(ctx, b.ID, LevelUpdates{TargetPrice: &target})
+	if err != nil {
+		t.Fatalf("UpdateLevels target: %v", err)
+	}
+	if updated.TargetPrice != target {
+		t.Fatalf("expected target %v, got %v", target, updated.TargetPrice)
+	}
+	if modifyCount.Load() != 0 {
+		t.Fatal("target-only update must not modify the broker order")
+	}
+
+	stop := 95.0
+	updated, err = engine.UpdateLevels(ctx, b.ID, LevelUpdates{StopLossPrice: &stop})
+	if err != nil {
+		t.Fatalf("UpdateLevels stop: %v", err)
+	}
+	if updated.StopLossPrice != stop {
+		t.Fatalf("expected stop %v, got %v", stop, updated.StopLossPrice)
+	}
+	if updated.TrailingStop != 0 {
+		t.Fatalf("expected trailing stop cleared on manual SL update, got %v", updated.TrailingStop)
+	}
+
+	entry := 98.0
+	updated, err = engine.UpdateLevels(ctx, b.ID, LevelUpdates{EntryPrice: &entry})
+	if err != nil {
+		t.Fatalf("UpdateLevels entry: %v", err)
+	}
+	if updated.EntryPrice != entry {
+		t.Fatalf("expected entry %v, got %v", entry, updated.EntryPrice)
+	}
+	if modifyCount.Load() != 1 || modifiedID != "ord-entry-1" || modifiedOrder.Price != entry {
+		t.Fatalf("unexpected modify call: count=%d id=%q order=%+v", modifyCount.Load(), modifiedID, modifiedOrder)
+	}
+	stored, err := store.GetBracket(ctx, b.ID)
+	if err != nil || stored == nil || stored.EntryPrice != entry {
+		t.Fatalf("store not updated: %+v err=%v", stored, err)
+	}
+
+	// A target below the entry must be rejected for a BUY bracket.
+	badTarget := 90.0
+	if _, err := engine.UpdateLevels(ctx, b.ID, LevelUpdates{TargetPrice: &badTarget}); err == nil {
+		t.Fatal("expected directional validation error")
+	}
+
+	// Zero removes the target exit.
+	zero := 0.0
+	updated, err = engine.UpdateLevels(ctx, b.ID, LevelUpdates{TargetPrice: &zero})
+	if err != nil {
+		t.Fatalf("remove target: %v", err)
+	}
+	if updated.TargetPrice != 0 {
+		t.Fatalf("expected target removed, got %v", updated.TargetPrice)
+	}
+
+	// Entry price cannot change once in position.
+	inPos, err := engine.Create(ctx, Bracket{
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "TCS-EQ",
+		InstrumentKey:   "nse_cm|11536",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      3800,
+		EntryOrderID:    "ord-filled-1",
+		TargetPrice:     3900,
+		StopLossPrice:   3700,
+		Status:          StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("Create in-position: %v", err)
+	}
+	newEntry := 3790.0
+	if _, err := engine.UpdateLevels(ctx, inPos.ID, LevelUpdates{EntryPrice: &newEntry}); err == nil {
+		t.Fatal("expected error changing entry price of an active position")
+	}
+}
+
 func TestDisarmManualSquareOff(t *testing.T) {
 	ctx := context.Background()
 	orderPlaced := false

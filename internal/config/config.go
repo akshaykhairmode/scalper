@@ -141,15 +141,16 @@ type Charts struct {
 
 // Trading holds quantity, margin, session and risk settings.
 type Trading struct {
-	DefaultProduct    string   `yaml:"default_product" json:"default_product"`
-	DefaultOrderType  string   `yaml:"default_order_type" json:"default_order_type"`
-	ConfirmLiveOrders bool     `yaml:"confirm_live_orders" json:"confirm_live_orders"`
-	MarketProtection  int      `yaml:"market_protection" json:"market_protection"`
-	Quantity          Quantity `yaml:"quantity" json:"quantity"`
-	Margin            Margin   `yaml:"margin" json:"margin"`
-	Session           Session  `yaml:"session" json:"session"`
-	Risk              Risk     `yaml:"risk" json:"risk"`
-	RiskView          RiskView `yaml:"risk_view" json:"risk_view"`
+	DefaultProduct           string   `yaml:"default_product" json:"default_product"`
+	DefaultOrderType         string   `yaml:"default_order_type" json:"default_order_type"`
+	ConfirmLiveOrders        bool     `yaml:"confirm_live_orders" json:"confirm_live_orders"`
+	ConfirmChartLevelChanges bool     `yaml:"confirm_chart_level_changes" json:"confirm_chart_level_changes"`
+	MarketProtection         int      `yaml:"market_protection" json:"market_protection"`
+	Quantity                 Quantity `yaml:"quantity" json:"quantity"`
+	Margin                   Margin   `yaml:"margin" json:"margin"`
+	Session                  Session  `yaml:"session" json:"session"`
+	Risk                     Risk     `yaml:"risk" json:"risk"`
+	RiskView                 RiskView `yaml:"risk_view" json:"risk_view"`
 }
 
 // Quantity controls the default order quantity and unit.
@@ -341,9 +342,10 @@ func Default() Config {
 			Persist:          true,
 		},
 		Trading: Trading{
-			DefaultProduct:    "MIS",
-			DefaultOrderType:  "MARKET",
-			ConfirmLiveOrders: true,
+			DefaultProduct:           "MIS",
+			DefaultOrderType:         "MARKET",
+			ConfirmLiveOrders:        true,
+			ConfirmChartLevelChanges: true,
 			Quantity: Quantity{
 				DefaultLots: 1,
 				DefaultUnit: "lots",

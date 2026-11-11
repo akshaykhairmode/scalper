@@ -115,6 +115,7 @@ trading:
   default_product: "MIS"
   default_order_type: "MARKET"
   confirm_live_orders: true
+  confirm_chart_level_changes: true
   market_protection: 0
   quantity:
     default_lots: 1

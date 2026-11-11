@@ -28,6 +28,7 @@ type Engine struct {
 	store              Store
 	placeOrder         func(ctx context.Context, o kotakapi.Order) (string, error)
 	cancelOrder        func(ctx context.Context, id string) error
+	modifyOrder        func(ctx context.Context, id string, o kotakapi.Order) error
 	log                *slog.Logger
 	brackets           map[string]*Bracket
 	onChange           func(b Bracket)
@@ -43,6 +44,14 @@ type Engine struct {
 func (e *Engine) SetAsync(async bool) {
 	e.mu.Lock()
 	e.asyncExecution = async
+	e.mu.Unlock()
+}
+
+// SetModifyOrder configures the broker order modification function used when a
+// pending bracket entry price is changed from the chart.
+func (e *Engine) SetModifyOrder(fn func(ctx context.Context, id string, o kotakapi.Order) error) {
+	e.mu.Lock()
+	e.modifyOrder = fn
 	e.mu.Unlock()
 }
 
@@ -190,27 +199,9 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 	b.TransactionType = tt
 
-	// Validate target and stoploss directional price sanity
-	if b.TransactionType == "BUY" {
-		if b.TargetPrice > 0 && b.EntryPrice > 0 && b.TargetPrice <= b.EntryPrice {
-			return nil, errors.New("bracket: target price must be greater than entry price for BUY")
-		}
-		if b.StopLossPrice > 0 && b.EntryPrice > 0 && b.StopLossPrice >= b.EntryPrice {
-			return nil, errors.New("bracket: stoploss price must be less than entry price for BUY")
-		}
-		if b.TargetPrice > 0 && b.StopLossPrice > 0 && b.TargetPrice <= b.StopLossPrice {
-			return nil, errors.New("bracket: target price must be greater than stoploss price for BUY")
-		}
-	} else if b.TransactionType == "SELL" {
-		if b.TargetPrice > 0 && b.EntryPrice > 0 && b.TargetPrice >= b.EntryPrice {
-			return nil, errors.New("bracket: target price must be less than entry price for SELL")
-		}
-		if b.StopLossPrice > 0 && b.EntryPrice > 0 && b.StopLossPrice <= b.EntryPrice {
-			return nil, errors.New("bracket: stoploss price must be greater than entry price for SELL")
-		}
-		if b.TargetPrice > 0 && b.StopLossPrice > 0 && b.TargetPrice >= b.StopLossPrice {
-			return nil, errors.New("bracket: target price must be less than stoploss price for SELL")
-		}
+	// Validate target and stoploss directional price sanity.
+	if err := validateLevels(b.TransactionType, b.EntryPrice, b.TargetPrice, b.StopLossPrice); err != nil {
+		return nil, err
 	}
 
 	prod := strings.ToUpper(strings.TrimSpace(b.Product))
@@ -328,6 +319,146 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 
 	e.notify(bracketCopy)
 	return &bracketCopy, nil
+}
+
+// LevelUpdates describes optional bracket price level changes. A nil pointer
+// leaves the corresponding level unchanged; a zero target or stoploss removes
+// that exit level.
+type LevelUpdates struct {
+	EntryPrice    *float64
+	TargetPrice   *float64
+	StopLossPrice *float64
+}
+
+func validateLevels(transactionType string, entry, target, stop float64) error {
+	tt := strings.ToUpper(strings.TrimSpace(transactionType))
+	if tt == "BUY" {
+		if target > 0 && entry > 0 && target <= entry {
+			return errors.New("bracket: target price must be greater than entry price for BUY")
+		}
+		if stop > 0 && entry > 0 && stop >= entry {
+			return errors.New("bracket: stoploss price must be less than entry price for BUY")
+		}
+		if target > 0 && stop > 0 && target <= stop {
+			return errors.New("bracket: target price must be greater than stoploss price for BUY")
+		}
+	} else if tt == "SELL" {
+		if target > 0 && entry > 0 && target >= entry {
+			return errors.New("bracket: target price must be less than entry price for SELL")
+		}
+		if stop > 0 && entry > 0 && stop <= entry {
+			return errors.New("bracket: stoploss price must be greater than entry price for SELL")
+		}
+		if target > 0 && stop > 0 && target >= stop {
+			return errors.New("bracket: target price must be less than stoploss price for SELL")
+		}
+	}
+	return nil
+}
+
+// UpdateLevels moves or removes a bracket's entry, target or stoploss level.
+// Moving a pending entry also modifies the resting broker order in place.
+func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdates) (*Bracket, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, errors.New("bracket id is required")
+	}
+
+	e.mu.RLock()
+	current, ok := e.brackets[id]
+	if !ok {
+		e.mu.RUnlock()
+		return nil, errors.New("bracket not found")
+	}
+	snapshot := *current
+	modifyOrder := e.modifyOrder
+	e.mu.RUnlock()
+
+	if snapshot.Status != StatusPendingEntry && snapshot.Status != StatusInPosition {
+		return nil, fmt.Errorf("bracket %s cannot be modified in status %s", id, snapshot.Status)
+	}
+
+	entry := snapshot.EntryPrice
+	target := snapshot.TargetPrice
+	stop := snapshot.StopLossPrice
+	if updates.EntryPrice != nil {
+		if snapshot.Status != StatusPendingEntry {
+			return nil, errors.New("cannot change entry price of an active position")
+		}
+		if *updates.EntryPrice <= 0 {
+			return nil, errors.New("entry price must be positive")
+		}
+		entry = *updates.EntryPrice
+	}
+	if updates.TargetPrice != nil {
+		if *updates.TargetPrice < 0 {
+			return nil, errors.New("target price cannot be negative")
+		}
+		target = *updates.TargetPrice
+	}
+	if updates.StopLossPrice != nil {
+		if *updates.StopLossPrice < 0 {
+			return nil, errors.New("stoploss price cannot be negative")
+		}
+		stop = *updates.StopLossPrice
+	}
+	if err := validateLevels(snapshot.TransactionType, entry, target, stop); err != nil {
+		return nil, err
+	}
+
+	if updates.EntryPrice != nil && snapshot.EntryOrderID != "" {
+		if modifyOrder == nil {
+			return nil, errors.New("order modification is not available")
+		}
+		order := kotakapi.Order{
+			ExchangeSegment: snapshot.ExchangeSegment,
+			TradingSymbol:   snapshot.TradingSymbol,
+			TransactionType: snapshot.TransactionType,
+			Product:         snapshot.Product,
+			OrderType:       "L",
+			Quantity:        snapshot.Quantity,
+			Price:           entry,
+			Validity:        "DAY",
+		}
+		if err := modifyOrder(ctx, snapshot.EntryOrderID, order); err != nil {
+			return nil, fmt.Errorf("bracket: modify entry order: %w", err)
+		}
+	}
+
+	e.mu.Lock()
+	current, ok = e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil, errors.New("bracket not found")
+	}
+	if current.Status != StatusPendingEntry && current.Status != StatusInPosition {
+		status := current.Status
+		e.mu.Unlock()
+		return nil, fmt.Errorf("bracket %s cannot be modified in status %s", id, status)
+	}
+	if updates.EntryPrice != nil && current.Status != StatusPendingEntry {
+		e.mu.Unlock()
+		return nil, errors.New("bracket entered a position while the entry price was being modified")
+	}
+	current.EntryPrice = entry
+	current.TargetPrice = target
+	current.StopLossPrice = stop
+	if updates.StopLossPrice != nil {
+		// An explicit stoploss move or removal takes over from trailing logic,
+		// otherwise the next tick would immediately re-tighten it.
+		current.TrailingStop = 0
+	}
+	current.UpdatedAt = time.Now()
+	updated := *current
+	e.mu.Unlock()
+
+	if e.store != nil {
+		if err := e.store.UpdateBracket(ctx, updated); err != nil {
+			e.log.Error("failed to persist bracket level update", "id", id, "error", err)
+		}
+	}
+	e.notify(updated)
+	return &updated, nil
 }
 
 // Cancel cancels a pending bracket, cancelling any resting entry order.

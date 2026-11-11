@@ -291,6 +291,7 @@
     setVal('f-default-unit', q.default_unit || 'lots');
     setChecked('f-allow-shares', !!q.allow_shares);
     setChecked('f-confirm-live-orders', !!t.confirm_live_orders);
+    setChecked('f-confirm-chart-levels', t.confirm_chart_level_changes !== false);
 
     setVal('f-max-daily-loss', r.max_daily_loss_inr !== undefined ? r.max_daily_loss_inr : 5000);
     setVal('f-max-orders-min', r.max_orders_per_minute !== undefined ? r.max_orders_per_minute : 6);
@@ -399,6 +400,7 @@
       { id: 'f-default-unit', path: ['trading', 'quantity', 'default_unit'], type: 'string' },
       { id: 'f-allow-shares', path: ['trading', 'quantity', 'allow_shares'], type: 'bool' },
       { id: 'f-confirm-live-orders', path: ['trading', 'confirm_live_orders'], type: 'bool' },
+      { id: 'f-confirm-chart-levels', path: ['trading', 'confirm_chart_level_changes'], type: 'bool' },
       { id: 'f-max-daily-loss', path: ['trading', 'risk', 'max_daily_loss_inr'], type: 'int' },
       { id: 'f-max-orders-min', path: ['trading', 'risk', 'max_orders_per_minute'], type: 'int' },
       { id: 'f-max-exit-sec', path: ['trading', 'risk', 'max_exit_orders_per_second'], type: 'int' },

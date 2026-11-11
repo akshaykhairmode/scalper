@@ -88,7 +88,32 @@ func TestBracketHandlers(t *testing.T) {
 		t.Fatalf("expected 1 bracket, got %d", len(listResp.Brackets))
 	}
 
-	// 4. Cancel bracket
+	// 4. Move the target level from the chart.
+	rec = do(t, s, localRequestWithBody(http.MethodPatch, "/api/brackets/test-bracket-1", []byte(`{"target_price":117.5,"confirm":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating target, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var moved bracket.Bracket
+	if err := json.NewDecoder(rec.Body).Decode(&moved); err != nil {
+		t.Fatalf("failed to decode moved bracket: %v", err)
+	}
+	if moved.TargetPrice != 117.5 {
+		t.Fatalf("expected target 117.5, got %v", moved.TargetPrice)
+	}
+
+	// 5. Directional validation is enforced by the engine.
+	rec = do(t, s, localRequestWithBody(http.MethodPatch, "/api/brackets/test-bracket-1", []byte(`{"target_price":95,"confirm":true}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid target, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// 6. An empty level payload is rejected.
+	rec = do(t, s, localRequestWithBody(http.MethodPatch, "/api/brackets/test-bracket-1", []byte(`{}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty update, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// 7. Cancel bracket
 	cancelReq := localRequestWithBody(http.MethodPost, "/api/brackets/test-bracket-1/cancel", []byte(`{}`))
 	rec = do(t, s, cancelReq)
 	if rec.Code != http.StatusOK {

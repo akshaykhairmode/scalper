@@ -1327,6 +1327,7 @@ function registerCustomOverlays() {
       const bgColor = isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
       const defaultKindLabel = isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
       const label = data.label || `${defaultKindLabel}: ₹${price.toFixed(2)}`;
+      const showRemove = Boolean(data.draggable) && (isTarget || isStop);
 
       const figures = [];
 
@@ -1350,7 +1351,7 @@ function registerCustomOverlays() {
       figures.push({
         type: "text",
         attrs: {
-          x: width - 8,
+          x: showRemove ? width - 28 : width - 8,
           y,
           text: label,
           align: "right",
@@ -1371,7 +1372,98 @@ function registerCustomOverlays() {
         ignoreEvent: true,
       });
 
+      if (showRemove) {
+        // Cache the badge centre so pointer hit-testing uses the same drawing
+        // coordinate space as the overlay renderer.
+        data.badgeX = width - 15;
+        data.badgeY = y;
+        figures.push({
+          type: "text",
+          attrs: {
+            x: width - 15,
+            y,
+            text: "✕",
+            align: "center",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#ffffff",
+            backgroundColor: "#7f1d1d",
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 3,
+            paddingRight: 3,
+            paddingTop: 1,
+            paddingBottom: 1,
+            borderRadius: 6,
+          },
+          ignoreEvent: true,
+        });
+      }
+
       return figures;
+    },
+  });
+
+  kc.registerOverlay({
+    name: "dragLevelLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const price = Number(data.price || overlay.points?.[0]?.value || 0);
+      const width = bounding?.width || 800;
+      const accent = "#f0b429";
+      const label = data.label || `MOVE: ₹${price.toFixed(2)}`;
+
+      return [
+        {
+          type: "line",
+          attrs: {
+            coordinates: [
+              { x: 0, y },
+              { x: width, y },
+            ],
+          },
+          styles: {
+            style: "dashed",
+            dashedValue: [7, 4],
+            size: 2.5,
+            color: accent,
+          },
+          ignoreEvent: true,
+        },
+        {
+          type: "text",
+          attrs: {
+            x: width - 8,
+            y,
+            text: label,
+            align: "right",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#000000",
+            backgroundColor: accent,
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 6,
+            paddingRight: 6,
+            paddingTop: 2,
+            paddingBottom: 2,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        },
+      ];
     },
   });
 
@@ -2277,7 +2369,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showDepth = true } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2308,6 +2400,7 @@ export class CandleChart {
     this.targetPreviewOverlayId = null;
     this.bracketLevelOverlayIds = [];
     this.bracketLevelsKey = "";
+    this.bracketData = null;
     this.dayDividerOverlayIds = [];
     this.dayDividerKey = "";
     this.stopPreviewOverlayId = null;
@@ -2319,6 +2412,14 @@ export class CandleChart {
     this.drawingTrendlineId = null;
     this.drawingTrendlineBtn = null;
     this.drawingEscHandler = null;
+    this.onLevelDrop = typeof onLevelDrop === "function" ? onLevelDrop : null;
+    this.onLevelRemove = typeof onLevelRemove === "function" ? onLevelRemove : null;
+    this.draggableOrderLevels = [];
+    this.draggableBracketLevels = [];
+    this.levelDrag = null;
+    this.levelDragPreviewId = null;
+    this.suppressChartClickUntil = 0;
+    this.levelPointerHandlers = null;
     this.colors = chartColors(container);
     this.loaderCallback = null;
     this.subscriberCallback = null;
@@ -2417,6 +2518,8 @@ export class CandleChart {
         if (this.showDepth) this.debounceDepthRefresh();
       });
     } catch (_) {}
+
+    this.initLevelDragging();
   }
 
   formatCandle(c) {
@@ -3249,8 +3352,17 @@ export class CandleChart {
    * A pending (resting entry) bracket shows its entry too; an in-position
    * bracket only needs the target/stop because the position line marks the entry.
    */
-  showBracketLevels({ entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = {}) {
-    if (!this.chart) return;
+  showBracketLevels({ bracketId = "", entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = {}) {
+    this.bracketData = { bracketId, entryPrice, targetPrice, stopPrice, side, pending };
+    this.renderBracketLevels();
+  }
+
+  renderBracketLevels() {
+    if (!this.chart || !this.bracketData || !this.showTrades) {
+      this.clearBracketOverlays();
+      return;
+    }
+    const { bracketId = "", entryPrice = 0, targetPrice = 0, stopPrice = 0, side = "BUY", pending = false } = this.bracketData;
     const entry = Number(entryPrice);
     const target = Number(targetPrice);
     const stop = Number(stopPrice);
@@ -3266,11 +3378,10 @@ export class CandleChart {
       levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)}` });
     }
 
-    const key = levels.map((l) => `${l.kind}:${l.price}`).join("|") + `|${isBuy ? "B" : "S"}`;
+    const key = levels.map((l) => `${l.kind}:${l.price}`).join("|") + `|${isBuy ? "B" : "S"}|${bracketId}`;
     if (key === this.bracketLevelsKey && this.bracketLevelOverlayIds.length === levels.length) return;
 
-    this.clearBracketLevels();
-    if (!levels.length) return;
+    this.clearBracketOverlays();
     this.bracketLevelsKey = key;
     for (const level of levels) {
       try {
@@ -3279,15 +3390,32 @@ export class CandleChart {
           groupId: "bracket_levels",
           points: [{ value: level.price }],
           lock: true,
-          extendData: { kind: level.kind, price: level.price, label: level.label, side: isBuy ? "B" : "S" },
+          extendData: {
+            bracketId,
+            kind: level.kind,
+            price: level.price,
+            label: level.label,
+            side: isBuy ? "B" : "S",
+            draggable: true,
+          },
         });
-        if (id) this.bracketLevelOverlayIds.push(id);
+        if (id) {
+          this.bracketLevelOverlayIds.push(id);
+          this.draggableBracketLevels.push({
+            source: "bracket",
+            bracketId,
+            kind: level.kind,
+            price: level.price,
+            side: isBuy ? "B" : "S",
+          });
+        }
       } catch (_) {}
     }
   }
 
-  clearBracketLevels() {
+  clearBracketOverlays() {
     this.bracketLevelsKey = "";
+    this.draggableBracketLevels = [];
     if (!this.chart) return;
     try {
       this.chart.removeOverlay({ groupId: "bracket_levels" });
@@ -3298,6 +3426,11 @@ export class CandleChart {
       } catch (_) {}
     }
     this.bracketLevelOverlayIds = [];
+  }
+
+  clearBracketLevels() {
+    this.bracketData = null;
+    this.clearBracketOverlays();
   }
 
   /** One dashed vertical line at the first bar of each trading day. */
@@ -3376,7 +3509,9 @@ export class CandleChart {
       this.currentSymbol = symbol;
       // Rebuild cached bracket overlays for the new symbol.
       this.bracketLevelOverlayIds = [];
+      this.draggableBracketLevels = [];
       this.bracketLevelsKey = "";
+      this.bracketData = null;
       this.indicatorSignature = "";
       try {
         this.chart?.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
@@ -3436,6 +3571,7 @@ export class CandleChart {
   }
 
   clearOpenOrders() {
+    this.draggableOrderLevels = [];
     if (!this.chart) return;
     try {
       this.chart.removeOverlay({ groupId: "open_orders" });
@@ -3454,6 +3590,9 @@ export class CandleChart {
     for (const o of this.openOrdersData) {
       const price = Number(o.price);
       if (!Number.isFinite(price) || price <= 0) continue;
+      // A pending bracket entry is drawn by showBracketLevels so dragging it
+      // updates the bracket instead of leaving the bracket out of sync.
+      if (o.bracketId) continue;
       try {
         const id = this.chart.createOverlay({
           name: "openOrderLine",
@@ -3465,9 +3604,19 @@ export class CandleChart {
             side: o.side,
             qty: o.quantity - (Number(o.filled_quantity) || 0),
             price,
+            draggable: true,
           },
         });
-        if (id) this.openOrderOverlayIds.push(id);
+        if (id) {
+          this.openOrderOverlayIds.push(id);
+          this.draggableOrderLevels.push({
+            source: "order",
+            orderId: o.id,
+            kind: "ENTRY",
+            price,
+            side: o.side,
+          });
+        }
       } catch (_) {}
     }
   }
@@ -3477,7 +3626,230 @@ export class CandleChart {
     this.refreshTradeOverlays();
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
+    this.renderBracketLevels();
     return this.showTrades;
+  }
+
+  initLevelDragging() {
+    if (!this.container || this.levelPointerHandlers) return;
+    const down = (event) => this.onLevelPointerDown(event);
+    const move = (event) => this.onLevelPointerMove(event);
+    const up = (event) => this.onLevelPointerUp(event);
+    this.container.addEventListener("pointerdown", down, true);
+    this.container.addEventListener("pointermove", move, true);
+    this.container.addEventListener("pointerup", up, true);
+    this.container.addEventListener("pointercancel", up, true);
+    this.levelPointerHandlers = { down, move, up };
+  }
+
+  getDraggableLevels() {
+    return [...this.draggableBracketLevels, ...this.draggableOrderLevels];
+  }
+
+  hitTestLevel(clientY) {
+    if (!this.showTrades || !this.chart || !this.container) return null;
+    const levels = this.getDraggableLevels();
+    if (!levels.length) return null;
+    const rect = this.container.getBoundingClientRect();
+    const y = clientY - rect.top;
+    if (y < 0 || y > rect.height) return null;
+    const x = Math.max(1, Math.min(rect.width - 1, rect.width / 2));
+    const price = this.getPriceFromPixel(y, x);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const above = this.getPriceFromPixel(Math.max(0, y - 6), x);
+    const below = this.getPriceFromPixel(Math.min(rect.height - 1, y + 6), x);
+    let tolerance = above && below ? Math.abs(below - above) / 2 : price * 0.0015;
+    tolerance = Math.max(tolerance, 0.05);
+    let best = null;
+    let bestDiff = Infinity;
+    for (const level of levels) {
+      const diff = Math.abs(Number(level.price) - price);
+      if (diff <= tolerance && diff < bestDiff) {
+        best = level;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  hitTestRemoveBadge(clientX, clientY) {
+    if (!this.showTrades || !this.container || !this.chart) return null;
+    const rect = this.container.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    let overlays = [];
+    try {
+      overlays = this.chart.getOverlays({ groupId: "bracket_levels" });
+    } catch (_) {
+      return null;
+    }
+    for (const overlay of overlays || []) {
+      const data = overlay?.extendData || {};
+      if (!data.draggable || (data.kind !== "TARGET" && data.kind !== "STOP")) continue;
+      const badgeX = Number(data.badgeX);
+      const badgeY = Number(data.badgeY);
+      if (!Number.isFinite(badgeX) || !Number.isFinite(badgeY)) continue;
+      if (Math.abs(x - badgeX) > 12 || Math.abs(y - badgeY) > 12) continue;
+      const level = this.draggableBracketLevels.find(
+        (item) => item.kind === data.kind &&
+          Math.abs(Number(item.price) - Number(data.price)) < 1e-6 &&
+          String(item.bracketId) === String(data.bracketId)
+      );
+      return level || {
+        source: "bracket",
+        bracketId: data.bracketId,
+        kind: data.kind,
+        price: Number(data.price),
+        side: data.side,
+      };
+    }
+    return null;
+  }
+
+  levelDragLabel(level, price) {
+    const kind = String(level?.kind || "ENTRY").toUpperCase();
+    const prefix = kind === "TARGET" ? "MOVE TARGET" : kind === "STOP" ? "MOVE SL" : "MOVE ENTRY";
+    return `${prefix}: ₹${Number(price).toFixed(2)}`;
+  }
+
+  showLevelDragPreview(level, price) {
+    this.clearLevelDragPreview();
+    if (!this.chart) return;
+    try {
+      this.levelDragPreviewId = this.chart.createOverlay({
+        name: "dragLevelLine",
+        groupId: "level_drag",
+        points: [{ value: price }],
+        lock: true,
+        extendData: { price, label: this.levelDragLabel(level, price) },
+      });
+    } catch (_) {}
+  }
+
+  updateLevelDragPreview(level, price) {
+    if (!this.levelDragPreviewId) {
+      this.showLevelDragPreview(level, price);
+      return;
+    }
+    try {
+      this.chart.overrideOverlay({
+        id: this.levelDragPreviewId,
+        points: [{ value: price }],
+        extendData: { price, label: this.levelDragLabel(level, price) },
+      });
+    } catch (_) {
+      this.showLevelDragPreview(level, price);
+    }
+  }
+
+  clearLevelDragPreview() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "level_drag" });
+    } catch (_) {}
+    if (this.levelDragPreviewId) {
+      try {
+        this.chart.removeOverlay({ id: this.levelDragPreviewId });
+      } catch (_) {}
+      this.levelDragPreviewId = null;
+    }
+  }
+
+  onLevelPointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (this.levelDrag || this.drawingTrendlineId) return;
+    const removeLevel = this.hitTestRemoveBadge(event.clientX, event.clientY);
+    if (removeLevel) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.suppressChartClickUntil = Date.now() + 600;
+      if (typeof this.onLevelRemove === "function") {
+        try {
+          this.onLevelRemove({ ...removeLevel });
+        } catch (error) {
+          console.warn("onLevelRemove:", error);
+        }
+      }
+      return;
+    }
+    const level = this.hitTestLevel(event.clientY);
+    if (!level) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.levelDrag = {
+      level,
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      moved: false,
+      price: Number(level.price),
+    };
+    this.suppressChartClickUntil = Date.now() + 600;
+    this.container.style.cursor = "ns-resize";
+    try {
+      this.container.setPointerCapture(event.pointerId);
+    } catch (_) {}
+    this.showLevelDragPreview(level, Number(level.price));
+  }
+
+  onLevelPointerMove(event) {
+    if (!this.container) return;
+    if (!this.levelDrag) {
+      if (this.hitTestRemoveBadge(event.clientX, event.clientY)) {
+        this.container.style.cursor = "pointer";
+      } else {
+        this.container.style.cursor = this.hitTestLevel(event.clientY) ? "ns-resize" : "";
+      }
+      return;
+    }
+    if (event.pointerId !== this.levelDrag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = this.container.getBoundingClientRect();
+    const y = Math.max(0, Math.min(rect.height - 1, event.clientY - rect.top));
+    const x = Math.max(1, Math.min(rect.width - 1, rect.width / 2));
+    const price = this.getPriceFromPixel(y, x);
+    if (!Number.isFinite(price) || price <= 0) return;
+    if (Math.abs(event.clientY - this.levelDrag.startY) >= 2) this.levelDrag.moved = true;
+    this.levelDrag.price = price;
+    this.updateLevelDragPreview(this.levelDrag.level, price);
+  }
+
+  onLevelPointerUp(event) {
+    if (!this.levelDrag) return;
+    if (event.pointerId !== undefined && event.pointerId !== this.levelDrag.pointerId) return;
+    const drag = this.levelDrag;
+    this.levelDrag = null;
+    this.suppressChartClickUntil = Date.now() + 400;
+    if (this.container) {
+      this.container.style.cursor = "";
+      try {
+        if (this.container.hasPointerCapture(event.pointerId)) {
+          this.container.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    this.clearLevelDragPreview();
+    if (event.type === "pointercancel") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!drag.moved) return;
+    const price = Math.round(Number(drag.price) * 20) / 20;
+    if (!Number.isFinite(price) || price <= 0) return;
+    if (typeof this.onLevelDrop === "function") {
+      try {
+        this.onLevelDrop({ ...drag.level, price, previousPrice: Number(drag.level.price) });
+      } catch (error) {
+        console.warn("onLevelDrop:", error);
+      }
+    }
+  }
+
+  consumeChartClickSuppression() {
+    if (Date.now() < this.suppressChartClickUntil) {
+      this.suppressChartClickUntil = 0;
+      return true;
+    }
+    return false;
   }
 
   clearTradeOverlays() {
@@ -3693,11 +4065,21 @@ export class CandleChart {
       clearTimeout(this._depthTimer);
       this._depthTimer = null;
     }
+    this.levelDrag = null;
+    this.clearLevelDragPreview();
+    if (this.container && this.levelPointerHandlers) {
+      this.container.removeEventListener("pointerdown", this.levelPointerHandlers.down, true);
+      this.container.removeEventListener("pointermove", this.levelPointerHandlers.move, true);
+      this.container.removeEventListener("pointerup", this.levelPointerHandlers.up, true);
+      this.container.removeEventListener("pointercancel", this.levelPointerHandlers.up, true);
+      this.levelPointerHandlers = null;
+    }
     this.clearOrderPreview();
     this.clearTargetPreview();
     this.clearOpenOrders();
     this.clearTradeOverlays();
     this.clearPositionOverlay();
+    this.clearBracketLevels();
     this.clearSRLines();
     this.clearDayDividers();
     this.clearAutoTrendlines();

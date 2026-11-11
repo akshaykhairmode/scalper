@@ -198,6 +198,7 @@ const S: any = {
   wsFailCount: 0,
   feedSubscriptions: [],
   charts: {},
+  showTradesPanes: { ce: true, underlying: true, pe: true },
   candles: {},
   historicalCache: new Map(),
   chartLoadID: 0,
@@ -292,6 +293,7 @@ async function requestJSON(url: string, options: any = {}) {
 
 const getJSON = (url) => requestJSON(url);
 const postJSON = (url, body) => requestJSON(url, { method: "POST", body: JSON.stringify(body) });
+const patchJSON = (url, body) => requestJSON(url, { method: "PATCH", body: JSON.stringify(body) });
 
 function postOrder(payload) {
 	return postJSON("/api/broker/orders", {
@@ -1168,7 +1170,17 @@ function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
   const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
   const savedPatterns = localStorage.getItem("scalper-show-patterns") === "true";
-  const savedTrades = localStorage.getItem("scalper-show-trades") !== "false";
+  // TX visibility is independent per chart. Fall back to the legacy global key
+  // so existing users keep the visibility they had before the split.
+  const legacyTrades = localStorage.getItem("scalper-show-trades") !== "false";
+  const savedTradesFor = (pane) => {
+    const value = localStorage.getItem(`scalper-show-trades-${pane}`);
+    return value === null ? legacyTrades : value !== "false";
+  };
+  const savedTradesCE = savedTradesFor("ce");
+  const savedTradesUnderlying = savedTradesFor("underlying");
+  const savedTradesPE = savedTradesFor("pe");
+  S.showTradesPanes = { ce: savedTradesCE, underlying: savedTradesUnderlying, pe: savedTradesPE };
   const savedMACE = localStorage.getItem("scalper-ma-ce") === "true";
   const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
   const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
@@ -1177,11 +1189,10 @@ function buildCharts() {
   const savedDivergence = localStorage.getItem("scalper-show-divergence") === "true";
   const savedMomentum = localStorage.getItem("scalper-show-momentum") === "true";
 
-  S.showTrades = savedTrades;
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, ...indicatorOptions });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTrades, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, ...indicatorOptions });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -1256,8 +1267,10 @@ function buildCharts() {
   }
 
   for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
-    button.classList.toggle("active", savedTrades);
-    button.setAttribute("aria-pressed", savedTrades ? "true" : "false");
+    const pane = tradesPaneKey(button.dataset.chart);
+    const active = Boolean(S.showTradesPanes[pane]);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
   }
 
   for (const button of $$(".chart-tools button[data-chart-action='ma']")) {
@@ -2531,6 +2544,7 @@ function updateChartTrades() {
     }
     if (ceBracket) {
       S.charts.ce.showBracketLevels?.({
+        bracketId: ceBracket.id,
         entryPrice: ceBracket.entryPrice,
         targetPrice: ceBracket.targetPrice,
         stopPrice: ceBracket.stopLossPrice,
@@ -2543,7 +2557,11 @@ function updateChartTrades() {
     if (!ceBracket && (!S.quickOrder || S.quickOrder.pane !== "ce")) {
       S.charts.ce.clearTargetPreview?.();
     }
-    const ceOpen = ce ? (S.orders || []).filter((o) => matchesContract(o, ce) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
+    const ceOpen = ce
+      ? (S.orders || [])
+          .filter((o) => matchesContract(o, ce) && isOpenOrder(o) && !finishedExitIds.has(String(o.id)))
+          .map((o) => (ceBracket && String(ceBracket.orderId) === String(o.id) ? { ...o, bracketId: ceBracket.id } : o))
+      : [];
     S.charts.ce.setTrades(ceTrades, { isSpot: false });
     S.charts.ce.setPosition(cePos);
     S.charts.ce.setOpenOrders(ceOpen);
@@ -2568,6 +2586,7 @@ function updateChartTrades() {
     }
     if (peBracket) {
       S.charts.pe.showBracketLevels?.({
+        bracketId: peBracket.id,
         entryPrice: peBracket.entryPrice,
         targetPrice: peBracket.targetPrice,
         stopPrice: peBracket.stopLossPrice,
@@ -2580,7 +2599,11 @@ function updateChartTrades() {
     if (!peBracket && (!S.quickOrder || S.quickOrder.pane !== "pe")) {
       S.charts.pe.clearTargetPreview?.();
     }
-    const peOpen = pe ? (S.orders || []).filter((o) => matchesContract(o, pe) && isOpenOrder(o) && !finishedExitIds.has(String(o.id))) : [];
+    const peOpen = pe
+      ? (S.orders || [])
+          .filter((o) => matchesContract(o, pe) && isOpenOrder(o) && !finishedExitIds.has(String(o.id)))
+          .map((o) => (peBracket && String(peBracket.orderId) === String(o.id) ? { ...o, bracketId: peBracket.id } : o))
+      : [];
     S.charts.pe.setTrades(peTrades, { isSpot: false });
     S.charts.pe.setPosition(pePos);
     S.charts.pe.setOpenOrders(peOpen);
@@ -2613,21 +2636,195 @@ function updateChartTrades() {
   }
 }
 
-function toggleAllChartTrades() {
-  S.showTrades = !S.showTrades;
+function tradesPaneKey(chartKey) {
+  return chartKey === "spot" || chartKey === "underlying" ? "underlying" : chartKey;
+}
+
+function chartTradesLabel(pane) {
+  if (pane === "ce") return "CALL";
+  if (pane === "pe") return "PUT";
+  return "UNDERLYING";
+}
+
+function toggleChartTrades(chartKey) {
+  const pane = tradesPaneKey(chartKey);
+  const chart = S.charts[chartKey] || (pane === "underlying" ? S.charts.spot : null);
+  if (!chart) return false;
+  const nextState = chart.toggleTrades();
+  S.showTradesPanes[pane] = Boolean(nextState);
   try {
-    localStorage.setItem("scalper-show-trades", String(S.showTrades));
+    localStorage.setItem(`scalper-show-trades-${pane}`, String(nextState));
   } catch (_) {}
-  for (const chart of (Object.values(S.charts) as any[])) {
-    chart?.toggleTrades(S.showTrades);
-  }
   for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
-    button.classList.toggle("active", S.showTrades);
-    button.setAttribute("aria-pressed", S.showTrades ? "true" : "false");
+    if (tradesPaneKey(button.dataset.chart) !== pane) continue;
+    button.classList.toggle("active", nextState);
+    button.setAttribute("aria-pressed", nextState ? "true" : "false");
   }
   updateChartTrades();
-  toast(S.showTrades ? "Orders & execution overlays enabled" : "Orders & execution overlays hidden", "ok", 2000);
-  return S.showTrades;
+  const label = chartTradesLabel(pane);
+  toast(nextState ? `Orders & execution overlays enabled (${label})` : `Orders & execution overlays hidden (${label})`, "ok", 2000);
+  return nextState;
+}
+
+function roundToTick(price) {
+  return Math.round(Number(price) * 20) / 20;
+}
+
+function chartLevelConfirmationsEnabled() {
+  return S.boot?.confirmChartLevelChanges !== false;
+}
+
+function validateBracketLevels(bracket, entry, target, stop) {
+  if (!bracket) return "";
+  const isBuy = bracket.action === "buy";
+  if (isBuy) {
+    if (entry > 0 && target > 0 && target <= entry) return "Target must be above the entry price for a BUY bracket.";
+    if (entry > 0 && stop > 0 && stop >= entry) return "Stop-loss must be below the entry price for a BUY bracket.";
+    if (target > 0 && stop > 0 && target <= stop) return "Target must be above the stop-loss for a BUY bracket.";
+  } else {
+    if (entry > 0 && target > 0 && target >= entry) return "Target must be below the entry price for a SELL bracket.";
+    if (entry > 0 && stop > 0 && stop <= entry) return "Stop-loss must be above the entry price for a SELL bracket.";
+    if (target > 0 && stop > 0 && target >= stop) return "Target must be below the stop-loss for a SELL bracket.";
+  }
+  return "";
+}
+
+async function handleChartLevelDrop(pane, info) {
+  if (!info) return;
+  const price = roundToTick(info.price);
+  const previous = roundToTick(info.previousPrice);
+  if (!Number.isFinite(price) || price <= 0 || Math.abs(price - previous) < 0.025) return;
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before modifying orders.", "warn");
+    return;
+  }
+
+  const kind = String(info.kind || "ENTRY").toUpperCase();
+  const levelLabel = kind === "TARGET" ? "TARGET" : kind === "STOP" ? "STOP-LOSS" : "ENTRY";
+  const bracket = info.bracketId
+    ? (S.autoTargets || []).find((b) => String(b.id) === String(info.bracketId))
+    : null;
+  const order = !bracket && info.orderId
+    ? (S.orders || []).find((o) => String(o.id) === String(info.orderId))
+    : null;
+
+  if (bracket) {
+    const entry = kind === "ENTRY" ? price : num(bracket.entryPrice);
+    const target = kind === "TARGET" ? price : num(bracket.targetPrice);
+    const stop = kind === "STOP" ? price : num(bracket.stopLossPrice);
+    const error = validateBracketLevels(bracket, entry, target, stop);
+    if (error) {
+      toast(error, "error", 5000);
+      return;
+    }
+  } else if (!order) {
+    toast("Could not find the order for this chart level.", "error", 4000);
+    return;
+  }
+
+  const symbol = bracket?.symbol || order?.symbol || chartTradesLabel(tradesPaneKey(pane));
+  const detail = kind === "ENTRY"
+    ? "The pending limit order will be modified at the broker."
+    : "The server bracket level will update immediately and trigger the exit at the new price.";
+  if (chartLevelConfirmationsEnabled()) {
+    const ok = await confirmAction({
+      title: `Move ${levelLabel}`,
+      body: `Move <b>${esc(levelLabel)}</b> for <b>${esc(symbol)}</b> from <b>₹${fmt(previous)}</b> to <b>₹${fmt(price)}</b>?<br><span class="muted">${detail}</span>`,
+      okLabel: `Move ${levelLabel}`,
+      danger: kind === "ENTRY",
+    });
+    if (!ok) return;
+  }
+
+  try {
+    if (bracket) {
+      const payload: any = { confirm: true };
+      if (kind === "ENTRY") payload.entry_price = price;
+      else if (kind === "TARGET") payload.target_price = price;
+      else payload.stop_loss_price = price;
+      const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}`, payload);
+      const updated = normalizeBracket(response?.bracket || response);
+      if (updated && updated.id) {
+        upsertBracket(updated);
+      } else {
+        if (kind === "ENTRY") bracket.entryPrice = price;
+        else if (kind === "TARGET") bracket.targetPrice = price;
+        else bracket.stopLossPrice = price;
+      }
+      saveAutoTargets();
+      renderTab();
+      updateChartTrades();
+      scheduleBooksRefresh(500);
+      toast(`${levelLabel} moved to ₹${fmt(price)}${bracket.symbol ? ` (${bracket.symbol})` : ""}.`, "ok", 3500);
+    } else {
+      await patchJSON(`/api/broker/orders/${encodeURIComponent(String(order.id))}`, {
+        price,
+        quantity: order.quantity,
+        order_type: "LIMIT",
+        validity: "DAY",
+        confirm: true,
+      });
+      toast(`Order ${order.id} modified to ₹${fmt(price)}.`, "ok", 3500);
+      scheduleBooksRefresh(300);
+    }
+  } catch (err) {
+    toast(`Could not move ${levelLabel}: ${err.message}`, "error", 6000);
+  }
+}
+
+async function handleChartLevelRemove(pane, info) {
+  if (!info) return;
+  const kind = String(info.kind || "").toUpperCase();
+  if (kind !== "TARGET" && kind !== "STOP") return;
+  if (!S.session?.authenticated) {
+    openLogin();
+    toast("Sign in with Kotak before modifying bracket exits.", "warn");
+    return;
+  }
+  const bracket = info.bracketId
+    ? (S.autoTargets || []).find((b) => String(b.id) === String(info.bracketId))
+    : null;
+  if (!bracket) {
+    toast("Could not find the bracket for this chart level.", "error", 4000);
+    return;
+  }
+
+  const levelLabel = kind === "TARGET" ? "TARGET" : "STOP-LOSS";
+  const detail = kind === "TARGET"
+    ? "The target exit will be removed. The position stays open until you exit manually or the stop-loss hits."
+    : "The stop-loss will be removed. The position will have no stop-loss protection until you set one again.";
+  if (chartLevelConfirmationsEnabled()) {
+    const ok = await confirmAction({
+      title: `Remove ${levelLabel}`,
+      body: `Remove <b>${esc(levelLabel)}</b> for <b>${esc(bracket.symbol || chartTradesLabel(tradesPaneKey(pane)))}</b>?<br><span class="muted">${detail}</span>`,
+      okLabel: `Remove ${levelLabel}`,
+      danger: true,
+    });
+    if (!ok) return;
+  }
+
+  try {
+    const payload: any = { confirm: true };
+    if (kind === "TARGET") payload.target_price = 0;
+    else payload.stop_loss_price = 0;
+    const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}`, payload);
+    const updated = normalizeBracket(response?.bracket || response);
+    if (updated && updated.id) {
+      upsertBracket(updated);
+    } else if (kind === "TARGET") {
+      bracket.targetPrice = 0;
+    } else {
+      bracket.stopLossPrice = 0;
+    }
+    saveAutoTargets();
+    renderTab();
+    updateChartTrades();
+    scheduleBooksRefresh(500);
+    toast(`${levelLabel} removed${bracket.symbol ? ` (${bracket.symbol})` : ""}.`, "warn", 3500);
+  } catch (err) {
+    toast(`Could not remove ${levelLabel}: ${err.message}`, "error", 6000);
+  }
 }
 
 function chartInstrument(type) {
@@ -5030,7 +5227,7 @@ function initChartTooltips() {
   const TOOLTIP_DATA: Record<string, { title: string; desc: string }> = {
     trades: {
       title: "Trades & Positions (TX)",
-      desc: "Toggle executed trades, open positions, and pending limit order lines directly on chart candles.",
+      desc: "Toggle this chart's trades, position and pending order lines. Drag an entry, TP or SL line to modify it; click ✕ on a TP/SL label to remove it.",
     },
     dom: {
       title: "Depth of Market (DOM)",
@@ -5229,6 +5426,7 @@ function bindChartClickEvents() {
 
       const chart = S.charts[pane];
       if (!chart || chart.drawingTrendlineId) return;
+      if (chart.consumeChartClickSuppression?.()) return;
 
       if (pane === "spot") {
         toast("Click on the CALL (left) or PUT (right) chart to place a Limit order at that strike premium.", "info", 4000);
@@ -7107,7 +7305,7 @@ function bindEvents() {
       const chart = S.charts[chartKey] || (chartKey === "underlying" ? S.charts.spot : null);
       if (!chart) return;
       if (action === "trades") {
-        toggleAllChartTrades();
+        toggleChartTrades(chartKey);
         return;
       }
       if (action === "ind") {

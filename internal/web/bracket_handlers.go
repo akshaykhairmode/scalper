@@ -68,6 +68,75 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 	s.writeRouteJSON(w, r, http.StatusCreated, created)
 }
 
+type bracketUpdateRequest struct {
+	EntryPrice    *float64 `json:"entry_price"`
+	TargetPrice   *float64 `json:"target_price"`
+	StopLossPrice *float64 `json:"stop_loss_price"`
+	Confirm       bool     `json:"confirm"`
+}
+
+func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
+	if s.bracketEngine == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "bracket id required", nil)
+		return
+	}
+	var req bracketUpdateRequest
+	if err := decodeRequest(w, r, &req); err != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket update payload: "+err.Error(), err)
+		return
+	}
+	if req.EntryPrice == nil && req.TargetPrice == nil && req.StopLossPrice == nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, "at least one bracket level is required", nil)
+		return
+	}
+
+	if req.EntryPrice != nil {
+		if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
+			s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
+			return
+		}
+		session, ok := s.brokerSession(w, r)
+		if !ok {
+			return
+		}
+		existing, found := s.bracketEngine.Get(id)
+		if !found {
+			s.writeRouteError(w, r, http.StatusNotFound, "bracket not found", nil)
+			return
+		}
+		entryOrder := kotakapi.Order{
+			ExchangeSegment: existing.ExchangeSegment,
+			TradingSymbol:   existing.TradingSymbol,
+			TransactionType: existing.TransactionType,
+			Product:         existing.Product,
+			OrderType:       "L",
+			Quantity:        existing.Quantity,
+			Price:           *req.EntryPrice,
+			Validity:        "DAY",
+		}
+		if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
+			s.writeRiskError(w, r, err)
+			return
+		}
+	}
+
+	updated, err := s.bracketEngine.UpdateLevels(r.Context(), id, bracket.LevelUpdates{
+		EntryPrice:    req.EntryPrice,
+		TargetPrice:   req.TargetPrice,
+		StopLossPrice: req.StopLossPrice,
+	})
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
+		return
+	}
+	s.writeRouteJSON(w, r, http.StatusOK, updated)
+}
+
 func (s *Server) handleCancelBracket(w http.ResponseWriter, r *http.Request) {
 	if s.bracketEngine == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)

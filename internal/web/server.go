@@ -218,21 +218,22 @@ type marginCacheEntry struct {
 // bootstrapConfig is rendered into the page so the frontend can start without
 // a round-trip. It contains no secrets: only display settings and the index list.
 type bootstrapConfig struct {
-	Indices            []bootstrapIndex     `json:"indices"`
-	Commodities        []bootstrapCommodity `json:"commodities,omitempty"`
-	Timeframes         []string             `json:"timeframes"`
-	DefaultTimeframe   string               `json:"defaultTimeframe"`
-	DefaultProduct     string               `json:"defaultProduct"`
-	DefaultLots        int                  `json:"defaultLots"`
-	DefaultUnit        string               `json:"defaultUnit"`
-	AllowShares        bool                 `json:"allowShares"`
-	ConfirmLiveOrders  bool                 `json:"confirmLiveOrders"`
-	PayoffRangePct     int                  `json:"payoffRangePct"`
-	PayoffPoints       int                  `json:"payoffPoints"`
-	ChainPremiumCutoff float64              `json:"chainPremiumCutoff"`
-	Version            string               `json:"version"`
-	MPINConfigured     bool                 `json:"mpinConfigured"`
-	MarketSession      bootstrapSession     `json:"marketSession"`
+	Indices                  []bootstrapIndex     `json:"indices"`
+	Commodities              []bootstrapCommodity `json:"commodities,omitempty"`
+	Timeframes               []string             `json:"timeframes"`
+	DefaultTimeframe         string               `json:"defaultTimeframe"`
+	DefaultProduct           string               `json:"defaultProduct"`
+	DefaultLots              int                  `json:"defaultLots"`
+	DefaultUnit              string               `json:"defaultUnit"`
+	AllowShares              bool                 `json:"allowShares"`
+	ConfirmLiveOrders        bool                 `json:"confirmLiveOrders"`
+	ConfirmChartLevelChanges bool                 `json:"confirmChartLevelChanges"`
+	PayoffRangePct           int                  `json:"payoffRangePct"`
+	PayoffPoints             int                  `json:"payoffPoints"`
+	ChainPremiumCutoff       float64              `json:"chainPremiumCutoff"`
+	Version                  string               `json:"version"`
+	MPINConfigured           bool                 `json:"mpinConfigured"`
+	MarketSession            bootstrapSession     `json:"marketSession"`
 }
 
 type bootstrapSession struct {
@@ -259,18 +260,19 @@ type bootstrapCommodity struct {
 
 func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 	boot := bootstrapConfig{
-		Timeframes:         append([]string(nil), cfg.Charts.Timeframes...),
-		DefaultTimeframe:   cfg.Charts.DefaultTimeframe,
-		DefaultProduct:     cfg.Trading.DefaultProduct,
-		DefaultLots:        cfg.Trading.Quantity.DefaultLots,
-		DefaultUnit:        cfg.Trading.Quantity.DefaultUnit,
-		AllowShares:        cfg.Trading.Quantity.AllowShares,
-		ConfirmLiveOrders:  cfg.Trading.ConfirmLiveOrders,
-		PayoffRangePct:     cfg.Trading.RiskView.PayoffRangePct,
-		PayoffPoints:       cfg.Trading.RiskView.PayoffPoints,
-		ChainPremiumCutoff: cfg.Market.Chain.PremiumCutoff,
-		Version:            formatDisplayVersion(version.Version),
-		MPINConfigured:     mpinConfigured,
+		Timeframes:               append([]string(nil), cfg.Charts.Timeframes...),
+		DefaultTimeframe:         cfg.Charts.DefaultTimeframe,
+		DefaultProduct:           cfg.Trading.DefaultProduct,
+		DefaultLots:              cfg.Trading.Quantity.DefaultLots,
+		DefaultUnit:              cfg.Trading.Quantity.DefaultUnit,
+		AllowShares:              cfg.Trading.Quantity.AllowShares,
+		ConfirmLiveOrders:        cfg.Trading.ConfirmLiveOrders,
+		ConfirmChartLevelChanges: cfg.Trading.ConfirmChartLevelChanges,
+		PayoffRangePct:           cfg.Trading.RiskView.PayoffRangePct,
+		PayoffPoints:             cfg.Trading.RiskView.PayoffPoints,
+		ChainPremiumCutoff:       cfg.Market.Chain.PremiumCutoff,
+		Version:                  formatDisplayVersion(version.Version),
+		MPINConfigured:           mpinConfigured,
 		MarketSession: bootstrapSession{
 			Open:     cfg.Trading.Session.Open,
 			Close:    cfg.Trading.Session.Close,
@@ -441,6 +443,17 @@ func New(opts Options) (*Server, error) {
 			s.books.expire(bookOrders, bookPositions, bookLimits)
 			return nil
 		}
+		modifyOrder := func(ctx context.Context, id string, o kotakapi.Order) error {
+			session, ok := s.brokerSessionValue()
+			if !ok {
+				return errors.New("kotak session unavailable or not authenticated")
+			}
+			if _, err := s.kotak.ModifyOrder(ctx, session, id, o); err != nil {
+				return err
+			}
+			s.books.expire(bookOrders, bookPositions, bookLimits)
+			return nil
+		}
 		var bStore bracket.Store
 		if opts.BracketStore != nil {
 			bStore = opts.BracketStore
@@ -449,7 +462,9 @@ func New(opts Options) (*Server, error) {
 		} else if bs, ok := opts.DB.(bracket.Store); ok {
 			bStore = bs
 		}
-		s.bracketEngine = bracket.NewEngine(bStore, placeOrder, cancelOrder, s.log)
+		engine := bracket.NewEngine(bStore, placeOrder, cancelOrder, s.log)
+		engine.SetModifyOrder(modifyOrder)
+		s.bracketEngine = engine
 	}
 
 	if s.bracketEngine != nil {
@@ -624,6 +639,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/diagnostics/ip", s.handleDiagnosticsIP)
 	mux.HandleFunc("GET /api/brackets", s.handleListBrackets)
 	mux.HandleFunc("POST /api/brackets", s.handleCreateBracket)
+	mux.HandleFunc("PATCH /api/brackets/{id}", s.handleUpdateBracket)
 	mux.HandleFunc("POST /api/brackets/{id}/cancel", s.handleCancelBracket)
 	mux.HandleFunc("POST /api/brackets/{id}/exit", s.handleExitBracket)
 	mux.HandleFunc("GET /api/candles", s.handleCandles)
