@@ -218,6 +218,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		if encodeErr == nil {
 			s.storeChainCache(cacheKey, payload)
 		}
+		s.ingestChainQuotes(page.Rows)
 		s.writeRouteJSON(w, r, http.StatusOK, page)
 		return
 	}
@@ -254,6 +255,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 	if encodeErr == nil {
 		s.storeChainCache(cacheKey, payload)
 	}
+	s.ingestChainQuotes(rows)
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
 }
 
@@ -298,6 +300,13 @@ func (s *Server) fetchInstrumentCandles(
 ) candleFetchResult {
 	if instrument == "" {
 		return candleFetchResult{}
+	}
+	// MCX has no broker history, so seed the live bar from the cached quote even
+	// when the contract has not traded since the chart was opened.
+	if s.candleAgg != nil && strings.HasPrefix(instrument, "mcx_fo|") && s.candleSessionAllows(instrument, localNow) {
+		if ltp, ok := s.cachedLTP(instrument, 5*time.Minute); ok {
+			s.candleAgg.OnTick(instrument, ltp, 0, 0, localNow)
+		}
 	}
 	var cached []market.Candle
 	if s.candleStore != nil {
@@ -345,7 +354,11 @@ func (s *Server) fetchInstrumentCandles(
 	// the live feed instead of returning an upstream error.
 	if strings.HasPrefix(instrument, "mcx_fo|") {
 		if len(cached) > 0 {
-			return candleFetchResult{Candles: cached, Source: "sqlite"}
+			warning := ""
+			if len(cached) < 5 {
+				warning = "Kotak has no MCX history; bars build from live quotes."
+			}
+			return candleFetchResult{Candles: cached, Source: "sqlite", Warning: warning}
 		}
 		return candleFetchResult{
 			Candles: []market.Candle{},

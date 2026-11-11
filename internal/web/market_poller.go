@@ -225,6 +225,43 @@ func (s *Server) applyPolledQuote(key string, quote market.Quote, fallback time.
 	return payload
 }
 
+// ingestChainQuotes turns option-chain snapshots into candle ticks. Kotak has
+// no historical endpoint for MCX, so illiquid commodity options otherwise show
+// an empty chart until they trade. Feeding quote snapshots keeps their bars
+// building even when the last price is unchanged.
+func (s *Server) ingestChainQuotes(rows []market.ChainRow) {
+	if s.candleAgg == nil || len(rows) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, row := range rows {
+		for _, quote := range []*market.OptionQuote{row.Call, row.Put} {
+			if quote == nil || quote.LTP <= 0 {
+				continue
+			}
+			if !strings.HasPrefix(quote.InstrumentKey, "mcx_fo|") {
+				continue
+			}
+			if !s.candleSessionAllows(quote.InstrumentKey, now) {
+				continue
+			}
+			s.setLiveQuoteFromMarket(quote.InstrumentKey, market.Quote{
+				LTP:           quote.LTP,
+				PreviousClose: quote.PreviousClose,
+				Change:        quote.Change,
+				ChangePct:     quote.ChangePct,
+				Volume:        quote.Volume,
+				OI:            quote.OI,
+				Bid:           quote.Bid,
+				Ask:           quote.Ask,
+				Bids:          quote.Bids,
+				Asks:          quote.Asks,
+			}, now)
+			s.candleAgg.OnTick(quote.InstrumentKey, quote.LTP, quote.Volume, quote.OI, now)
+		}
+	}
+}
+
 func (s *Server) broadcastPolledTicks(payloads []*tickPayload) {
 	if len(payloads) == 0 {
 		return
