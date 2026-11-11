@@ -284,7 +284,7 @@ func (s *Server) forwardHSMEvents() {
 					s.evaluator.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
 				}
 			}
-			if s.candleAgg != nil {
+			if s.candleAgg != nil && s.candleSessionAllows(key, ts) {
 				s.candleAgg.OnTick(key, event.Quote.LTP, event.Quote.Volume, event.Quote.OI, ts)
 			}
 

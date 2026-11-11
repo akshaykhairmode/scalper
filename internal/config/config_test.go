@@ -273,7 +273,7 @@ func TestValidate(t *testing.T) {
 		{name: "bad preview debounce", mutate: func(c *Config) { c.Trading.Margin.PreviewDebounceMS = 99 }, wantField: "trading.margin.preview_debounce_ms"},
 		{name: "bad session open", mutate: func(c *Config) { c.Trading.Session.Open = "9:15" }, wantField: "trading.session.open"},
 		{name: "bad session close", mutate: func(c *Config) { c.Trading.Session.Close = "25:99" }, wantField: "trading.session.close"},
-		{name: "session order", mutate: func(c *Config) { c.Trading.Session.Open = "15:30" }, wantField: "trading.session.open"},
+		{name: "session order", mutate: func(c *Config) { c.Trading.Session.Open = "15:45" }, wantField: "trading.session.open"},
 		{name: "negative risk", mutate: func(c *Config) { c.Trading.Risk.MaxDailyLossINR = -1 }, wantField: "trading.risk.max_daily_loss_inr"},
 		{name: "bad payoff range", mutate: func(c *Config) { c.Trading.RiskView.PayoffRangePct = 0 }, wantField: "trading.risk_view.payoff_range_pct"},
 		{name: "bad payoff points", mutate: func(c *Config) { c.Trading.RiskView.PayoffPoints = 10 }, wantField: "trading.risk_view.payoff_points"},

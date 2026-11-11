@@ -20,6 +20,15 @@ const chartColors = (element) => {
 
 const toChartTimestamp = (time) => (time > 1e11 ? time : time * 1000);
 
+const istDayFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+});
+const istDayKey = (time) => {
+  const parts = istDayFormatter.formatToParts(new Date(toChartTimestamp(time)));
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${pick("year")}-${pick("month")}-${pick("day")}`;
+};
+
 const formatVolume = (val) => {
   if (!Number.isFinite(val) || val <= 0) return "0";
   if (val >= 1e7) return `${(val / 1e7).toFixed(2)}Cr`;
@@ -636,6 +645,30 @@ function registerCustomOverlays() {
   const kc = window.klinecharts;
   if (!kc || overlaysRegistered) return;
   overlaysRegistered = true;
+
+  // Vertical marker at each trading-day boundary. Bars are spaced by index, so
+  // a new day is otherwise only visible in the x-axis labels.
+  kc.registerOverlay({
+    name: "dayDividerLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.x)) return [];
+      const data = overlay.extendData || {};
+      const color = data.color || "#536a7d";
+      const height = bounding?.height || 400;
+      return [{
+        type: "line",
+        attrs: { coordinates: [{ x: coord.x, y: 0 }, { x: coord.x, y: height }] },
+        styles: { style: "dashed", dashedValue: [2, 4], size: 1, color },
+        ignoreEvent: true,
+      }];
+    },
+  });
 
   kc.registerOverlay({
     name: "tradeMarker",
@@ -2275,6 +2308,8 @@ export class CandleChart {
     this.targetPreviewOverlayId = null;
     this.bracketLevelOverlayIds = [];
     this.bracketLevelsKey = "";
+    this.dayDividerOverlayIds = [];
+    this.dayDividerKey = "";
     this.stopPreviewOverlayId = null;
     this.openOrderOverlayIds = [];
     this.openOrdersData = [];
@@ -3265,6 +3300,49 @@ export class CandleChart {
     this.bracketLevelOverlayIds = [];
   }
 
+  /** One dashed vertical line at the first bar of each trading day. */
+  refreshDayDividers() {
+    if (!this.chart) return;
+    const boundaries = [];
+    let previousDay = "";
+    for (const candle of this.data) {
+      if (!Number.isFinite(candle?.time)) continue;
+      const day = istDayKey(candle.time);
+      if (previousDay && day !== previousDay) boundaries.push({ time: candle.time, day });
+      previousDay = day;
+    }
+    const key = boundaries.map((boundary) => boundary.time).join(",");
+    if (key === this.dayDividerKey) return;
+    this.clearDayDividers();
+    this.dayDividerKey = key;
+    for (const boundary of boundaries) {
+      try {
+        const id = this.chart.createOverlay({
+          name: "dayDividerLine",
+          groupId: "day_divider",
+          points: [{ timestamp: toChartTimestamp(boundary.time) }],
+          lock: true,
+          extendData: { color: this.colors.border, day: boundary.day },
+        });
+        if (id) this.dayDividerOverlayIds.push(id);
+      } catch (_) {}
+    }
+  }
+
+  clearDayDividers() {
+    this.dayDividerKey = "";
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "day_divider" });
+    } catch (_) {}
+    for (const id of this.dayDividerOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.dayDividerOverlayIds = [];
+  }
+
   /** Stop-loss preview while composing a bracket in the quick order panel. */
   showStopPreview(price, label = "") {
     this.clearStopPreview();
@@ -3331,6 +3409,7 @@ export class CandleChart {
     }
 
     this.refreshSRLines();
+    this.refreshDayDividers();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
     this.refreshIndicatorOverlays();
@@ -3551,6 +3630,7 @@ export class CandleChart {
       this.data[lastIdx] = { ...this.data[lastIdx], ...candle };
     } else {
       this.data.push(candle);
+      this.refreshDayDividers();
       if (this.showAutoTrendlines) {
         this.refreshAutoTrendlines();
       }
@@ -3619,6 +3699,7 @@ export class CandleChart {
     this.clearTradeOverlays();
     this.clearPositionOverlay();
     this.clearSRLines();
+    this.clearDayDividers();
     this.clearAutoTrendlines();
     this.clearDepth();
     this.clearPatterns();

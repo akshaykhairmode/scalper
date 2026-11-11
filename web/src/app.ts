@@ -1,5 +1,6 @@
 import { CandleChart } from "./charts";
 import { generateQRCodeSVG } from "./utils/qrcode";
+import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
 const $: any = (id: string) => document.getElementById(id);
 const $$: any = (selector: string, root: any = document) => [...root.querySelectorAll(selector)];
@@ -29,6 +30,62 @@ const marketStateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
 });
 
+function istParts(ms) {
+  const parts = marketStateFormatter.formatToParts(new Date(ms));
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  return {
+    day: `${pick("year")}-${pick("month")}-${pick("day")}`,
+    weekday: pick("weekday"),
+    minute: Number(pick("hour")) * 60 + Number(pick("minute")),
+  };
+}
+
+// Equity derivatives trade until 15:40 IST; the cash closing auction keeps the
+// index printing until ~15:35. Anything outside this window is a stale broker
+// snapshot, not a real bar.
+const NSE_CANDLE_CLOSE_MINUTE = 15 * 60 + 40;
+
+function candleSessionAllows(timeSec, key = "") {
+  if (!Number.isFinite(timeSec) || timeSec <= 0) return false;
+  const parts = istParts(timeSec * 1000);
+  if (parts.weekday === "Sat" || parts.weekday === "Sun") return false;
+  const holidays = S.boot?.marketSession?.holidays || [];
+  if (holidays.includes(parts.day)) return false;
+  const commodity = String(key).toLowerCase().startsWith("mcx_");
+  const open = commodity ? 9 * 60 : 9 * 60 + 15;
+  const close = commodity ? 23 * 60 + 55 : NSE_CANDLE_CLOSE_MINUTE;
+  return parts.minute >= open && parts.minute <= close;
+}
+
+// A broker replaying the previous close on a holiday produces a full day of
+// flat bars. Those are not candles and should not stretch the chart.
+function dropFlatNonTradingDays(candles) {
+  if (!Array.isArray(candles) || candles.length < 2) return candles || [];
+  const out = [];
+  let prevClose = 0;
+  let day = "";
+  let group = [];
+  const flush = () => {
+    if (!group.length) return;
+    const flat = group.every((c) => c.open === c.high && c.high === c.low && c.low === c.close);
+    if (flat && prevClose > 0 && Math.abs(group[0].close - prevClose) < 1e-6) {
+      group = [];
+      return;
+    }
+    out.push(...group);
+    prevClose = group[group.length - 1].close;
+    group = [];
+  };
+  for (const candle of candles) {
+    const candleDay = istParts(candle.time * 1000).day;
+    if (day && candleDay !== day) flush();
+    day = candleDay;
+    group.push(candle);
+  }
+  flush();
+  return out;
+}
+
 function fmt(value, digits = 2) {
   if (!Number.isFinite(value)) return "—";
   let formatter = numberFormatters.get(digits);
@@ -43,6 +100,23 @@ function fmtSigned(value, digits = 2) {
   if (!Number.isFinite(value)) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "−" : "";
   return sign + fmt(Math.abs(value), digits);
+}
+
+function fmtMoney(value, digits = 0) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value < 0 ? "−" : ""}₹${fmt(Math.abs(value), digits)}`;
+}
+
+function fmtMaxProfit(value) {
+  if (value == null) return "—";
+  if (Number(value) === Infinity) return "∞";
+  return fmtMoney(num(value));
+}
+
+function fmtMaxLoss(value) {
+  if (value == null) return "—";
+  if (Number(value) === -Infinity) return "−∞";
+  return fmtMoney(num(value));
 }
 
 function fmtCompact(value) {
@@ -2593,7 +2667,7 @@ async function loadCharts(forceRefresh = false) {
         ? "Live candles only; historical refresh is retrying."
         : `Historical data unavailable: ${entry.error.message}`);
     } else {
-      const merged = mergeChartCandles(entry.candles, S.candles[liveKey]);
+      const merged = mergeChartCandles(entry.candles, S.candles[liveKey], key);
       if (merged.length) {
         S.candles[liveKey] = merged.slice(-500).map((candle) => ({ ...candle }));
       }
@@ -2605,16 +2679,18 @@ async function loadCharts(forceRefresh = false) {
   updateChartTrades();
 }
 
-function mergeChartCandles(historical, live) {
+function mergeChartCandles(historical, live, instrumentKey = "") {
   const byTime = new Map<any, any>(
     (historical || [])
       .filter((c: any) => c && c.low > 0 && c.open > 0 && c.high > 0 && c.close > 0 && c.high >= c.low)
+      .filter((c: any) => candleSessionAllows(c.time, instrumentKey))
       .map((candle) => [candle.time, { ...candle }])
   );
   for (const candle of (live || [])) {
     if (!candle || candle.low <= 0 || candle.open <= 0 || candle.high <= 0 || candle.close <= 0 || candle.high < candle.low) {
       continue;
     }
+    if (!candleSessionAllows(candle.time, instrumentKey)) continue;
     const existing = byTime.get(candle.time);
     if (!existing) {
       byTime.set(candle.time, { ...candle });
@@ -2629,7 +2705,8 @@ function mergeChartCandles(historical, live) {
     existing.close = candle.close;
     existing.volume = Math.max(existing.volume || 0, candle.volume || 0);
   }
-  return [...byTime.values()].sort((a: any, b: any) => a.time - b.time);
+  const merged = [...byTime.values()].sort((a: any, b: any) => a.time - b.time);
+  return dropFlatNonTradingDays(merged);
 }
 
 function setChartHint(pane, message) {
@@ -2642,6 +2719,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
   if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
+  if (!candleSessionAllows(time, key)) return;
   const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600 })[S.timeframe];
   if (!interval) return;
   const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
@@ -3170,52 +3248,8 @@ function heldQuantity(instrumentKey) {
 }
 
 /* ── Payoff math ───────────────────────────────────────── */
-
-function intrinsic(type, strike, spot) {
-  return type === "CE" ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
-}
-
-function computePayoff(legs) {
-  const clean = legs.filter((leg) => leg.qty !== 0 && Number.isFinite(leg.strike) && Number.isFinite(leg.avg));
-  if (!clean.length) {
-    return { points: [], maxProfit: 0, maxLoss: 0, breakevens: [], unlimitedProfit: false, unlimitedLoss: false };
-  }
-  const strikes: any = [...new Set(clean.map((leg: any) => leg.strike))].sort((a: any, b: any) => a - b);
-  const maxStrike = strikes[strikes.length - 1];
-  const map = [0, ...strikes, maxStrike * 2];
-  const points = map.map((spot) => ({
-    spot,
-    pnl: clean.reduce((sum, leg) => sum + leg.qty * (intrinsic(leg.type, leg.strike, spot) - leg.avg), 0),
-  }));
-
-  const netCalls = clean.filter((leg) => leg.type === "CE").reduce((sum, leg) => sum + leg.qty, 0);
-  const unlimitedProfit = netCalls > 0;
-  const unlimitedLoss = netCalls < 0;
-
-  let maxProfit = -Infinity;
-  let maxLoss = Infinity;
-  for (const point of points) {
-    maxProfit = Math.max(maxProfit, point.pnl);
-    maxLoss = Math.min(maxLoss, point.pnl);
-  }
-  if (unlimitedProfit) maxProfit = Infinity;
-  if (unlimitedLoss) maxLoss = -Infinity;
-
-  const breakevens = [];
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    if (a.pnl === 0) {
-      if (!breakevens.includes(a.spot)) breakevens.push(a.spot);
-    }
-    if ((a.pnl < 0 && b.pnl > 0) || (a.pnl > 0 && b.pnl < 0)) {
-      const ratio = -a.pnl / (b.pnl - a.pnl);
-      const be = a.spot + ratio * (b.spot - a.spot);
-      if (!breakevens.some((v) => Math.abs(v - be) < 0.001)) breakevens.push(be);
-    }
-  }
-  return { points, maxProfit, maxLoss, breakevens, unlimitedProfit, unlimitedLoss };
-}
+// computePayoff, payoffCurve and legRisk live in ./utils/payoff so the maths
+// is unit-tested without a DOM.
 
 function buildRiskGroups(positions) {
   const groups = new Map();
@@ -3344,39 +3378,72 @@ function renderTab() {
   else if (S.tab === "depth") content.innerHTML = depthHTML();
 }
 
+function positionGroup(position) {
+  if (position.underlying && position.expiry) {
+    return { key: `${position.underlying}|${position.expiry}`, label: `${position.underlying} · ${position.expiry}` };
+  }
+  // Equity/ETF/futures legs carry no option expiry. Keep them out of the
+  // option groups so their premium cannot leak into a Nifty/Bank Nifty card.
+  const label = position.symbol || position.instrument_key || "Unresolved position";
+  return { key: `spot|${label}`, label };
+}
+
+function productLabel(position) {
+  const raw = String(position?.product ?? "").trim().toUpperCase();
+  if (!raw) return "—";
+  if (raw === "NORMAL") return "NRML";
+  if (raw === "INTRADAY") return "MIS";
+  if (raw === "DELIVERY") return "CNC";
+  return raw;
+}
+
 function positionsHTML() {
   if (!S.positions.length) return `<div class="empty-state">No open positions. Sign in with Kotak to view your account or place an order.</div>`;
   const sorted = [...S.positions].sort(comparePositions);
   const groups = new Map();
   for (const p of sorted) {
-    const key = `${p.underlying || S.activeIndex}|${p.expiry || S.expiry}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(p);
+    const { key, label } = positionGroup(p);
+    if (!groups.has(key)) groups.set(key, { label, list: [] });
+    groups.get(key).list.push(p);
   }
   let html = `<table class="book"><thead><tr>
-    <th>Contract</th><th>Net</th><th>Avg</th><th>LTP</th><th>P&amp;L</th>
+    <th>Contract</th><th title="Product type (MIS / NRML / CNC)">Type</th><th>Net</th><th>Avg</th><th>LTP</th><th>P&amp;L</th>
     <th>Max P</th><th>Max L</th><th></th>
   </tr></thead><tbody>`;
-  for (const [key, list] of groups) {
+  for (const { label, list } of groups.values()) {
     const hasOpenInGroup = list.some((p) => Math.abs(num(p.quantity)) > 0);
-    const payoff = hasOpenInGroup ? computePayoff(list.map((p) => ({
-      type: p.option_type,
-      strike: p.strike,
-      qty: num(p.quantity),
-      avg: num(p.average_price),
-    }))) : null;
+    const optionLegs = list.filter((p) => isOptionLeg({
+      type: p.option_type, strike: p.strike, qty: p.quantity, avg: p.average_price,
+    }));
+    const payoff = hasOpenInGroup && optionLegs.length
+      ? computePayoff(optionLegs.map((p) => ({
+        type: p.option_type,
+        strike: p.strike,
+        qty: num(p.quantity),
+        avg: num(p.average_price),
+      })))
+      : null;
 
-    const groupMeta = payoff
-      ? ` — group Max P ${payoff.maxProfit === Infinity ? "∞" : `₹${fmt(payoff.maxProfit, 0)}`} · Max L ${payoff.maxLoss === -Infinity ? "∞" : `₹${fmt(payoff.maxLoss, 0)}`}`
-      : " — closed";
+    let groupMeta = "";
+    if (!hasOpenInGroup) {
+      groupMeta = " — closed";
+    } else if (payoff) {
+      if (payoff.points.length) {
+        groupMeta = ` — group Max P ${fmtMaxProfit(payoff.maxProfit)} · Max L ${fmtMaxLoss(payoff.maxLoss)}`;
+      }
+      if (payoff.excluded) {
+        groupMeta += `${groupMeta ? " · " : " — "}${payoff.excluded} unpriced`;
+      }
+    }
 
-    html += `<tr class="group-row${hasOpenInGroup ? "" : " closed"}"><td colspan="8">${esc(key.replace("|", " · "))}${groupMeta}</td></tr>`;
+    html += `<tr class="group-row${hasOpenInGroup ? "" : " closed"}"><td colspan="9">${esc(label)}${groupMeta}</td></tr>`;
     for (const p of list) {
       const risk = legRisk(p);
       const isOpen = Math.abs(num(p.quantity)) > 0;
       const openPnL = p.unrealised_pnl != null ? p.unrealised_pnl : p.pnl;
       html += `<tr class="${isOpen ? "" : "closed"}" data-pos-row="${esc(p.instrument_key)}">
         <td class="sym">${esc(p.symbol || `${p.underlying} ${fmtStrike(p.strike)} ${p.option_type}`)}</td>
+        <td class="muted">${esc(productLabel(p))}</td>
         <td>${p.quantity > 0 ? "+" : ""}${p.quantity}</td>
         <td>${fmt(p.average_price)}</td>
         <td data-pos-ltp="${esc(p.instrument_key)}">${fmt(p.ltp)}</td>
@@ -3384,8 +3451,8 @@ function positionsHTML() {
           <span class="font-bold">${fmtSigned(isOpen ? openPnL : p.pnl, 0)}</span>
           ${isOpen && p.realised_pnl ? `<span class="muted" style="display:block;font-size:9.5px;" title="Realised earlier today">Day: ${fmtSigned(p.pnl, 0)}</span>` : ""}
         </td>
-        <td>${risk.maxProfit === Infinity ? "∞" : `₹${fmt(risk.maxProfit, 0)}`}</td>
-        <td>${risk.maxLoss === -Infinity ? "∞" : `₹${fmt(risk.maxLoss, 0)}`}</td>
+        <td>${risk ? fmtMaxProfit(risk.maxProfit) : "—"}</td>
+        <td>${risk ? fmtMaxLoss(risk.maxLoss) : "—"}</td>
         <td>${isOpen ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
       </tr>`;
     }
@@ -3393,30 +3460,26 @@ function positionsHTML() {
   return html + `</tbody></table>`;
 }
 
-function legRisk(position) {
-  const qty = Math.abs(num(position.quantity));
-  const avg = num(position.average_price);
-  const strike = num(position.strike);
-  const type = position.option_type;
-  const long = num(position.quantity) > 0;
-  if (type === "CE") {
-    return long
-      ? { maxProfit: Infinity, maxLoss: avg * qty }
-      : { maxProfit: avg * qty, maxLoss: -Infinity };
-  }
-  return long
-    ? { maxProfit: (strike - avg) * qty, maxLoss: avg * qty }
-    : { maxProfit: avg * qty, maxLoss: (strike - avg) * qty };
-}
-
 function riskHTML() {
   const groups = S.risk?.length ? S.risk : buildRiskGroups(S.positions);
   if (!groups.length) {
     return `<div class="empty-state">No open legs. The at-expiry payoff appears here once a position is open.</div>`;
   }
-  return `<div class="risk-cards">${groups.map((group, index) => {
-    const maxP = group.maxProfit === Infinity ? "∞" : `₹${fmt(num(group.maxProfit), 0)}`;
-    const maxL = group.maxLoss === -Infinity ? "∞" : `₹${fmt(num(group.maxLoss), 0)}`;
+  const unpricedPositions = (S.positions || []).filter((position) => {
+    const type = String(position?.option_type ?? "").toUpperCase();
+    return Math.abs(num(position?.quantity)) > 0
+      && (type === "CE" || type === "PE")
+      && (num(position?.strike) <= 0 || num(position?.average_price) <= 0);
+  }).length;
+  const unpricedGroups = groups.reduce((sum, group) => sum + num(group.excluded), 0);
+  const excluded = Math.max(unpricedPositions, unpricedGroups);
+  const warning = excluded > 0
+    ? `<div class="risk-warning">${excluded} open leg${excluded === 1 ? "" : "s"} excluded from the payoff: strike or average price unavailable.</div>`
+    : "";
+  return `${warning}<div class="risk-cards">${groups.map((group, index) => {
+    const hasPayoff = (group.points || []).length > 0;
+    const maxP = hasPayoff ? fmtMaxProfit(group.maxProfit) : "—";
+    const maxL = hasPayoff ? fmtMaxLoss(group.maxLoss) : "—";
     const be = (group.breakevens || []).map((b) => fmt(num(b), 2)).join(", ") || "—";
     const flag = group.unlimitedLoss
       ? `<span class="risk-flag bad">unlimited loss</span>`
@@ -3432,7 +3495,7 @@ function riskHTML() {
         ${flag}
       </div>
       <div class="risk-metrics">
-        <div class="risk-metric"><span>Net premium</span><b>₹${fmt(num(group.netPremium), 0)}</b></div>
+        <div class="risk-metric"><span>Net premium</span><b>${fmtMoney(num(group.netPremium))}</b></div>
         <div class="risk-metric"><span>Max P</span><b class="up">${maxP}</b></div>
         <div class="risk-metric"><span>Max L</span><b class="down">${maxL}</b></div>
         <div class="risk-metric"><span>Break-even</span><b>${be}</b></div>
@@ -3444,10 +3507,14 @@ function riskHTML() {
 
 function drawRiskCharts() {
   const groups = S.risk?.length ? S.risk : buildRiskGroups(S.positions);
+  const rangePct = num(S.boot.payoffRangePct, 10);
+  const count = num(S.boot.payoffPoints, 121);
   groups.forEach((group, index) => {
     const canvas = $(`risk-canvas-${index}`);
     if (!canvas) return;
-    drawPayoff(canvas, group.points || [], S.spots.get(group.underlying)?.ltp || 0);
+    const spot = S.spots.get(group.underlying)?.ltp || 0;
+    const curve = payoffCurve(group.legs || [], spot, rangePct, count);
+    drawPayoff(canvas, curve.length ? curve : group.points || [], spot);
   });
 }
 

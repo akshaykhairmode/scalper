@@ -193,7 +193,7 @@ func (s *Server) applyPolledQuote(key string, quote market.Quote, fallback time.
 		}
 	}
 	s.setLiveQuoteFromMarket(key, quote, ts)
-	if s.candleAgg != nil {
+	if s.candleAgg != nil && s.candleSessionAllows(key, ts) {
 		s.candleAgg.OnTick(key, quote.LTP, quote.Volume, quote.OI, ts)
 	}
 	if s.evaluator != nil {

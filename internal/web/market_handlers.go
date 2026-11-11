@@ -308,11 +308,12 @@ func (s *Server) fetchInstrumentCandles(
 				"instrument", instrument, "timeframe", timeframe, "request_id", logging.RequestID(ctx))
 			cached = nil
 		}
+		cached = s.filterCandles(instrument, cached)
 		if len(cached) == 0 && timeframe != "1m" {
 			// Older or tick-only data may exist as 1-minute bars. Derive the
 			// requested timeframe so MCX charts can still show history.
 			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
-				cached = synth
+				cached = s.filterCandles(instrument, synth)
 			}
 		}
 		if len(cached) > 0 && isMalformedCandleRun(cached) {
@@ -320,8 +321,8 @@ func (s *Server) fetchInstrumentCandles(
 				"event", "malformed_cached_candles", "instrument", instrument, "timeframe", timeframe)
 			if timeframe != "1m" {
 				if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
-					cached = synth
-					if writeErr := s.candleStore.WriteCandles(ctx, instrument, timeframe, synth); writeErr != nil {
+					cached = s.filterCandles(instrument, synth)
+					if writeErr := s.candleStore.WriteCandles(ctx, instrument, timeframe, cached); writeErr != nil {
 						s.log.Warn("failed to write repaired candles to store", "event", "candle_cache_repair_failed",
 							"instrument", instrument, "timeframe", timeframe, "error", writeErr)
 					}
@@ -354,12 +355,13 @@ func (s *Server) fetchInstrumentCandles(
 	}
 
 	fetched, err := s.market.Candles(ctx, s.marketBaseURL(), instrument, timeframe)
+	fetched = s.filterCandles(instrument, fetched)
 	if err == nil && isMalformedCandleRun(fetched) {
 		s.log.Warn("upstream historical candles malformed (clamped day-high/close); rejecting fetched bars",
 			"event", "malformed_upstream_candles", "instrument", instrument, "timeframe", timeframe)
 		if s.candleStore != nil && timeframe != "1m" {
 			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
-				fetched = synth
+				fetched = s.filterCandles(instrument, synth)
 			} else {
 				fetched = nil
 			}

@@ -1404,6 +1404,15 @@ table.book .link-button:hover { color: var(--text); border-color: var(--border-s
 
 /* Risk cards */
 .risk-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; padding: 10px; }
+.risk-warning {
+  margin: 10px 10px 0;
+  padding: 6px 9px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+}
 .risk-card {
   border: 1px solid var(--line);
   border-radius: 8px;

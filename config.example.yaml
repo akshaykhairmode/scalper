@@ -124,7 +124,10 @@ trading:
     preview_debounce_ms: 300
   session:
     open: "09:15"
-    close: "15:30"
+    # Equity derivatives trade until 15:40 (NSE circular NSE/FAOP/74467,
+    # effective 2026-08-03). Cash CAS securities stop continuous trading at
+    # 15:15 and settle via the closing auction until ~15:35.
+    close: "15:40"
     allow_outside_hours: false
   risk:
     max_lots_per_order: 0

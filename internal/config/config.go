@@ -355,7 +355,7 @@ func Default() Config {
 			},
 			Session: Session{
 				Open:  "09:15",
-				Close: "15:30",
+				Close: "15:40",
 			},
 			Risk: Risk{
 				MaxDailyLossINR:        5000,
