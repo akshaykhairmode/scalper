@@ -1,4 +1,5 @@
 import { CandleChart } from "./charts";
+import { buildThetaSeries } from "./chart/theta";
 import { generateQRCodeSVG } from "./utils/qrcode";
 import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
@@ -200,6 +201,11 @@ const S: any = {
   charts: {},
   showTradesPanes: { ce: true, underlying: true, pe: true },
   candles: {},
+  maxPain: null,
+  chainStats: null,
+  thetaMeta: null,
+  chartSettingsPane: "underlying",
+  chainStatsRequestID: 0,
   historicalCache: new Map(),
   chartLoadID: 0,
   quickOrder: null,
@@ -1100,70 +1106,89 @@ function handleBrokerOrderSound(raw) {
 
 function buildTimeframes() {
   const group = $("tf-group");
-  const list = S.boot.timeframes?.length ? S.boot.timeframes : ["1m", "3m", "5m", "15m", "1h"];
+  const list = S.boot.timeframes?.length ? S.boot.timeframes : ["1m", "3m", "5m", "15m", "1h", "4h"];
   group.innerHTML = list.map((tf) => `<button type="button" data-tf="${esc(tf)}" class="${tf === S.timeframe ? "active" : ""}">${esc(tf)}</button>`).join("");
 }
 
-function indicatorPrefs() {
-  try {
-    return {
-      rsi: localStorage.getItem("scalper-show-rsi") === "true",
-      divergence: localStorage.getItem("scalper-show-divergence") === "true",
-      momentum: localStorage.getItem("scalper-show-momentum") === "true",
-    };
-  } catch (_) {
-    return { rsi: false, divergence: false, momentum: false };
-  }
+function chartForPane(pane) {
+  if (pane === "underlying" || pane === "spot") return S.charts.spot || null;
+  return S.charts[pane] || null;
 }
 
-function updateIndicatorButtonState() {
-  const prefs = indicatorPrefs();
-  const active = prefs.rsi || prefs.divergence || prefs.momentum;
-  for (const button of $$('button[data-chart-action="ind"]')) {
+function allCharts() {
+  return [S.charts.ce, S.charts.spot, S.charts.pe].filter(Boolean);
+}
+
+function chartLabelForPane(pane) {
+  return pane === "ce" ? "CALL" : pane === "pe" ? "PUT" : "UNDERLYING";
+}
+
+function updateChartSettingsButtonState() {
+  for (const button of $$('button[data-chart-action="settings"]')) {
+    const pane = button.dataset.chart;
+    const chart = chartForPane(pane);
+    if (!chart) continue;
+    const active = Boolean(
+      chart.showEMA || chart.showSR || chart.showAutoTrendlines || chart.showPatterns ||
+      chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
+      chart.showMomentum || chart.showTheta || (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
+    );
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   }
 }
 
-function toggleIndicatorPopover(anchor) {
-  const popover = $("indicator-popover");
+function syncChartSettingsMenu(pane) {
+  const chart = chartForPane(pane);
+  if (!chart) return;
+  const set = (id, value) => {
+    const box = $(id);
+    if (box) box.checked = Boolean(value);
+  };
+  set("cs-trades", chart.showTrades);
+  set("cs-dom", chart.showDepth);
+  set("cs-sr", chart.showSR);
+  set("cs-auto-tl", chart.showAutoTrendlines);
+  set("cs-patterns", chart.showPatterns);
+  set("cs-ema", chart.showEMA);
+  set("cs-rsi", chart.showRSI);
+  set("cs-divergence", chart.showDivergence);
+  set("cs-momentum", chart.showMomentum);
+  set("cs-theta", S.charts.spot?.showTheta);
+  set("cs-max-pain", S.charts.spot?.showMaxPain);
+}
+
+function closeChartSettings() {
+  const popover = $("chart-settings-popover");
+  if (popover) popover.style.display = "none";
+  for (const button of $$('button[data-chart-action="settings"]')) {
+    button.setAttribute("aria-expanded", "false");
+  }
+}
+
+function openChartSettings(anchor, pane) {
+  const popover = $("chart-settings-popover");
   if (!popover) return;
-  if (popover.style.display !== "none") {
-    popover.style.display = "none";
+  if (popover.style.display !== "none" && S.chartSettingsPane === pane) {
+    closeChartSettings();
     return;
   }
-  const prefs = indicatorPrefs();
-  const rsiBox = $("ind-rsi");
-  const divBox = $("ind-divergence");
-  const momBox = $("ind-momentum");
-  if (rsiBox) rsiBox.checked = prefs.rsi;
-  if (divBox) divBox.checked = prefs.divergence;
-  if (momBox) momBox.checked = prefs.momentum;
-
+  S.chartSettingsPane = pane;
+  syncChartSettingsMenu(pane);
+  for (const button of $$('button[data-chart-action="settings"]')) {
+    button.setAttribute("aria-expanded", button === anchor ? "true" : "false");
+  }
   const rect = anchor.getBoundingClientRect();
   popover.style.display = "block";
   popover.style.position = "fixed";
-  popover.style.top = `${Math.max(10, Math.min(window.innerHeight - 190, rect.bottom + 4))}px`;
-  popover.style.left = `${Math.max(10, Math.min(window.innerWidth - 300, rect.right - 260))}px`;
+  const height = popover.offsetHeight || 340;
+  const width = popover.offsetWidth || 300;
+  popover.style.top = `${Math.max(10, Math.min(window.innerHeight - height - 10, rect.bottom + 4))}px`;
+  popover.style.left = `${Math.max(10, Math.min(window.innerWidth - width - 10, rect.right - width))}px`;
 }
 
-function applyIndicatorPrefs() {
-  const prefs = {
-    rsi: Boolean($("ind-rsi")?.checked),
-    divergence: Boolean($("ind-divergence")?.checked),
-    momentum: Boolean($("ind-momentum")?.checked),
-  };
-  try {
-    localStorage.setItem("scalper-show-rsi", String(prefs.rsi));
-    localStorage.setItem("scalper-show-divergence", String(prefs.divergence));
-    localStorage.setItem("scalper-show-momentum", String(prefs.momentum));
-  } catch (_) {}
-  for (const chart of [S.charts.ce, S.charts.spot, S.charts.pe]) {
-    chart?.toggleRSI?.(prefs.rsi);
-    chart?.toggleDivergence?.(prefs.divergence);
-    chart?.toggleMomentumCandles?.(prefs.momentum);
-  }
-  updateIndicatorButtonState();
+function updateIndicatorButtonState() {
+  updateChartSettingsButtonState();
 }
 
 function buildCharts() {
@@ -1188,10 +1213,12 @@ function buildCharts() {
   const savedRSI = localStorage.getItem("scalper-show-rsi") === "true";
   const savedDivergence = localStorage.getItem("scalper-show-divergence") === "true";
   const savedMomentum = localStorage.getItem("scalper-show-momentum") === "true";
+  const savedMaxPain = localStorage.getItem("scalper-show-max-pain") !== "false";
+  const savedTheta = localStorage.getItem("scalper-show-theta") === "true";
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
   S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
   S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
@@ -1201,31 +1228,6 @@ function buildCharts() {
     configurable: true,
   });
 
-  $$('button[data-chart-action="sr"]').forEach((b) => {
-    b.classList.toggle("active", savedSR);
-    b.setAttribute("aria-pressed", savedSR ? "true" : "false");
-  });
-  $$('button[data-chart-action="auto-tl"]').forEach((b) => {
-    b.classList.toggle("active", savedAutoTL);
-    b.setAttribute("aria-pressed", savedAutoTL ? "true" : "false");
-  });
-  $$('button[data-chart-action="patterns"]').forEach((b) => {
-    b.classList.toggle("active", savedPatterns);
-    b.setAttribute("aria-pressed", savedPatterns ? "true" : "false");
-  });
-  $$('button[data-chart-action="dom"]').forEach((b) => {
-    b.classList.toggle("active", savedDOM);
-    b.setAttribute("aria-pressed", savedDOM ? "true" : "false");
-    b.title = "Order Flow DOM · Fixed-interval Buyer & Seller volume ladder on chart";
-  });
-  $$('button[data-chart-action="ma"]').forEach((b) => {
-    const pane = b.dataset.chart;
-    const active = (pane === "ce" && savedMACE) ||
-                   ((pane === "spot" || pane === "underlying") && savedMAUnderlying) ||
-                   (pane === "pe" && savedMAPE);
-    b.classList.toggle("active", active);
-    b.setAttribute("aria-pressed", active ? "true" : "false");
-  });
   updateIndicatorButtonState();
 
   let syncingRange = false;
@@ -1254,32 +1256,6 @@ function buildCharts() {
       c.chart.subscribeAction("onScroll", () => syncRange(c));
       c.chart.subscribeAction("onZoom", () => syncRange(c));
     }
-  }
-
-  for (const button of $$(".chart-tools button[data-chart-action='sr']")) {
-    button.classList.toggle("active", savedSR);
-    button.setAttribute("aria-pressed", savedSR ? "true" : "false");
-  }
-
-  for (const button of $$(".chart-tools button[data-chart-action='auto-tl']")) {
-    button.classList.toggle("active", savedAutoTL);
-    button.setAttribute("aria-pressed", savedAutoTL ? "true" : "false");
-  }
-
-  for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
-    const pane = tradesPaneKey(button.dataset.chart);
-    const active = Boolean(S.showTradesPanes[pane]);
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  }
-
-  for (const button of $$(".chart-tools button[data-chart-action='ma']")) {
-    const pane = button.dataset.chart;
-    const active = (pane === "ce" && savedMACE) ||
-                   ((pane === "spot" || pane === "underlying") && savedMAUnderlying) ||
-                   (pane === "pe" && savedMAPE);
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
   }
 
   initChartVisibility();
@@ -1573,6 +1549,11 @@ async function loadFromAPI() {
   const expiryRaw = await getJSON(`/api/expiries?index=${encodeURIComponent(S.activeIndex)}`);
   S.expiries = normalizeExpiryList(expiryRaw);
   S.expiry = pickExpiry(S.expiries);
+  S.maxPain = null;
+  S.chainStats = null;
+  S.thetaMeta = null;
+  applyMaxPain();
+  updateSpotMeta();
 
   const requestID = ++S.chainRequestID;
   const chainIndex = S.activeIndex;
@@ -1588,6 +1569,7 @@ async function loadFromAPI() {
   renderAll();
   loadCharts();
   expandChainToPremium();
+  loadChainStats().catch((error) => console.warn("initial chain stats failed", error));
 }
 
 function applyIndexQuotes(indexRaw) {
@@ -1816,6 +1798,7 @@ function startLivePolling() {
           renderChain(true);
           renderPaneHeaders();
           renderPCR();
+          loadChainStats().catch((error) => console.warn("chain stats refresh failed", error));
         }
       } catch (error) {
         console.warn("underlying/chain quote refresh failed", error);
@@ -2661,15 +2644,126 @@ function toggleChartTrades(chartKey) {
   try {
     localStorage.setItem(`scalper-show-trades-${pane}`, String(nextState));
   } catch (_) {}
-  for (const button of $$(".chart-tools button[data-chart-action='trades']")) {
-    if (tradesPaneKey(button.dataset.chart) !== pane) continue;
-    button.classList.toggle("active", nextState);
-    button.setAttribute("aria-pressed", nextState ? "true" : "false");
-  }
   updateChartTrades();
+  updateChartSettingsButtonState();
   const label = chartTradesLabel(pane);
   toast(nextState ? `Orders & execution overlays enabled (${label})` : `Orders & execution overlays hidden (${label})`, "ok", 2000);
   return nextState;
+}
+
+function toggleChartEMA(pane, forceState?) {
+  const chart = chartForPane(pane);
+  if (!chart) return false;
+  const nextState = chart.toggleEMA(forceState);
+  const label = chartLabelForPane(pane);
+  try {
+    if (pane === "underlying" || pane === "spot") {
+      localStorage.setItem("scalper-ma-underlying", String(nextState));
+      localStorage.setItem("scalper-ma-spot", String(nextState));
+    } else {
+      localStorage.setItem(`scalper-ma-${pane}`, String(nextState));
+    }
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? `EMA 10/20/200 enabled (${label})` : `EMA 10/20/200 hidden (${label})`, "ok", 1500);
+  return nextState;
+}
+
+function toggleChartDepth(pane, forceState?) {
+  const chart = chartForPane(pane);
+  if (!chart) return false;
+  const nextState = typeof forceState === "boolean" ? forceState : !chart.showDepth;
+  for (const item of allCharts()) item.toggleDepth(nextState);
+  if (nextState) {
+    renderPaneHeaders();
+  }
+  try {
+    localStorage.setItem("scalper-show-dom", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? "Order Flow DOM enabled" : "Order Flow DOM hidden", "ok", 1500);
+  return nextState;
+}
+
+function toggleChartSR(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showSR;
+  for (const chart of allCharts()) chart.toggleSR(nextState);
+  try {
+    localStorage.setItem("scalper-show-sr", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  return nextState;
+}
+
+function toggleChartAutoTrendlines(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showAutoTrendlines;
+  for (const chart of allCharts()) chart.toggleAutoTrendlines(nextState);
+  try {
+    localStorage.setItem("scalper-show-auto-tl", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? "Auto trendlines enabled" : "Auto trendlines hidden", "ok", 1500);
+  return nextState;
+}
+
+function toggleChartPatterns(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showPatterns;
+  for (const chart of allCharts()) chart.togglePatterns(nextState);
+  try {
+    localStorage.setItem("scalper-show-patterns", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? "Patterns enabled (Micro, Geometric, Harmonics & Setups)" : "Patterns hidden", "ok", 1500);
+  return nextState;
+}
+
+function toggleChartRSI(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showRSI;
+  for (const chart of allCharts()) chart.toggleRSI(nextState);
+  try {
+    localStorage.setItem("scalper-show-rsi", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  return nextState;
+}
+
+function toggleChartDivergence(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showDivergence;
+  for (const chart of allCharts()) chart.toggleDivergence(nextState);
+  try {
+    localStorage.setItem("scalper-show-divergence", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  return nextState;
+}
+
+function toggleChartMomentum(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showMomentum;
+  for (const chart of allCharts()) chart.toggleMomentumCandles(nextState);
+  try {
+    localStorage.setItem("scalper-show-momentum", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  return nextState;
+}
+
+function startChartTrendline(pane) {
+  const chart = chartForPane(pane);
+  if (!chart) return;
+  for (const other of allCharts()) {
+    if (other !== chart) other.cancelTrendline?.();
+  }
+  chart.toggleTrendline(null, {
+    onStart: () => toast("Click chart to set trendline start point (Esc to cancel)", "ok", 4000),
+    onComplete: () => toast("Trendline placed (drag ends to adjust, right-click to delete)", "ok", 3500),
+    onCancel: () => toast("Trendline cancelled", "warn", 2000),
+  });
 }
 
 function roundToTick(price) {
@@ -3021,6 +3115,158 @@ async function loadCharts(forceRefresh = false) {
   }
   renderPaneHeaders();
   updateChartTrades();
+  refreshThetaSeries();
+}
+
+function thetaBarSeconds() {
+  return ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 } as any)[S.timeframe] || 300;
+}
+
+function thetaSessionClock() {
+  const parse = (value, fallback) => {
+    const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
+    if (!match) return fallback;
+    return Number(match[1]) * 3600 + Number(match[2]) * 60;
+  };
+  if (activeCommodity()) {
+    return { open: 9 * 3600, close: 23 * 3600 + 30 * 60 };
+  }
+  return {
+    open: parse(S.boot?.marketSession?.open, 9 * 3600 + 15 * 60),
+    // Option expiry is 15:30 IST even when the derivatives session runs a few
+    // minutes longer; theta must stop at the expiry timestamp.
+    close: 15 * 3600 + 30 * 60,
+  };
+}
+
+function thetaSessionSeconds() {
+  const { open, close } = thetaSessionClock();
+  const span = close - open;
+  return span > 0 ? span : 6.25 * 3600;
+}
+
+function thetaSessionCloseSeconds() {
+  return thetaSessionClock().close;
+}
+
+function updateSpotMeta() {
+  const sub = $("spot-sub");
+  if (!sub) return;
+  const chart = S.charts.spot;
+  let text = `Spot · ${S.timeframe}`;
+  if (chart?.showMaxPain && S.maxPain?.value > 0) {
+    text += ` · MP ${fmtStrike(S.maxPain.value)}`;
+  }
+  if (chart?.showTheta && S.thetaMeta) {
+    const items = [];
+    const fmtTheta = (value) => fmtMoney(value, Math.abs(value) < 10 ? 1 : 0);
+    if (Number.isFinite(S.thetaMeta.ceTheta)) items.push(`CE ${fmtTheta(S.thetaMeta.ceTheta)}`);
+    if (Number.isFinite(S.thetaMeta.peTheta)) items.push(`PE ${fmtTheta(S.thetaMeta.peTheta)}`);
+    if (items.length) text += ` · θ/day ${items.join(" / ")}`;
+  }
+  sub.textContent = text;
+}
+
+function refreshThetaSeries(full = true) {
+  const chart = S.charts.spot;
+  if (!chart) return;
+  S.thetaMeta = null;
+  if (!chart.showTheta) {
+    chart.setThetaMeta(null);
+    updateSpotMeta();
+    return;
+  }
+  const ce = selectedOption("CE");
+  const pe = selectedOption("PE");
+  if (!ce || !pe || !S.expiry || !Array.isArray(chart.data) || !chart.data.length) {
+    chart.setThetaSeries(new Map());
+    chart.setThetaMeta(null);
+    updateSpotMeta();
+    return;
+  }
+  const result = buildThetaSeries({
+    spotCandles: chart.data,
+    ceCandles: S.charts.ce?.data || [],
+    peCandles: S.charts.pe?.data || [],
+    strike: num(ce.strike),
+    expiry: S.expiry,
+    ceLotSize: num(ce.lotSize, 1) || 1,
+    peLotSize: num(pe.lotSize, 1) || 1,
+    barSeconds: thetaBarSeconds(),
+    sessionSeconds: thetaSessionSeconds(),
+    sessionCloseSeconds: thetaSessionCloseSeconds(),
+    expiryCloseSeconds: thetaSessionCloseSeconds(),
+  });
+  chart.setThetaSeries(result.byTime, { full });
+  chart.setThetaMeta(result.meta);
+  S.thetaMeta = result.meta;
+  updateSpotMeta();
+}
+
+function applyMaxPain() {
+  const chart = S.charts.spot;
+  if (!chart) return;
+  if (!chart.showMaxPain) {
+    chart.clearMaxPain();
+    updateSpotMeta();
+    return;
+  }
+  if (!S.maxPain?.value) {
+    chart.setMaxPain(null);
+    updateSpotMeta();
+    return;
+  }
+  chart.setMaxPain(S.maxPain.value, S.maxPain);
+  updateSpotMeta();
+}
+
+async function loadChainStats() {
+  if (!S.charts.spot?.showMaxPain || !S.activeIndex || !S.expiry) return;
+  const requestID = ++S.chainStatsRequestID;
+  const index = S.activeIndex;
+  const expiry = S.expiry;
+  try {
+    const data = await getJSON(`/api/chain/stats?${new URLSearchParams({ index, expiry }).toString()}`);
+    if (requestID !== S.chainStatsRequestID || index !== S.activeIndex || expiry !== S.expiry) return;
+    S.chainStats = data || null;
+    const maxPain = num(data?.maxPain);
+    S.maxPain = maxPain > 0
+      ? {
+          value: maxPain,
+          asOf: num(data?.asOf),
+          callOIWall: num(data?.callOIWall),
+          putOIWall: num(data?.putOIWall),
+          pcr: num(data?.pcr),
+          strikes: num(data?.strikes),
+        }
+      : null;
+    applyMaxPain();
+  } catch (error) {
+    console.warn("chain stats request failed", error);
+  }
+}
+
+function toggleMaxPain(enabled) {
+  const chart = S.charts.spot;
+  if (!chart) return;
+  const next = chart.toggleMaxPain(Boolean(enabled));
+  try {
+    localStorage.setItem("scalper-show-max-pain", String(next));
+  } catch (_) {}
+  if (next) loadChainStats().catch(() => {});
+  applyMaxPain();
+  updateChartSettingsButtonState();
+}
+
+function toggleTheta(enabled) {
+  const chart = S.charts.spot;
+  if (!chart) return;
+  const next = chart.toggleTheta(Boolean(enabled));
+  try {
+    localStorage.setItem("scalper-show-theta", String(next));
+  } catch (_) {}
+  refreshThetaSeries();
+  updateChartSettingsButtonState();
 }
 
 function mergeChartCandles(historical, live, instrumentKey = "") {
@@ -3059,12 +3305,22 @@ function setChartHint(pane, message) {
   hint.hidden = !message;
 }
 
+let thetaRefreshTimer = null;
+function scheduleThetaRefresh() {
+  if (!S.charts.spot?.showTheta) return;
+  if (thetaRefreshTimer) window.clearTimeout(thetaRefreshTimer);
+  thetaRefreshTimer = window.setTimeout(() => {
+    thetaRefreshTimer = null;
+    refreshThetaSeries(false);
+  }, 500);
+}
+
 function updateLiveCandle(key, price, timestamp, volume) {
   if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
   if (!candleSessionAllows(time, key)) return;
-  const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600 })[S.timeframe];
+  const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 })[S.timeframe];
   if (!interval) return;
   const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
   const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
@@ -3077,6 +3333,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
   const cacheKey = `${key}|${S.timeframe}`;
   const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
   let candle = candles[candles.length - 1];
+  let startedNewBar = false;
   if (candle && bucket < candle.time) {
     bucket = candle.time;
   }
@@ -3092,6 +3349,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
       dayVolume: cumVolume || 0,
     };
     candles.push(candle);
+    startedNewBar = true;
     if (candles.length > 500) candles.shift();
   } else {
     candle.high = Math.max(candle.high, value);
@@ -3115,6 +3373,9 @@ function updateLiveCandle(key, price, timestamp, volume) {
     S.charts.spot.update(candle);
     setChartHint("spot", "");
   }
+  if (startedNewBar && (key === activeSpotInstrument() || key === chartInstrument("CE") || key === chartInstrument("PE"))) {
+    scheduleThetaRefresh();
+  }
 }
 
 function renderPaneHeaders() {
@@ -3133,8 +3394,7 @@ function renderPaneHeaders() {
 
   const spotTitle = $("spot-title");
   if (spotTitle) spotTitle.textContent = spot?.displayName || S.activeIndex || "UNDERLYING";
-  const spotSub = $("spot-sub");
-  if (spotSub) spotSub.textContent = `Spot · ${S.timeframe}`;
+  updateSpotMeta();
   const spotLtp = $("spot-ltp");
   if (spotLtp) spotLtp.textContent = spot?.ltp ? fmt(spot.ltp) : "—";
   const spotChange = $("spot-change");
@@ -7667,123 +7927,20 @@ function bindEvents() {
   for (const button of $$(".chart-tools button")) {
     button.addEventListener("click", () => {
       const action = button.dataset.chartAction;
-      if (action === "expand") {
-        setFocusedChart(button.dataset.chart);
-        return;
-      }
       const chartKey = button.dataset.chart;
-      const chart = S.charts[chartKey] || (chartKey === "underlying" ? S.charts.spot : null);
+      if (action === "settings") {
+        openChartSettings(button, chartKey);
+        return;
+      }
+      if (action === "expand") {
+        setFocusedChart(chartKey);
+        return;
+      }
+      const chart = chartForPane(chartKey);
       if (!chart) return;
-      if (action === "trades") {
-        toggleChartTrades(chartKey);
-        return;
-      }
-      if (action === "ind") {
-        toggleIndicatorPopover(button);
-        return;
-      }
-      if (action === "ma") {
-        const nextState = chart.toggleEMA();
-        button.classList.toggle("active", nextState);
-        button.setAttribute("aria-pressed", nextState ? "true" : "false");
-        try {
-          if (chartKey === "spot" || chartKey === "underlying") {
-            localStorage.setItem("scalper-ma-underlying", String(nextState));
-            localStorage.setItem("scalper-ma-spot", String(nextState));
-          } else {
-            localStorage.setItem(`scalper-ma-${chartKey}`, String(nextState));
-          }
-        } catch (_) {}
-        const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
-        toast(nextState ? `EMA 10/20/200 enabled (${label})` : `EMA 10/20/200 hidden (${label})`, "ok", 1500);
-        return;
-      }
-      if (action === "dom") {
-        const nextState = chart.toggleDepth();
-        button.classList.toggle("active", nextState);
-        button.setAttribute("aria-pressed", nextState ? "true" : "false");
-
-        if (nextState) {
-          const isSpot = chartKey === "underlying" || chartKey === "spot";
-          const spotInst = activeSpotInstrument();
-          let depth = null;
-          if (chartKey === "ce") {
-            const ceInst = chartInstrument("CE");
-            depth = S.depths?.[ceInst] || (selectedOption("CE")?.bids?.length || selectedOption("CE")?.asks?.length ? { bids: selectedOption("CE").bids, asks: selectedOption("CE").asks } : null);
-          } else if (chartKey === "pe") {
-            const peInst = chartInstrument("PE");
-            depth = S.depths?.[peInst] || (selectedOption("PE")?.bids?.length || selectedOption("PE")?.asks?.length ? { bids: selectedOption("PE").bids, asks: selectedOption("PE").asks } : null);
-          } else if (isSpot) {
-            depth = S.depths?.[spotInst] || null;
-            if (S.chain && S.chain.length) {
-              chart.setChainData?.(S.chain);
-            }
-          }
-          if (depth) {
-            chart.setDepth(depth);
-          } else {
-            chart.refreshDepth();
-          }
-        }
-
-        try {
-          localStorage.setItem("scalper-show-dom", String(nextState));
-        } catch (_) {}
-        const label = chartKey === "ce" ? "CALL" : (chartKey === "pe" ? "PUT" : "UNDERLYING");
-        toast(nextState ? `Order Flow DOM enabled (${label})` : `Order Flow DOM hidden (${label})`, "ok", 1500);
-        return;
-      }
-      if (action === "sr") {
-        const nextState = chart.toggleSR();
-        button.classList.toggle("active", nextState);
-        button.setAttribute("aria-pressed", nextState ? "true" : "false");
-        try {
-          localStorage.setItem("scalper-show-sr", String(nextState));
-        } catch {
-          // ignore
-        }
-        return;
-      }
-      if (action === "auto-tl") {
-        const nextState = chart.toggleAutoTrendlines();
-        button.classList.toggle("active", nextState);
-        button.setAttribute("aria-pressed", nextState ? "true" : "false");
-        try {
-          localStorage.setItem("scalper-show-auto-tl", String(nextState));
-        } catch {
-          // ignore
-        }
-        toast(nextState ? "Auto trendlines enabled" : "Auto trendlines hidden", "ok", 1500);
-        return;
-      }
-      if (action === "patterns") {
-        const nextState = chart.togglePatterns();
-        button.classList.toggle("active", nextState);
-        button.setAttribute("aria-pressed", nextState ? "true" : "false");
-        try {
-          localStorage.setItem("scalper-show-patterns", String(nextState));
-        } catch {
-          // ignore
-        }
-        toast(nextState ? "Patterns enabled (Micro, Geometric, Harmonics & Setups)" : "Patterns hidden", "ok", 1500);
-        return;
-      }
-      if (action === "trendline") {
-        for (const [otherPane, otherChart] of Object.entries(S.charts) as [string, any][]) {
-          if (otherChart && otherChart !== chart) {
-            otherChart.cancelTrendline?.();
-          }
-        }
-        chart.toggleTrendline(button, {
-          onStart: () => toast("Click chart to set trendline start point (Esc to cancel)", "ok", 4000),
-          onComplete: () => toast("Trendline placed (drag ends to adjust, right-click to delete)", "ok", 3500),
-          onCancel: () => toast("Trendline cancelled", "warn", 2000),
-        });
-        return;
-      }
       if (action === "in") chart.zoomIn();
       else if (action === "out") chart.zoomOut();
-      else chart.resetView();
+      else if (action === "reset") chart.resetView();
     });
   }
 
@@ -8187,36 +8344,57 @@ function bindEvents() {
 
   document.addEventListener("click", (e) => {
     if (patternPopover && patternPopover.style.display !== "none") {
-      if (!patternPopover.contains(e.target as any) && !(e.target as any)?.closest?.('[data-chart-action="patterns"]')) {
+      if (!patternPopover.contains(e.target as any) &&
+          !(e.target as any)?.closest?.("#cs-pattern-settings")) {
         patternPopover.style.display = "none";
       }
     }
   });
 
-  $$('button[data-chart-action="patterns"]').forEach((btn) => {
-    btn.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      if (!patternPopover) return;
-      const rect = btn.getBoundingClientRect();
-      patternPopover.style.display = "block";
-      patternPopover.style.position = "fixed";
-      patternPopover.style.top = `${Math.min(window.innerHeight - 200, rect.bottom + 4)}px`;
-      patternPopover.style.left = `${Math.max(10, Math.min(window.innerWidth - 260, rect.left - 100))}px`;
+  const settingsPopover = $("chart-settings-popover");
+  $("chart-settings-close")?.addEventListener("click", closeChartSettings);
+  const chartSettingHandlers = {
+    "cs-trades": (checked) => {
+      const chart = chartForPane(S.chartSettingsPane);
+      if (chart && Boolean(chart.showTrades) !== checked) toggleChartTrades(S.chartSettingsPane);
+    },
+    "cs-dom": (checked) => toggleChartDepth(S.chartSettingsPane, checked),
+    "cs-sr": (checked) => toggleChartSR(checked),
+    "cs-auto-tl": (checked) => toggleChartAutoTrendlines(checked),
+    "cs-patterns": (checked) => toggleChartPatterns(checked),
+    "cs-ema": (checked) => toggleChartEMA(S.chartSettingsPane, checked),
+    "cs-rsi": (checked) => toggleChartRSI(checked),
+    "cs-divergence": (checked) => toggleChartDivergence(checked),
+    "cs-momentum": (checked) => toggleChartMomentum(checked),
+    "cs-max-pain": (checked) => toggleMaxPain(checked),
+    "cs-theta": (checked) => toggleTheta(checked),
+  };
+  for (const [id, handler] of Object.entries(chartSettingHandlers)) {
+    $(id)?.addEventListener("change", (event: any) => {
+      handler(Boolean(event.target?.checked));
+      syncChartSettingsMenu(S.chartSettingsPane);
+      updateChartSettingsButtonState();
     });
-  });
-
-  // Chart indicator popover (RSI / divergence / momentum candles)
-  const indicatorPopover = $("indicator-popover");
-  for (const id of ["ind-rsi", "ind-divergence", "ind-momentum"]) {
-    $(id)?.addEventListener("change", applyIndicatorPrefs);
   }
-  $("indicator-popover-close")?.addEventListener("click", () => {
-    if (indicatorPopover) indicatorPopover.style.display = "none";
+  $("cs-trendline")?.addEventListener("click", () => {
+    const pane = S.chartSettingsPane;
+    closeChartSettings();
+    startChartTrendline(pane);
+  });
+  $("cs-pattern-settings")?.addEventListener("click", (event: any) => {
+    if (!patternPopover) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    closeChartSettings();
+    patternPopover.style.display = "block";
+    patternPopover.style.position = "fixed";
+    patternPopover.style.top = `${Math.max(10, Math.min(window.innerHeight - 220, rect.top - 8))}px`;
+    patternPopover.style.left = `${Math.max(10, Math.min(window.innerWidth - 260, rect.right - 260))}px`;
   });
   document.addEventListener("click", (e) => {
-    if (indicatorPopover && indicatorPopover.style.display !== "none") {
-      if (!indicatorPopover.contains(e.target as any) && !(e.target as any)?.closest?.('[data-chart-action="ind"]')) {
-        indicatorPopover.style.display = "none";
+    if (settingsPopover && settingsPopover.style.display !== "none") {
+      if (!settingsPopover.contains(e.target as any) &&
+          !(e.target as any)?.closest?.('[data-chart-action="settings"]')) {
+        closeChartSettings();
       }
     }
   });
@@ -8230,6 +8408,16 @@ function bindEvents() {
       return;
     }
     if (event.key !== "Escape") return;
+    const settingsPopoverEl = $("chart-settings-popover");
+    if (settingsPopoverEl && settingsPopoverEl.style.display !== "none") {
+      closeChartSettings();
+      return;
+    }
+    const patternPopoverEl = $("pattern-popover");
+    if (patternPopoverEl && patternPopoverEl.style.display !== "none") {
+      patternPopoverEl.style.display = "none";
+      return;
+    }
     if (S.quickOrder) {
       closeChartQuickOrder();
       return;
@@ -8334,6 +8522,12 @@ async function switchIndex(key) {
   S.chainLoading = false;
   S.selected = { type: "CE", CE: null, PE: null };
   S.chainScrolled = false;
+  S.maxPain = null;
+  S.chainStats = null;
+  S.thetaMeta = null;
+  S.chainStatsRequestID++;
+  applyMaxPain();
+  updateSpotMeta();
   updateFeedSubscriptions();
   renderAll();
   try {
@@ -8364,6 +8558,7 @@ async function switchIndex(key) {
   renderAll();
   loadCharts();
   expandChainToPremium();
+  loadChainStats().catch((error) => console.warn("chain stats failed", error));
 }
 
 async function switchExpiry(date) {
@@ -8377,6 +8572,12 @@ async function switchExpiry(date) {
   S.chainLoading = false;
   S.selected = { type: "CE", CE: null, PE: null };
   S.chainScrolled = false;
+  S.maxPain = null;
+  S.chainStats = null;
+  S.thetaMeta = null;
+  S.chainStatsRequestID++;
+  applyMaxPain();
+  updateSpotMeta();
   updateFeedSubscriptions();
   renderAll();
   try {
@@ -8396,6 +8597,7 @@ async function switchExpiry(date) {
   renderAll();
   loadCharts();
   expandChainToPremium();
+  loadChainStats().catch((error) => console.warn("chain stats failed", error));
 }
 
 async function refreshMarket() {

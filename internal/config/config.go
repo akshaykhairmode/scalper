@@ -360,7 +360,7 @@ func Default() Config {
 		},
 		Charts: Charts{
 			BaseTimeframe:    "1m",
-			Timeframes:       []string{"1m", "3m", "5m", "15m", "1h"},
+			Timeframes:       []string{"1m", "3m", "5m", "15m", "1h", "4h"},
 			DefaultTimeframe: "5m",
 			RetentionDays:    30,
 			Persist:          true,

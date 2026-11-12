@@ -464,7 +464,14 @@ func (s *Service) Candles(ctx context.Context, baseURL, instrumentKey, timeframe
 	// `days` calendar dates, including today, rather than `days + 1`.
 	fromDate := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
 	toDate := now.Format("2006-01-02")
-	return s.client.Historical(ctx, baseURL, segment+"|"+symbol, interval, fromDate, toDate)
+	candles, err := s.client.Historical(ctx, baseURL, segment+"|"+symbol, interval, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	if timeframe == "4h" {
+		candles = aggregateFourHourCandles(candles, segment)
+	}
+	return candles, nil
 }
 
 func (s *Service) resolveConfiguredIndex(instrumentKey string) (config.Index, bool) {
@@ -513,9 +520,67 @@ func historicalTimeframe(timeframe string) (string, int, bool) {
 		return "15min", 60, true
 	case "1h":
 		return "60min", 90, true
+	case "4h":
+		// Kotak has no native 4-hour interval. Fetch 60-minute bars and bucket
+		// them into session-aligned four-hour candles below.
+		return "60min", 90, true
 	default:
 		return "", 0, false
 	}
+}
+
+// aggregateFourHourCandles combines 60-minute bars into session-aligned 4-hour
+// bars. Buckets start at the exchange session open, so NSE produces
+// 09:15-13:15 and 13:15-15:30 bars instead of clock-hour buckets.
+func aggregateFourHourCandles(candles []Candle, segment string) []Candle {
+	if len(candles) == 0 {
+		return nil
+	}
+	loc := time.FixedZone("IST", 5*60*60+30*60)
+	openHour, openMin := 9, 15
+	if segment == scrip.SegmentMCXFO {
+		openHour, openMin = 9, 0
+	}
+	const interval = int64(4 * 60 * 60)
+
+	byBucket := make(map[int64]*Candle, len(candles)/4+1)
+	buckets := make([]int64, 0, len(candles)/4+1)
+	for _, candle := range candles {
+		if candle.Time <= 0 {
+			continue
+		}
+		at := time.Unix(candle.Time, 0).In(loc)
+		dayOpen := time.Date(at.Year(), at.Month(), at.Day(), openHour, openMin, 0, 0, loc).Unix()
+		if candle.Time < dayOpen {
+			continue
+		}
+		bucket := dayOpen + ((candle.Time-dayOpen)/interval)*interval
+		agg := byBucket[bucket]
+		if agg == nil {
+			copied := candle
+			copied.Time = bucket
+			byBucket[bucket] = &copied
+			buckets = append(buckets, bucket)
+			continue
+		}
+		if candle.High > agg.High {
+			agg.High = candle.High
+		}
+		if candle.Low < agg.Low {
+			agg.Low = candle.Low
+		}
+		agg.Close = candle.Close
+		agg.Volume += candle.Volume
+		if candle.OpenInterest > 0 {
+			agg.OpenInterest = candle.OpenInterest
+		}
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i] < buckets[j] })
+	out := make([]Candle, 0, len(buckets))
+	for _, bucket := range buckets {
+		out = append(out, *byBucket[bucket])
+	}
+	return out
 }
 
 // Option looks up an instrument in the Scrip Master by its canonical key.

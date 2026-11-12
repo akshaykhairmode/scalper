@@ -787,6 +787,14 @@ a { color: var(--blue); }
 }
 .chart-tools button:hover { color: var(--text); border-color: #3b4d5f; background: var(--panel-2); }
 .chart-tools button.active { color: var(--accent); border-color: #4a3a10; background: #1d1808; }
+.chart-tools button.chart-settings-btn {
+  min-width: auto;
+  padding: 0 7px;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  letter-spacing: .1px;
+}
+.chart-tools button.chart-settings-btn span { font-size: 9px; opacity: .8; }
 
 /* Floating Chart Action Tooltip */
 .chart-tooltip {
@@ -3215,6 +3223,12 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     background: var(--panel-2);
     padding: 0 6px;
   }
+  .pane.pro-tools-open .chart-tools button.chart-settings-btn {
+    min-width: 84px;
+    padding: 0 8px;
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
   .chart-tools button[data-chart-action="expand"] {
     display: none;
   }
@@ -3856,6 +3870,52 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
 .pattern-popover-item input[type="checkbox"] {
   accent-color: var(--accent);
   cursor: pointer;
+}
+.pattern-popover-item em {
+  color: var(--muted-2);
+  font-style: normal;
+  font-size: 9.5px;
+}
+.chart-settings-popover {
+  width: min(86vw, 286px);
+  max-height: min(74vh, 560px);
+  overflow-y: auto;
+}
+.chart-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 7px;
+}
+.chart-settings-group + .chart-settings-group {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+.chart-settings-group-title {
+  color: var(--muted-2);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+.chart-settings-action {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.chart-settings-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 body[data-theme="light"] .pattern-popover {
   background: #ffffff;

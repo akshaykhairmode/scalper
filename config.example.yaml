@@ -106,7 +106,7 @@ market:
 
 charts:
   base_timeframe: "1m"
-  timeframes: ["1m", "3m", "5m", "15m", "1h"]
+  timeframes: ["1m", "3m", "5m", "15m", "1h", "4h"]
   default_timeframe: "5m"
   retention_days: 30
   persist: true

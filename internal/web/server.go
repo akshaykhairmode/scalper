@@ -675,6 +675,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/indices", s.handleIndices)
 	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
 	mux.HandleFunc("GET /api/chain", s.handleChain)
+	mux.HandleFunc("GET /api/chain/stats", s.handleChainStats)
 	// Account books and order actions are available only through authenticated broker APIs.
 	mux.HandleFunc("GET /api/broker/orders", s.handleBrokerOrders)
 	mux.HandleFunc("GET /api/broker/orders/{id}", s.handleBrokerOrder)

@@ -158,6 +158,60 @@ func TestHandleIndicesStaleFallback(t *testing.T) {
 	}
 }
 
+type statsMarketAPI struct {
+	fakeMarketAPI
+	chainCalls int
+}
+
+func (s *statsMarketAPI) Chain(context.Context, string, string, string) ([]market.ChainRow, error) {
+	s.chainCalls++
+	return []market.ChainRow{
+		{Strike: 25000, Call: &market.OptionQuote{OI: 1000}, Put: &market.OptionQuote{OI: 5000}},
+		{Strike: 25100, Call: &market.OptionQuote{OI: 100}, Put: &market.OptionQuote{OI: 100}},
+		{Strike: 25200, Call: &market.OptionQuote{OI: 5000}, Put: &market.OptionQuote{OI: 1000}},
+	}, nil
+}
+
+func TestHandleChainStatsUsesFullLadderAndCaches(t *testing.T) {
+	api := &statsMarketAPI{}
+	s := newTestServer(t, serverOpts{marketAPI: api})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chain/stats?index=NIFTY&expiry=2026-11-12", nil)
+	rec := httptest.NewRecorder()
+	s.handleChainStats(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats request code = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var stats chainStatsPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.MaxPain != 25100 {
+		t.Errorf("maxPain = %v, want 25100", stats.MaxPain)
+	}
+	if stats.CallOIWall != 25200 || stats.PutOIWall != 25000 {
+		t.Errorf("OI walls = CE %v / PE %v, want 25200 / 25000", stats.CallOIWall, stats.PutOIWall)
+	}
+	if stats.PCR != 1 {
+		t.Errorf("PCR = %v, want 1", stats.PCR)
+	}
+	if stats.Strikes != 3 {
+		t.Errorf("strikes = %d, want 3", stats.Strikes)
+	}
+	if api.chainCalls != 1 {
+		t.Fatalf("chainCalls = %d, want 1", api.chainCalls)
+	}
+
+	rec = httptest.NewRecorder()
+	s.handleChainStats(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cached stats request code = %d, want 200", rec.Code)
+	}
+	if api.chainCalls != 1 {
+		t.Fatalf("chainCalls after cache hit = %d, want 1", api.chainCalls)
+	}
+}
+
 func TestHandleChainCachingAndFallback(t *testing.T) {
 	api := &flappyMarketAPI{}
 	s := newTestServer(t, serverOpts{marketAPI: api})

@@ -259,6 +259,107 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
 }
 
+type chainStatsPayload struct {
+	MaxPain    float64 `json:"maxPain"`
+	CallOIWall float64 `json:"callOIWall"`
+	PutOIWall  float64 `json:"putOIWall"`
+	PCR        float64 `json:"pcr"`
+	Strikes    int     `json:"strikes"`
+	AsOf       int64   `json:"asOf"`
+}
+
+// handleChainStats returns chain-level levels that need the full strike
+// ladder, like max pain and the largest CE/PE open-interest walls. The chart's
+// normal windowed chain is intentionally small, so it cannot compute these
+// reliably.
+func (s *Server) handleChainStats(w http.ResponseWriter, r *http.Request) {
+	if s.market == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "live market data is not configured", nil)
+		return
+	}
+	index := strings.TrimSpace(r.URL.Query().Get("index"))
+	expiry := strings.TrimSpace(r.URL.Query().Get("expiry"))
+	if index == "" || expiry == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "index and expiry are required", nil)
+		return
+	}
+
+	ttl := 30 * time.Second
+	if !s.isMarketOpen(s.now()) {
+		ttl = 60 * time.Second
+	}
+	cacheKey := fmt.Sprintf("%s|%s|stats", index, expiry)
+	s.chainCacheMu.Lock()
+	cached, hasCached := s.chainCache[cacheKey]
+	s.chainCacheMu.Unlock()
+	if hasCached && time.Since(cached.fetchedAt) < ttl {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(cached.payload)
+		return
+	}
+
+	rows, err := s.market.Chain(r.Context(), s.marketBaseURL(), index, expiry)
+	if err != nil {
+		if hasCached {
+			s.log.Warn("Kotak chain stats refresh failed; serving cached stats",
+				"event", "chain_stats_refresh_failed",
+				"error", err,
+				"index", index,
+				"expiry", expiry,
+				"request_id", logging.RequestID(r.Context()))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(cached.payload)
+			return
+		}
+		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+		return
+	}
+
+	var callOI, putOI, callWall, putWall int64
+	for _, row := range rows {
+		if row.Call != nil {
+			callOI += row.Call.OI
+			if row.Call.OI > callWall {
+				callWall = row.Call.OI
+			}
+		}
+		if row.Put != nil {
+			putOI += row.Put.OI
+			if row.Put.OI > putWall {
+				putWall = row.Put.OI
+			}
+		}
+	}
+	stats := chainStatsPayload{
+		Strikes: len(rows),
+		AsOf:    s.now().UnixMilli(),
+	}
+	if callOI+putOI > 0 {
+		stats.MaxPain = computeMaxPain(rows)
+	}
+	if callOI > 0 {
+		stats.PCR = float64(putOI) / float64(callOI)
+	}
+	if callWall > 0 || putWall > 0 {
+		for _, row := range rows {
+			if callWall > 0 && row.Call != nil && row.Call.OI == callWall {
+				stats.CallOIWall = row.Strike
+			}
+			if putWall > 0 && row.Put != nil && row.Put.OI == putWall {
+				stats.PutOIWall = row.Strike
+			}
+		}
+	}
+
+	payload, encodeErr := json.Marshal(stats)
+	if encodeErr != nil {
+		s.writeRouteError(w, r, http.StatusInternalServerError, "encode chain stats failed", encodeErr)
+		return
+	}
+	s.storeChainCache(cacheKey, payload)
+	s.writeRouteJSON(w, r, http.StatusOK, stats)
+}
+
 const maxChainCacheEntries = 128
 
 func (s *Server) storeChainCache(key string, payload []byte) {
@@ -318,9 +419,11 @@ func (s *Server) fetchInstrumentCandles(
 			cached = nil
 		}
 		cached = s.filterCandles(instrument, cached)
-		if len(cached) == 0 && timeframe != "1m" {
+		if len(cached) == 0 && timeframe != "1m" && timeframe != "4h" {
 			// Older or tick-only data may exist as 1-minute bars. Derive the
-			// requested timeframe so MCX charts can still show history.
+			// requested timeframe so MCX charts can still show history. 4h is
+			// aggregated from Kotak's 60-minute bars because its session-aligned
+			// buckets cannot be reconstructed from epoch-aligned 1m buckets.
 			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
 				cached = s.filterCandles(instrument, synth)
 			}
@@ -328,7 +431,7 @@ func (s *Server) fetchInstrumentCandles(
 		if len(cached) > 0 && isMalformedCandleRun(cached) {
 			s.log.Warn("cached candles contain malformed run; repairing from 1m store",
 				"event", "malformed_cached_candles", "instrument", instrument, "timeframe", timeframe)
-			if timeframe != "1m" {
+			if timeframe != "1m" && timeframe != "4h" {
 				if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
 					cached = s.filterCandles(instrument, synth)
 					if writeErr := s.candleStore.WriteCandles(ctx, instrument, timeframe, cached); writeErr != nil {
@@ -372,7 +475,7 @@ func (s *Server) fetchInstrumentCandles(
 	if err == nil && isMalformedCandleRun(fetched) {
 		s.log.Warn("upstream historical candles malformed (clamped day-high/close); rejecting fetched bars",
 			"event", "malformed_upstream_candles", "instrument", instrument, "timeframe", timeframe)
-		if s.candleStore != nil && timeframe != "1m" {
+		if s.candleStore != nil && timeframe != "1m" && timeframe != "4h" {
 			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
 				fetched = s.filterCandles(instrument, synth)
 			} else {

@@ -149,7 +149,7 @@ func TestIndicesErrorsWhenNoConfiguredIndexQuoteIsReturned(t *testing.T) {
 }
 
 func TestCandlesResolvesCanonicalInstrumentsToKotakSymbols(t *testing.T) {
-	requests := make(chan string, 2)
+	requests := make(chan string, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.URL.Query().Get("neosymbol") + "|" + r.URL.Query().Get("interval")
 		w.Header().Set("Content-Type", "application/json")
@@ -201,10 +201,40 @@ func TestCandlesResolvesCanonicalInstrumentsToKotakSymbols(t *testing.T) {
 	if _, err := service.Candles(context.Background(), server.URL, option.InstrumentKey, "1h"); err != nil {
 		t.Fatal(err)
 	}
-	got := []string{<-requests, <-requests}
+	if _, err := service.Candles(context.Background(), server.URL, option.InstrumentKey, "4h"); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{<-requests, <-requests, <-requests}
 	if !strings.Contains(strings.Join(got, ","), "nse_cm|Nifty 50|5min") ||
 		!strings.Contains(strings.Join(got, ","), "nse_fo|12345|60min") {
 		t.Fatalf("historical instrument requests = %v", got)
+	}
+}
+
+func TestAggregateFourHourCandlesAlignsToSessionOpen(t *testing.T) {
+	loc := time.FixedZone("IST", 5*60*60+30*60)
+	at := func(hour, minute int) int64 {
+		return time.Date(2026, time.November, 10, hour, minute, 0, 0, loc).Unix()
+	}
+	got := aggregateFourHourCandles([]Candle{
+		{Time: at(9, 15), Open: 100, High: 102, Low: 99, Close: 101, Volume: 10, OpenInterest: 1},
+		{Time: at(10, 15), Open: 101, High: 105, Low: 100, Close: 104, Volume: 20, OpenInterest: 2},
+		{Time: at(11, 15), Open: 104, High: 108, Low: 103, Close: 107, Volume: 30, OpenInterest: 3},
+		{Time: at(12, 15), Open: 107, High: 109, Low: 105, Close: 106, Volume: 40, OpenInterest: 4},
+		{Time: at(13, 15), Open: 106, High: 110, Low: 104, Close: 109, Volume: 50, OpenInterest: 5},
+		{Time: at(14, 15), Open: 109, High: 112, Low: 108, Close: 111, Volume: 60, OpenInterest: 6},
+		{Time: at(15, 15), Open: 111, High: 113, Low: 110, Close: 112, Volume: 70, OpenInterest: 7},
+	}, "nse_fo")
+
+	if len(got) != 2 {
+		t.Fatalf("got %d 4h candles, want 2: %+v", len(got), got)
+	}
+	first, second := got[0], got[1]
+	if first.Time != at(9, 15) || first.Open != 100 || first.High != 109 || first.Low != 99 || first.Close != 106 || first.Volume != 100 {
+		t.Errorf("first 4h candle = %+v", first)
+	}
+	if second.Time != at(13, 15) || second.Open != 106 || second.High != 113 || second.Low != 104 || second.Close != 112 || second.Volume != 180 {
+		t.Errorf("second 4h candle = %+v", second)
 	}
 }
 

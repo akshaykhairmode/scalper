@@ -161,15 +161,8 @@
         </div>
         <div class="chart-frame">
           <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart"></div>
-          <div class="chart-tools" aria-label="CALL chart zoom controls">
-            <button type="button" data-chart="ce" data-chart-action="trades" title="Trades &amp; Positions (TX) · Toggle this chart's overlays. Drag entry/TP/SL lines to modify; click ✕ to remove TP or SL" aria-label="Toggle Trades, Positions and Open Orders">TX</button>
-            <button type="button" data-chart="ce" data-chart-action="dom" title="Order Flow DOM · Display fixed-interval Buyer &amp; Seller volume ladder on chart" aria-label="Toggle Order Flow DOM">DOM</button>
-            <button type="button" data-chart="ce" data-chart-action="trendline" title="Draw Trendline (TL) · Click two points on chart to place a manual trendline" aria-label="Draw Trendline">TL</button>
-            <button type="button" data-chart="ce" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
-            <button type="button" data-chart="ce" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
-            <button type="button" data-chart="ce" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="ce" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
-            <button type="button" data-chart="ce" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
+          <div class="chart-tools" aria-label="CALL chart tools">
+            <button type="button" class="chart-settings-btn" data-chart="ce" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="ce" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="ce" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -221,15 +214,8 @@
         </div>
         <div class="chart-frame">
           <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
-          <div class="chart-tools" aria-label="Underlying chart zoom controls">
-            <button type="button" data-chart="underlying" data-chart-action="trades" title="Trades &amp; Positions (TX) · Toggle this chart's overlays. Drag entry/TP/SL lines to modify; click ✕ to remove TP or SL" aria-label="Toggle Trades, Positions and Open Orders">TX</button>
-            <button type="button" data-chart="underlying" data-chart-action="dom" title="Order Flow DOM · Display fixed-interval Buyer &amp; Seller volume ladder on chart" aria-label="Toggle Order Flow DOM">DOM</button>
-            <button type="button" data-chart="underlying" data-chart-action="trendline" title="Draw Trendline (TL) · Click two points on chart to place a manual trendline" aria-label="Draw Trendline">TL</button>
-            <button type="button" data-chart="underlying" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
-            <button type="button" data-chart="underlying" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
-            <button type="button" data-chart="underlying" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="underlying" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
-            <button type="button" data-chart="underlying" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
+          <div class="chart-tools" aria-label="Underlying chart tools">
+            <button type="button" class="chart-settings-btn" data-chart="underlying" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="underlying" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="underlying" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -256,15 +242,8 @@
         </div>
         <div class="chart-frame">
           <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart"></div>
-          <div class="chart-tools" aria-label="PUT chart zoom controls">
-            <button type="button" data-chart="pe" data-chart-action="trades" title="Trades &amp; Positions (TX) · Toggle this chart's overlays. Drag entry/TP/SL lines to modify; click ✕ to remove TP or SL" aria-label="Toggle Trades, Positions and Open Orders">TX</button>
-            <button type="button" data-chart="pe" data-chart-action="dom" title="Order Flow DOM · Display fixed-interval Buyer &amp; Seller volume ladder on chart" aria-label="Toggle Order Flow DOM">DOM</button>
-            <button type="button" data-chart="pe" data-chart-action="trendline" title="Draw Trendline (TL) · Click two points on chart to place a manual trendline" aria-label="Draw Trendline">TL</button>
-            <button type="button" data-chart="pe" data-chart-action="auto-tl" title="Auto Trendlines (ATL) · Automatically detect swing pivots and project trendlines" aria-label="Toggle Auto Trendlines">ATL</button>
-            <button type="button" data-chart="pe" data-chart-action="sr" title="Support &amp; Resistance (SR) · Plot key horizontal support and resistance zones" aria-label="Toggle Support and Resistance lines">SR</button>
-            <button type="button" data-chart="pe" data-chart-action="patterns" title="Pattern Recognition (PTN) · Detect candlestick formations (Hammer, Engulfing, etc.)" aria-label="Toggle Pattern Recognition">PTN</button>
-            <button type="button" data-chart="pe" data-chart-action="ma" title="EMA 10 / 20 / 200 · Exponential trend lines with 10-20 crossover markers" aria-label="Toggle EMA trend lines">EMA</button>
-            <button type="button" data-chart="pe" data-chart-action="ind" title="Indicators (IND) · RSI(14) pane, RSI divergence and momentum candles" aria-label="Chart indicators">IND</button>
+          <div class="chart-tools" aria-label="PUT chart tools">
+            <button type="button" class="chart-settings-btn" data-chart="pe" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="pe" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="pe" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -944,26 +923,72 @@
     </div>
   </div>
 
-  <div class="pattern-popover" id="indicator-popover" style="display: none;" role="dialog" aria-label="Chart indicators">
+  <div class="pattern-popover chart-settings-popover" id="chart-settings-popover" style="display: none;" role="dialog" aria-label="Chart indicators and settings">
     <div class="pattern-popover-header">
-      <span>Chart Indicators</span>
-      <button type="button" class="pattern-popover-close" id="indicator-popover-close" aria-label="Close indicator settings">✕</button>
+      <span>Indicators &amp; Settings</span>
+      <button type="button" class="pattern-popover-close" id="chart-settings-close" aria-label="Close chart settings">✕</button>
     </div>
     <div class="pattern-popover-body">
-      <label class="pattern-popover-item">
-        <input type="checkbox" id="ind-rsi">
-        <span>RSI (14) pane · 30 / 50 / 70 guides</span>
-      </label>
-      <label class="pattern-popover-item">
-        <input type="checkbox" id="ind-divergence">
-        <span>RSI Divergence (bull / bear)</span>
-      </label>
-      <label class="pattern-popover-item">
-        <input type="checkbox" id="ind-momentum">
-        <span>Momentum Candles (wide body ≥ 1.5×ATR)</span>
-      </label>
-      <div class="pattern-popover-item" style="opacity:.7;cursor:default;">
-        <span style="font-size:10px;">EMA 10/20/200 &amp; cross markers: use the EMA button.</span>
+      <div class="chart-settings-group">
+        <span class="chart-settings-group-title">Overlays</span>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-trades">
+          <span>Trades &amp; Positions (TX)</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-dom">
+          <span>Order Flow DOM</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-sr">
+          <span>Support &amp; Resistance</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-auto-tl">
+          <span>Auto Trendlines</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-patterns">
+          <span>Pattern Recognition</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-ema">
+          <span>EMA 10 / 20 / 200</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-max-pain">
+          <span>Max Pain line <em>(spot)</em></span>
+        </label>
+      </div>
+
+      <div class="chart-settings-group">
+        <span class="chart-settings-group-title">Panes</span>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-rsi">
+          <span>RSI (14) with 30 / 50 / 70 guides</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-divergence">
+          <span>RSI Divergence</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-momentum">
+          <span>Momentum Candles</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-theta">
+          <span>Time Decay / Theta <em>(spot)</em></span>
+        </label>
+      </div>
+
+      <div class="chart-settings-group">
+        <span class="chart-settings-group-title">Tools</span>
+        <button type="button" class="chart-settings-action" id="cs-trendline">
+          <span>✎</span> Draw Trendline
+        </button>
+        <button type="button" class="chart-settings-action" id="cs-pattern-settings">
+          <span>⚙</span> Pattern Filters…
+        </button>
       </div>
     </div>
   </div>

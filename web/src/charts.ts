@@ -1243,6 +1243,55 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
+    name: "maxPainLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const price = Number(data.price || overlay.points?.[0]?.value || 0);
+      const width = bounding?.width || 800;
+      const color = data.color || "#c084fc";
+      return [
+        {
+          type: "line",
+          attrs: { coordinates: [{ x: 0, y }, { x: width, y }] },
+          styles: { style: "dashed", dashedValue: [6, 4], size: 1.2, color },
+          ignoreEvent: true,
+        },
+        {
+          type: "text",
+          attrs: {
+            x: width - 8,
+            y,
+            text: `MP: ${Math.round(price).toLocaleString("en-IN")}`,
+            align: "right",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#0b0710",
+            backgroundColor: color,
+            size: 10,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 6,
+            paddingRight: 6,
+            paddingTop: 2,
+            paddingBottom: 2,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        },
+      ];
+    },
+  });
+
+  kc.registerOverlay({
     name: "targetPreviewLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -2351,6 +2400,26 @@ function registerCustomIndicators() {
   });
 
   kc.registerIndicator({
+    name: "TD",
+    shortName: "TD",
+    calcParams: [],
+    precision: 0,
+    shouldFormatBigNumber: true,
+    figures: [
+      { key: "ce", title: "CE decay: ", type: "line", styles: { color: "#4c8dff", size: 1.5 } },
+      { key: "pe", title: "PE decay: ", type: "line", styles: { color: "#ff9f43", size: 1.5 } },
+      { key: "zero", title: null, type: "line", styles: { color: "rgba(130,146,162,0.35)", size: 1 } },
+    ],
+    calc: function(dataList) {
+      return (dataList || []).map((candle) => ({
+        ce: Number.isFinite(candle?.tdCE) ? candle.tdCE : null,
+        pe: Number.isFinite(candle?.tdPE) ? candle.tdPE : null,
+        zero: 0,
+      }));
+    },
+  });
+
+  kc.registerIndicator({
     name: "RSI14",
     shortName: "RSI",
     calcParams: [14],
@@ -2475,7 +2544,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2487,6 +2556,12 @@ export class CandleChart {
     this.showRSI = Boolean(showRSI);
     this.showDivergence = Boolean(showDivergence);
     this.showMomentum = Boolean(showMomentum);
+    this.showTheta = Boolean(showTheta);
+    this.showMaxPain = Boolean(showMaxPain);
+    this.maxPainValue = null;
+    this.maxPainMeta = null;
+    this.thetaMeta = null;
+    this.thetaDataReady = false;
     this.showDepth = Boolean(showDepth);
     this.emaCrossOverlayIds = [];
     this.divergenceOverlayIds = [];
@@ -2597,6 +2672,10 @@ export class CandleChart {
       }
     }
 
+    if (this.showTheta) {
+      this.ensureThetaIndicator();
+    }
+
     if (this.showEMA) {
       try {
         this.chart.createIndicator(
@@ -2649,7 +2728,7 @@ export class CandleChart {
     if (h <= 0 || h < Math.max(o, l, cl)) h = Math.max(o, l, cl);
     if (l <= 0 || o <= 0 || cl <= 0 || h <= 0) return null;
 
-    return {
+    const formatted: any = {
       timestamp: ts,
       open: o,
       high: Math.max(h, o, cl),
@@ -2659,6 +2738,9 @@ export class CandleChart {
       turnover: Number.isFinite(c.turnover) && c.turnover >= 0 ? Number(c.turnover) : 0,
       dayVolume: c.dayVolume,
     };
+    if (Number.isFinite(c.tdCE)) formatted.tdCE = Number(c.tdCE);
+    if (Number.isFinite(c.tdPE)) formatted.tdPE = Number(c.tdPE);
+    return formatted;
   }
 
   formatCandles(candles) {
@@ -2821,6 +2903,98 @@ export class CandleChart {
         });
         if (id) this.momentumOverlayIds.push(id);
       } catch (_) {}
+    }
+  }
+
+  ensureThetaIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "TD", calcParams: [], paneId: "pane_theta" },
+        false,
+        { id: "pane_theta", height: 90 }
+      );
+    } catch (e) {
+      console.warn("createIndicator TD:", e);
+    }
+  }
+
+  toggleTheta(forceState) {
+    this.showTheta = typeof forceState === "boolean" ? forceState : !this.showTheta;
+    if (!this.chart) return this.showTheta;
+    if (this.showTheta) {
+      this.ensureThetaIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "pane_theta", name: "TD" });
+      } catch (e) {
+        console.warn("removeIndicator TD:", e);
+      }
+    }
+    return this.showTheta;
+  }
+
+  setThetaSeries(byTime, { full = false } = {}) {
+    this.thetaMeta = null;
+    for (const candle of this.data) {
+      const point = byTime?.get?.(candle.time);
+      candle.tdCE = point && Number.isFinite(point.ce) ? point.ce : null;
+      candle.tdPE = point && Number.isFinite(point.pe) ? point.pe : null;
+    }
+    if (!this.showTheta) return;
+    if (full || !this.thetaDataReady) {
+      this.thetaDataReady = true;
+      this.setData(this.data, { resetScale: false });
+      this.thetaDataReady = true;
+      return;
+    }
+    const latest = this.data[this.data.length - 1];
+    const formatted = latest ? this.formatCandle(latest) : null;
+    if (formatted && this.subscriberCallback) this.subscriberCallback(formatted);
+  }
+
+  setThetaMeta(meta) {
+    this.thetaMeta = meta || null;
+  }
+
+  toggleMaxPain(forceState) {
+    this.showMaxPain = typeof forceState === "boolean" ? forceState : !this.showMaxPain;
+    this.refreshMaxPain();
+    return this.showMaxPain;
+  }
+
+  setMaxPain(value, meta = null) {
+    this.maxPainValue = Number.isFinite(value) && value > 0 ? value : null;
+    this.maxPainMeta = meta || null;
+    this.refreshMaxPain();
+  }
+
+  clearMaxPain() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "max_pain" });
+    } catch (_) {}
+    try {
+      this.chart.removeOverlay({ name: "maxPainLine" });
+    } catch (_) {}
+  }
+
+  refreshMaxPain() {
+    this.clearMaxPain();
+    if (!this.showMaxPain || !this.chart || !this.maxPainValue || !this.data.length) return;
+    try {
+      this.chart.createOverlay({
+        name: "maxPainLine",
+        groupId: "max_pain",
+        points: [{ value: this.maxPainValue }],
+        lock: true,
+        extendData: {
+          price: this.maxPainValue,
+          color: this.colors.accent,
+        },
+      });
+    } catch (e) {
+      console.warn("createOverlay maxPainLine:", e);
     }
   }
 
@@ -3648,6 +3822,7 @@ export class CandleChart {
   }
 
   setData(data, { symbol = "", resetScale = true } = {}) {
+    this.thetaDataReady = false;
     if (symbol && symbol !== this.currentSymbol) {
       this.currentSymbol = symbol;
       // Rebuild cached bracket overlays for the new symbol.
@@ -3687,6 +3862,7 @@ export class CandleChart {
     }
 
     this.refreshSRLines();
+    this.refreshMaxPain();
     this.refreshDayDividers();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
@@ -4172,7 +4348,8 @@ export class CandleChart {
         this.refreshPatterns();
       }
     }
-    const formatted = this.formatCandle(candle);
+    const latest = this.data[this.data.length - 1];
+    const formatted = this.formatCandle(latest ? { ...latest, ...candle } : candle);
     if (formatted && this.subscriberCallback) {
       this.subscriberCallback(formatted);
     }
@@ -4209,6 +4386,7 @@ export class CandleChart {
       this.chart.setStyles(buildStyles(this.colors));
     }
     this.refreshSRLines();
+    this.refreshMaxPain();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
     this.refreshDepth();

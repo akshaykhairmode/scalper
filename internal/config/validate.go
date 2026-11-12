@@ -18,7 +18,7 @@ var (
 )
 
 var chartTimeframes = map[string]bool{
-	"1m": true, "3m": true, "5m": true, "15m": true, "1h": true,
+	"1m": true, "3m": true, "5m": true, "15m": true, "1h": true, "4h": true,
 }
 
 var scripSegments = map[string]bool{

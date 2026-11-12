@@ -30,6 +30,7 @@ var candleTimeframes = []struct {
 	{"5m", 300},
 	{"15m", 900},
 	{"1h", 3600},
+	{"4h", 14400},
 }
 
 const istOffsetSeconds = 5*60*60 + 30*60
