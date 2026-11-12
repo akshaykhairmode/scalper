@@ -1106,7 +1106,11 @@ function handleBrokerOrderSound(raw) {
 
 function buildTimeframes() {
   const group = $("tf-group");
-  const list = S.boot.timeframes?.length ? S.boot.timeframes : ["1m", "3m", "5m", "15m", "1h", "4h"];
+  const configured = S.boot.timeframes?.length ? S.boot.timeframes : ["1m", "3m", "5m", "15m", "1h"];
+  const list = [...configured];
+  // 4h is a built-in timeframe. Keep it visible even when an older deployed
+  // config.yaml only lists the original intraday timeframes.
+  if (!list.includes("4h")) list.push("4h");
   group.innerHTML = list.map((tf) => `<button type="button" data-tf="${esc(tf)}" class="${tf === S.timeframe ? "active" : ""}">${esc(tf)}</button>`).join("");
 }
 
@@ -1129,7 +1133,7 @@ function updateChartSettingsButtonState() {
     const chart = chartForPane(pane);
     if (!chart) continue;
     const active = Boolean(
-      chart.showEMA || chart.showSR || chart.showAutoTrendlines || chart.showPatterns ||
+      chart.showEMA || chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
       chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
       chart.showMomentum || chart.showTheta || (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
     );
@@ -1150,6 +1154,7 @@ function syncChartSettingsMenu(pane) {
   set("cs-sr", chart.showSR);
   set("cs-auto-tl", chart.showAutoTrendlines);
   set("cs-patterns", chart.showPatterns);
+  set("cs-fib", chart.showFib);
   set("cs-ema", chart.showEMA);
   set("cs-rsi", chart.showRSI);
   set("cs-divergence", chart.showDivergence);
@@ -1195,6 +1200,7 @@ function buildCharts() {
   const savedSR = localStorage.getItem("scalper-show-sr") === "true";
   const savedAutoTL = localStorage.getItem("scalper-show-auto-tl") === "true";
   const savedPatterns = localStorage.getItem("scalper-show-patterns") === "true";
+  const savedFib = localStorage.getItem("scalper-show-fib") === "true";
   // TX visibility is independent per chart. Fall back to the legacy global key
   // so existing users keep the visibility they had before the split.
   const legacyTrades = localStorage.getItem("scalper-show-trades") !== "false";
@@ -1217,9 +1223,9 @@ function buildCharts() {
   const savedTheta = localStorage.getItem("scalper-show-theta") === "true";
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -2717,6 +2723,18 @@ function toggleChartPatterns(forceState?) {
   } catch (_) {}
   updateChartSettingsButtonState();
   toast(nextState ? "Patterns enabled (Micro, Geometric, Harmonics & Setups)" : "Patterns hidden", "ok", 1500);
+  return nextState;
+}
+
+function toggleChartFib(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showFib;
+  for (const chart of allCharts()) chart.toggleFib(nextState);
+  try {
+    localStorage.setItem("scalper-show-fib", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? "Fibonacci retracement enabled" : "Fibonacci retracement hidden", "ok", 1500);
   return nextState;
 }
 
@@ -8362,6 +8380,7 @@ function bindEvents() {
     "cs-sr": (checked) => toggleChartSR(checked),
     "cs-auto-tl": (checked) => toggleChartAutoTrendlines(checked),
     "cs-patterns": (checked) => toggleChartPatterns(checked),
+    "cs-fib": (checked) => toggleChartFib(checked),
     "cs-ema": (checked) => toggleChartEMA(S.chartSettingsPane, checked),
     "cs-rsi": (checked) => toggleChartRSI(checked),
     "cs-divergence": (checked) => toggleChartDivergence(checked),

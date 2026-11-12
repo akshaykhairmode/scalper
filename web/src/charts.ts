@@ -1,5 +1,6 @@
 import * as Patterns from "./chart/patterns";
 import * as Indicators from "./chart/indicators";
+import { calculateFibLevels } from "./chart/fibonacci";
 
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
@@ -1292,6 +1293,75 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
+    name: "fibRetracement",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      if (!coordinates || !coordinates.length) return [];
+      const data = overlay.extendData || {};
+      const levels = Array.isArray(data.levels) ? data.levels : [];
+      if (!levels.length) return [];
+      const width = bounding?.width || 800;
+      const figures = [];
+      const rows = [];
+      for (let i = 0; i < levels.length; i++) {
+        const level = levels[i];
+        const coord = coordinates[i];
+        if (!coord || !Number.isFinite(coord.y) || !Number.isFinite(level?.price)) continue;
+        rows.push({ level, y: coord.y, labelY: coord.y });
+      }
+      const ordered = [...rows].sort((a, b) => a.y - b.y);
+      let lastLabelY = -Infinity;
+      for (const row of ordered) {
+        row.labelY = Math.max(row.y, lastLabelY + 11);
+        lastLabelY = row.labelY;
+      }
+
+      for (const row of rows) {
+        const { level, y, labelY } = row;
+        const color = level.color || "#2dd4bf";
+        figures.push({
+          type: "line",
+          attrs: { coordinates: [{ x: 0, y }, { x: width, y }] },
+          styles: {
+            style: level.golden ? "solid" : "dashed",
+            dashedValue: [4, 3],
+            size: level.golden ? 1.4 : 1,
+            color,
+          },
+          ignoreEvent: true,
+        });
+        figures.push({
+          type: "text",
+          attrs: {
+            x: width - 8,
+            y: labelY,
+            text: `${level.label}  ${Math.round(level.price).toLocaleString("en-IN")}`,
+            align: "right",
+            baseline: "middle",
+          },
+          styles: {
+            color: "#041014",
+            backgroundColor: color,
+            size: 9,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 5,
+            paddingRight: 5,
+            paddingTop: 1.5,
+            paddingBottom: 1.5,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        });
+      }
+      return figures;
+    },
+  });
+
+  kc.registerOverlay({
     name: "targetPreviewLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -2544,7 +2614,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2552,6 +2622,7 @@ export class CandleChart {
     this.showTrades = showTrades;
     this.showAutoTrendlines = showAutoTrendlines;
     this.showPatterns = showPatterns;
+    this.showFib = Boolean(showFib);
     this.showEMA = Boolean(showEMA ?? showMA);
     this.showRSI = Boolean(showRSI);
     this.showDivergence = Boolean(showDivergence);
@@ -2575,6 +2646,7 @@ export class CandleChart {
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
     this.patternOverlayIds = [];
+    this.fibOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
     this.orderPreviewOverlayId = null;
@@ -3231,6 +3303,44 @@ export class CandleChart {
     }
   }
 
+  toggleFib(forceState) {
+    this.showFib = typeof forceState === "boolean" ? forceState : !this.showFib;
+    this.refreshFib();
+    return this.showFib;
+  }
+
+  clearFib() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "fib_retracement" });
+    } catch (_) {}
+    for (const id of this.fibOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.fibOverlayIds = [];
+  }
+
+  refreshFib() {
+    this.clearFib();
+    if (!this.showFib || !this.chart || !this.data.length) return;
+    const fib = calculateFibLevels(this.data);
+    if (!fib || !fib.levels.length) return;
+    try {
+      const id = this.chart.createOverlay({
+        name: "fibRetracement",
+        groupId: "fib_retracement",
+        points: fib.levels.map((level) => ({ value: level.price })),
+        lock: true,
+        extendData: fib,
+      });
+      if (id) this.fibOverlayIds.push(id);
+    } catch (e) {
+      console.warn("createOverlay fibRetracement:", e);
+    }
+  }
+
   toggleAutoTrendlines(forceState) {
     this.showAutoTrendlines = typeof forceState === "boolean" ? forceState : !this.showAutoTrendlines;
     this.refreshAutoTrendlines();
@@ -3862,6 +3972,7 @@ export class CandleChart {
     }
 
     this.refreshSRLines();
+    this.refreshFib();
     this.refreshMaxPain();
     this.refreshDayDividers();
     this.refreshAutoTrendlines();
@@ -4341,6 +4452,9 @@ export class CandleChart {
     } else {
       this.data.push(candle);
       this.refreshDayDividers();
+      if (this.showFib) {
+        this.refreshFib();
+      }
       if (this.showAutoTrendlines) {
         this.refreshAutoTrendlines();
       }
@@ -4386,6 +4500,7 @@ export class CandleChart {
       this.chart.setStyles(buildStyles(this.colors));
     }
     this.refreshSRLines();
+    this.refreshFib();
     this.refreshMaxPain();
     this.refreshAutoTrendlines();
     this.refreshPatterns();

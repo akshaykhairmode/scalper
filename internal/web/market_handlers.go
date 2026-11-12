@@ -385,6 +385,11 @@ type candleFetchResult struct {
 }
 
 func (s *Server) isTimeframeAllowed(timeframe string) bool {
+	// 4h is synthesized from Kotak's 60-minute candles, so it remains available
+	// even when an older deployed config.yaml predates the built-in timeframe.
+	if timeframe == "4h" {
+		return true
+	}
 	for _, configured := range s.configSnapshot().Charts.Timeframes {
 		if timeframe == configured {
 			return true

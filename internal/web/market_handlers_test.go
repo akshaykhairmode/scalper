@@ -212,6 +212,18 @@ func TestHandleChainStatsUsesFullLadderAndCaches(t *testing.T) {
 	}
 }
 
+func TestFourHourTimeframeIsAlwaysAllowed(t *testing.T) {
+	cfg := testConfig()
+	cfg.Charts.Timeframes = []string{"1m", "5m"}
+	s := &Server{cfg: cfg}
+	if !s.isTimeframeAllowed("4h") {
+		t.Fatal("4h should be allowed even when the config predates it")
+	}
+	if s.isTimeframeAllowed("2h") {
+		t.Fatal("unknown timeframe should still be rejected")
+	}
+}
+
 func TestHandleChainCachingAndFallback(t *testing.T) {
 	api := &flappyMarketAPI{}
 	s := newTestServer(t, serverOpts{marketAPI: api})
