@@ -1191,7 +1191,7 @@ function buildCharts() {
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
   S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: true, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAUnderlying, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
   S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
