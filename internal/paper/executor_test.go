@@ -202,7 +202,7 @@ func TestLimitBuyRestsAndFillsOnTick(t *testing.T) {
 
 	ex.OnTick(ctx, "key", 99.9, 99.8, 100.0)
 	got, _ = store.GetPaperOrder(ctx, id)
-	if got.Status != StatusComplete || got.FilledPrice != 100 {
+	if got.Status != StatusComplete || got.FilledPrice != 99.9 {
 		t.Fatalf("unexpected fill: %+v", got)
 	}
 }
@@ -235,8 +235,40 @@ func TestStopMarketSellTriggers(t *testing.T) {
 	if got.Status != StatusComplete {
 		t.Fatalf("status = %s after trigger", got.Status)
 	}
-	if got.FilledPrice != 95-0.05 {
-		t.Fatalf("filled price = %v", got.FilledPrice)
+	if got.FilledPrice < 94.84 || got.FilledPrice > 94.86 {
+		t.Fatalf("filled price = %v, want ~94.85 (gap fill)", got.FilledPrice)
+	}
+}
+
+func TestStopLimitDoesNotFillThroughGap(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	ex := newTestExecutor(t, store)
+	ex.OnTick(ctx, "key", 100, 99.9, 100.1)
+
+	order := buyOrder("key")
+	order.TransactionType = "SELL"
+	order.OrderType = "SL"
+	order.TriggerPrice = 95
+	order.Price = 94
+	id, err := ex.Place(ctx, order)
+	if err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+
+	// Gap below the limit: the trigger fires but a real stop-limit would not
+	// fill yet.
+	ex.OnTick(ctx, "key", 93.9, 93.8, 94.0)
+	got, _ := store.GetPaperOrder(ctx, id)
+	if got.Status != StatusTriggerPending {
+		t.Fatalf("status = %s, want TRIGGER_PENDING through the gap", got.Status)
+	}
+
+	// Price returns to the limit: now it fills.
+	ex.OnTick(ctx, "key", 94.1, 94.0, 94.2)
+	got, _ = store.GetPaperOrder(ctx, id)
+	if got.Status != StatusComplete || got.FilledPrice != 94 {
+		t.Fatalf("unexpected fill after recovery: %+v", got)
 	}
 }
 
@@ -423,5 +455,65 @@ func TestRestoreOpenOrders(t *testing.T) {
 	got, _ := store.GetPaperOrder(ctx, "paper_1")
 	if got.Status != StatusComplete {
 		t.Fatalf("restored order did not fill: %+v", got)
+	}
+}
+
+func TestLimitsIncludeUnrealizedPnL(t *testing.T) {
+	ctx := context.Background()
+	ex := newTestExecutor(t, newFakeStore())
+	ex.OnTick(ctx, "key", 100, 100, 100)
+	if _, err := ex.Place(ctx, buyOrder("key")); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	ex.OnTick(ctx, "key", 110, 110, 110)
+	limits := ex.Limits()
+	if limits.Total <= 100000 {
+		t.Fatalf("total = %v, want starting balance plus unrealized PnL", limits.Total)
+	}
+	if limits.Total < 100700 || limits.Total > 100800 {
+		t.Fatalf("total = %v, want ~100746", limits.Total)
+	}
+}
+
+func TestIOCLimitCancelsWhenNotMarketable(t *testing.T) {
+	ctx := context.Background()
+	ex := newTestExecutor(t, newFakeStore())
+	ex.OnTick(ctx, "key", 100, 100, 100)
+	order := buyOrder("key")
+	order.OrderType = "L"
+	order.Price = 99
+	order.Validity = "IOC"
+	id, err := ex.Place(ctx, order)
+	if err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	got, ok := ex.Order(id)
+	if !ok || got.Status != StatusCancelled {
+		t.Fatalf("IOC order should cancel, got %+v", got)
+	}
+	if positions := ex.Positions(); len(positions) != 0 {
+		t.Fatalf("IOC cancel created a position: %+v", positions)
+	}
+}
+
+func TestIOCLimitFillsWhenMarketable(t *testing.T) {
+	ctx := context.Background()
+	ex := newTestExecutor(t, newFakeStore())
+	ex.OnTick(ctx, "key", 100, 100, 100)
+	order := buyOrder("key")
+	order.OrderType = "L"
+	order.Price = 101
+	order.Validity = "IOC"
+	id, err := ex.Place(ctx, order)
+	if err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	got, ok := ex.Order(id)
+	if !ok || got.Status != StatusComplete {
+		t.Fatalf("IOC order should fill, got %+v", got)
+	}
+	positions := ex.Positions()
+	if len(positions) != 1 || positions[0].NetQuantity != 75 {
+		t.Fatalf("IOC fill position = %+v", positions)
 	}
 }

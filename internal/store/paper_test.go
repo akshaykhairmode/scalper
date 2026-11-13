@@ -244,6 +244,44 @@ func TestActiveBracketsIncludeExitFailed(t *testing.T) {
 	t.Fatalf("EXIT_FAILED bracket missing from active set: %+v", active)
 }
 
+func TestScopedUpdateCannotCrossModes(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	live := s.BracketsFor("live")
+	scopedPaper := s.BracketsFor("paper")
+
+	b := bracket.Bracket{
+		ID:              "shared-bracket-1",
+		ExchangeSegment: "nse_fo",
+		TradingSymbol:   "NIFTY26NOV25000CE",
+		InstrumentKey:   "nse_fo|NIFTY|2026-11-26|25000|CE",
+		TransactionType: "BUY",
+		Quantity:        75,
+		Product:         "MIS",
+		EntryPrice:      100,
+	}
+	if err := live.CreateBracket(ctx, b); err != nil {
+		t.Fatalf("create live: %v", err)
+	}
+
+	paperB := b
+	paperB.Status = bracket.StatusCancelled
+	if err := scopedPaper.UpdateBracket(ctx, paperB); err == nil {
+		t.Fatal("cross-mode update should fail")
+	}
+
+	got, err := live.GetBracket(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("get live: %v", err)
+	}
+	if got.Mode != "live" {
+		t.Fatalf("mode = %q, want live", got.Mode)
+	}
+	if got.Status == bracket.StatusCancelled {
+		t.Fatal("live row was modified by the paper scope")
+	}
+}
+
 func TestScopedBracketsIsolateModes(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

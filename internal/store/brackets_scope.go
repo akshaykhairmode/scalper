@@ -32,10 +32,11 @@ func (b *ScopedBrackets) CreateBracket(ctx context.Context, br bracket.Bracket) 
 	return b.store.CreateBracket(ctx, br)
 }
 
-// UpdateBracket updates a bracket in this scope.
+// UpdateBracket updates a bracket in this scope. The mode predicate prevents a
+// colliding ID from rewriting the other account's row.
 func (b *ScopedBrackets) UpdateBracket(ctx context.Context, br bracket.Bracket) error {
 	br.Mode = b.mode
-	return b.store.UpdateBracket(ctx, br)
+	return b.store.UpdateBracketInMode(ctx, br, b.mode)
 }
 
 // GetBracket fetches a bracket that belongs to this scope.

@@ -465,13 +465,13 @@ func New(opts Options) (*Server, error) {
 	if opts.BracketEngine != nil {
 		s.bracketEngine = opts.BracketEngine
 	} else {
+		// Only a caller-supplied, mode-scoped store is safe. Falling back to the
+		// raw DB would load paper brackets into the live engine.
 		var bStore bracket.Store
 		if opts.BracketStore != nil {
 			bStore = opts.BracketStore
-		} else if as, ok := opts.DB.(bracket.ActiveStore); ok {
-			bStore = as
-		} else if bs, ok := opts.DB.(bracket.Store); ok {
-			bStore = bs
+		} else {
+			s.log.Debug("bracket persistence disabled: no scoped bracket store configured")
 		}
 		live := &broker.Live{
 			Client:  s.kotak,
@@ -506,6 +506,13 @@ func New(opts Options) (*Server, error) {
 		pEngine.SetMode("paper")
 		exec.SetOnFill(func(f bracket.Fill) {
 			pEngine.OnFill(s.feedCtx, f)
+			// A manual paper order has no bracket tag. When it reduces a
+			// position, resize the bracket protecting the remainder.
+			if strings.TrimSpace(f.Tag) == "" {
+				if o, ok := exec.Order(f.OrderID); ok {
+					s.syncPaperBracketsAfterExit(s.feedCtx, o.InstrumentKey, o.Product, o.ExchangeSegment, o.TradingSymbol)
+				}
+			}
 		})
 		s.paperExec = exec
 		s.paperEngine = pEngine
@@ -532,6 +539,12 @@ func New(opts Options) (*Server, error) {
 	if s.bracketEngine != nil {
 		s.bracketEngine.SetAsync(true)
 		s.bracketEngine.SetOnChange(func(b bracket.Bracket) {
+			// Live bracket data must not reach clients that are not signed in
+			// to Kotak. Paper updates are broadcast separately and stay
+			// available without a broker session.
+			if s.a != nil && s.a.CurrentSession() == nil {
+				return
+			}
 			s.broadcast(map[string]any{
 				"type": "bracket_update",
 				"data": b,

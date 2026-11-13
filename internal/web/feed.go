@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -32,6 +33,43 @@ var feedUpgrader = websocket.Upgrader{
 type feedClient struct {
 	conn *websocket.Conn
 	send chan []byte
+
+	subMu       sync.Mutex
+	subWindow   time.Time
+	subCount    int
+	unsubWindow time.Time
+	unsubCount  int
+}
+
+const (
+	maxFeedKeysPerCommand    = 2000
+	maxFeedCommandsPerMinute = 60
+)
+
+// allowSubscribe limits subscription churn per connection so a client cannot
+// hammer the shared market feed.
+func (c *feedClient) allowSubscribe(now time.Time) bool {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	if now.Sub(c.subWindow) > time.Minute {
+		c.subWindow = now
+		c.subCount = 0
+	}
+	c.subCount++
+	return c.subCount <= maxFeedCommandsPerMinute
+}
+
+// allowUnsubscribe has its own bucket so cleanup is never blocked by a
+// subscribe burst.
+func (c *feedClient) allowUnsubscribe(now time.Time) bool {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	if now.Sub(c.unsubWindow) > time.Minute {
+		c.unsubWindow = now
+		c.unsubCount = 0
+	}
+	c.unsubCount++
+	return c.unsubCount <= maxFeedCommandsPerMinute
 }
 
 type feedCommand struct {
@@ -149,6 +187,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		switch command.Type {
 		case "subscribe":
+			if len(command.Keys) > maxFeedKeysPerCommand {
+				s.log.Warn("websocket subscribe key limit exceeded", "event", "websocket_subscribe_limited", "keys", len(command.Keys))
+				continue
+			}
+			if !client.allowSubscribe(time.Now()) {
+				s.log.Warn("websocket subscribe rate limited", "event", "websocket_subscribe_limited")
+				continue
+			}
 			if s.hsm == nil {
 				continue
 			}
@@ -157,6 +203,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			s.scheduleWatchlistSave()
 		case "unsubscribe":
+			if len(command.Keys) > maxFeedKeysPerCommand {
+				s.log.Warn("websocket unsubscribe key limit exceeded", "event", "websocket_subscribe_limited", "keys", len(command.Keys))
+				continue
+			}
+			if !client.allowUnsubscribe(time.Now()) {
+				s.log.Warn("websocket unsubscribe rate limited", "event", "websocket_subscribe_limited")
+				continue
+			}
 			if s.hsm == nil {
 				continue
 			}
@@ -200,7 +254,9 @@ func (s *Server) forwardOrderFeedEvents() {
 			if s.bracketEngine != nil {
 				s.bracketEngine.OnOrderEvent(s.feedCtx, event)
 			}
-			s.broadcast(map[string]any{"type": "broker_" + event.Type, "data": event.Data})
+			if s.a == nil || s.a.CurrentSession() != nil {
+				s.broadcast(map[string]any{"type": "broker_" + event.Type, "data": event.Data})
+			}
 		}
 	}
 }

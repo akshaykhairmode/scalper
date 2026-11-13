@@ -302,18 +302,17 @@ func writePaperFillChildren(ctx context.Context, tx *sql.Tx, p paper.Position, a
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO paper_positions (
-			instrument_key, exchange_segment, trading_symbol, product,
+			instrument_key, product, exchange_segment, trading_symbol,
 			net_quantity, average_price, realized_pnl, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(instrument_key) DO UPDATE SET
+		ON CONFLICT(instrument_key, product) DO UPDATE SET
 			exchange_segment = excluded.exchange_segment,
 			trading_symbol = excluded.trading_symbol,
-			product = excluded.product,
 			net_quantity = excluded.net_quantity,
 			average_price = excluded.average_price,
 			realized_pnl = excluded.realized_pnl,
 			updated_at = excluded.updated_at`,
-		p.InstrumentKey, p.ExchangeSegment, p.TradingSymbol, p.Product,
+		p.InstrumentKey, p.Product, p.ExchangeSegment, p.TradingSymbol,
 		p.NetQuantity, p.AveragePrice, p.RealizedPnL, posUpdated.Unix()); err != nil {
 		return fmt.Errorf("store: fill paper position %s: %w", p.InstrumentKey, err)
 	}
@@ -412,18 +411,17 @@ func (s *Store) UpsertPaperPosition(ctx context.Context, p paper.Position) error
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO paper_positions (
-			instrument_key, exchange_segment, trading_symbol, product,
+			instrument_key, product, exchange_segment, trading_symbol,
 			net_quantity, average_price, realized_pnl, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(instrument_key) DO UPDATE SET
+		ON CONFLICT(instrument_key, product) DO UPDATE SET
 			exchange_segment = excluded.exchange_segment,
 			trading_symbol = excluded.trading_symbol,
-			product = excluded.product,
 			net_quantity = excluded.net_quantity,
 			average_price = excluded.average_price,
 			realized_pnl = excluded.realized_pnl,
 			updated_at = excluded.updated_at`,
-		p.InstrumentKey, p.ExchangeSegment, p.TradingSymbol, p.Product,
+		p.InstrumentKey, p.Product, p.ExchangeSegment, p.TradingSymbol,
 		p.NetQuantity, p.AveragePrice, p.RealizedPnL, updated.Unix())
 	if err != nil {
 		return fmt.Errorf("store: upsert paper position %s: %w", p.InstrumentKey, err)

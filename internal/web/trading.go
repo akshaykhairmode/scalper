@@ -3,12 +3,14 @@ package web
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/paper"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
 const (
@@ -110,18 +112,53 @@ func (s *Server) ensurePaperSubscribed(instrumentKey string) {
 // margin. The option strike is a stable proxy for the underlying spot and does
 // not require a live quote.
 func (s *Server) paperShortNotional(instrumentKey string) (float64, bool) {
-	if s.market == nil || strings.TrimSpace(instrumentKey) == "" {
+	instrumentKey = strings.TrimSpace(instrumentKey)
+	if instrumentKey == "" {
 		return 0, false
 	}
-	option, ok := s.market.Option(instrumentKey)
-	if !ok {
+	if s.market != nil {
+		if option, ok := s.market.Option(instrumentKey); ok {
+			// Prefer the live underlying spot over the strike: the strike is a
+			// good proxy near ATM but drifts for deep ITM/OTM options.
+			if ltp, ok := s.cachedSpotLTP(option.Underlying); ok {
+				return ltp, true
+			}
+			strike := float64(option.StrikePaise) / 100
+			if strike > 0 {
+				return strike, true
+			}
+		}
+	}
+	// Fall back to the structured key so margin still works while the scrip
+	// master is loading.
+	parts := strings.Split(instrumentKey, "|")
+	if len(parts) >= 5 {
+		typ := strings.ToUpper(strings.TrimSpace(parts[4]))
+		if typ == "CE" || typ == "PE" {
+			if strike, err := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64); err == nil && strike > 0 {
+				return strike, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// cachedSpotLTP returns the latest cached spot price for an underlying.
+func (s *Server) cachedSpotLTP(underlying string) (float64, bool) {
+	underlying = strings.TrimSpace(underlying)
+	if underlying == "" {
 		return 0, false
 	}
-	strike := float64(option.StrikePaise) / 100
-	if strike <= 0 {
-		return 0, false
+	candidates := []string{
+		scrip.SpotKey("nse_cm", underlying),
+		"nse_cm|" + underlying,
 	}
-	return strike, true
+	for _, key := range candidates {
+		if ltp, ok := s.cachedLTP(key, 10*time.Second); ok && ltp > 0 {
+			return ltp, true
+		}
+	}
+	return 0, false
 }
 
 // paperQuoteSource resolves a price for a paper order when no tick has been
@@ -165,6 +202,11 @@ func (s *Server) reconcilePaperBrackets(ctx context.Context) {
 		switch b.Status {
 		case bracket.StatusPendingEntry:
 			if b.EntryOrderID == "" {
+				// A crash between persisting the bracket and placing its entry
+				// order leaves an orphan. Cancel it rather than let it hang.
+				if err := s.paperEngine.Disarm(ctx, b.ID); err != nil {
+					s.log.Warn("failed to cancel orphan paper bracket", "bracket_id", b.ID, "error", err)
+				}
 				continue
 			}
 			o, ok := s.paperExec.Order(b.EntryOrderID)

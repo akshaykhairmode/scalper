@@ -267,21 +267,29 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 		}
 	}
 
-	// Pre-register bracket in memory so fast fill events arriving immediately
-	// after placement will match.
+	// Reject duplicate IDs before placing anything. A retried create must not
+	// submit a second order or overwrite an existing bracket row.
 	e.mu.Lock()
-	bracketCopy := b
-	e.brackets[b.ID] = &bracketCopy
+	_, exists := e.brackets[b.ID]
 	e.mu.Unlock()
+	if exists {
+		return nil, fmt.Errorf("%w: %s", ErrDuplicateBracket, b.ID)
+	}
 
-	// Persist the pending row before placing the entry order. Paper fills are
-	// delivered as soon as Place returns, and the fill handler must be able to
-	// update an existing row.
+	// Persist before placing the entry order. A failed insert must abort the
+	// create; otherwise the entry order would be live with no bracket row.
+	bracketCopy := b
 	if e.store != nil {
 		if err := e.store.CreateBracket(ctx, bracketCopy); err != nil {
-			e.log.Error("failed to persist bracket in store", "id", b.ID, "error", err)
+			return nil, fmt.Errorf("bracket: persist %s: %w", b.ID, err)
 		}
 	}
+
+	// Pre-register in memory so a fast fill arriving immediately after Place
+	// can match.
+	e.mu.Lock()
+	e.brackets[b.ID] = &bracketCopy
+	e.mu.Unlock()
 
 	// If entry order has not yet been placed and bracket is in PENDING_ENTRY, submit it
 	if b.Status == StatusPendingEntry && b.EntryOrderID == "" && e.exec != nil {
@@ -561,10 +569,6 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 
 	orderToCancel := b.EntryOrderID
 	exchangeStopOrderID := b.ExchangeStopOrderID
-	e.unindexActiveInPosition(b)
-	b.Status = StatusCancelled
-	b.UpdatedAt = time.Now()
-	bracketCopy := *b
 	e.mu.Unlock()
 
 	if exchangeStopOrderID != "" {
@@ -578,20 +582,190 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 		}
 	}
 
-	if orderToCancel != "" && e.exec != nil {
-		if err := e.exec.Cancel(ctx, orderToCancel); err != nil {
-			e.log.Warn("failed to cancel order on bracket cancel", "id", id, "order_id", orderToCancel, "error", err)
+	if orderToCancel != "" {
+		filled, price, err := e.cancelEntryOrder(ctx, orderToCancel)
+		if err != nil {
+			return fmt.Errorf("bracket: cancel entry order %s: %w", orderToCancel, err)
+		}
+		if filled {
+			e.mu.Lock()
+			curr, ok := e.brackets[id]
+			if !ok {
+				e.mu.Unlock()
+				return fmt.Errorf("bracket: entry order %s filled before it could be cancelled", orderToCancel)
+			}
+			curr.Status = StatusInPosition
+			if price > 0 {
+				curr.EntryPrice = price
+			}
+			curr.UpdatedAt = time.Now()
+			e.indexActiveInPosition(curr)
+			cp := *curr
+			e.mu.Unlock()
+			e.persistBracket(ctx, cp)
+			e.notify(cp)
+			e.ensureExchangeStop(ctx, id)
+			return fmt.Errorf("bracket: entry order %s filled before it could be cancelled", orderToCancel)
 		}
 	}
 
-	if e.store != nil {
-		if err := e.store.UpdateBracket(ctx, bracketCopy); err != nil {
-			e.log.Error("failed to update bracket on cancel in store", "id", id, "error", err)
-		}
+	e.mu.Lock()
+	curr, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil
 	}
+	if curr.Status == StatusCancelled {
+		e.mu.Unlock()
+		return nil
+	}
+	if curr.Status != StatusPendingEntry {
+		status := curr.Status
+		e.mu.Unlock()
+		return fmt.Errorf("bracket %s cannot be cancelled in status %s", id, status)
+	}
+	e.unindexActiveInPosition(curr)
+	curr.Status = StatusCancelled
+	curr.UpdatedAt = time.Now()
+	bracketCopy := *curr
+	e.mu.Unlock()
 
+	e.persistBracket(ctx, bracketCopy)
 	e.notify(bracketCopy)
 	return nil
+}
+
+// cancelEntryOrder asks the executor to cancel an entry order and reports
+// whether it filled instead. It never mutates bracket state. Confirmation is
+// best-effort: an executor that cannot look orders up is trusted to have
+// accepted the cancel.
+func (e *Engine) cancelEntryOrder(ctx context.Context, orderID string) (bool, float64, error) {
+	if e.exec == nil || strings.TrimSpace(orderID) == "" {
+		return false, 0, nil
+	}
+	if err := e.exec.Cancel(ctx, orderID); err != nil {
+		return false, 0, err
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return false, 0, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		foundID, status, price, err := e.exec.Lookup(ctx, orderID, "")
+		if err != nil {
+			if errors.Is(err, ErrExecutorUnavailable) || errors.Is(err, ErrOrderNotFound) {
+				return false, 0, nil
+			}
+			return false, 0, err
+		}
+		if strings.TrimSpace(foundID) == "" {
+			return false, 0, nil
+		}
+		if isFilledStatus(status) {
+			return true, price, nil
+		}
+		if isCancelledStatus(status) {
+			return false, 0, nil
+		}
+		if strings.Contains(strings.ToUpper(status), "PARTIAL") {
+			return false, 0, fmt.Errorf("order %s is partially filled", orderID)
+		}
+	}
+	return false, 0, fmt.Errorf("order %s cancel not confirmed", orderID)
+}
+
+// exitOrderState reports whether an existing exit order already filled or is
+// still working. done is true only when the order is terminal without a fill.
+func (e *Engine) exitOrderState(ctx context.Context, orderID string) (filled bool, price float64, done bool) {
+	if e.exec == nil || strings.TrimSpace(orderID) == "" {
+		return false, 0, true
+	}
+	foundID, status, price, err := e.exec.Lookup(ctx, orderID, "")
+	if err != nil {
+		if errors.Is(err, ErrExecutorUnavailable) || errors.Is(err, ErrOrderNotFound) {
+			// The order cannot be found; treat it as terminal.
+			return false, 0, true
+		}
+		// Unknown state: never place a second exit.
+		return false, 0, false
+	}
+	if strings.TrimSpace(foundID) == "" {
+		return false, 0, true
+	}
+	if isFilledStatus(status) {
+		return true, price, true
+	}
+	if isCancelledStatus(status) {
+		return false, 0, true
+	}
+	return false, 0, false
+}
+
+// exitOrderByTag finds an existing exit order for a bracket by its deterministic
+// client tag. It covers a placement whose response was lost. A lookup failure
+// other than "not found" is returned as an error so callers never place a
+// second exit on unknown state.
+func (e *Engine) exitOrderByTag(ctx context.Context, bracketID string) (orderID, status string, price float64, found bool, err error) {
+	if e.exec == nil {
+		return "", "", 0, false, nil
+	}
+	foundID, status, price, err := e.exec.Lookup(ctx, "", "exit_"+bracketID)
+	if err != nil {
+		if errors.Is(err, ErrExecutorUnavailable) || errors.Is(err, ErrOrderNotFound) {
+			return "", "", 0, false, nil
+		}
+		return "", "", 0, false, err
+	}
+	if strings.TrimSpace(foundID) == "" {
+		return "", "", 0, false, nil
+	}
+	return foundID, status, price, true, nil
+}
+
+// adoptExitFill records an exit that an existing order already completed.
+func (e *Engine) adoptExitFill(ctx context.Context, id string, price float64) {
+	e.mu.Lock()
+	b, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return
+	}
+	if b.Status == StatusCancelled {
+		e.mu.Unlock()
+		return
+	}
+	exchangeStopOrderID := b.ExchangeStopOrderID
+	wasWorking := b.ExchangeStopIsWorking()
+	e.unindexActiveInPosition(b)
+	b.Status = StatusExitedManual
+	if price > 0 {
+		b.ExitPrice = price
+		if b.TransactionType == "BUY" {
+			b.PnL = (b.ExitPrice - b.EntryPrice) * float64(b.Quantity)
+		} else {
+			b.PnL = (b.EntryPrice - b.ExitPrice) * float64(b.Quantity)
+		}
+	}
+	b.UpdatedAt = time.Now()
+	cp := *b
+	e.mu.Unlock()
+
+	if wasWorking && exchangeStopOrderID != "" {
+		if filled, p, err := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID); filled {
+			e.markExchangeStopFill(ctx, id, p)
+			return
+		} else if err != nil {
+			e.log.Error("CRITICAL: failed to cancel exchange backstop after external exit",
+				"id", id, "order_id", exchangeStopOrderID, "error", err)
+		} else {
+			e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
+		}
+	}
+	e.persistBracket(ctx, cp)
+	e.notify(cp)
 }
 
 // Disarm marks an active or pending bracket as externally squared off/cancelled
@@ -603,13 +777,58 @@ func (e *Engine) Disarm(ctx context.Context, id string) error {
 		e.mu.Unlock()
 		return errors.New("bracket not found")
 	}
+	if b.Status == StatusPendingEntry {
+		// A pending bracket still has a working entry order. Cancel it before
+		// marking the bracket done, otherwise the order can fill unmanaged.
+		entryOrderID := b.EntryOrderID
+		e.mu.Unlock()
+
+		filled, price, err := e.cancelEntryOrder(ctx, entryOrderID)
+		if err != nil {
+			return fmt.Errorf("bracket: cancel entry order %s: %w", entryOrderID, err)
+		}
+
+		e.mu.Lock()
+		b, ok = e.brackets[id]
+		if !ok {
+			e.mu.Unlock()
+			return nil
+		}
+		if filled {
+			b.Status = StatusInPosition
+			if price > 0 {
+				b.EntryPrice = price
+			}
+			b.UpdatedAt = time.Now()
+			e.indexActiveInPosition(b)
+			cp := *b
+			e.mu.Unlock()
+			e.persistBracket(ctx, cp)
+			e.notify(cp)
+			e.ensureExchangeStop(ctx, id)
+			return fmt.Errorf("bracket: entry order %s filled before disarm", entryOrderID)
+		}
+		if b.Status != StatusPendingEntry {
+			status := b.Status
+			e.mu.Unlock()
+			if status == StatusCancelled {
+				return nil
+			}
+			return fmt.Errorf("bracket %s cannot be disarmed in status %s", id, status)
+		}
+		e.unindexActiveInPosition(b)
+		b.Status = StatusCancelled
+		b.UpdatedAt = time.Now()
+		cp := *b
+		e.mu.Unlock()
+		e.persistBracket(ctx, cp)
+		e.notify(cp)
+		return nil
+	}
+
 	exchangeStopOrderID := b.ExchangeStopOrderID
 	e.unindexActiveInPosition(b)
-	if b.Status == StatusPendingEntry {
-		b.Status = StatusCancelled
-	} else {
-		b.Status = StatusExitedManual
-	}
+	b.Status = StatusExitedManual
 	b.UpdatedAt = time.Now()
 	bracketCopy := *b
 	e.mu.Unlock()
@@ -625,15 +844,124 @@ func (e *Engine) Disarm(ctx context.Context, id string) error {
 		}
 	}
 
-	if e.store != nil {
-		_ = e.store.UpdateBracket(ctx, bracketCopy)
-	}
+	e.persistBracket(ctx, bracketCopy)
 	e.notify(bracketCopy)
 	return nil
 }
 
+// UpdateQuantity resizes an in-position bracket after a partial manual exit so
+// its SL/TP does not overshoot the remaining position. A working exchange
+// backstop is replaced for the new quantity.
+func (e *Engine) UpdateQuantity(ctx context.Context, id string, qty int64) error {
+	if qty <= 0 {
+		return errors.New("bracket: quantity must be positive")
+	}
+	e.mu.Lock()
+	b, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return errors.New("bracket not found")
+	}
+	if b.Status != StatusInPosition && b.Status != StatusExitFailed {
+		status := b.Status
+		e.mu.Unlock()
+		return fmt.Errorf("bracket %s cannot be resized in status %s", id, status)
+	}
+	if b.Quantity == qty {
+		e.mu.Unlock()
+		return nil
+	}
+	oldQty := b.Quantity
+	b.Quantity = qty
+	b.UpdatedAt = time.Now()
+	hadBackstop := b.ExchangeStopOrderID != "" || b.ExchangeStopIsWorking()
+	cp := *b
+	e.mu.Unlock()
+
+	e.persistBracket(ctx, cp)
+	e.notify(cp)
+	if hadBackstop {
+		if err := e.cancelExchangeStopForBracket(ctx, id); err != nil {
+			// The old stop may still be live; keep the original size so the
+			// bracket and the broker order agree.
+			e.mu.Lock()
+			var restored Bracket
+			restoredOK := false
+			if curr, ok := e.brackets[id]; ok {
+				curr.Quantity = oldQty
+				curr.UpdatedAt = time.Now()
+				restored = *curr
+				restoredOK = true
+			}
+			e.mu.Unlock()
+			if restoredOK {
+				e.persistBracket(ctx, restored)
+				e.notify(restored)
+			}
+			return fmt.Errorf("bracket: resize blocked by backstop cancel: %w", err)
+		}
+		e.ensureExchangeStop(ctx, id)
+	}
+	return nil
+}
+
+// Rearm restores an in-position bracket that was disarmed while its position
+// stayed open, for example when a square-off close order failed.
+func (e *Engine) Rearm(ctx context.Context, id string) error {
+	e.mu.Lock()
+	b, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return errors.New("bracket not found")
+	}
+	if b.Status != StatusExitedManual {
+		status := b.Status
+		e.mu.Unlock()
+		return fmt.Errorf("bracket %s cannot be re-armed in status %s", id, status)
+	}
+	exitOrderID := b.ExitOrderID
+	e.mu.Unlock()
+
+	if exitOrderID != "" {
+		filled, price, done := e.exitOrderState(ctx, exitOrderID)
+		if filled {
+			e.adoptExitFill(ctx, id, price)
+			return nil
+		}
+		if !done {
+			return fmt.Errorf("bracket %s exit order %s is still working", id, exitOrderID)
+		}
+	}
+
+	e.mu.Lock()
+	b, ok = e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil
+	}
+	if b.Status != StatusExitedManual {
+		status := b.Status
+		e.mu.Unlock()
+		return fmt.Errorf("bracket %s cannot be re-armed in status %s", id, status)
+	}
+	b.Status = StatusInPosition
+	b.ExitPrice = 0
+	b.ExitOrderID = ""
+	b.PnL = 0
+	b.UpdatedAt = time.Now()
+	e.indexActiveInPosition(b)
+	cp := *b
+	e.mu.Unlock()
+
+	e.persistBracket(ctx, cp)
+	e.notify(cp)
+	e.ensureExchangeStop(ctx, id)
+	return nil
+}
+
 // MarkExternalExit records an exit that was executed outside the engine, such
-// as a paper square-off. It never places an order.
+// as a paper square-off. It cancels a working entry order or exchange backstop
+// first and never places a market exit.
 func (e *Engine) MarkExternalExit(ctx context.Context, id string, price float64) error {
 	e.mu.Lock()
 	b, ok := e.brackets[id]
@@ -645,50 +973,87 @@ func (e *Engine) MarkExternalExit(ctx context.Context, id string, price float64)
 		e.mu.Unlock()
 		return nil
 	}
-	e.unindexActiveInPosition(b)
 	wasPending := b.Status == StatusPendingEntry
 	entryOrderID := b.EntryOrderID
+	exchangeStopOrderID := b.ExchangeStopOrderID
+	wasWorking := b.ExchangeStopIsWorking()
+	e.mu.Unlock()
+
+	if wasPending && entryOrderID != "" {
+		filled, fillPrice, err := e.cancelEntryOrder(ctx, entryOrderID)
+		if err != nil {
+			return fmt.Errorf("bracket: cancel entry order %s: %w", entryOrderID, err)
+		}
+		if filled {
+			e.mu.Lock()
+			curr, ok := e.brackets[id]
+			if !ok {
+				e.mu.Unlock()
+				return fmt.Errorf("bracket: entry order %s filled before external exit", entryOrderID)
+			}
+			curr.Status = StatusInPosition
+			if fillPrice > 0 {
+				curr.EntryPrice = fillPrice
+			}
+			curr.UpdatedAt = time.Now()
+			e.indexActiveInPosition(curr)
+			cp := *curr
+			e.mu.Unlock()
+			e.persistBracket(ctx, cp)
+			e.notify(cp)
+			e.ensureExchangeStop(ctx, id)
+			return fmt.Errorf("bracket: entry order %s filled before external exit", entryOrderID)
+		}
+	}
+
+	if wasWorking && exchangeStopOrderID != "" {
+		if filled, fillPrice, err := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID); filled {
+			e.markExchangeStopFill(ctx, id, fillPrice)
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("bracket: cancel exchange stop before external exit: %w", err)
+		}
+	}
+
+	e.mu.Lock()
+	b, ok = e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil
+	}
+	if b.Status == StatusCancelled {
+		e.mu.Unlock()
+		return nil
+	}
+	e.unindexActiveInPosition(b)
 	if wasPending {
 		b.Status = StatusCancelled
 	} else {
 		b.Status = StatusExitedManual
-	}
-	if price > 0 && !wasPending {
-		b.ExitPrice = price
-		if b.TransactionType == "BUY" {
-			b.PnL = (b.ExitPrice - b.EntryPrice) * float64(b.Quantity)
-		} else {
-			b.PnL = (b.EntryPrice - b.ExitPrice) * float64(b.Quantity)
+		if price > 0 {
+			b.ExitPrice = price
+			if b.TransactionType == "BUY" {
+				b.PnL = (b.ExitPrice - b.EntryPrice) * float64(b.Quantity)
+			} else {
+				b.PnL = (b.EntryPrice - b.ExitPrice) * float64(b.Quantity)
+			}
 		}
 	}
-	if b.ExchangeStopStatus == ExchangeStopWorking || b.ExchangeStopStatus == ExchangeStopPlacing {
+	if wasWorking {
 		b.ExchangeStopStatus = ExchangeStopCancelled
 	}
 	b.UpdatedAt = time.Now()
 	updated := *b
 	e.mu.Unlock()
 
-	// A pending bracket must not leave a live entry order behind.
-	if wasPending && entryOrderID != "" && e.exec != nil {
-		if err := e.exec.Cancel(ctx, entryOrderID); err != nil {
-			e.log.Warn("failed to cancel entry order on external exit", "id", id, "order_id", entryOrderID, "error", err)
-		}
-	}
-
-	if e.store != nil {
-		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if err := e.store.UpdateBracket(pctx, updated); err != nil {
-			e.log.Error("failed to persist external bracket exit", "id", id, "error", err)
-		}
-	}
+	e.persistBracket(ctx, updated)
 	e.notify(updated)
 	return nil
 }
 
 // OnOrderModified keeps a pending bracket's entry price in sync when its
 // resting order is changed through the order API rather than the engine.
-func (e *Engine) OnOrderModified(ctx context.Context, orderID string, price float64) {
+func (e *Engine) OnOrderModified(ctx context.Context, orderID string, price float64, qty int64) {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" || price <= 0 {
 		return
@@ -704,6 +1069,9 @@ func (e *Engine) OnOrderModified(ctx context.Context, orderID string, price floa
 			break
 		}
 		b.EntryPrice = price
+		if qty > 0 {
+			b.Quantity = qty
+		}
 		b.UpdatedAt = time.Now()
 		cp := *b
 		updated = &cp
@@ -738,33 +1106,64 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	}
 
 	if b.Status == StatusPendingEntry {
-		// Entry not filled; cancel entry order and cancel bracket
+		// Entry not filled; cancel the resting entry order before marking the
+		// bracket done. If the cancel cannot be confirmed, keep it pending so a
+		// later fill is still managed.
 		orderToCancel := b.EntryOrderID
-		b.Status = StatusCancelled
-		b.UpdatedAt = time.Now()
-		bracketCopy := *b
 		e.mu.Unlock()
 
-		if orderToCancel != "" && e.exec != nil {
-			_ = e.exec.Cancel(ctx, orderToCancel)
+		filled, price, err := e.cancelEntryOrder(ctx, orderToCancel)
+		if err != nil {
+			return fmt.Errorf("bracket: cancel entry order %s: %w", orderToCancel, err)
 		}
-		if e.store != nil {
-			_ = e.store.UpdateBracket(ctx, bracketCopy)
+
+		e.mu.Lock()
+		curr, ok := e.brackets[id]
+		if !ok {
+			e.mu.Unlock()
+			return nil
 		}
+		if filled {
+			curr.Status = StatusInPosition
+			if price > 0 {
+				curr.EntryPrice = price
+			}
+			curr.UpdatedAt = time.Now()
+			e.indexActiveInPosition(curr)
+			cp := *curr
+			e.mu.Unlock()
+			e.persistBracket(ctx, cp)
+			e.notify(cp)
+			e.ensureExchangeStop(ctx, id)
+			return fmt.Errorf("bracket: entry order %s filled before exit; retry", orderToCancel)
+		}
+		if curr.Status != StatusPendingEntry {
+			status := curr.Status
+			e.mu.Unlock()
+			if status == StatusCancelled {
+				return nil
+			}
+			return fmt.Errorf("bracket %s cannot be exited in status %s", id, status)
+		}
+		e.unindexActiveInPosition(curr)
+		curr.Status = StatusCancelled
+		curr.UpdatedAt = time.Now()
+		bracketCopy := *curr
+		e.mu.Unlock()
+
+		e.persistBracket(ctx, bracketCopy)
 		e.notify(bracketCopy)
 		return nil
 	}
 
-	// In position or failed exit: cancel resting exit order if any, and execute market exit
-	e.unindexActiveInPosition(b)
+	// In position or failed exit. Check for an existing exit order *before*
+	// mutating state or cancelling the backstop, so an unknown lookup cannot
+	// leave the position unprotected.
 	restingOrder := b.ExitOrderID
 	exchangeStopOrderID := ""
 	if b.ExchangeStopIsWorking() || b.ExchangeStopOrderID != "" {
 		exchangeStopOrderID = b.ExchangeStopOrderID
 	}
-	b.Status = StatusExitedManual
-	b.UpdatedAt = time.Now()
-
 	exitSide := "SELL"
 	if strings.ToUpper(b.TransactionType) == "SELL" {
 		exitSide = "BUY"
@@ -780,10 +1179,50 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		Quantity:        b.Quantity,
 		Validity:        "DAY",
 	}
-	bracketCopy := *b
 	e.mu.Unlock()
 
 	ctx = kotakhttp.WithPriority(ctx)
+
+	if orderID, status, price, found, lookupErr := e.exitOrderByTag(ctx, id); lookupErr != nil {
+		return fmt.Errorf("bracket: check existing exit order: %w", lookupErr)
+	} else if found {
+		if isFilledStatus(status) {
+			e.adoptExitFill(ctx, id, price)
+			return nil
+		}
+		if !isCancelledStatus(status) {
+			return fmt.Errorf("bracket %s already has a working exit order %s", id, orderID)
+		}
+	}
+
+	if restingOrder != "" && e.exec != nil {
+		filled, price, done := e.exitOrderState(ctx, restingOrder)
+		if filled {
+			e.adoptExitFill(ctx, id, price)
+			return nil
+		}
+		if !done {
+			return fmt.Errorf("bracket %s exit order %s is still working", id, restingOrder)
+		}
+		_ = e.exec.Cancel(ctx, restingOrder)
+	}
+
+	e.mu.Lock()
+	curr, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil
+	}
+	if curr.Status != StatusInPosition && curr.Status != StatusExitFailed {
+		status := curr.Status
+		e.mu.Unlock()
+		return fmt.Errorf("bracket %s cannot be exited in status %s", id, status)
+	}
+	e.unindexActiveInPosition(curr)
+	curr.Status = StatusExitedManual
+	curr.UpdatedAt = time.Now()
+	bracketCopy := *curr
+	e.mu.Unlock()
 
 	if exchangeStopOrderID != "" {
 		filled, price, cancelErr := e.cancelExchangeStopOrder(ctx, exchangeStopOrderID)
@@ -802,17 +1241,11 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 				bracketCopy = *curr
 			}
 			e.mu.Unlock()
-			if e.store != nil {
-				_ = e.store.UpdateBracket(ctx, bracketCopy)
-			}
+			e.persistBracket(ctx, bracketCopy)
 			e.notify(bracketCopy)
 			return fmt.Errorf("could not cancel exchange backstop before exit: %w", cancelErr)
 		}
 		e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
-	}
-
-	if restingOrder != "" && e.exec != nil {
-		_ = e.exec.Cancel(ctx, restingOrder)
 	}
 
 	var exitErr error
@@ -862,9 +1295,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	}
 	e.mu.Unlock()
 
-	if e.store != nil {
-		_ = e.store.UpdateBracket(ctx, bracketCopy)
-	}
+	e.persistBracket(ctx, bracketCopy)
 	e.notify(bracketCopy)
 	if exitErr != nil {
 		return fmt.Errorf("failed to execute market exit order: %w", exitErr)
@@ -1055,6 +1486,14 @@ func isCancelledStatus(status string) bool {
 		return false
 	}
 }
+
+// IsFilledStatus reports whether a broker order status means the order
+// executed. It is exported for callers that reconcile manual orders.
+func IsFilledStatus(status string) bool { return isFilledStatus(status) }
+
+// IsCancelledStatus reports whether a broker order status is terminal without
+// a fill. It is exported for callers that reconcile manual orders.
+func IsCancelledStatus(status string) bool { return isCancelledStatus(status) }
 
 func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	e.mu.Lock()
@@ -1318,6 +1757,43 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 	}
 	ctx = kotakhttp.WithPriority(ctx)
 
+	// Check for an existing exit order before touching the backstop, so an
+	// unknown lookup cannot leave the position naked.
+	if orderID, status, price, found, lookupErr := e.exitOrderByTag(ctx, trg.bracketID); lookupErr != nil {
+		e.log.Error("CRITICAL: could not check existing exit order; not placing a second exit",
+			"bracket_id", trg.bracketID, "error", lookupErr)
+		e.failTriggerExit(ctx, trg.bracketID)
+		return
+	} else if found {
+		if isFilledStatus(status) {
+			e.adoptExitFill(ctx, trg.bracketID, price)
+			return
+		}
+		if !isCancelledStatus(status) {
+			e.log.Warn("existing exit order is still working; parking for retry",
+				"bracket_id", trg.bracketID, "order_id", orderID)
+			e.failTriggerExit(ctx, trg.bracketID)
+			return
+		}
+	}
+
+	if trg.restingOrder != "" && e.exec != nil {
+		filled, price, done := e.exitOrderState(ctx, trg.restingOrder)
+		if filled {
+			e.adoptExitFill(ctx, trg.bracketID, price)
+			return
+		}
+		if !done {
+			e.log.Warn("existing exit order is still working; parking for retry",
+				"bracket_id", trg.bracketID, "order_id", trg.restingOrder)
+			e.failTriggerExit(ctx, trg.bracketID)
+			return
+		}
+		if err := e.exec.Cancel(ctx, trg.restingOrder); err != nil {
+			e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)
+		}
+	}
+
 	if trg.exchangeStopOrder != "" {
 		filled, price, cancelErr := e.cancelExchangeStopOrder(ctx, trg.exchangeStopOrder)
 		if filled {
@@ -1336,12 +1812,6 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 			}
 		} else {
 			e.setExchangeStopStatus(ctx, trg.bracketID, ExchangeStopCancelled)
-		}
-	}
-
-	if trg.restingOrder != "" && e.exec != nil {
-		if err := e.exec.Cancel(ctx, trg.restingOrder); err != nil {
-			e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)
 		}
 	}
 

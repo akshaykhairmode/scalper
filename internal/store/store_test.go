@@ -39,7 +39,7 @@ func TestOpenAndSchema(t *testing.T) {
 		t.Fatalf("Ping: %v", err)
 	}
 	v, err := s.SchemaVersion(ctx)
-	if err != nil || v != 12 {
+	if err != nil || v != 13 {
 		t.Fatalf("SchemaVersion = %d, %v", v, err)
 	}
 	if !filepath.IsAbs(s.Path()) {
@@ -89,7 +89,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 			t.Fatalf("Open %d: %v", i, err)
 		}
 		v, err := s.SchemaVersion(context.Background())
-		if err != nil || v != 12 {
+		if err != nil || v != 13 {
 			t.Fatalf("version = %d, %v", v, err)
 		}
 		if err := s.Close(); err != nil {
@@ -174,7 +174,7 @@ func TestLoadMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 12 {
+	if len(m) != 13 {
 		t.Fatalf("migrations = %+v", m)
 	}
 	if m[0].version != 1 || m[0].name != "0001_init.sql" || m[0].sql == "" {
@@ -213,6 +213,9 @@ func TestLoadMigrations(t *testing.T) {
 	if len(m) < 12 || m[11].version != 12 || m[11].name != "0012_paper_order_validity.sql" || m[11].sql == "" {
 		t.Fatalf("twelfth migration = %+v", m[11])
 	}
+	if len(m) < 13 || m[12].version != 13 || m[12].name != "0013_paper_positions_product.sql" || m[12].sql == "" {
+		t.Fatalf("thirteenth migration = %+v", m[12])
+	}
 }
 
 func TestFailedMigrationRollsBack(t *testing.T) {
@@ -226,8 +229,8 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 12 {
-		t.Fatalf("version = %d, want 12", v)
+	if v != 13 {
+		t.Fatalf("version = %d, want 13", v)
 	}
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 99`).Scan(&count); err != nil {

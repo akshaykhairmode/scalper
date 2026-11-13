@@ -13,6 +13,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
+	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
@@ -198,6 +199,11 @@ func (s *Server) checkPaperOrderRisk(ctx context.Context, o kotakapi.Order) erro
 			if pct := trading.Paper.ShortMarginPct; pct > 0 {
 				required *= pct / 100
 			}
+		} else if _, isOption := s.paperShortNotional(key); !isOption {
+			// Non-option longs use the same intraday percentage as shorts.
+			if pct := trading.Paper.ShortMarginPct; pct > 0 {
+				required *= pct / 100
+			}
 		}
 		limits := s.paperExec.Limits()
 		if required > limits.Available {
@@ -230,7 +236,7 @@ func (s *Server) paperExposureForOrder(o kotakapi.Order, key string) (current, o
 		return 0, o.Quantity
 	}
 	for _, p := range s.paperExec.Positions() {
-		if p.InstrumentKey == key {
+		if p.InstrumentKey == key && (o.Product == "" || strings.EqualFold(p.Product, o.Product)) {
 			current = p.NetQuantity
 			break
 		}
@@ -275,6 +281,32 @@ func (s *Server) paperOpenLots(underlying, excludeKey string) int64 {
 		}
 		if sameUnderlying(u, underlying) {
 			total += quantityLots(absInt64(p.NetQuantity), lot)
+		}
+	}
+	// Resting entry orders will become exposure when they fill, so count them
+	// against the index cap as well.
+	for _, o := range s.paperExec.Orders() {
+		if !o.Open() || !paper.IsEntryTag(o.Tag) {
+			continue
+		}
+		lot := int64(1)
+		u := o.TradingSymbol
+		if s.market != nil {
+			if opt, ok := s.market.Option(o.InstrumentKey); ok {
+				if opt.LotSize > 0 {
+					lot = opt.LotSize
+				}
+				if opt.Underlying != "" {
+					u = opt.Underlying
+				}
+			}
+		}
+		remaining := o.Quantity - o.FilledQuantity
+		if remaining <= 0 {
+			continue
+		}
+		if sameUnderlying(u, underlying) {
+			total += quantityLots(remaining, lot)
 		}
 	}
 	return total

@@ -26,6 +26,13 @@ type Fill struct {
 	Qty     int64
 }
 
-// ErrExecutorUnavailable reports that an executor does not implement an
-// optional operation. Executors that support every operation never return it.
-var ErrExecutorUnavailable = errors.New("bracket: executor operation is not configured")
+var (
+	// ErrExecutorUnavailable reports that an executor does not implement an
+	// optional operation. Executors that support every operation never return it.
+	ErrExecutorUnavailable = errors.New("bracket: executor operation is not configured")
+	// ErrOrderNotFound reports that the executor looked up an order and it does
+	// not exist. It is distinct from a transient lookup failure.
+	ErrOrderNotFound = errors.New("bracket: order not found")
+	// ErrDuplicateBracket reports that a bracket ID already exists.
+	ErrDuplicateBracket = errors.New("bracket: bracket already exists")
+)

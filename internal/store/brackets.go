@@ -54,6 +54,20 @@ func (s *Store) CreateBracket(ctx context.Context, b bracket.Bracket) error {
 
 // UpdateBracket updates an existing bracket record in the database.
 func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
+	return s.updateBracket(ctx, b, "")
+}
+
+// UpdateBracketInMode updates a bracket only if it belongs to mode. It prevents
+// a live and a paper bracket that share an ID from overwriting each other.
+func (s *Store) UpdateBracketInMode(ctx context.Context, b bracket.Bracket, mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "paper" {
+		mode = "live"
+	}
+	return s.updateBracket(ctx, b, mode)
+}
+
+func (s *Store) updateBracket(ctx context.Context, b bracket.Bracket, mode string) error {
 	if s == nil || s.db == nil {
 		return errors.New("store: database not open")
 	}
@@ -66,7 +80,7 @@ func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
 		updatedAt = s.now()
 	}
 
-	res, err := s.db.ExecContext(ctx, `
+	query := `
 		UPDATE brackets SET
 			mode = ?,
 			exchange_segment = ?,
@@ -89,7 +103,8 @@ func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
 			exchange_stop_price = ?,
 			exchange_stop_status = ?,
 			updated_at = ?
-		WHERE id = ?`,
+		WHERE id = ?`
+	args := []any{
 		bracketMode(b.Mode), b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
 		b.TransactionType, b.Quantity, b.Product, b.EntryPrice, b.EntryOrderID,
 		b.TargetPrice, b.StopLossPrice, b.TrailingStop, b.ExitOrderID, b.ExitPrice,
@@ -97,7 +112,13 @@ func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
 		b.ExchangeStopPrice, b.ExchangeStopStatus,
 		updatedAt.UTC().Format("2006-01-02 15:04:05"),
 		b.ID,
-	)
+	}
+	if mode != "" {
+		query += ` AND mode = ?`
+		args = append(args, mode)
+	}
+
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: update bracket %s: %w", b.ID, err)
 	}

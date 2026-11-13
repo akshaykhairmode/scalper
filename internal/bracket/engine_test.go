@@ -1108,3 +1108,520 @@ func TestDisarmManualSquareOff(t *testing.T) {
 		t.Fatal("Disarm should not place any order")
 	}
 }
+
+type failingCreateStore struct {
+	*mockStore
+	err error
+}
+
+func (f failingCreateStore) CreateBracket(context.Context, Bracket) error { return f.err }
+
+func TestCreateAbortsWhenStoreFails(t *testing.T) {
+	ctx := context.Background()
+	var placed atomic.Int32
+	exec := &testExec{place: func(context.Context, kotakapi.Order) (string, error) {
+		placed.Add(1)
+		return "ord-1", nil
+	}}
+	engine := NewEngine(failingCreateStore{mockStore: newMockStore(), err: errors.New("db down")}, exec, testLogger())
+
+	_, err := engine.Create(ctx, Bracket{
+		ID:              "brk-fail",
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		Product:         "MIS",
+	})
+	if err == nil {
+		t.Fatal("expected persist error")
+	}
+	if placed.Load() != 0 {
+		t.Fatalf("entry order placed despite persist failure: %d", placed.Load())
+	}
+	if _, ok := engine.Get("brk-fail"); ok {
+		t.Fatal("bracket registered despite persist failure")
+	}
+}
+
+func TestCreateRejectsDuplicateID(t *testing.T) {
+	ctx := context.Background()
+	var placed atomic.Int32
+	exec := &testExec{place: func(context.Context, kotakapi.Order) (string, error) {
+		placed.Add(1)
+		return "ord-1", nil
+	}}
+	engine := NewEngine(newMockStore(), exec, testLogger())
+	b := Bracket{
+		ID:              "brk-dup",
+		ExchangeSegment: "NSE",
+		TradingSymbol:   "RELIANCE",
+		InstrumentKey:   "nse_cm|2885",
+		TransactionType: "BUY",
+		Quantity:        10,
+		EntryPrice:      100,
+		Product:         "MIS",
+	}
+	if _, err := engine.Create(ctx, b); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := engine.Create(ctx, b); err == nil {
+		t.Fatal("expected duplicate ID error")
+	}
+	if placed.Load() != 1 {
+		t.Fatalf("place count = %d, want 1", placed.Load())
+	}
+}
+
+func TestCancelKeepsPendingWhenCancelFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place:  func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+		cancel: func(context.Context, string) error { return errors.New("broker busy") },
+		lookup: func(context.Context, string, string) (string, string, float64, error) {
+			return "ord-1", "OPEN", 0, nil
+		},
+	}, testLogger())
+	if _, err := engine.Create(ctx, Bracket{
+		ID: "brk-c", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Cancel(ctx, "brk-c"); err == nil {
+		t.Fatal("expected cancel error")
+	}
+	got, _ := engine.Get("brk-c")
+	if got.Status != StatusPendingEntry {
+		t.Fatalf("status = %s, want PENDING_ENTRY", got.Status)
+	}
+}
+
+func TestCancelAdoptsFillRace(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place:  func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+		cancel: func(context.Context, string) error { return nil },
+		lookup: func(context.Context, string, string) (string, string, float64, error) {
+			return "ord-1", "COMPLETE", 105, nil
+		},
+	}, testLogger())
+	if _, err := engine.Create(ctx, Bracket{
+		ID: "brk-c2", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Cancel(ctx, "brk-c2"); err == nil {
+		t.Fatal("expected fill-race error")
+	}
+	got, _ := engine.Get("brk-c2")
+	if got.Status != StatusInPosition {
+		t.Fatalf("status = %s, want IN_POSITION", got.Status)
+	}
+	if got.EntryPrice != 105 {
+		t.Fatalf("entry price = %v, want 105", got.EntryPrice)
+	}
+}
+
+func TestDisarmCancelsPendingEntryOrder(t *testing.T) {
+	ctx := context.Background()
+	var cancelled atomic.Value
+	engine := NewEngine(newMockStore(), &testExec{
+		place:  func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+		cancel: func(_ context.Context, id string) error { cancelled.Store(id); return nil },
+		lookup: func(context.Context, string, string) (string, string, float64, error) {
+			return "ord-1", "CANCELLED", 0, nil
+		},
+	}, testLogger())
+	if _, err := engine.Create(ctx, Bracket{
+		ID: "brk-d", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Disarm(ctx, "brk-d"); err != nil {
+		t.Fatalf("Disarm: %v", err)
+	}
+	if got, _ := cancelled.Load().(string); got != "ord-1" {
+		t.Fatalf("cancelled order = %q, want ord-1", got)
+	}
+	got, _ := engine.Get("brk-d")
+	if got.Status != StatusCancelled {
+		t.Fatalf("status = %s, want CANCELLED", got.Status)
+	}
+}
+
+func TestExitAdoptsExistingFilledExitOrder(t *testing.T) {
+	ctx := context.Background()
+	var placed atomic.Int32
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) {
+			placed.Add(1)
+			return "new-exit", nil
+		},
+		lookup: func(_ context.Context, id, tag string) (string, string, float64, error) {
+			if id == "exit-1" || tag == "exit_brk-exit" {
+				return "exit-1", "COMPLETE", 105, nil
+			}
+			return "", "", 0, ErrExecutorUnavailable
+		},
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-exit", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS", Status: StatusInPosition, ExitOrderID: "exit-1",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Exit(ctx, b.ID); err != nil {
+		t.Fatalf("Exit: %v", err)
+	}
+	if placed.Load() != 0 {
+		t.Fatalf("a second exit order was placed: %d", placed.Load())
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitedManual {
+		t.Fatalf("status = %s, want EXITED_MANUAL", got.Status)
+	}
+	if got.ExitPrice != 105 {
+		t.Fatalf("exit price = %v, want 105", got.ExitPrice)
+	}
+}
+
+func TestExitDoesNotPlaceSecondExitWhileWorking(t *testing.T) {
+	ctx := context.Background()
+	var placed atomic.Int32
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) {
+			placed.Add(1)
+			return "new-exit", nil
+		},
+		lookup: func(_ context.Context, id, tag string) (string, string, float64, error) {
+			if id == "exit-1" || tag == "exit_brk-working" {
+				return "exit-1", "OPEN", 0, nil
+			}
+			return "", "", 0, ErrExecutorUnavailable
+		},
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-working", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS", Status: StatusInPosition, ExitOrderID: "exit-1",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Exit(ctx, b.ID); err == nil {
+		t.Fatal("expected error while the existing exit order is still working")
+	}
+	if placed.Load() != 0 {
+		t.Fatalf("a second exit order was placed: %d", placed.Load())
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("status = %s, want IN_POSITION (restored)", got.Status)
+	}
+}
+
+func TestUpdateQuantityResizesInPositionBracket(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-qty", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 150,
+		EntryPrice: 100, Product: "MIS", Status: StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.UpdateQuantity(ctx, b.ID, 75); err != nil {
+		t.Fatalf("UpdateQuantity: %v", err)
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Quantity != 75 {
+		t.Fatalf("quantity = %d, want 75", got.Quantity)
+	}
+}
+
+func TestRearmRestoresDisarmedBracket(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-r", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 10,
+		EntryPrice: 100, Product: "MIS", Status: StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Disarm(ctx, b.ID); err != nil {
+		t.Fatalf("Disarm: %v", err)
+	}
+	if err := engine.Rearm(ctx, b.ID); err != nil {
+		t.Fatalf("Rearm: %v", err)
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("status = %s, want IN_POSITION", got.Status)
+	}
+}
+
+func newBackstopTestBracket(t *testing.T, engine *Engine, id string) *Bracket {
+	t.Helper()
+	b, err := engine.Create(context.Background(), Bracket{
+		ID: id, ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 50,
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Product: "MIS",
+		Status: StatusInPosition, ExitOrderID: "exit-1",
+		ExchangeStopOrderID: "xstop-1", ExchangeStopStatus: ExchangeStopWorking,
+	})
+	if err != nil {
+		t.Fatalf("create %s: %v", id, err)
+	}
+	return b
+}
+
+func TestExitDoesNotPlaceSecondExitWhenLookupFails(t *testing.T) {
+	ctx := context.Background()
+	var placed atomic.Int32
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) {
+			placed.Add(1)
+			return "new-exit", nil
+		},
+		lookup: func(context.Context, string, string) (string, string, float64, error) {
+			return "", "", 0, errors.New("network down")
+		},
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-lookup", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 50,
+		EntryPrice: 100, Product: "MIS", Status: StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Exit(ctx, b.ID); err == nil {
+		t.Fatal("expected an error when the exit lookup fails")
+	}
+	if placed.Load() != 0 {
+		t.Fatalf("placed a second exit on unknown state: %d", placed.Load())
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("status = %s, want IN_POSITION", got.Status)
+	}
+}
+
+func TestExitDoesNotCancelBackstopWhenExitStillWorking(t *testing.T) {
+	ctx := context.Background()
+	var cancelled atomic.Int32
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "new-exit", nil },
+		cancel: func(_ context.Context, id string) error {
+			if id == "xstop-1" {
+				cancelled.Add(1)
+			}
+			return nil
+		},
+		lookup: func(_ context.Context, id, tag string) (string, string, float64, error) {
+			if id == "exit-1" || tag == "exit_brk-backstop" || id == "xstop-1" {
+				return id, "OPEN", 0, nil
+			}
+			return "", "", 0, ErrOrderNotFound
+		},
+	}, testLogger())
+	b := newBackstopTestBracket(t, engine, "brk-backstop")
+	if err := engine.Exit(ctx, b.ID); err == nil {
+		t.Fatal("expected an error while the exit order is working")
+	}
+	if cancelled.Load() != 0 {
+		t.Fatalf("backstop was cancelled while the exit was still working: %d", cancelled.Load())
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition || got.ExchangeStopStatus != ExchangeStopWorking {
+		t.Fatalf("bracket mutated: %+v", got)
+	}
+}
+
+func TestProcessTriggerExitParksWhenExitStillWorking(t *testing.T) {
+	ctx := context.Background()
+	var cancelled atomic.Int32
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "new-exit", nil },
+		cancel: func(_ context.Context, id string) error {
+			if id == "xstop-1" {
+				cancelled.Add(1)
+			}
+			return nil
+		},
+		lookup: func(_ context.Context, id, tag string) (string, string, float64, error) {
+			if id == "exit-1" || tag == "exit_brk-trigger" || id == "xstop-1" {
+				return id, "OPEN", 0, nil
+			}
+			return "", "", 0, ErrOrderNotFound
+		},
+	}, testLogger())
+	b := newBackstopTestBracket(t, engine, "brk-trigger")
+	engine.processTriggerExit(ctx, tickTrigger{
+		bracketID: b.ID, exitSide: "SELL", exitQuantity: 50,
+		instrumentKey: "nse_cm|2885", segment: "NSE", symbol: "RELIANCE", product: "MIS",
+		restingOrder: "exit-1", exchangeStopOrder: "xstop-1", newStatus: StatusSLHit,
+	})
+	if cancelled.Load() != 0 {
+		t.Fatalf("backstop was cancelled while the exit was still working: %d", cancelled.Load())
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitFailed {
+		t.Fatalf("status = %s, want EXIT_FAILED", got.Status)
+	}
+}
+
+func TestMarkExternalExitKeepsPositionWhenBackstopCancelFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		cancel: func(context.Context, string) error { return errors.New("broker busy") },
+		lookup: func(_ context.Context, id, _ string) (string, string, float64, error) {
+			if id == "xstop-1" {
+				return id, "OPEN", 0, nil
+			}
+			return "", "", 0, ErrOrderNotFound
+		},
+	}, testLogger())
+	b := newBackstopTestBracket(t, engine, "brk-mark")
+	if err := engine.MarkExternalExit(ctx, b.ID, 105); err == nil {
+		t.Fatal("expected an error when the backstop cannot be cancelled")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusInPosition {
+		t.Fatalf("status = %s, want IN_POSITION", got.Status)
+	}
+}
+
+func TestUpdateQuantityKeepsSizeWhenBackstopCancelFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		cancel: func(context.Context, string) error { return errors.New("broker busy") },
+		lookup: func(_ context.Context, id, _ string) (string, string, float64, error) {
+			if id == "xstop-1" {
+				return id, "OPEN", 0, nil
+			}
+			return "", "", 0, ErrOrderNotFound
+		},
+	}, testLogger())
+	b := newBackstopTestBracket(t, engine, "brk-qty-backstop")
+	if err := engine.UpdateQuantity(ctx, b.ID, 25); err == nil {
+		t.Fatal("expected an error when the backstop cannot be replaced")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Quantity != 50 {
+		t.Fatalf("quantity = %d, want the original 50", got.Quantity)
+	}
+}
+
+func TestRearmRefusesWhenExitStillWorking(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		lookup: func(_ context.Context, id, _ string) (string, string, float64, error) {
+			if id == "exit-1" {
+				return id, "OPEN", 0, nil
+			}
+			return "", "", 0, ErrOrderNotFound
+		},
+	}, testLogger())
+	b := newBackstopTestBracket(t, engine, "brk-rearm-working")
+	if err := engine.Disarm(ctx, b.ID); err != nil {
+		t.Fatalf("Disarm: %v", err)
+	}
+	if err := engine.Rearm(ctx, b.ID); err == nil {
+		t.Fatal("expected an error while the exit order is working")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusExitedManual {
+		t.Fatalf("status = %s, want EXITED_MANUAL", got.Status)
+	}
+}
+
+func TestOnOrderModifiedUpdatesQuantity(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-mod", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 50,
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Product: "MIS",
+		EntryOrderID: "e1",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	engine.OnOrderModified(ctx, "e1", 95, 75)
+	got, _ := engine.Get(b.ID)
+	if got.EntryPrice != 95 || got.Quantity != 75 {
+		t.Fatalf("bracket = entry %v qty %d, want 95/75", got.EntryPrice, got.Quantity)
+	}
+}
+
+func TestCancelKeepsPendingWhenLookupFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+		lookup: func(context.Context, string, string) (string, string, float64, error) {
+			return "", "", 0, errors.New("network down")
+		},
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-cancel-lookup", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 50,
+		EntryPrice: 100, Product: "MIS",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Cancel(ctx, b.ID); err == nil {
+		t.Fatal("expected an error when the cancel lookup fails")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusPendingEntry {
+		t.Fatalf("status = %s, want PENDING_ENTRY", got.Status)
+	}
+}
+
+func TestCancelKeepsPendingWhenOrderStillWorking(t *testing.T) {
+	ctx := context.Background()
+	engine := NewEngine(newMockStore(), &testExec{
+		place: func(context.Context, kotakapi.Order) (string, error) { return "ord-1", nil },
+		lookup: func(_ context.Context, id, _ string) (string, string, float64, error) {
+			return id, "OPEN", 0, nil
+		},
+	}, testLogger())
+	b, err := engine.Create(ctx, Bracket{
+		ID: "brk-cancel-working", ExchangeSegment: "NSE", TradingSymbol: "RELIANCE",
+		InstrumentKey: "nse_cm|2885", TransactionType: "BUY", Quantity: 50,
+		EntryPrice: 100, Product: "MIS",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	shortCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := engine.Cancel(shortCtx, b.ID); err == nil {
+		t.Fatal("expected an error while the order is still working")
+	}
+	got, _ := engine.Get(b.ID)
+	if got.Status != StatusPendingEntry {
+		t.Fatalf("status = %s, want PENDING_ENTRY", got.Status)
+	}
+}

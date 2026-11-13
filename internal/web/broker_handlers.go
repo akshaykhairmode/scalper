@@ -304,15 +304,26 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 		s.writeRiskError(w, r, err)
 		return
 	}
-	// A manual order opposite an open bracket is an exit: cancel the exchange
-	// backstop first so two sells are never live at the broker.
-	if s.bracketEngine != nil {
+	// An explicit exit cancels the exchange backstop first so two sells are
+	// never live at the broker. A manual reduce keeps its backstop.
+	isExit := strings.EqualFold(strings.TrimSpace(req.Intent), "EXIT")
+	if isExit && s.bracketEngine != nil {
 		s.bracketEngine.CancelExchangeStopsForInstrument(r.Context(), req.ExchangeSegment, req.TradingSymbol, req.TransactionType)
 	}
 	raw, err := s.kotak.PlaceOrder(r.Context(), session, req.Order)
 	if err != nil {
+		if isExit {
+			s.rearmLiveBackstopsForContract(r.Context(), req.ExchangeSegment, req.TradingSymbol, req.Product)
+		}
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
 		return
+	}
+	if isExit {
+		if orderID := brokerOrderID(raw); orderID != "" {
+			// Disarm only after the exit is confirmed filled, so a rejected
+			// exit does not leave the position without its server SL/TP.
+			go s.disarmLiveBracketsAfterExit(r.Context(), orderID, req.ExchangeSegment, req.TradingSymbol, req.Product, req.TransactionType, req.Quantity)
+		}
 	}
 	s.books.expire(bookPositions, bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusCreated, raw)
@@ -337,18 +348,29 @@ func (s *Server) placePaperOrder(w http.ResponseWriter, r *http.Request, req liv
 		s.writeRiskError(w, r, err)
 		return
 	}
-	if s.paperEngine != nil {
+	isExit := strings.EqualFold(strings.TrimSpace(req.Intent), "EXIT")
+	if isExit && s.paperEngine != nil {
 		s.paperEngine.CancelExchangeStopsForInstrument(r.Context(),
 			req.ExchangeSegment, req.TradingSymbol, req.TransactionType)
 	}
+	product := strings.ToUpper(strings.TrimSpace(req.Product))
+	if product == "" {
+		product = "MIS"
+	}
+	req.Product = product
+	before := s.paperPositionNet(req.Order.InstrumentKey, product)
 	id, err := s.paperExec.Place(r.Context(), req.Order)
 	if err != nil {
+		if isExit {
+			s.rearmPaperBackstopsForContract(r.Context(), req.ExchangeSegment, req.TradingSymbol, product)
+		}
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
 		return
 	}
 	s.ensurePaperSubscribed(req.Order.InstrumentKey)
-	if strings.EqualFold(strings.TrimSpace(req.Intent), "EXIT") {
-		s.disarmPaperBracketsForInstrument(r.Context(), req.InstrumentKey, req.ExchangeSegment, req.TradingSymbol)
+	after := s.paperPositionNet(req.Order.InstrumentKey, product)
+	if isExit || absInt64(after) < absInt64(before) {
+		s.syncPaperBracketsAfterExit(r.Context(), req.Order.InstrumentKey, product, req.ExchangeSegment, req.TradingSymbol)
 	}
 	status := paper.StatusComplete
 	if _, actual, _, lookupErr := s.paperExec.Lookup(r.Context(), id, ""); lookupErr == nil && actual != "" {
@@ -463,7 +485,7 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if s.paperEngine != nil {
-			s.paperEngine.OnOrderModified(r.Context(), id, req.Price)
+			s.paperEngine.OnOrderModified(r.Context(), id, req.Price, req.Quantity)
 		}
 		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"order_id": id, "success": true, "mode": modePaper})
 		return
@@ -488,6 +510,9 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
 		return
+	}
+	if s.bracketEngine != nil && req.Price > 0 {
+		s.bracketEngine.OnOrderModified(r.Context(), id, req.Price, req.Quantity)
 	}
 	s.books.expire(bookOrders)
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
@@ -558,16 +583,23 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 		Confirm bool   `json:"confirm"`
 		Mode    string `json:"mode"`
 	}
-	mode := s.requestMode(r)
-	if r.ContentLength > 0 || r.Header.Get("Content-Type") != "" {
+	// Square-off-all is destructive, so require an explicit account instead of
+	// falling back to the configured default.
+	rawMode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if r.ContentLength != 0 || r.Header.Get("Content-Type") != "" {
 		if err := decodeRequest(w, r, &req); err != nil {
 			s.writeRouteError(w, r, http.StatusBadRequest, "invalid square-off request: "+err.Error(), err)
 			return
 		}
 	}
 	if strings.TrimSpace(req.Mode) != "" {
-		mode = normalizeTradingMode(req.Mode)
+		rawMode = strings.TrimSpace(req.Mode)
 	}
+	if rawMode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode is required for square-off-all (live or paper)", nil)
+		return
+	}
+	mode := normalizeTradingMode(rawMode)
 	if mode == "" {
 		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
 		return
@@ -605,14 +637,52 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 	if s.bracketEngine != nil {
 		s.bracketEngine.CancelAllExchangeStops(r.Context())
 	}
+
+	// Disarm brackets before closing so a tick cannot trigger a second exit
+	// while the square-off orders are in flight. In-position brackets are
+	// re-armed below if their close order fails.
+	errList := make([]string, 0)
+	var disarmed []bracket.Bracket
+	if s.bracketEngine != nil {
+		active, err := s.bracketEngine.List(500)
+		if err != nil {
+			errList = append(errList, "list brackets: "+err.Error())
+		} else {
+			for _, b := range active {
+				switch b.Status {
+				case bracket.StatusPendingEntry:
+					if err := s.bracketEngine.Disarm(r.Context(), b.ID); err != nil {
+						errList = append(errList, b.TradingSymbol+": "+err.Error())
+					}
+				case bracket.StatusInPosition, bracket.StatusExitFailed:
+					if err := s.bracketEngine.Disarm(r.Context(), b.ID); err != nil {
+						errList = append(errList, b.TradingSymbol+": "+err.Error())
+						continue
+					}
+					disarmed = append(disarmed, b)
+				}
+			}
+		}
+	}
+
 	raw, err := s.getBook(r.Context(), bookPositions, session)
 	if err != nil {
-		s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+		errList = append(errList, "fetch positions: "+err.Error())
+		errList = append(errList, s.rearmAllLiveBrackets(r.Context(), disarmed)...)
+		s.writeRouteJSON(w, r, http.StatusBadGateway, brokerSquareOffAllResponse{
+			Success: false,
+			Errors:  errList,
+		})
 		return
 	}
 	rows, err := decodeBookRows(raw)
 	if err != nil {
-		s.writeRouteError(w, r, http.StatusBadGateway, "failed to decode positions: "+err.Error(), err)
+		errList = append(errList, "decode positions: "+err.Error())
+		errList = append(errList, s.rearmAllLiveBrackets(r.Context(), disarmed)...)
+		s.writeRouteJSON(w, r, http.StatusBadGateway, brokerSquareOffAllResponse{
+			Success: false,
+			Errors:  errList,
+		})
 		return
 	}
 
@@ -661,8 +731,10 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 	}
 
 	type squareOffResult struct {
-		symbol string
-		err    error
+		segment string
+		symbol  string
+		product string
+		err     error
 	}
 
 	results := make(chan squareOffResult, len(orders))
@@ -678,7 +750,7 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 			defer func() { <-sem }()
 
 			_, orderErr := s.kotak.PlaceOrder(r.Context(), session, order)
-			results <- squareOffResult{symbol: order.TradingSymbol, err: orderErr}
+			results <- squareOffResult{segment: order.ExchangeSegment, symbol: order.TradingSymbol, product: order.Product, err: orderErr}
 		}(o)
 	}
 
@@ -686,7 +758,6 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 	close(results)
 
 	closedCount := 0
-	errList := make([]string, 0)
 	for res := range results {
 		if res.err != nil {
 			errMsg := res.err.Error()
@@ -697,19 +768,13 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 			if s.log != nil {
 				s.log.Error("square-off order failed", "symbol", res.symbol, "error", res.err)
 			}
-		} else {
-			closedCount++
+			// The position is still open: restore its bracket and backstop.
+			errList = append(errList, s.rearmLiveBrackets(r.Context(), disarmed, res.segment, res.symbol, res.product)...)
+			continue
 		}
-	}
-
-	if s.bracketEngine != nil {
-		if active, err := s.bracketEngine.List(500); err == nil {
-			for _, b := range active {
-				if b.Status == bracket.StatusInPosition || b.Status == bracket.StatusPendingEntry || b.Status == bracket.StatusExitFailed {
-					_ = s.bracketEngine.Disarm(r.Context(), b.ID)
-				}
-			}
-		}
+		closedCount++
+		// Catch brackets that became IN_POSITION while the close was in flight.
+		errList = append(errList, s.disarmLiveBracketsForContract(r.Context(), res.segment, res.symbol, res.product)...)
 	}
 
 	s.books.expire(bookPositions, bookOrders, bookLimits)

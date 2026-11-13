@@ -351,7 +351,7 @@ func (e *Engine) CancelExchangeStopsForInstrument(ctx context.Context, segment, 
 	e.mu.RUnlock()
 
 	for _, id := range ids {
-		e.cancelExchangeStopForBracket(ctx, id)
+		_ = e.cancelExchangeStopForBracket(ctx, id)
 	}
 }
 
@@ -370,33 +370,34 @@ func (e *Engine) CancelAllExchangeStops(ctx context.Context) {
 	}
 	e.mu.RUnlock()
 	for _, id := range ids {
-		e.cancelExchangeStopForBracket(ctx, id)
+		_ = e.cancelExchangeStopForBracket(ctx, id)
 	}
 }
 
-func (e *Engine) cancelExchangeStopForBracket(ctx context.Context, bracketID string) {
+func (e *Engine) cancelExchangeStopForBracket(ctx context.Context, bracketID string) error {
 	e.mu.RLock()
 	b, ok := e.brackets[bracketID]
 	if !ok {
 		e.mu.RUnlock()
-		return
+		return errors.New("bracket not found")
 	}
 	orderID := b.ExchangeStopOrderID
 	e.mu.RUnlock()
 	if orderID == "" {
-		return
+		return nil
 	}
 	filled, price, err := e.cancelExchangeStopOrder(ctx, orderID)
 	if filled {
 		e.markExchangeStopFill(ctx, bracketID, price)
-		return
+		return nil
 	}
 	if err != nil {
 		e.log.Error("CRITICAL: failed to cancel exchange backstop",
 			"bracket_id", bracketID, "order_id", orderID, "error", err)
-		return
+		return err
 	}
 	e.setExchangeStopStatus(ctx, bracketID, ExchangeStopCancelled)
+	return nil
 }
 
 func exchangeStopTag(bracketID string) string {
@@ -447,7 +448,7 @@ func (e *Engine) cancelExchangeStopOrder(ctx context.Context, orderID string) (f
 		lookupMissing := false
 		for poll := 0; poll < 5; poll++ {
 			_, status, price, lookupErr := e.exec.Lookup(ctx, orderID, "")
-			if errors.Is(lookupErr, ErrExecutorUnavailable) {
+			if errors.Is(lookupErr, ErrExecutorUnavailable) || errors.Is(lookupErr, ErrOrderNotFound) {
 				lookupMissing = true
 				break
 			}
@@ -596,7 +597,7 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 
 	if mode == "" || mode == ExchangeStopOff {
 		if orderID != "" {
-			e.cancelExchangeStopForBracket(ctx, bracketID)
+			_ = e.cancelExchangeStopForBracket(ctx, bracketID)
 		}
 		return
 	}
@@ -607,7 +608,7 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 		}
 		_, brokerStatus, price, err := e.exec.Lookup(ctx, orderID, "")
 		if err != nil {
-			if errors.Is(err, ErrExecutorUnavailable) && bracketMode == "paper" {
+			if (errors.Is(err, ErrExecutorUnavailable) || errors.Is(err, ErrOrderNotFound)) && bracketMode == "paper" {
 				// Paper orders are local; an unknown ID means the order was
 				// never persisted, so it is safe to retry.
 				e.setExchangeStopStatus(ctx, bracketID, ExchangeStopFailed)
@@ -642,7 +643,7 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 		}
 		foundID, brokerStatus, price, err := e.exec.Lookup(ctx, "", exchangeStopTag(bracketID))
 		if err != nil || foundID == "" {
-			if bracketMode == "paper" && (err == nil || errors.Is(err, ErrExecutorUnavailable)) {
+			if bracketMode == "paper" && (err == nil || errors.Is(err, ErrExecutorUnavailable) || errors.Is(err, ErrOrderNotFound)) {
 				e.setExchangeStopStatus(ctx, bracketID, ExchangeStopFailed)
 				if e.allowExchangeStopRetry(bracketID) {
 					e.ensureExchangeStop(ctx, bracketID)

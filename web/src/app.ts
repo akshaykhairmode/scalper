@@ -4069,9 +4069,10 @@ function requiredMargin(option, shares, side) {
   const opening = Math.max(0, shares - closing);
   if (opening === 0) return 0;
   if (tradingMode() === "paper") {
-    const perShare = num(option.strike) > 0
-      ? num(option.strike)
-      : (S.spots.get(option.underlying)?.ltp || option.ltp);
+    const spot = S.spots.get(option.underlying)?.ltp || 0;
+    const perShare = spot > 0
+      ? spot
+      : (num(option.strike) > 0 ? num(option.strike) : option.ltp);
     return perShare * opening * (num(S.boot.paperShortMarginPct, 20) / 100);
   }
   const spot = S.spots.get(option.underlying)?.ltp || 0;
@@ -4297,7 +4298,7 @@ function positionsHTML() {
         </td>
         <td>${risk ? fmtMaxProfit(risk.maxProfit) : "—"}</td>
         <td>${risk ? fmtMaxLoss(risk.maxLoss) : "—"}</td>
-        <td>${isOpen ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
+        <td>${isOpen ? `<button type="button" class="link-button" data-exit="${esc(p.instrument_key)}" data-exit-product="${esc(p.product || "")}">EXIT</button>` : `<span class="muted">CLOSED</span>`}</td>
       </tr>`;
     }
   }
@@ -4932,25 +4933,43 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
         createdAt: Date.now(),
       };
       registerAutoTarget(newTarget);
-      postJSON("/api/brackets", {
-        id: newTarget.id,
-        mode: orderMode,
-        confirm: true,
-        exchange_segment: option.exchangeSegment,
-        trading_symbol: option.symbol,
-        instrument_key: option.instrumentKey,
-        transaction_type: action.toUpperCase(),
-        quantity: qty,
-        product: S.product || "MIS",
-        entry_price: price,
-        entry_order_id: orderId,
-        target_price: autoTargetPrice,
-        stoploss_price: autoStopPrice,
-        trailing_stop: 0,
-        exchange_stop_mode: exchangeStop?.mode || "",
-      }).catch((err) => {
+      try {
+        await postJSON("/api/brackets", {
+          id: newTarget.id,
+          mode: orderMode,
+          confirm: true,
+          exchange_segment: option.exchangeSegment,
+          trading_symbol: option.symbol,
+          instrument_key: option.instrumentKey,
+          transaction_type: action.toUpperCase(),
+          quantity: qty,
+          product: S.product || "MIS",
+          entry_price: price,
+          entry_order_id: orderId,
+          target_price: autoTargetPrice,
+          stoploss_price: autoStopPrice,
+          trailing_stop: 0,
+          exchange_stop_mode: exchangeStop?.mode || "",
+        });
+      } catch (err) {
         console.warn("failed to register server bracket:", err);
-      });
+        // The entry order is already live. Cancel it rather than leave an
+        // unprotected working order behind.
+        if (orderId) {
+          await requestJSON(
+            `/api/broker/orders/${encodeURIComponent(orderId)}?mode=${encodeURIComponent(orderMode)}`,
+            { method: "DELETE", body: JSON.stringify({ confirm: true, mode: orderMode }) },
+          ).catch(() => {});
+        }
+        S.autoTargets = (S.autoTargets || []).filter((t) => t.id !== newTarget.id);
+        saveAutoTargets();
+        toast(
+          `Bracket registration failed; the entry order was cancelled if it was still working. Check the Orders tab. ${err.message}`,
+          "error",
+          6000,
+        );
+        return;
+      }
       const exits = [];
       if (autoTargetPrice > 0) {
         exits.push(`Target ₹${autoTargetPrice.toFixed(2)} (+${Math.abs(autoTargetPrice - price).toFixed(2)} pts)`);
@@ -6506,11 +6525,16 @@ async function submitQuickOrder(action) {
   }
 }
 
-async function onExit(instrumentKey) {
+async function onExit(instrumentKey, product = "") {
   const orderMode = tradingMode();
   if (requiresBrokerLogin()) { openLogin(); toast("Sign in with Kotak before exiting a position.", "warn"); return; }
-  const position = S.positions.find((p) => p.instrument_key === instrumentKey);
-  if (!position) return;
+  const position = S.positions.find(
+    (p) => p.instrument_key === instrumentKey && (!product || String(p.product || "") === String(product)),
+  );
+  if (!position) {
+    toast("Position changed; refresh the Positions tab and try again.", "warn", 5000);
+    return;
+  }
   const side = position.quantity > 0 ? "S" : "B";
   const qty = Math.abs(position.quantity);
   const ok = await confirmAction({
@@ -8207,7 +8231,7 @@ function bindEvents() {
 
   $("tab-content").addEventListener("click", (event) => {
     const exit = event.target.closest("[data-exit]");
-    if (exit) { onExit(exit.dataset.exit); return; }
+    if (exit) { onExit(exit.dataset.exit, exit.dataset.exitProduct); return; }
     const exitBracket = event.target.closest("[data-exit-bracket]");
     if (exitBracket) { onExitBracket(exitBracket.dataset.exitBracket); return; }
     const cancelBracket = event.target.closest("[data-cancel-bracket]");

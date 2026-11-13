@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
@@ -703,5 +705,415 @@ func TestPaperBracketTickLifecycle(t *testing.T) {
 	}
 	if len(paperList.Brackets) != 1 || paperList.Brackets[0].Status != bracket.StatusTargetHit {
 		t.Fatalf("paper list = %+v", paperList.Brackets)
+	}
+}
+
+func TestPaperBracketCreateForcesPendingStatus(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+
+	body, _ := json.Marshal(map[string]any{
+		"id":                 "brk-forced-pending",
+		"mode":               "paper",
+		"exchange_segment":   "nse_fo",
+		"trading_symbol":     "NIFTY26NOV25000CE",
+		"instrument_key":     key,
+		"transaction_type":   "BUY",
+		"quantity":           75,
+		"product":            "MIS",
+		"entry_price":        99,
+		"target_price":       110,
+		"stoploss_price":     90,
+		"status":             "IN_POSITION",
+		"exchange_stop_mode": "SL-M",
+		"confirm":            true,
+	})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created bracket.Bracket
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != bracket.StatusPendingEntry {
+		t.Fatalf("status = %s, want PENDING_ENTRY", created.Status)
+	}
+	got, ok := s.paperEngine.Get(created.ID)
+	if !ok {
+		t.Fatal("bracket missing")
+	}
+	if got.Status != bracket.StatusPendingEntry {
+		t.Fatalf("stored status = %s, want PENDING_ENTRY", got.Status)
+	}
+	for _, o := range s.paperExec.Orders() {
+		if o.Open() && strings.HasPrefix(o.Tag, "xstop_") {
+			t.Fatalf("exchange backstop was armed for a fabricated in-position bracket: %+v", o)
+		}
+	}
+}
+
+func TestPaperPartialExitResizesBracket(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 150, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	b, err := s.paperEngine.Create(ctx, bracket.Bracket{
+		Mode: "paper", ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		InstrumentKey: key, TransactionType: "BUY", Quantity: 150, Product: "MIS",
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Status: bracket.StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create bracket: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"instrument_key": key, "exchange_segment": "nse_fo", "trading_symbol": "NIFTY26NOV25000CE",
+		"transaction_type": "S", "quantity": 75, "order_type": "MARKET", "product": "MIS",
+		"validity": "DAY", "intent": "ENTRY", "mode": "paper", "confirm": true,
+	})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/broker/orders", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("partial exit status = %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ := s.paperEngine.Get(b.ID)
+	if got.Quantity != 75 {
+		t.Fatalf("bracket quantity = %d, want 75", got.Quantity)
+	}
+
+	body, _ = json.Marshal(map[string]any{
+		"instrument_key": key, "exchange_segment": "nse_fo", "trading_symbol": "NIFTY26NOV25000CE",
+		"transaction_type": "S", "quantity": 75, "order_type": "MARKET", "product": "MIS",
+		"validity": "DAY", "intent": "EXIT", "mode": "paper", "confirm": true,
+	})
+	rec = do(t, s, localRequestWithBody(http.MethodPost, "/api/broker/orders", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("full exit status = %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ = s.paperEngine.Get(b.ID)
+	if got.Status != bracket.StatusExitedManual {
+		t.Fatalf("bracket status = %s, want EXITED_MANUAL", got.Status)
+	}
+}
+
+func TestPaperRestingExitResizesBracketOnFill(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 150, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	b, err := s.paperEngine.Create(ctx, bracket.Bracket{
+		Mode: "paper", ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		InstrumentKey: key, TransactionType: "BUY", Quantity: 150, Product: "MIS",
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Status: bracket.StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create bracket: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"instrument_key": key, "exchange_segment": "nse_fo", "trading_symbol": "NIFTY26NOV25000CE",
+		"transaction_type": "S", "quantity": 75, "order_type": "L", "price": 101, "product": "MIS",
+		"validity": "DAY", "intent": "EXIT", "mode": "paper", "confirm": true,
+	})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/broker/orders", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("resting exit status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	s.onTick(ctx, key, 102, 101.9, 102.1)
+	got, _ := s.paperEngine.Get(b.ID)
+	if got.Quantity != 75 {
+		t.Fatalf("bracket quantity = %d, want 75 after the resting exit filled", got.Quantity)
+	}
+}
+
+func TestPaperSquareOffRearmsBracketWhenCloseFails(t *testing.T) {
+	s, st := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+
+	now := time.Now()
+	custom, err := paper.New(ctx, paper.Options{
+		Store:           st,
+		StartingBalance: 100000,
+		ShortMarginPct:  20,
+		Now:             func() time.Time { return now },
+		QuoteSource:     func(context.Context, string) (paper.Quote, bool) { return paper.Quote{}, false },
+	})
+	if err != nil {
+		t.Fatalf("paper.New: %v", err)
+	}
+	engine := bracket.NewEngine(st.BracketsFor("paper"), custom, testLogger())
+	engine.SetMode("paper")
+	engine.SetAsync(false)
+	custom.SetOnFill(func(f bracket.Fill) { engine.OnFill(ctx, f) })
+	s.paperExec = custom
+	s.paperEngine = engine
+
+	custom.OnTick(ctx, key, 100, 99.9, 100.1)
+	if _, err := custom.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 75, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	b, err := engine.Create(ctx, bracket.Bracket{
+		Mode: "paper", ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		InstrumentKey: key, TransactionType: "BUY", Quantity: 75, Product: "MIS",
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Status: bracket.StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create bracket: %v", err)
+	}
+
+	// Make the cached quote stale; the close cannot price and must fail.
+	now = now.Add(11 * time.Second)
+
+	closed, errs := s.squareOffPaper(ctx)
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0", closed)
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected the close to fail")
+	}
+	got, ok := engine.Get(b.ID)
+	if !ok {
+		t.Fatal("bracket missing after square-off")
+	}
+	if got.Status != bracket.StatusInPosition {
+		t.Fatalf("bracket status = %s, want IN_POSITION (re-armed)", got.Status)
+	}
+}
+
+func TestPaperReversalDisarmsWrongSideBracket(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 75, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	b, err := s.paperEngine.Create(ctx, bracket.Bracket{
+		Mode: "paper", ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		InstrumentKey: key, TransactionType: "BUY", Quantity: 75, Product: "MIS",
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90, Status: bracket.StatusInPosition,
+	})
+	if err != nil {
+		t.Fatalf("create bracket: %v", err)
+	}
+	// Sell 150: the account flips to short, so the long bracket is wrong-side.
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "SELL", Product: "MIS", OrderType: "MKT", Quantity: 150, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("reverse position: %v", err)
+	}
+	s.syncPaperBracketsAfterExit(ctx, key, "MIS", "nse_fo", "NIFTY26NOV25000CE")
+	got, _ := s.paperEngine.Get(b.ID)
+	if got.Status != bracket.StatusExitedManual {
+		t.Fatalf("status = %s, want EXITED_MANUAL", got.Status)
+	}
+}
+
+func TestPaperPositionsSeparateProducts(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+
+	seed := func(product string) {
+		if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+			InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+			TransactionType: "BUY", Product: product, OrderType: "MKT", Quantity: 75, Validity: "DAY",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", product, err)
+		}
+	}
+	seed("MIS")
+	seed("NRML")
+
+	nonZero := func() []paper.PositionView {
+		var out []paper.PositionView
+		for _, p := range s.paperExec.Positions() {
+			if p.NetQuantity != 0 {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	if got := nonZero(); len(got) != 2 {
+		t.Fatalf("positions = %+v, want one MIS and one NRML", got)
+	}
+
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "SELL", Product: "MIS", OrderType: "MKT", Quantity: 75, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("close MIS: %v", err)
+	}
+	got := nonZero()
+	if len(got) != 1 || !strings.EqualFold(got[0].Product, "NRML") || got[0].NetQuantity != 75 {
+		t.Fatalf("after closing MIS positions = %+v, want only NRML 75", got)
+	}
+}
+
+func TestPaperLongMarginIsConsistent(t *testing.T) {
+	ctx := context.Background()
+	optionKey := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	futureKey := "nse_fo|NIFTY|2026-11-26|FUT"
+
+	sFuture, _ := newPaperTestServer(t)
+	defer sFuture.Close()
+	sFuture.onTick(ctx, futureKey, 100, 99.9, 100.1)
+	if _, err := sFuture.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: futureKey, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOVFUT",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 75, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed future: %v", err)
+	}
+	usedFuture := sFuture.paperExec.Limits().Used
+	if usedFuture > 3000 {
+		t.Fatalf("future long margin = %v, want the intraday percentage (~1500)", usedFuture)
+	}
+
+	sOption, _ := newPaperTestServer(t)
+	defer sOption.Close()
+	sOption.onTick(ctx, optionKey, 100, 99.9, 100.1)
+	if _, err := sOption.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: optionKey, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "MKT", Quantity: 75, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed option: %v", err)
+	}
+	usedOption := sOption.paperExec.Limits().Used
+	if usedOption < 7000 {
+		t.Fatalf("option long margin = %v, want the full premium", usedOption)
+	}
+}
+
+func TestPaperMaxLotsCountsRestingEntryOrders(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+
+	if _, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "L", Quantity: 75, Price: 99, Validity: "DAY",
+	}); err != nil {
+		t.Fatalf("seed resting order: %v", err)
+	}
+
+	s.configMu.Lock()
+	s.cfg.Trading.Risk.MaxOpenLotsPerIndex = 1
+	s.configMu.Unlock()
+
+	order := kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "L", Quantity: 75, Price: 99, Validity: "DAY",
+	}
+	if err := s.checkPaperOrderRisk(ctx, order); err == nil {
+		t.Fatal("expected the resting entry order to count toward max_open_lots_per_index")
+	}
+}
+
+func TestPaperReconcileCancelsOrphanPendingBracket(t *testing.T) {
+	s, st := newPaperTestServer(t)
+	defer s.Close()
+	ctx := context.Background()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+
+	orphan := bracket.Bracket{
+		ID: "brk-orphan", Mode: "paper", ExchangeSegment: "nse_fo",
+		TradingSymbol: "NIFTY26NOV25000CE", InstrumentKey: key,
+		TransactionType: "BUY", Quantity: 75, Product: "MIS",
+		EntryPrice: 100, TargetPrice: 110, StopLossPrice: 90,
+		Status: bracket.StatusPendingEntry,
+	}
+	if err := st.BracketsFor("paper").CreateBracket(ctx, orphan); err != nil {
+		t.Fatalf("create orphan: %v", err)
+	}
+
+	newEngine := bracket.NewEngine(st.BracketsFor("paper"), s.paperExec, testLogger())
+	newEngine.SetMode("paper")
+	s.paperEngine = newEngine
+	s.reconcilePaperBrackets(ctx)
+
+	got, ok := s.paperEngine.Get(orphan.ID)
+	if !ok {
+		t.Fatal("orphan bracket missing after reconcile")
+	}
+	if got.Status != bracket.StatusCancelled {
+		t.Fatalf("orphan status = %s, want CANCELLED", got.Status)
+	}
+}
+
+func TestPaperBracketRejectsMismatchedEntryOrder(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	ctx := context.Background()
+	s.onTick(ctx, key, 100, 99.9, 100.1)
+	id, err := s.paperExec.Place(ctx, kotakapi.Order{
+		InstrumentKey: key, ExchangeSegment: "nse_fo", TradingSymbol: "NIFTY26NOV25000CE",
+		TransactionType: "BUY", Product: "MIS", OrderType: "L", Quantity: 75, Price: 99, Validity: "DAY",
+	})
+	if err != nil {
+		t.Fatalf("place entry: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"mode": "paper", "exchange_segment": "nse_fo", "trading_symbol": "NIFTY26NOV25000CE",
+		"instrument_key": key, "transaction_type": "BUY", "quantity": 50, "product": "MIS",
+		"entry_price": 99, "entry_order_id": id, "confirm": true,
+	})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaperBracketRejectsUnknownEntryOrder(t *testing.T) {
+	s, _ := newPaperTestServer(t)
+	defer s.Close()
+	key := "nse_fo|NIFTY|2026-11-26|25000|CE"
+	body, _ := json.Marshal(map[string]any{
+		"mode":             "paper",
+		"exchange_segment": "nse_fo",
+		"trading_symbol":   "NIFTY26NOV25000CE",
+		"instrument_key":   key,
+		"transaction_type": "BUY",
+		"quantity":         75,
+		"product":          "MIS",
+		"entry_price":      100,
+		"entry_order_id":   "paper_missing",
+		"confirm":          true,
+	})
+	rec := do(t, s, localRequestWithBody(http.MethodPost, "/api/brackets", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }

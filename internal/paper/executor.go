@@ -181,7 +181,7 @@ func (e *Executor) restore(ctx context.Context) error {
 	}
 	for i := range positions {
 		p := positions[i]
-		e.positions[p.InstrumentKey] = &p
+		e.positions[positionKey(p.InstrumentKey, p.Product)] = &p
 	}
 	return nil
 }
@@ -273,8 +273,10 @@ func (e *Executor) Place(ctx context.Context, o kotakapi.Order) (string, error) 
 	e.mu.Lock()
 	e.orders[id] = order
 	e.indexOpenLocked(order)
+	e.pruneOrdersLocked()
 	var fills []bracket.Fill
-	if orderType == "MKT" {
+	switch {
+	case orderType == "MKT":
 		price := marketFillPrice(side, quote, e.slippage)
 		fill, ferr := e.fillNewLocked(ctx, order, price, order.Quantity)
 		if ferr != nil {
@@ -284,7 +286,41 @@ func (e *Executor) Place(ctx context.Context, o kotakapi.Order) (string, error) 
 			return "", fmt.Errorf("paper: fill order: %w", ferr)
 		}
 		fills = append(fills, fill)
-	} else {
+	case order.Validity == "IOC":
+		// Immediate-or-cancel: fill now if the cached tick crosses it, else
+		// cancel instead of leaving a working order behind.
+		filled := false
+		if q, ok := e.quotes[key]; ok && q.LTP > 0 {
+			if price, hit := e.triggerPrice(order, q.LTP); hit {
+				fill, ferr := e.fillNewLocked(ctx, order, price, order.Quantity)
+				if ferr != nil {
+					delete(e.orders, id)
+					e.unindexOpenLocked(order)
+					e.mu.Unlock()
+					return "", fmt.Errorf("paper: fill IOC order: %w", ferr)
+				}
+				fills = append(fills, fill)
+				filled = true
+			}
+		}
+		if !filled {
+			order.Status = StatusCancelled
+			order.UpdatedAt = e.now()
+			pctx, cancel := persistContext(ctx)
+			err := e.store.CreatePaperOrder(pctx, *order)
+			cancel()
+			if err != nil {
+				delete(e.orders, id)
+				e.unindexOpenLocked(order)
+				e.mu.Unlock()
+				return "", fmt.Errorf("paper: persist IOC order: %w", err)
+			}
+			e.unindexOpenLocked(order)
+			if isEntryTag(order.Tag) {
+				fills = append(fills, bracket.Fill{OrderID: id, Tag: order.Tag, Status: StatusCancelled})
+			}
+		}
+	default:
 		pctx, cancel := persistContext(ctx)
 		err := e.store.CreatePaperOrder(pctx, *order)
 		cancel()
@@ -408,7 +444,7 @@ func (e *Executor) Lookup(_ context.Context, id, tag string) (string, string, fl
 		}
 	}
 	if found == nil {
-		return "", "", 0, bracket.ErrExecutorUnavailable
+		return "", "", 0, bracket.ErrOrderNotFound
 	}
 	return found.ID, found.Status, found.FilledPrice, nil
 }
@@ -486,31 +522,42 @@ func (e *Executor) triggerPrice(o *Order, ltp float64) (float64, bool) {
 		if o.Price <= 0 {
 			return 0, false
 		}
+		// A marketable limit fills at the better available tick, never worse
+		// than the limit.
 		if buy && ltp <= o.Price {
-			return o.Price, true
+			return mathMin(o.Price, ltp), true
 		}
 		if !buy && ltp >= o.Price {
-			return o.Price, true
+			return mathMax(o.Price, ltp), true
 		}
 	case "SL-M":
+		// A stop-market fills at the tick that crossed it, including any gap.
 		if buy && o.TriggerPrice > 0 && ltp >= o.TriggerPrice {
-			return o.TriggerPrice + e.slippage, true
+			return ltp + e.slippage, true
 		}
 		if !buy && o.TriggerPrice > 0 && ltp <= o.TriggerPrice {
-			return mathMax(o.TriggerPrice-e.slippage, 0.01), true
+			return mathMax(ltp-e.slippage, 0.01), true
 		}
 	case "SL":
 		if buy && o.TriggerPrice > 0 && ltp >= o.TriggerPrice {
-			if o.Price > 0 {
+			if o.Price <= 0 {
+				return ltp + e.slippage, true
+			}
+			if ltp <= o.Price {
 				return o.Price, true
 			}
-			return o.TriggerPrice + e.slippage, true
+			// Gapped above the limit: a real stop-limit would not fill yet.
+			return 0, false
 		}
 		if !buy && o.TriggerPrice > 0 && ltp <= o.TriggerPrice {
-			if o.Price > 0 {
+			if o.Price <= 0 {
+				return mathMax(ltp-e.slippage, 0.01), true
+			}
+			if ltp >= o.Price {
 				return o.Price, true
 			}
-			return mathMax(o.TriggerPrice-e.slippage, 0.01), true
+			// Gapped below the limit: a real stop-limit would not fill yet.
+			return 0, false
 		}
 	}
 	return 0, false
@@ -532,7 +579,7 @@ func (e *Executor) planFill(o *Order, price float64, qty int64) (Order, Position
 		TradingSymbol:   o.TradingSymbol,
 		Product:         o.Product,
 	}
-	if existing := e.positions[o.InstrumentKey]; existing != nil {
+	if existing := e.positions[positionKey(o.InstrumentKey, o.Product)]; existing != nil {
 		pos = *existing
 	}
 	realized := applyToPosition(&pos, o.TransactionType, qty, price)
@@ -556,7 +603,7 @@ func (e *Executor) planFill(o *Order, price float64, qty int64) (Order, Position
 
 func (e *Executor) applyFillLocked(o *Order, filled Order, pos Position, account Account, price, realized float64) bracket.Fill {
 	*o = filled
-	e.positions[o.InstrumentKey] = &pos
+	e.positions[positionKey(o.InstrumentKey, o.Product)] = &pos
 	e.account = account
 	e.lastFill[o.InstrumentKey] = price
 	e.unindexOpenLocked(o)
@@ -644,6 +691,36 @@ func (e *Executor) Positions() []PositionView {
 	return out
 }
 
+// maxInMemoryOrders caps the in-memory order book. Persisted history is not
+// affected; only very old completed orders are dropped from memory.
+const maxInMemoryOrders = 5000
+
+func (e *Executor) pruneOrdersLocked() {
+	if len(e.orders) <= maxInMemoryOrders {
+		return
+	}
+	type candidate struct {
+		id string
+		at time.Time
+	}
+	candidates := make([]candidate, 0, len(e.orders))
+	for id, o := range e.orders {
+		if o.Open() {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, at: o.UpdatedAt})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].at.Before(candidates[j].at)
+	})
+	for _, c := range candidates {
+		if len(e.orders) <= maxInMemoryOrders {
+			break
+		}
+		delete(e.orders, c.id)
+	}
+}
+
 // Orders returns the in-memory order book, newest first.
 func (e *Executor) Orders() []Order {
 	e.mu.Lock()
@@ -666,7 +743,7 @@ func (e *Executor) Limits() Limits {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	used := e.usedMarginLocked()
-	total := e.account.StartingBalance + e.account.RealizedPnL
+	total := e.account.StartingBalance + e.account.RealizedPnL + e.unrealizedPnLLocked()
 	available := total - used
 	if available < 0 {
 		available = 0
@@ -688,11 +765,18 @@ func (e *Executor) usedMarginLocked() float64 {
 		if p.NetQuantity < 0 {
 			notional = absFloat64(float64(p.NetQuantity)) * e.shortNotionalFor(p.InstrumentKey, price)
 			notional *= e.shortMarginPct / 100
+		} else if !e.isOptionNotional(p.InstrumentKey) {
+			// Non-option longs use the same intraday percentage as shorts.
+			notional *= e.shortMarginPct / 100
 		}
 		used += notional
 	}
 	for _, o := range e.orders {
 		if !o.Open() || !isEntryTag(o.Tag) {
+			continue
+		}
+		opening := e.openingQtyLocked(o)
+		if opening <= 0 {
 			continue
 		}
 		price := o.Price
@@ -707,14 +791,67 @@ func (e *Executor) usedMarginLocked() float64 {
 		if price <= 0 {
 			continue
 		}
-		notional := absFloat64(float64(o.Quantity)) * price
+		notional := absFloat64(float64(opening)) * price
 		if o.TransactionType == "SELL" {
-			notional = absFloat64(float64(o.Quantity)) * e.shortNotionalFor(o.InstrumentKey, price)
+			notional = absFloat64(float64(opening)) * e.shortNotionalFor(o.InstrumentKey, price)
+			notional *= e.shortMarginPct / 100
+		} else if !e.isOptionNotional(o.InstrumentKey) {
 			notional *= e.shortMarginPct / 100
 		}
 		used += notional
 	}
 	return used
+}
+
+// openingQtyLocked returns the portion of an order that opens new exposure.
+// Only that portion reserves margin; a reduce or the closing part of a reversal
+// does not.
+func (e *Executor) openingQtyLocked(o *Order) int64 {
+	current := int64(0)
+	if p := e.positions[positionKey(o.InstrumentKey, o.Product)]; p != nil {
+		current = p.NetQuantity
+	}
+	delta := o.Quantity
+	if o.TransactionType == "SELL" {
+		delta = -delta
+	}
+	if current == 0 {
+		return absInt64(delta)
+	}
+	if (current > 0 && delta > 0) || (current < 0 && delta < 0) {
+		return absInt64(delta)
+	}
+	excess := absInt64(delta) - absInt64(current)
+	if excess < 0 {
+		return 0
+	}
+	return excess
+}
+
+func (e *Executor) unrealizedPnLLocked() float64 {
+	var total float64
+	for _, p := range e.positions {
+		if p.NetQuantity == 0 {
+			continue
+		}
+		ltp := p.AveragePrice
+		if q, ok := e.quotes[p.InstrumentKey]; ok && q.LTP > 0 {
+			ltp = q.LTP
+		}
+		total += (ltp - p.AveragePrice) * float64(p.NetQuantity)
+	}
+	return total
+}
+
+// isOptionNotional reports whether the executor can resolve an option strike
+// for the instrument. Long options reserve their full premium; other longs use
+// the same intraday percentage as shorts.
+func (e *Executor) isOptionNotional(instrumentKey string) bool {
+	if e.shortNotional == nil {
+		return false
+	}
+	_, ok := e.shortNotional(instrumentKey)
+	return ok
 }
 
 func (e *Executor) shortNotionalFor(instrumentKey string, fallback float64) float64 {
@@ -753,18 +890,12 @@ func (e *Executor) OpenInstrumentKeys() []string {
 func (e *Executor) PnL() float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	total := e.account.RealizedPnL
-	for _, p := range e.positions {
-		if p.NetQuantity == 0 {
-			continue
-		}
-		ltp := p.AveragePrice
-		if q, ok := e.quotes[p.InstrumentKey]; ok && q.LTP > 0 {
-			ltp = q.LTP
-		}
-		total += (ltp - p.AveragePrice) * float64(p.NetQuantity)
-	}
-	return total
+	return e.account.RealizedPnL + e.unrealizedPnLLocked()
+}
+
+// positionKey scopes a position to its product so MIS and NRML do not merge.
+func positionKey(instrumentKey, product string) string {
+	return strings.ToUpper(strings.TrimSpace(product)) + "\x00" + strings.TrimSpace(instrumentKey)
 }
 
 func persistContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -855,6 +986,9 @@ func isEntryTag(tag string) bool {
 	return !strings.HasPrefix(tag, "exit_") && !strings.HasPrefix(tag, "xstop_")
 }
 
+// IsEntryTag reports whether a paper order tag represents an opening order.
+func IsEntryTag(tag string) bool { return isEntryTag(tag) }
+
 func isExpired(o *Order, now time.Time) bool {
 	if o == nil || o.CreatedAt.IsZero() {
 		return false
@@ -924,6 +1058,13 @@ func minInt64(a, b int64) int64 {
 
 func mathMax(a, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func mathMin(a, b float64) float64 {
+	if a < b {
 		return a
 	}
 	return b

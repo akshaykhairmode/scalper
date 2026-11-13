@@ -10,6 +10,7 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
+	"github.com/akshaykhairmode/scalper/internal/paper"
 )
 
 type bracketListResponse struct {
@@ -54,6 +55,10 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b.Mode = mode
+	// HTTP creates always start pending. A client must not be able to fabricate
+	// an in-position bracket, which would arm an exchange stop with no position
+	// and skip the risk checks below.
+	b.Status = bracket.StatusPendingEntry
 	engine := s.engineFor(mode)
 	if engine == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable for "+mode, nil)
@@ -67,9 +72,40 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for paper brackets", nil)
 		return
 	}
+	if id := strings.TrimSpace(b.EntryOrderID); id != "" && mode == modePaper {
+		if s.paperExec == nil {
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "paper account is not enabled", nil)
+			return
+		}
+		order, ok := s.paperExec.Order(id)
+		if !ok {
+			s.writeRouteError(w, r, http.StatusBadRequest, "entry_order_id does not belong to the paper account", nil)
+			return
+		}
+		if !strings.EqualFold(order.InstrumentKey, b.InstrumentKey) ||
+			!strings.EqualFold(order.ExchangeSegment, b.ExchangeSegment) ||
+			!strings.EqualFold(order.TradingSymbol, b.TradingSymbol) ||
+			normalizeOrderSide(order.TransactionType) != normalizeOrderSide(b.TransactionType) ||
+			order.Quantity != b.Quantity {
+			s.writeRouteError(w, r, http.StatusBadRequest, "entry_order_id does not match the bracket", nil)
+			return
+		}
+		switch order.Status {
+		case paper.StatusOpen, paper.StatusTriggerPending:
+			// The order is still working; the bracket stays pending.
+		case paper.StatusComplete:
+			b.Status = bracket.StatusInPosition
+			if order.FilledPrice > 0 {
+				b.EntryPrice = order.FilledPrice
+			}
+		default:
+			s.writeRouteError(w, r, http.StatusBadRequest, "entry_order_id is not working or filled", nil)
+			return
+		}
+	}
 
 	// If the bracket needs an entry order placed (EntryOrderID is empty), enforce risk controls
-	if (b.Status == "" || b.Status == bracket.StatusPendingEntry) && b.EntryOrderID == "" {
+	if b.EntryOrderID == "" {
 		entryOrder := kotakapi.Order{
 			InstrumentKey:   b.InstrumentKey,
 			ExchangeSegment: b.ExchangeSegment,
@@ -100,7 +136,11 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 
 	created, err := engine.Create(r.Context(), b)
 	if err != nil {
-		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
+		status := http.StatusBadRequest
+		if errors.Is(err, bracket.ErrDuplicateBracket) {
+			status = http.StatusConflict
+		}
+		s.writeRouteError(w, r, status, err.Error(), err)
 		return
 	}
 	if mode == modePaper {
@@ -337,7 +377,7 @@ func (s *Server) lookupBrokerOrder(ctx context.Context, orderID, tag string) (st
 		price, _ := numberField(row, "avgPrc", "avgprc", "avg_price", "average_price", "price", "prc")
 		return rowID, status, price, nil
 	}
-	return "", "", 0, errors.New("order not found")
+	return "", "", 0, bracket.ErrOrderNotFound
 }
 
 func (s *Server) reconcileBracketsAfterStart() {

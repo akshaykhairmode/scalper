@@ -208,6 +208,8 @@ func (s *Server) squareOffPaper(ctx context.Context) (int, []string) {
 
 	// Phase 2: close net positions.
 	closed := 0
+	closedKeys := make(map[string]bool)
+	failedKeys := make(map[string]bool)
 	for _, p := range s.paperExec.Positions() {
 		if p.NetQuantity == 0 {
 			continue
@@ -229,14 +231,28 @@ func (s *Server) squareOffPaper(ctx context.Context) (int, []string) {
 			Validity:        "DAY",
 		})
 		if err != nil {
+			failedKeys[paperPosKey(p.InstrumentKey, p.Product)] = true
 			errs = append(errs, p.TradingSymbol+": "+err.Error())
 			continue
 		}
+		closedKeys[paperPosKey(p.InstrumentKey, p.Product)] = true
 		closed++
 	}
 
-	// Phase 3: record the realized exit price/PnL now that the fills exist.
+	// Phase 3: record realized PnL for closed positions and restore brackets
+	// whose close failed, so the position is never left unprotected.
 	for _, b := range active {
+		key := paperPosKey(b.InstrumentKey, b.Product)
+		if failedKeys[key] {
+			if err := s.paperEngine.Rearm(ctx, b.ID); err != nil {
+				errs = append(errs, b.TradingSymbol+": "+err.Error())
+			}
+			continue
+		}
+		if !closedKeys[key] {
+			// No position was found; the bracket is already flat.
+			continue
+		}
 		price, ok := s.paperExec.LastFillPrice(b.InstrumentKey)
 		if !ok {
 			for _, p := range s.paperExec.Positions() {
@@ -257,44 +273,110 @@ func (s *Server) squareOffPaper(ctx context.Context) (int, []string) {
 	return closed, errs
 }
 
-// disarmPaperBracketsForInstrument marks in-position paper brackets externally
-// exited after a manual order closes the whole position. Pending entries are
-// intentionally left alone: they are separate orders, not part of this exit.
-func (s *Server) disarmPaperBracketsForInstrument(ctx context.Context, instrumentKey, segment, symbol string) {
-	if s.paperEngine == nil || s.paperExec == nil {
+// syncPaperBracketsAfterExit resizes or disarms in-position paper brackets to
+// match the remaining net position after a manual exit. It never increases a
+// bracket's quantity.
+func (s *Server) syncPaperBracketsAfterExit(ctx context.Context, instrumentKey, product, segment, symbol string) {
+	if s.paperEngine == nil || s.paperExec == nil || strings.TrimSpace(product) == "" {
 		return
 	}
-	net := int64(0)
-	found := false
-	for _, p := range s.paperExec.Positions() {
-		if p.InstrumentKey == instrumentKey {
-			net = p.NetQuantity
-			found = true
-			break
-		}
-	}
-	if found && net != 0 {
-		// Partial exit: keep the bracket's SL/TP protecting the remainder.
-		return
-	}
+	net := s.paperPositionNet(instrumentKey, product)
 	active, err := s.paperEngine.List(500)
 	if err != nil {
 		s.log.Warn("failed to list paper brackets for manual exit", "error", err)
 		return
 	}
+	var matching []bracket.Bracket
 	for _, b := range active {
 		if b.Status != bracket.StatusInPosition && b.Status != bracket.StatusExitFailed {
+			continue
+		}
+		if product != "" && !strings.EqualFold(strings.TrimSpace(b.Product), strings.TrimSpace(product)) {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(b.ExchangeSegment), strings.TrimSpace(segment)) ||
 			!strings.EqualFold(strings.TrimSpace(b.TradingSymbol), strings.TrimSpace(symbol)) {
 			continue
 		}
-		price, _ := s.paperExec.LastFillPrice(b.InstrumentKey)
-		if err := s.paperEngine.MarkExternalExit(ctx, b.ID, price); err != nil {
-			s.log.Warn("failed to disarm paper bracket after manual exit", "bracket_id", b.ID, "error", err)
+		matching = append(matching, b)
+	}
+	if net == 0 {
+		for _, b := range matching {
+			price, _ := s.paperExec.LastFillPrice(b.InstrumentKey)
+			if err := s.paperEngine.MarkExternalExit(ctx, b.ID, price); err != nil {
+				s.log.Warn("failed to disarm paper bracket after manual exit", "bracket_id", b.ID, "error", err)
+			}
+		}
+		return
+	}
+
+	long := net > 0
+	remaining := absInt64(net)
+	for _, b := range matching {
+		// A reversal leaves the bracket on the wrong side.
+		if (long && b.TransactionType == "SELL") || (!long && b.TransactionType == "BUY") {
+			price, _ := s.paperExec.LastFillPrice(b.InstrumentKey)
+			if err := s.paperEngine.MarkExternalExit(ctx, b.ID, price); err != nil {
+				s.log.Warn("failed to disarm reversed paper bracket", "bracket_id", b.ID, "error", err)
+			}
+			continue
+		}
+		if remaining <= 0 {
+			break
+		}
+		if b.Quantity <= remaining {
+			remaining -= b.Quantity
+			continue
+		}
+		if err := s.paperEngine.UpdateQuantity(ctx, b.ID, remaining); err != nil {
+			s.log.Warn("failed to resize paper bracket after partial exit", "bracket_id", b.ID, "error", err)
+		}
+		remaining = 0
+	}
+}
+
+// rearmPaperBackstopsForContract restores paper exchange stops after a manual
+// exit is rejected.
+func (s *Server) rearmPaperBackstopsForContract(ctx context.Context, segment, symbol, product string) {
+	if s.paperEngine == nil {
+		return
+	}
+	active, err := s.paperEngine.List(500)
+	if err != nil {
+		return
+	}
+	for _, b := range active {
+		if b.Status != bracket.StatusInPosition {
+			continue
+		}
+		if product != "" && !strings.EqualFold(strings.TrimSpace(b.Product), strings.TrimSpace(product)) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(b.ExchangeSegment), strings.TrimSpace(segment)) ||
+			!strings.EqualFold(strings.TrimSpace(b.TradingSymbol), strings.TrimSpace(symbol)) {
+			continue
+		}
+		s.paperEngine.EnsureExchangeStop(ctx, b.ID)
+	}
+}
+
+// paperPositionNet returns the current net paper position for an instrument
+// and product. An empty product matches any product.
+func (s *Server) paperPositionNet(instrumentKey, product string) int64 {
+	if s.paperExec == nil || strings.TrimSpace(product) == "" {
+		return 0
+	}
+	for _, p := range s.paperExec.Positions() {
+		if p.InstrumentKey == instrumentKey && (product == "" || strings.EqualFold(p.Product, product)) {
+			return p.NetQuantity
 		}
 	}
+	return 0
+}
+
+// paperPosKey scopes a position to its product for square-off bookkeeping.
+func paperPosKey(instrumentKey, product string) string {
+	return strings.ToUpper(strings.TrimSpace(product)) + "\x00" + strings.TrimSpace(instrumentKey)
 }
 
 // paperMarginPreview estimates required margin for the frontend preview.
@@ -306,6 +388,10 @@ func (s *Server) paperMarginPreview(price float64, qty int64, side, instrumentKe
 			perShare = v
 		}
 		required = float64(qty) * perShare
+		if pct := s.configSnapshot().Trading.Paper.ShortMarginPct; pct > 0 {
+			required *= pct / 100
+		}
+	} else if _, isOption := s.paperShortNotional(instrumentKey); !isOption {
 		if pct := s.configSnapshot().Trading.Paper.ShortMarginPct; pct > 0 {
 			required *= pct / 100
 		}

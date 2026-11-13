@@ -1332,7 +1332,7 @@ func TestBrokerSquareOffAll(t *testing.T) {
 		s := newTestServer(t, serverOpts{db: fakeDB{}, kotak: client, consumerKey: "ck-123"})
 		defer s.Close()
 
-		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		req := localRequest(http.MethodPost, "/api/broker/square-off-all?mode=live")
 		rec := do(t, s, req)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
@@ -1343,7 +1343,7 @@ func TestBrokerSquareOffAll(t *testing.T) {
 		s := newTestServer(t, serverOpts{db: fakeDB{}})
 		defer s.Close()
 
-		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		req := localRequest(http.MethodPost, "/api/broker/square-off-all?mode=live")
 		rec := do(t, s, req)
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("expected 503 Service Unavailable, got %d", rec.Code)
@@ -1425,6 +1425,8 @@ func TestBrokerSquareOffAll(t *testing.T) {
 		}
 
 		unconfirmedReq := localRequest(http.MethodPost, "/api/broker/square-off-all")
+		unconfirmedReq.Header.Set("Content-Type", "application/json")
+		unconfirmedReq.Body = io.NopCloser(strings.NewReader(`{"mode":"live"}`))
 		unconfirmedRec := do(t, s, unconfirmedReq)
 		if unconfirmedRec.Code != http.StatusBadRequest {
 			t.Fatalf("expected status 400 for unconfirmed square off, got %d: %s", unconfirmedRec.Code, unconfirmedRec.Body.String())
@@ -1432,7 +1434,7 @@ func TestBrokerSquareOffAll(t *testing.T) {
 
 		req := localRequest(http.MethodPost, "/api/broker/square-off-all")
 		req.Header.Set("Content-Type", "application/json")
-		req.Body = io.NopCloser(strings.NewReader(`{"confirm":true}`))
+		req.Body = io.NopCloser(strings.NewReader(`{"confirm":true,"mode":"live"}`))
 		rec := do(t, s, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
