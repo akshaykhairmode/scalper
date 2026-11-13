@@ -1,6 +1,7 @@
 import * as Patterns from "./chart/patterns";
 import * as Indicators from "./chart/indicators";
 import { calculateFibLevels } from "./chart/fibonacci";
+import { buildVolumeProfile, suggestVolumeRanges } from "./chart/volumeProfile";
 
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
@@ -1289,6 +1290,124 @@ function registerCustomOverlays() {
           ignoreEvent: true,
         },
       ];
+    },
+  });
+
+  kc.registerOverlay({
+    name: "volumeProfile",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      const data = overlay.extendData || {};
+      const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const priceHigh = Number(data.priceHigh);
+      const priceLow = Number(data.priceLow);
+      if (!nodes.length || !coordinates || coordinates.length < 2) return [];
+      if (!Number.isFinite(priceHigh) || !Number.isFinite(priceLow) || priceHigh <= priceLow) return [];
+      const top = coordinates[0];
+      const bottom = coordinates[1];
+      if (!Number.isFinite(top?.y) || !Number.isFinite(bottom?.y)) return [];
+
+      const width = bounding?.width || 800;
+      const span = priceHigh - priceLow;
+      const yOf = (price) => top.y + ((priceHigh - price) / span) * (bottom.y - top.y);
+      const figures = [];
+
+      // Zones first so the histogram bars sit on top of them.
+      const band = (range, color) => {
+        if (!range) return;
+        const y1 = yOf(Number(range.high));
+        const y2 = yOf(Number(range.low));
+        if (!Number.isFinite(y1) || !Number.isFinite(y2)) return;
+        figures.push({
+          type: "polygon",
+          attrs: {
+            coordinates: [
+              { x: 0, y: y1 },
+              { x: width, y: y1 },
+              { x: width, y: y2 },
+              { x: 0, y: y2 },
+            ],
+          },
+          styles: { style: "fill", color, borderColor: "transparent", borderSize: 0 },
+          ignoreEvent: true,
+        });
+      };
+      band(data.buy, "rgba(41, 179, 96, 0.12)");
+      band(data.sell, "rgba(240, 90, 90, 0.12)");
+
+      let maxVolume = 0;
+      for (const node of nodes) {
+        if (Number(node?.volume) > maxVolume) maxVolume = Number(node.volume);
+      }
+      const maxBar = Math.max(20, width * 0.16);
+      if (maxVolume > 0) {
+        for (const node of nodes) {
+          const volume = Number(node?.volume);
+          if (!(volume > 0)) continue;
+          const y1 = yOf(Number(node.high));
+          const y2 = yOf(Number(node.low));
+          if (!Number.isFinite(y1) || !Number.isFinite(y2)) continue;
+          const barWidth = Math.max(1, (volume / maxVolume) * maxBar);
+          const rising = Number(node.buy) >= Number(node.sell);
+          figures.push({
+            type: "polygon",
+            attrs: {
+              coordinates: [
+                { x: width - barWidth, y: y1 },
+                { x: width, y: y1 },
+                { x: width, y: y2 },
+                { x: width - barWidth, y: y2 },
+              ],
+            },
+            styles: {
+              style: "fill",
+              color: rising ? "rgba(53, 196, 106, 0.30)" : "rgba(255, 93, 93, 0.30)",
+              borderColor: "transparent",
+              borderSize: 0,
+            },
+            ignoreEvent: true,
+          });
+        }
+      }
+
+      const level = (price, color, dashed, size) => {
+        const value = Number(price);
+        if (!Number.isFinite(value)) return;
+        const y = yOf(value);
+        figures.push({
+          type: "line",
+          attrs: { coordinates: [{ x: 0, y }, { x: width, y }] },
+          styles: {
+            style: dashed ? "dashed" : "solid",
+            dashedValue: [5, 4],
+            size,
+            color,
+          },
+          ignoreEvent: true,
+        });
+      };
+      level(data.val, "rgba(148, 163, 184, 0.7)", true, 1);
+      level(data.vah, "rgba(148, 163, 184, 0.7)", true, 1);
+      level(data.poc, "rgba(240, 180, 41, 0.95)", false, 1.4);
+
+      const pocPrice = Number(data.poc);
+      if (Number.isFinite(pocPrice)) {
+        figures.push({
+          type: "text",
+          attrs: { x: 8, y: yOf(pocPrice) - 7, text: "POC", align: "left", baseline: "bottom" },
+          styles: {
+            color: "#f0b429",
+            size: 9,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+          },
+          ignoreEvent: true,
+        });
+      }
+      return figures;
     },
   });
 
@@ -2614,7 +2733,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showDepth = true, onLevelDrop = null, onLevelRemove = null } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showVolumeProfile = false, showDepth = true, onLevelDrop = null, onLevelRemove = null, onVolumeProfile = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2631,6 +2750,12 @@ export class CandleChart {
     this.showMaxPain = Boolean(showMaxPain);
     this.maxPainValue = null;
     this.maxPainMeta = null;
+    this.showVolumeProfile = Boolean(showVolumeProfile);
+    this.vpOverlayId = null;
+    this.vpLastKey = "";
+    this.vpSuggestion = null;
+    this._vpTimer = null;
+    this.onVolumeProfile = typeof onVolumeProfile === "function" ? onVolumeProfile : null;
     this.thetaMeta = null;
     this.thetaDataReady = false;
     this.showDepth = Boolean(showDepth);
@@ -3078,6 +3203,94 @@ export class CandleChart {
     this.refreshEMACrosses();
     this.refreshDivergence();
     this.refreshMomentumCandles();
+  }
+
+  toggleVolumeProfile(forceState) {
+    this.showVolumeProfile = typeof forceState === "boolean" ? forceState : !this.showVolumeProfile;
+    this.vpLastKey = "";
+    this.refreshVolumeProfile(true);
+    return this.showVolumeProfile;
+  }
+
+  clearVolumeProfile() {
+    this.vpOverlayId = null;
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "volume_profile" });
+    } catch (_) {}
+    try {
+      this.chart.removeOverlay({ name: "volumeProfile" });
+    } catch (_) {}
+  }
+
+  emitVolumeProfile() {
+    if (!this.onVolumeProfile) return;
+    try {
+      this.onVolumeProfile(this.vpSuggestion);
+    } catch (e) {
+      console.warn("onVolumeProfile handler:", e);
+    }
+  }
+
+  debounceVolumeProfile() {
+    if (this._vpTimer) clearTimeout(this._vpTimer);
+    this._vpTimer = setTimeout(() => {
+      this._vpTimer = null;
+      if (this.showVolumeProfile) this.refreshVolumeProfile();
+    }, 1500);
+  }
+
+  refreshVolumeProfile(force = false) {
+    if (!this.showVolumeProfile || !this.chart || this.data.length < 8) {
+      this.clearVolumeProfile();
+      this.vpSuggestion = null;
+      this.vpLastKey = "";
+      this.emitVolumeProfile();
+      return;
+    }
+    const profile = buildVolumeProfile(this.data, { buckets: 48, lookback: 300 });
+    const last = this.data[this.data.length - 1];
+    const suggestion = profile ? suggestVolumeRanges(profile, last?.close) : null;
+    if (!profile || !suggestion) {
+      this.clearVolumeProfile();
+      this.vpSuggestion = null;
+      this.vpLastKey = "";
+      this.emitVolumeProfile();
+      return;
+    }
+    const key = [
+      profile.candles,
+      profile.poc.toFixed(4),
+      profile.vah.toFixed(4),
+      profile.val.toFixed(4),
+      suggestion.bias,
+    ].join(":");
+    if (!force && key === this.vpLastKey && this.vpOverlayId) return;
+    this.vpLastKey = key;
+    this.clearVolumeProfile();
+    try {
+      const id = this.chart.createOverlay({
+        name: "volumeProfile",
+        groupId: "volume_profile",
+        points: [{ value: profile.high }, { value: profile.low }],
+        lock: true,
+        extendData: {
+          priceHigh: profile.high,
+          priceLow: profile.low,
+          nodes: profile.nodes,
+          poc: profile.poc,
+          vah: profile.vah,
+          val: profile.val,
+          buy: suggestion.buy,
+          sell: suggestion.sell,
+        },
+      });
+      if (id) this.vpOverlayId = id;
+    } catch (e) {
+      console.warn("createOverlay volumeProfile:", e);
+    }
+    this.vpSuggestion = { ...suggestion, profile };
+    this.emitVolumeProfile();
   }
 
   clearEMACrosses() {
@@ -3982,6 +4195,7 @@ export class CandleChart {
     this.refreshPositionOverlay();
     this.refreshOpenOrders();
     this.refreshDepth();
+    this.refreshVolumeProfile();
   }
 
   setTrades(trades, { isSpot = false } = {}) {
@@ -4469,6 +4683,9 @@ export class CandleChart {
     }
     if (this.showDepth) {
       this.debounceDepthRefresh();
+    }
+    if (this.showVolumeProfile) {
+      this.debounceVolumeProfile();
     }
   }
 

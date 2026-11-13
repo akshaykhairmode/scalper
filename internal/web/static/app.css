@@ -759,6 +759,28 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
   margin-left: 3px;
   font-weight: 700;
 }
+.pane-vp-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 46%;
+  padding: 1px 6px;
+  border: 1px solid #3c4560;
+  border-radius: 4px;
+  background: #12182a;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: .03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  cursor: default;
+}
+.pane-vp-chip[hidden] { display: none; }
+.pane-vp-chip.long { border-color: #1f5c3a; background: #0e1f16; color: #4ade80; }
+.pane-vp-chip.short { border-color: #5c1f2a; background: #1f0e12; color: #f87171; }
+.pane-vp-chip.none { border-color: #4a3a10; background: #1a1608; color: var(--accent); }
 .pane-pcr-chip b.up { color: var(--green); }
 .pane-pcr-chip b.down { color: var(--red); }
 .pane-sub { color: var(--muted-2); font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

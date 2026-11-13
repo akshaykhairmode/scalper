@@ -375,6 +375,9 @@ func TestTerminalTemplateContract(t *testing.T) {
 		`id="toast-alert" role="alert" aria-live="assertive"`,
 		`id="strike-search-input"`,
 		`aria-label="Search strike"`,
+		`id="cs-volume-profile"`,
+		`id="ce-vp-chip"`,
+		`id="pe-vp-chip"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("index body missing %q", want)

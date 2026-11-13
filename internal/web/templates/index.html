@@ -168,7 +168,7 @@
       <article class="pane" data-pane="ce">
         <div class="pane-head">
           <div class="pane-id">
-            <div class="pane-title-row"><span class="pane-title" id="ce-title">CALL</span><select class="pane-strike-select" id="ce-strike-select" aria-label="Call strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="ce-pcr-chip" title="Put/Call Ratio">PCR <b id="ce-pcr-val">—</b></span></div>
+            <div class="pane-title-row"><span class="pane-title" id="ce-title">CALL</span><select class="pane-strike-select" id="ce-strike-select" aria-label="Call strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="ce-pcr-chip" title="Put/Call Ratio">PCR <b id="ce-pcr-val">—</b></span><span class="pane-vp-chip" id="ce-vp-chip" role="status" hidden></span></div>
             <span class="pane-sub" id="ce-sub">select a strike</span>
           </div>
           <div class="pane-quote">
@@ -249,7 +249,7 @@
       <article class="pane" data-pane="pe">
         <div class="pane-head">
           <div class="pane-id">
-            <div class="pane-title-row"><span class="pane-title" id="pe-title">PUT</span><select class="pane-strike-select" id="pe-strike-select" aria-label="Put strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="pe-pcr-chip" title="Put/Call Ratio">PCR <b id="pe-pcr-val">—</b></span></div>
+            <div class="pane-title-row"><span class="pane-title" id="pe-title">PUT</span><select class="pane-strike-select" id="pe-strike-select" aria-label="Put strike" disabled><option value="">—</option></select><span class="pane-pcr-chip" id="pe-pcr-chip" title="Put/Call Ratio">PCR <b id="pe-pcr-val">—</b></span><span class="pane-vp-chip" id="pe-vp-chip" role="status" hidden></span></div>
             <span class="pane-sub" id="pe-sub">select a strike</span>
           </div>
           <div class="pane-quote">
@@ -985,6 +985,14 @@
         <label class="pattern-popover-item">
           <input type="checkbox" id="cs-max-pain">
           <span>Max Pain line <em>(spot)</em></span>
+        </label>
+      </div>
+
+      <div class="chart-settings-group">
+        <span class="chart-settings-group-title">Volume</span>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-volume-profile">
+          <span>Volume Profile + Buy/Sell zones <em>(CE/PE)</em></span>
         </label>
       </div>
 

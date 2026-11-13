@@ -1,5 +1,6 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
+import { formatRange } from "./chart/volumeProfile";
 import { generateQRCodeSVG } from "./utils/qrcode";
 import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
@@ -1322,6 +1323,7 @@ function syncChartSettingsMenu(pane) {
   set("cs-momentum", chart.showMomentum);
   set("cs-theta", S.charts.spot?.showTheta);
   set("cs-max-pain", S.charts.spot?.showMaxPain);
+  set("cs-volume-profile", S.charts.ce?.showVolumeProfile ?? S.charts.pe?.showVolumeProfile);
 }
 
 function closeChartSettings() {
@@ -1382,11 +1384,12 @@ function buildCharts() {
   const savedMomentum = localStorage.getItem("scalper-show-momentum") === "true";
   const savedMaxPain = localStorage.getItem("scalper-show-max-pain") !== "false";
   const savedTheta = localStorage.getItem("scalper-show-theta") === "true";
+  const savedVolumeProfile = localStorage.getItem("scalper-show-volume-profile") === "true";
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
   S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -3456,6 +3459,60 @@ function toggleTheta(enabled) {
   } catch (_) {}
   refreshThetaSeries();
   updateChartSettingsButtonState();
+}
+
+// Volume profile runs on the option legs only: the spot pane is an index and
+// index candles carry no traded volume, so a profile there would be empty.
+const VOLUME_PROFILE_PANES = ["ce", "pe"];
+
+function renderVolumeProfileChip(pane, info) {
+  const chip = $(`${pane}-vp-chip`);
+  if (!chip) return;
+  if (!info || !info.buy || !info.sell) {
+    chip.hidden = true;
+    chip.textContent = "";
+    chip.removeAttribute("title");
+    chip.removeAttribute("aria-label");
+    chip.className = "pane-vp-chip";
+    return;
+  }
+  const bias = info.bias || "none";
+  const arrow = bias === "long" ? "▲" : bias === "short" ? "▼" : "•";
+  const activeRange = bias === "short" ? info.sell : info.buy;
+  chip.hidden = false;
+  chip.className = `pane-vp-chip ${bias}`;
+  chip.textContent = bias === "none" ? "VP • wait" : `VP ${arrow} ${formatRange(activeRange)}`;
+  const parts = [
+    `Volume profile — ${info.note || ""}`.trim(),
+    `Buy ${formatRange(info.buy)}`,
+    `Sell ${formatRange(info.sell)}`,
+    `Stop ${formatRange({ low: info.stop, high: info.stop })}`,
+    `Target ${formatRange({ low: info.target, high: info.target })}`,
+    `POC ${formatRange({ low: info.profile?.poc, high: info.profile?.poc })}`,
+  ];
+  chip.title = parts.join(" · ");
+  chip.setAttribute("aria-label", chip.title);
+}
+
+function toggleVolumeProfile(forceState?) {
+  const first = S.charts.ce || S.charts.pe;
+  if (!first) return false;
+  const next = typeof forceState === "boolean" ? forceState : !first.showVolumeProfile;
+  for (const pane of VOLUME_PROFILE_PANES) {
+    const chart = S.charts[pane];
+    if (chart) chart.toggleVolumeProfile(next);
+    if (!next) renderVolumeProfileChip(pane, null);
+  }
+  try {
+    localStorage.setItem("scalper-show-volume-profile", String(next));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  if (next && !VOLUME_PROFILE_PANES.some((pane) => isPaneVisible(pane))) {
+    toast("Volume profile needs the CALL or PUT chart visible", "warn", 3200);
+  } else {
+    toast(next ? "Volume profile + buy/sell zones enabled" : "Volume profile hidden", "ok", 1600);
+  }
+  return next;
 }
 
 function mergeChartCandles(historical, live, instrumentKey = "") {
@@ -8723,6 +8780,7 @@ function bindEvents() {
     "cs-momentum": (checked) => toggleChartMomentum(checked),
     "cs-max-pain": (checked) => toggleMaxPain(checked),
     "cs-theta": (checked) => toggleTheta(checked),
+    "cs-volume-profile": (checked) => toggleVolumeProfile(checked),
   };
   for (const [id, handler] of Object.entries(chartSettingHandlers)) {
     $(id)?.addEventListener("change", (event: any) => {
