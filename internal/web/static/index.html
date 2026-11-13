@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0b0e14">
   <meta name="mobile-web-app-capable" content="yes">
@@ -26,7 +26,7 @@
       --text: #f3f4f6;
       --text-muted: #94a3b8;
     }
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       padding-top: var(--safe-top);
@@ -136,6 +136,13 @@
       transition: background 0.15s ease;
     }
     .btn-secondary:active { background: rgba(255, 255, 255, 0.1); }
+    .pair-error {
+      margin: 10px 0 0;
+      color: #f87171;
+      font-size: 12px;
+      line-height: 1.4;
+      text-align: center;
+    }
     .paired-box {
       width: 100%;
       background: rgba(16, 185, 129, 0.08);
@@ -312,6 +319,16 @@
       50% { opacity: 1; }
       100% { top: 248px; opacity: 0.2; }
     }
+    @media (prefers-reduced-motion: reduce) {
+      .scan-laser {
+        animation: none;
+        top: 10px;
+        opacity: 1;
+      }
+      .btn-primary:active {
+        transform: none;
+      }
+    }
     .scanner-footer {
       position: absolute;
       bottom: max(24px, var(--safe-bottom));
@@ -333,7 +350,7 @@
 </head>
 <body>
   <div class="pairing-container">
-    <div class="brand-logo">⚡</div>
+    <div class="brand-logo" aria-hidden="true">⚡</div>
     <h1>Scalper Mobile</h1>
     <p class="subtitle">Connect your mobile device to your Scalper trading terminal</p>
 
@@ -345,7 +362,7 @@
       </div>
       <div id="paired-url-text" class="paired-url"></div>
       <div class="paired-actions">
-        <button type="button" class="btn-launch" id="btn-launch-terminal">⚡ Launch Terminal</button>
+        <button type="button" class="btn-launch" id="btn-launch-terminal"><span aria-hidden="true">⚡</span> Launch Terminal</button>
         <button type="button" class="btn-unpair" id="btn-unpair-terminal">Unpair / Scan New</button>
       </div>
     </div>
@@ -358,16 +375,17 @@
       </ol>
 
       <button type="button" class="btn-primary" id="btn-open-scanner">
-        <span>📷</span>
+        <span aria-hidden="true">📷</span>
         <span>Scan QR Code</span>
       </button>
 
       <button type="button" class="btn-secondary" id="btn-pick-image">
-        <span>🖼️</span>
+        <span aria-hidden="true">🖼️</span>
         <span>Upload QR Image / Photo</span>
       </button>
 
       <input type="file" id="file-picker" accept="image/*">
+      <p id="pair-error" class="pair-error" role="alert" hidden></p>
 
       <div style="text-align: center;">
         <button type="button" class="manual-toggle" id="manual-toggle">Enter URL manually</button>
@@ -435,6 +453,26 @@
     const scannerClose = document.getElementById("btn-close-scanner");
     const scannerStatus = document.getElementById("scanner-status");
     const scannerCanvas = document.getElementById("scanner-canvas");
+    const pairError = document.getElementById("pair-error");
+
+    const SCANNER_DEFAULT_STATUS = "Point your camera at the Pair Device QR code on your terminal";
+    let scannerStatusResetTimer = null;
+
+    function setScannerStatus(message, warning = false) {
+      if (scannerStatusResetTimer !== null) {
+        clearTimeout(scannerStatusResetTimer);
+        scannerStatusResetTimer = null;
+      }
+      scannerStatus.textContent = message;
+      scannerStatus.style.color = warning ? "#f87171" : "";
+      if (warning) {
+        scannerStatusResetTimer = window.setTimeout(() => {
+          scannerStatus.textContent = SCANNER_DEFAULT_STATUS;
+          scannerStatus.style.color = "";
+          scannerStatusResetTimer = null;
+        }, 4000);
+      }
+    }
 
     function getSavedServer() {
       try {
@@ -612,6 +650,7 @@
     filePicker.addEventListener("change", async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
+      if (pairError) pairError.hidden = true;
       const img = new Image();
       img.onload = async () => {
         // Try BarcodeDetector
@@ -639,7 +678,12 @@
             return;
           }
         }
-        alert("No valid QR code found in this image. Please try again.");
+        const message = "No valid QR code found in this image. Please try again.";
+        setScannerStatus(message, true);
+        if (pairError) {
+          pairError.textContent = message;
+          pairError.hidden = false;
+        }
       };
       img.src = URL.createObjectURL(file);
     });

@@ -60,7 +60,7 @@
       <button type="button" class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></button>
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
-      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
+      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate"><span aria-hidden="true">🤖</span> AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">{{.Mode}}</span>
       <span class="clock" id="clock">{{.Now}}</span>
@@ -684,7 +684,7 @@
       <form id="serve-auth-form" novalidate style="margin-top:16px;">
         <div id="biometric-unlock-serve-container" style="margin-bottom: 16px;" hidden>
           <button type="button" class="primary" id="biometric-unlock-serve-btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer;">
-            <span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>
+            <span aria-hidden="true">⚡</span> Biometric Unlock (Touch ID / Fingerprint / Face ID)
           </button>
           <div class="auth-divider" style="display:flex; align-items:center; margin:16px 0; color:var(--text-muted, #888); font-size:12px;">
             <span style="flex:1; height:1px; background:var(--border, #333);"></span>
@@ -812,7 +812,7 @@
         <div class="strike-search-wrap">
           <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)..." aria-label="Search strike" aria-describedby="strike-search-hint">
         </div>
-        <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike (Current Spot Price)">⚡ ATM</button>
+        <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike (Current Spot Price)"><span aria-hidden="true">⚡</span> ATM</button>
       </div>
       <span class="strike-search-hint" id="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
       <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
@@ -1046,22 +1046,22 @@
         <div class="mobile-drawer-section">
           <span class="mobile-drawer-section-title">Quick Actions</span>
           <button type="button" class="drawer-action-btn" id="drawer-status-btn">
-            <i>📊</i> <span>System Status &amp; Connectivity</span>
+            <i aria-hidden="true">📊</i> <span>System Status &amp; Connectivity</span>
           </button>
           <button type="button" class="drawer-action-btn" id="drawer-pair-btn">
-            <i>📱</i> <span>Pair Mobile Device (QR Code)</span>
+            <i aria-hidden="true">📱</i> <span>Pair Mobile Device (QR Code)</span>
           </button>
           <button type="button" class="drawer-action-btn" id="drawer-register-btn">
-            <i>🔐</i> <span>Biometrics / Passkey (Touch/Face ID)</span>
+            <i aria-hidden="true">🔐</i> <span>Biometrics / Passkey (Touch/Face ID)</span>
           </button>
           <a href="/settings" target="_blank" rel="noopener noreferrer" class="drawer-action-btn" id="drawer-settings-btn">
-            <i>⚙️</i> <span>Settings</span>
+            <i aria-hidden="true">⚙️</i> <span>Settings</span>
           </a>
           <button type="button" class="drawer-action-btn" id="drawer-theme-btn">
-            <i>🌓</i> <span id="drawer-theme-label">Switch Theme</span>
+            <i aria-hidden="true">🌓</i> <span id="drawer-theme-label">Switch Theme</span>
           </button>
           <button type="button" class="drawer-action-btn" id="drawer-unpair-btn">
-            <i>🔄</i> <span>Switch / Unpair Server (Scan QR)</span>
+            <i aria-hidden="true">🔄</i> <span>Switch / Unpair Server (Scan QR)</span>
           </button>
         </div>
 
@@ -1075,20 +1075,20 @@
   <!-- Concept 1 Bottom Navigation Bar (4 Tab Dock) -->
   <nav class="mobile-bottom-nav" id="mobile-bottom-nav" aria-label="Mobile primary navigation">
     <button type="button" class="mobile-bnav-btn active" id="mb-nav-terminal" data-bnav="terminal">
-      <span class="bnav-icon">⚡</span>
+      <span class="bnav-icon" aria-hidden="true">⚡</span>
       <span class="bnav-label">Terminal</span>
     </button>
     <button type="button" class="mobile-bnav-btn" id="mb-nav-chain" data-bnav="chain">
-      <span class="bnav-icon">⛓</span>
+      <span class="bnav-icon" aria-hidden="true">⛓</span>
       <span class="bnav-label">Chain</span>
     </button>
     <button type="button" class="mobile-bnav-btn" id="mb-nav-positions" data-bnav="positions">
-      <span class="bnav-icon">💼</span>
+      <span class="bnav-icon" aria-hidden="true">💼</span>
       <span class="bnav-label">Positions</span>
       <span class="bnav-badge" id="mobile-bottom-pos-badge" hidden>0</span>
     </button>
     <button type="button" class="mobile-bnav-btn" id="mb-nav-orders" data-bnav="orders">
-      <span class="bnav-icon">📋</span>
+      <span class="bnav-icon" aria-hidden="true">📋</span>
       <span class="bnav-label">Orders</span>
     </button>
   </nav>

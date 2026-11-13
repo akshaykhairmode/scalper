@@ -7519,7 +7519,7 @@ async function handleBiometricUnlock() {
   } finally {
     if (serveBtn) {
       serveBtn.disabled = false;
-      serveBtn.innerHTML = "<span>⚡ Biometric Unlock (Touch ID / Fingerprint / Face ID)</span>";
+      serveBtn.innerHTML = '<span aria-hidden="true">⚡</span> Biometric Unlock (Touch ID / Fingerprint / Face ID)';
     }
   }
 }
