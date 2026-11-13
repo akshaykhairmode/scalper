@@ -6,6 +6,33 @@ import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff
 const $: any = (id: string) => document.getElementById(id);
 const $$: any = (selector: string, root: any = document) => [...root.querySelectorAll(selector)];
 
+// Native <dialog> helpers. Fall back to the hidden attribute for environments
+// where showModal() is unavailable.
+function openDialog(id: string) {
+  const el = $(id);
+  if (!el) return null;
+  if (typeof el.showModal === "function") {
+    if (!el.open) el.showModal();
+  } else {
+    el.hidden = false;
+  }
+  return el;
+}
+
+function closeDialog(id: string) {
+  const el = $(id);
+  if (!el) return;
+  if (typeof el.close === "function" && el.open) el.close();
+  else el.hidden = true;
+}
+
+function dialogIsOpen(id: string) {
+  const el = $(id);
+  if (!el) return false;
+  if (typeof el.open === "boolean") return el.open;
+  return !el.hidden;
+}
+
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;",
   "<": "&lt;",
@@ -966,7 +993,8 @@ function init() {
   window.setInterval(updateAIWinRateChip, 30000);
 
   const serveAuthModal = $("serve-auth-modal");
-  const isTerminalLocked = serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none";
+  const isTerminalLocked = Boolean(serveAuthModal);
+  if (serveAuthModal) openDialog("serve-auth-modal");
   updateBiometricButtons();
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -1976,15 +2004,13 @@ function connectWebSocket() {
 }
 
 function showServerDownModal(attempt) {
-  const modal = $("server-down-modal");
   const status = $("server-down-status");
-  if (modal) modal.hidden = false;
+  openDialog("server-down-modal");
   if (status) status.textContent = `Reconnecting… (attempt ${attempt})`;
 }
 
 function hideServerDownModal() {
-  const modal = $("server-down-modal");
-  if (modal) modal.hidden = true;
+  closeDialog("server-down-modal");
 }
 
 function handleTickData(data, { batch = false } = {}) {
@@ -3788,13 +3814,13 @@ function openStrikeModal(targetType = S.selected.type) {
   $("strike-search-input").value = "";
   applyStrikeFilter();
   renderChainMoreControls();
-  $("strike-modal").hidden = false;
+  openDialog("strike-modal");
   $("strike-search-input").focus();
   requestAnimationFrame(() => scrollATMIntoView());
 }
 
 function closeStrikeModal() {
-  $("strike-modal").hidden = true;
+  closeDialog("strike-modal");
 }
 
 async function selectSearchedStrike(value, targetType = S.strikeSearchTarget) {
@@ -4128,8 +4154,7 @@ function switchTab(tabName: string) {
 }
 
 function closeMobileDrawer() {
-  const backdrop = $("mobile-drawer-backdrop");
-  if (backdrop) backdrop.hidden = true;
+  closeDialog("mobile-drawer-backdrop");
 }
 
 let bottomDirty = false;
@@ -4606,7 +4631,7 @@ async function showOrderHistory(orderId) {
   const body = $("order-history-body");
   if (!modal || !body) return;
 
-  modal.hidden = false;
+  openDialog("order-history-modal");
   body.innerHTML = `<div class="empty-state">Loading history for order ${esc(orderId)}…</div>`;
   if (meta) meta.innerHTML = `<span>Order ID: <strong>${esc(orderId)}</strong></span>`;
 
@@ -6180,7 +6205,12 @@ function openChartQuickOrder(pane, price, x, y) {
 
   const frame = chart.container.closest(".chart-frame") || chart.container;
   frame.appendChild(widget);
-  widget.hidden = false;
+  if (typeof widget.show === "function") {
+    if (!widget.open) widget.show();
+  } else {
+    widget.hidden = false;
+  }
+  $("cqo-price")?.focus();
 
   const frameRect = frame.getBoundingClientRect();
   const widgetWidth = widget.offsetWidth || 250;
@@ -6481,7 +6511,8 @@ function closeChartQuickOrder() {
   const widget = $("chart-quick-order");
   if (widget) {
     widget.classList.remove("is-dragging");
-    widget.hidden = true;
+    if (typeof widget.close === "function" && widget.open) widget.close();
+    else widget.hidden = true;
   }
 }
 
@@ -6622,7 +6653,7 @@ function confirmAction({ title, body, okLabel = "Confirm", danger = false }) {
   const ok = $("confirm-ok");
   ok.textContent = okLabel;
   ok.className = danger ? "danger" : "primary";
-  $("confirm-modal").hidden = false;
+  openDialog("confirm-modal");
   ok.focus();
   return new Promise((resolve) => {
     confirmResolve = resolve;
@@ -6630,7 +6661,7 @@ function confirmAction({ title, body, okLabel = "Confirm", danger = false }) {
 }
 
 function closeConfirm(value) {
-  $("confirm-modal").hidden = true;
+  closeDialog("confirm-modal");
   if (confirmResolve) {
     const resolve = confirmResolve;
     confirmResolve = null;
@@ -6736,20 +6767,16 @@ function openLogin() {
   loginError("");
   const submitBtn = $("login-submit");
   if (submitBtn) submitBtn.textContent = "Continue";
-  const modal = $("login-modal");
-  if (modal) {
-    modal.hidden = false;
-    modal.style.display = "grid";
-  }
+  openDialog("login-modal");
   window.setTimeout(() => $("totp-input")?.focus(), 30);
 }
 
 function closeLogin() {
-  const modal = $("login-modal");
-  if (modal) {
-    modal.hidden = true;
-    modal.style.display = "none";
-  }
+  closeDialog("login-modal");
+  resetLoginState();
+}
+
+function resetLoginState() {
   totpAccepted = false;
   if ($("totp-input")) {
     $("totp-input").value = "";
@@ -6940,7 +6967,7 @@ function setStatusPill(el, statusType, text) {
 async function openStatusModal() {
   const modal = $("status-modal");
   if (!modal) return;
-  modal.hidden = false;
+  openDialog("status-modal");
   await refreshStatusModal(true);
   if (!statusRefreshTimer) {
     statusRefreshTimer = window.setInterval(() => refreshStatusModal(false), 3500);
@@ -6948,8 +6975,7 @@ async function openStatusModal() {
 }
 
 function closeStatusModal() {
-  const modal = $("status-modal");
-  if (modal) modal.hidden = true;
+  closeDialog("status-modal");
   if (statusRefreshTimer) {
     window.clearInterval(statusRefreshTimer);
     statusRefreshTimer = null;
@@ -6957,8 +6983,7 @@ function closeStatusModal() {
 }
 
 async function refreshStatusModal(force = false) {
-  const modal = $("status-modal");
-  if (!modal || modal.hidden) return;
+  if (!dialogIsOpen("status-modal")) return;
   if (statusBusy && !force) return;
   statusBusy = true;
   const refreshBtn = $("status-refresh-button");
@@ -7225,11 +7250,7 @@ async function tryAutoUnlockDevice() {
     if (res.ok && data.ok) {
       if (data.token) localStorage.setItem("scalper_serve_session", data.token);
       if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
-      const serveModal = $("serve-auth-modal");
-      if (serveModal) {
-        serveModal.style.display = "none";
-        serveModal.hidden = true;
-      }
+      closeDialog("serve-auth-modal");
       toast(`Unlocked via ${data.device_name || "Device Binding"}!`, "ok");
       startTerminalSession();
       return true;
@@ -7252,11 +7273,7 @@ async function unlockWithSavedDevice(devId = "") {
   if (res.ok && data.ok) {
     if (data.token) localStorage.setItem("scalper_serve_session", data.token);
     if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
-    const serveModal = $("serve-auth-modal");
-    if (serveModal) {
-      serveModal.style.display = "none";
-      serveModal.hidden = true;
-    }
+    closeDialog("serve-auth-modal");
     toast(`Unlocked via ${data.device_name || "Device"}!`, "ok");
     await startTerminalSession();
     return true;
@@ -7325,11 +7342,7 @@ async function handleBiometricUnlock() {
             if (finRes.ok && finData.ok) {
               if (finData.token) localStorage.setItem("scalper_serve_session", finData.token);
               if (finData.device_id) localStorage.setItem("scalper_device_id", finData.device_id);
-              const serveModal = $("serve-auth-modal");
-              if (serveModal) {
-                serveModal.style.display = "none";
-                serveModal.hidden = true;
-              }
+              closeDialog("serve-auth-modal");
               toast(`Unlocked via ${finData.device_name || "Biometrics"}!`, "ok");
               await startTerminalSession();
               return;
@@ -7395,11 +7408,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
         toast(`Device "${d.device?.device_name || "Device"}" bound successfully!`, "ok");
         await loadDevicesList();
         if (pairToken) {
-          const serveModal = $("serve-auth-modal");
-          if (serveModal) {
-            serveModal.style.display = "none";
-            serveModal.hidden = true;
-          }
+          closeDialog("serve-auth-modal");
           startTerminalSession();
         }
         return;
@@ -7475,11 +7484,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
     await loadDevicesList();
 
     if (pairToken) {
-      const serveModal = $("serve-auth-modal");
-      if (serveModal) {
-        serveModal.style.display = "none";
-        serveModal.hidden = true;
-      }
+      closeDialog("serve-auth-modal");
       startTerminalSession();
       const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
       window.history.replaceState({ path: cleanUrl }, "", cleanUrl);
@@ -7496,8 +7501,7 @@ async function handleRegisterDevice(deviceName = "", pairToken = "") {
 async function openPairModal() {
   const modal = $("pair-modal");
   if (!modal) return;
-  modal.hidden = false;
-  modal.style.display = "grid";
+  openDialog("pair-modal");
 
   const qrContainer = $("pair-qr-svg");
   const urlInput = $("pair-url-input") as HTMLInputElement | null;
@@ -7524,11 +7528,7 @@ async function openPairModal() {
 }
 
 function closePairModal() {
-  const modal = $("pair-modal");
-  if (modal) {
-    modal.hidden = true;
-    modal.style.display = "none";
-  }
+  closeDialog("pair-modal");
 }
 
 async function onAskAI(type: string) {
@@ -7593,15 +7593,13 @@ async function onAskAI(type: string) {
 let aiModalRefreshTimer: number | null = null;
 
 function isAISignalsModalOpen(): boolean {
-  const modal = $("ai-signals-modal");
-  return Boolean(modal && !modal.hidden && modal.style.display !== "none");
+  return dialogIsOpen("ai-signals-modal");
 }
 
 function openAISignalsModal() {
   const modal = $("ai-signals-modal");
   if (!modal) return;
-  modal.hidden = false;
-  modal.style.display = "grid";
+  openDialog("ai-signals-modal");
   refreshAISignalsModal();
   if (aiModalRefreshTimer === null) {
     aiModalRefreshTimer = window.setInterval(() => {
@@ -7618,11 +7616,7 @@ function openAISignalsModal() {
 }
 
 function closeAISignalsModal() {
-  const modal = $("ai-signals-modal");
-  if (modal) {
-    modal.hidden = true;
-    modal.style.display = "none";
-  }
+  closeDialog("ai-signals-modal");
   if (aiModalRefreshTimer !== null) {
     window.clearInterval(aiModalRefreshTimer);
     aiModalRefreshTimer = null;
@@ -8148,9 +8142,7 @@ function bindEvents() {
   $("drawer-mode-badge")?.addEventListener("click", toggleTradingMode);
 
   function openMobileDrawer() {
-    const backdrop = $("mobile-drawer-backdrop");
-    if (!backdrop) return;
-    backdrop.hidden = false;
+    if (!openDialog("mobile-drawer-backdrop")) return;
     const modeBadge = $("drawer-mode-badge");
     if (modeBadge) modeBadge.textContent = tradingMode().toUpperCase();
     const sessionStatus = $("drawer-session-status");
@@ -8162,8 +8154,7 @@ function bindEvents() {
   }
 
   function closeMobileDrawer() {
-    const backdrop = $("mobile-drawer-backdrop");
-    if (backdrop) backdrop.hidden = true;
+    closeDialog("mobile-drawer-backdrop");
   }
 
   $("mobile-menu-btn")?.addEventListener("click", openMobileDrawer);
@@ -8252,18 +8243,10 @@ function bindEvents() {
     if (historyBtn) { showOrderHistory(historyBtn.dataset.orderHistory); return; }
   });
 
-  $("order-history-close")?.addEventListener("click", () => {
-    const modal = $("order-history-modal");
-    if (modal) modal.hidden = true;
-  });
-  $("order-history-close-btn")?.addEventListener("click", () => {
-    const modal = $("order-history-modal");
-    if (modal) modal.hidden = true;
-  });
+  $("order-history-close")?.addEventListener("click", () => closeDialog("order-history-modal"));
+  $("order-history-close-btn")?.addEventListener("click", () => closeDialog("order-history-modal"));
   $("order-history-modal")?.addEventListener("click", (e) => {
-    if (e.target === $("order-history-modal")) {
-      $("order-history-modal").hidden = true;
-    }
+    if (e.target === $("order-history-modal")) closeDialog("order-history-modal");
   });
 
   const serveAuthModal = $("serve-auth-modal");
@@ -8297,8 +8280,7 @@ function bindEvents() {
         if (resp.ok && data.ok) {
           if (data.device_id) localStorage.setItem("scalper_device_id", data.device_id);
           if (data.token) localStorage.setItem("scalper_serve_session", data.token);
-          serveAuthModal.style.display = "none";
-          serveAuthModal.hidden = true;
+          closeDialog("serve-auth-modal");
           await startTerminalSession();
           if (!S.session?.authenticated) {
             openLogin();
@@ -8326,7 +8308,7 @@ function bindEvents() {
       }
     });
 
-    if (serveAuthModal && !serveAuthModal.hidden && serveAuthModal.style.display !== "none") {
+    if (dialogIsOpen("serve-auth-modal")) {
       setTimeout(() => {
         if (serveAuthUser && !serveAuthUser.value) {
           serveAuthUser.focus();
@@ -8349,6 +8331,28 @@ function bindEvents() {
   $("confirm-modal").addEventListener("click", (event) => {
     if (event.target === $("confirm-modal")) closeConfirm(false);
   });
+  // Esc fires cancel before close; resolve the pending promise exactly once.
+  $("confirm-modal").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeConfirm(false);
+  });
+  // Native close events run cleanup even when the dialog is dismissed with Esc.
+  $("login-modal")?.addEventListener("close", resetLoginState);
+  $("status-modal")?.addEventListener("close", () => {
+    if (statusRefreshTimer) {
+      window.clearInterval(statusRefreshTimer);
+      statusRefreshTimer = null;
+    }
+  });
+  $("ai-signals-modal")?.addEventListener("close", () => {
+    if (aiModalRefreshTimer !== null) {
+      window.clearInterval(aiModalRefreshTimer);
+      aiModalRefreshTimer = null;
+    }
+  });
+  // These dialogs gate access or block on a reconnect; Esc must not dismiss them.
+  $("serve-auth-modal")?.addEventListener("cancel", (event) => event.preventDefault());
+  $("server-down-modal")?.addEventListener("cancel", (event) => event.preventDefault());
 
   $("feed-badge")?.addEventListener("click", openStatusModal);
   $("order-feed-badge")?.addEventListener("click", openStatusModal);
@@ -8581,23 +8585,23 @@ function bindEvents() {
       closeChartQuickOrder();
       return;
     }
-    if (!$("confirm-modal").hidden) {
+    if (dialogIsOpen("confirm-modal")) {
       closeConfirm(false);
       return;
     }
-    if (!$("pair-modal")?.hidden) {
+    if (dialogIsOpen("pair-modal")) {
       closePairModal();
       return;
     }
-    if (!$("status-modal")?.hidden) {
+    if (dialogIsOpen("status-modal")) {
       closeStatusModal();
       return;
     }
-    if (!$("order-history-modal")?.hidden) {
-      $("order-history-modal").hidden = true;
+    if (dialogIsOpen("order-history-modal")) {
+      closeDialog("order-history-modal");
       return;
     }
-    if (!$("strike-modal").hidden) {
+    if (dialogIsOpen("strike-modal")) {
       closeStrikeModal();
       return;
     }
@@ -9058,8 +9062,7 @@ window.addEventListener("resize", () => {
 
 function handleAppBackButton() {
   // 1. Close mobile drawer if open
-  const drawerBackdrop = $("mobile-drawer-backdrop");
-  if (drawerBackdrop && !drawerBackdrop.hidden) {
+  if (dialogIsOpen("mobile-drawer-backdrop")) {
     closeMobileDrawer();
     return true;
   }
@@ -9082,14 +9085,8 @@ function handleAppBackButton() {
   ];
 
   for (const m of modalClosers) {
-    const el = $(m.id);
-    if (el && !el.hidden && el.style.display !== "none") {
-      if (typeof m.fn === "function") {
-        m.fn();
-      } else {
-        el.hidden = true;
-        el.style.display = "none";
-      }
+    if (dialogIsOpen(m.id)) {
+      m.fn();
       return true;
     }
   }

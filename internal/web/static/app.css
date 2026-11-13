@@ -858,8 +858,13 @@ body[data-theme="light"] .chart-tooltip-desc {
 
 .chart-quick-order {
   position: absolute;
+  inset: auto;
+  margin: 0;
+  max-width: none;
+  max-height: none;
   z-index: 10;
   width: 250px;
+  color: inherit;
   background: var(--panel);
   border: 1px solid var(--border-strong, #2a3746);
   border-radius: 6px;
@@ -873,8 +878,8 @@ body[data-theme="light"] .chart-tooltip-desc {
   user-select: none;
   touch-action: none;
 }
-.chart-quick-order[hidden] {
-  display: none !important;
+.chart-quick-order:not([open]) {
+  display: none;
 }
 
 @keyframes cqo-appear {
@@ -1830,17 +1835,35 @@ body[data-theme="dark"] .col-ask-px {
 .footer-uptime { color: #4a5866; font-family: var(--mono); font-size: 9px; }
 
 /* ── Modals ──────────────────────────────────────────────── */
-.modal-backdrop {
+dialog.modal-backdrop {
   position: fixed;
   inset: 0;
   z-index: 100;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+dialog.modal-backdrop:not([open]) {
+  display: none;
+}
+dialog.modal-backdrop[open] {
   display: grid;
   place-items: center;
-  padding: 20px;
+}
+dialog.modal-backdrop::backdrop {
   background: #030609b8;
   backdrop-filter: blur(3px);
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
-.modal-backdrop[hidden] { display: none; }
 
 .modal {
   width: min(440px, 100%);
@@ -2383,7 +2406,7 @@ body[data-theme="light"] .chain-row .cell-ce.selected { background: #e0f2fe; box
 body[data-theme="light"] .chain-row .cell-pe.selected { background: #ffedd5; box-shadow: inset 0 0 0 1px #fb923c; color: #ea580c; }
 body[data-theme="light"] .chain-row .cell-strike { color: var(--text); background: var(--panel-2); }
 body[data-theme="light"] .form-error { border-color: #fca5a5; background: #fef2f2; color: #b91c1c; }
-body[data-theme="light"] .modal-backdrop { background: rgba(15, 23, 42, 0.45); }
+body[data-theme="light"] dialog.modal-backdrop::backdrop { background: rgba(15, 23, 42, 0.45); }
 body[data-theme="light"] .modal { border-color: var(--line); background: #ffffff; box-shadow: 0 20px 45px rgba(15, 23, 42, 0.15); }
 body[data-theme="light"] .modal-update-banner { background: #f0fdf4; border-color: #86efac; }
 body[data-theme="light"] .status-card { background: #f8fafc; border-color: var(--line); }
@@ -2745,18 +2768,26 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
   }
 
   /* Mobile Slide-Out Drawer */
-  .mobile-drawer-backdrop {
+  dialog.mobile-drawer-backdrop {
     position: fixed;
     inset: 0;
+    z-index: 10000;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    justify-content: flex-end;
+  }
+  dialog.mobile-drawer-backdrop[open] {
+    display: flex;
+  }
+  dialog.mobile-drawer-backdrop::backdrop {
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(4px);
-    z-index: 10000;
-    display: flex;
-    justify-content: flex-end;
-    animation: fadeIn 0.2s ease;
-  }
-  .mobile-drawer-backdrop[hidden] {
-    display: none !important;
   }
   .mobile-drawer {
     width: 310px;
@@ -3416,17 +3447,16 @@ body[data-theme="light"] .footer-uptime { color: #64748b; }
     background: #090d14 !important;
     backdrop-filter: none !important;
     z-index: 10000 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: stretch !important;
-    align-items: stretch !important;
     width: 100% !important;
     height: 100% !important;
     height: 100dvh !important;
     overflow: hidden !important;
   }
-  #strike-modal.modal-backdrop[hidden] {
-    display: none !important;
+  #strike-modal.modal-backdrop[open] {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: stretch !important;
+    align-items: stretch !important;
   }
   #strike-modal .strike-modal {
     width: 100% !important;

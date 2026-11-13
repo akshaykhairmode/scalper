@@ -317,8 +317,8 @@
   </footer>
 
   <!-- System Status modal -->
-  <div class="modal-backdrop" id="status-modal" hidden>
-    <div class="modal status-modal" role="dialog" aria-modal="true" aria-labelledby="status-title">
+  <dialog class="modal-backdrop" id="status-modal" closedby="any" aria-labelledby="status-title">
+    <div class="modal status-modal">
       <div class="modal-head">
         <div>
           <span class="eyebrow">DIAGNOSTICS &amp; TELEMETRY</span>
@@ -484,11 +484,11 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Order History modal -->
-  <div class="modal-backdrop" id="order-history-modal" hidden>
-    <div class="modal order-history-modal" role="dialog" aria-modal="true" aria-labelledby="order-history-title" style="max-width:680px; width:94vw;">
+  <dialog class="modal-backdrop" id="order-history-modal" closedby="any" aria-labelledby="order-history-title">
+    <div class="modal order-history-modal"  style="max-width:680px; width:94vw;">
       <div class="modal-head">
         <div>
           <span class="eyebrow">ORDER AUDIT TRAIL</span>
@@ -506,11 +506,11 @@
         <button type="button" class="primary small" id="order-history-close-btn">Close</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Pair Mobile Device modal -->
-  <div class="modal-backdrop" id="pair-modal" hidden>
-    <div class="modal pair-modal" role="dialog" aria-modal="true" aria-labelledby="pair-title" style="max-width:500px; width:92vw;">
+  <dialog class="modal-backdrop" id="pair-modal" closedby="any" aria-labelledby="pair-title">
+    <div class="modal pair-modal"  style="max-width:500px; width:92vw;">
       <div class="modal-head">
         <div>
           <span class="eyebrow">PASSKEYS &amp; DEVICE BINDING</span>
@@ -564,11 +564,11 @@
         <button type="button" class="primary small" id="pair-modal-close-btn">Close</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- AI Signals & Performance Modal -->
-  <div class="modal-backdrop" id="ai-signals-modal" hidden>
-    <div class="modal ai-signals-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-signals-title" style="max-width:840px; width:95vw;">
+  <dialog class="modal-backdrop" id="ai-signals-modal" closedby="any" aria-labelledby="ai-signals-title">
+    <div class="modal ai-signals-dialog"  style="max-width:840px; width:95vw;">
       <div class="modal-head">
         <div>
           <span class="eyebrow">SYSTEM 1 (JEV) &amp; SYSTEM 2 (AGENT)</span>
@@ -651,12 +651,12 @@
         <button type="button" class="primary small" id="ai-signals-close-btn">Close</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Serve mode lock modal -->
   {{if .ServeLocked}}
-  <div class="modal-backdrop" id="serve-auth-modal" style="display:grid; place-items:center; z-index:99999;">
-    <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="serve-auth-title">
+  <dialog class="modal-backdrop" id="serve-auth-modal" closedby="none" aria-labelledby="serve-auth-title">
+    <div class="modal login-modal">
       <div class="modal-head">
         <div>
           <span class="eyebrow">SERVE MODE · ACCESS CONTROL</span>
@@ -697,12 +697,12 @@
         </div>
       </form>
     </div>
-  </div>
+  </dialog>
   {{end}}
 
   <!-- Login modal -->
-  <div class="modal-backdrop" id="login-modal" hidden>
-    <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+  <dialog class="modal-backdrop" id="login-modal" aria-labelledby="login-title">
+    <div class="modal login-modal">
       <div class="modal-head">
         <div>
           <span class="eyebrow">KOTAK NEO · MANUAL LOGIN</span>
@@ -740,11 +740,11 @@
         </div>
       </form>
     </div>
-  </div>
+  </dialog>
 
   <!-- Server down modal -->
-  <div class="modal-backdrop" id="server-down-modal" hidden>
-    <div class="modal server-down-modal" role="alertdialog" aria-modal="true" aria-labelledby="server-down-title">
+  <dialog class="modal-backdrop" id="server-down-modal" closedby="none" aria-labelledby="server-down-title">
+    <div class="modal server-down-modal">
       <div class="modal-head">
         <h2 id="server-down-title">⚠ Server Disconnected</h2>
       </div>
@@ -757,11 +757,11 @@
         <p class="server-down-status" id="server-down-status">Reconnecting…</p>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Confirmation modal -->
-  <div class="modal-backdrop" id="confirm-modal" hidden>
-    <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <dialog class="modal-backdrop" id="confirm-modal" aria-labelledby="confirm-title">
+    <div class="modal confirm-modal">
       <div class="modal-head">
         <h2 id="confirm-title">Confirm</h2>
       </div>
@@ -771,11 +771,11 @@
         <button type="button" class="primary" id="confirm-ok">Confirm</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Strike search modal -->
-  <div class="modal-backdrop" id="strike-modal" hidden>
-    <section class="modal strike-modal" role="dialog" aria-modal="true" aria-labelledby="strike-title">
+  <dialog class="modal-backdrop" id="strike-modal" closedby="any" aria-labelledby="strike-title">
+    <section class="modal strike-modal">
       <div class="modal-head">
         <div>
           <span class="eyebrow">OPTION CHAIN · / TO SEARCH</span>
@@ -809,13 +809,13 @@
       </div>
       <button type="button" class="chain-more" id="load-more-below" hidden>Load more below</button>
     </section>
-  </div>
+  </dialog>
 
   <!-- Floating Chart Tooltip -->
   <div id="chart-tooltip" class="chart-tooltip" role="tooltip" hidden></div>
 
   <!-- Chart quick limit order widget -->
-  <div id="chart-quick-order" class="chart-quick-order" role="dialog" aria-label="Limit order" hidden>
+  <dialog id="chart-quick-order" class="chart-quick-order" aria-label="Limit order">
     <div class="cqo-header" id="cqo-header" title="Drag to move card">
       <div class="cqo-header-left">
         <span class="cqo-drag-grip" aria-hidden="true" title="Drag to move card">⋮⋮</span>
@@ -896,7 +896,7 @@
         <span class="cqo-subprice" id="cqo-sell-price">@ ₹0.00</span>
       </button>
     </div>
-  </div>
+  </dialog>
 
   <div class="pattern-popover" id="pattern-popover" style="display: none;" role="dialog" aria-label="Pattern filters">
     <div class="pattern-popover-header">
@@ -998,8 +998,8 @@
   </div>
 
   <!-- Mobile Slide-Out Drawer (Concept 1) -->
-  <div class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" hidden>
-    <aside class="mobile-drawer" id="mobile-drawer" role="dialog" aria-modal="true" aria-label="Mobile Navigation Menu">
+  <dialog class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" closedby="any" aria-label="Mobile Navigation Menu">
+    <div class="mobile-drawer" id="mobile-drawer">
       <div class="mobile-drawer-head">
         <div class="mobile-drawer-brand">
           <span class="mark">S</span>
@@ -1049,8 +1049,8 @@
           <button type="button" class="drawer-logout-btn" id="drawer-auth-btn">Sign Out</button>
         </div>
       </div>
-    </aside>
-  </div>
+    </div>
+  </dialog>
 
   <!-- Concept 1 Bottom Navigation Bar (4 Tab Dock) -->
   <nav class="mobile-bottom-nav" id="mobile-bottom-nav" aria-label="Mobile primary navigation">
