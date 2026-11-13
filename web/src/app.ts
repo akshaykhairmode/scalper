@@ -1029,36 +1029,81 @@ async function startTerminalSession() {
   }
 }
 
-function initTheme() {
-  let theme = "dark";
+function systemTheme() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function currentTheme() {
+  const theme = document.documentElement.dataset.theme;
+  return theme === "light" || theme === "dark" ? theme : systemTheme();
+}
+
+function storedTheme() {
   try {
     const savedTheme = localStorage.getItem("scalper-theme");
-    if (savedTheme === "light" || savedTheme === "dark") theme = savedTheme;
+    if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
   } catch (error) {
     console.warn("Unable to read saved theme preference", error);
   }
+  return null;
+}
+
+function syncColorSchemeMeta(theme) {
+  const meta = document.querySelector('meta[name="color-scheme"]') as HTMLMetaElement | null;
+  if (!meta) return;
+  // A stored override pins the scheme; otherwise let the UA follow the system.
+  meta.content = storedTheme() ? theme : "light dark";
+}
+
+function initTheme() {
+  const theme = storedTheme() || systemTheme();
   setTheme(theme, false);
+  const query = window.matchMedia("(prefers-color-scheme: dark)");
+  const onChange = () => {
+    if (storedTheme()) return;
+    // No pinned override: follow the OS. setTheme() keeps the color-scheme
+    // meta at "light dark" so the UA can pick the scheme.
+    setTheme(systemTheme(), false);
+  };
+  if (typeof query.addEventListener === "function") query.addEventListener("change", onChange);
+  else if (typeof query.addListener === "function") query.addListener(onChange);
 }
 
 function setTheme(theme, persist = true) {
-  document.body.dataset.theme = theme;
+  if (persist) {
+    try {
+      localStorage.setItem("scalper-theme", theme);
+    } catch (error) {
+      console.warn("Unable to save theme preference", error);
+    }
+  }
+  document.documentElement.dataset.theme = theme;
   const toggle = $("theme-toggle");
   const nextTheme = theme === "dark" ? "light" : "dark";
   toggle.setAttribute("aria-label", `Switch to ${nextTheme} theme`);
   toggle.title = `Switch to ${nextTheme} theme`;
-  document.querySelector('meta[name="color-scheme"]').content = theme;
+  syncColorSchemeMeta(theme);
   const themeMeta = document.querySelector('meta[name="theme-color"]');
   if (themeMeta) {
     themeMeta.content = theme === "dark" ? "#0b0e14" : "#f8fafc";
   }
   for (const chart of (Object.values(S.charts) as any[])) chart.applyTheme();
   if (S.tab === "risk") renderTab();
-  if (!persist) return;
+}
+
+function toggleTheme() {
+  const target = currentTheme() === "dark" ? "light" : "dark";
   try {
-    localStorage.setItem("scalper-theme", theme);
+    // Two-state model: only pin a theme that differs from the OS preference,
+    // so clearing the override falls back to following the system.
+    if (target === systemTheme()) localStorage.removeItem("scalper-theme");
+    else localStorage.setItem("scalper-theme", target);
   } catch (error) {
     console.warn("Unable to save theme preference", error);
   }
+  // setTheme() re-reads the stored override and syncs the color-scheme meta:
+  // the pinned value when an override exists, "light dark" otherwise.
+  setTheme(target, false);
 }
 
 /* ── Trade sound notifications ─────────────────────────── */
@@ -4409,7 +4454,7 @@ function drawPayoff(canvas, points, spot) {
   const xOf = (x) => pad + ((x - minX) / Math.max(1, maxX - minX)) * (width - pad * 2);
   const yOf = (y) => pad + ((maxY - y) / Math.max(1, maxY - minY)) * (height - pad * 2);
 
-  const isLight = document.body.dataset.theme === "light";
+  const isLight = currentTheme() === "light";
   ctx.strokeStyle = isLight ? "#cbd5e1" : "#1a232c";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -8000,7 +8045,7 @@ function bindEvents() {
     if (!collapsed && bottomDirty) renderTab();
   });
   $("theme-toggle").addEventListener("click", () => {
-    setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    toggleTheme();
   });
 
   const marginMetric = $("margin-metric");
@@ -8150,7 +8195,7 @@ function bindEvents() {
     const authBtn = $("drawer-auth-btn");
     if (authBtn) authBtn.textContent = S.session?.authenticated ? "Sign Out" : "Sign In";
     const themeLabel = $("drawer-theme-label");
-    if (themeLabel) themeLabel.textContent = `Switch to ${document.body.dataset.theme === "light" ? "Dark" : "Light"} Theme`;
+    if (themeLabel) themeLabel.textContent = `Switch to ${currentTheme() === "light" ? "Dark" : "Light"} Theme`;
   }
 
   function closeMobileDrawer() {
@@ -8176,9 +8221,9 @@ function bindEvents() {
     handleRegisterDevice();
   });
   $("drawer-theme-btn")?.addEventListener("click", () => {
-    setTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    toggleTheme();
     const themeLabel = $("drawer-theme-label");
-    if (themeLabel) themeLabel.textContent = `Switch to ${document.body.dataset.theme === "light" ? "Dark" : "Light"} Theme`;
+    if (themeLabel) themeLabel.textContent = `Switch to ${currentTheme() === "light" ? "Dark" : "Light"} Theme`;
   });
   $("drawer-unpair-btn")?.addEventListener("click", () => {
     closeMobileDrawer();
