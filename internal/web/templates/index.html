@@ -154,6 +154,12 @@
     <button type="button" class="panic-pill-exit-btn" id="mobile-panic-exit-btn" title="Emergency 1-tap square off all open positions">EXIT ALL ✕</button>
   </div>
 
+  <table class="sr-only" id="chart-data-table" aria-label="Chart data summary">
+    <caption>Latest option chain values around the money</caption>
+    <thead><tr><th scope="col">Strike</th><th scope="col">Call LTP</th><th scope="col">Put LTP</th></tr></thead>
+    <tbody id="chart-data-tbody"></tbody>
+  </table>
+
   <main class="terminal bottom-collapsed" data-mobile-view="ce">
     <section class="charts-row" id="charts-row" aria-label="Charts">
       <article class="pane" data-pane="ce">
@@ -172,7 +178,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart"></div>
+          <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart" aria-describedby="chart-data-table"></div>
           <div class="chart-tools" aria-label="CALL chart tools">
             <button type="button" class="chart-settings-btn" data-chart="ce" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -225,7 +231,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
+          <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart" aria-describedby="chart-data-table"></div>
           <div class="chart-tools" aria-label="Underlying chart tools">
             <button type="button" class="chart-settings-btn" data-chart="underlying" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -253,7 +259,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart"></div>
+          <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart" aria-describedby="chart-data-table"></div>
           <div class="chart-tools" aria-label="PUT chart tools">
             <button type="button" class="chart-settings-btn" data-chart="pe" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -309,7 +315,7 @@
         <button type="button" class="danger square-off-button" id="square-off-button">SQUARE OFF ALL</button>
         <button type="button" class="ghost small bottom-toggle" id="bottom-toggle" aria-controls="tab-content" aria-expanded="false">Expand</button>
       </div>
-      <div class="tab-content" id="tab-content">
+      <div class="tab-content" id="tab-content" role="region" aria-label="Positions, orders, and holdings" tabindex="0">
         <div class="empty-state">No open positions.</div>
       </div>
     </section>
@@ -811,13 +817,15 @@
       <span class="strike-search-hint" id="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
       <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
       <button type="button" class="chain-more" id="load-more-above" hidden>Load more above</button>
-      <div class="chain-head" role="row">
-        <span class="col-ce">CALL (LTP / VOL)</span>
-        <span class="col-strike">STRIKE</span>
-        <span class="col-pe">PUT (LTP / VOL)</span>
-      </div>
-      <div class="chain-body" id="chain-body" role="table" tabindex="0">
-        <div class="empty-state">Waiting for the option chain…</div>
+      <div class="chain-grid" id="chain-grid" role="grid" aria-label="Option chain" aria-colcount="3" tabindex="0">
+        <div class="chain-head" role="row">
+          <span class="col-ce" role="columnheader">CALL (LTP / VOL)</span>
+          <span class="col-strike" role="columnheader">STRIKE</span>
+          <span class="col-pe" role="columnheader">PUT (LTP / VOL)</span>
+        </div>
+        <div class="chain-body" id="chain-body" role="rowgroup">
+          <div class="empty-state" role="row"><span role="gridcell">Waiting for the option chain…</span></div>
+        </div>
       </div>
       <button type="button" class="chain-more" id="load-more-below" hidden>Load more below</button>
     </section>

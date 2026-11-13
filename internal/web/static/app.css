@@ -1210,7 +1210,17 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .chain-head .col-ce { color: #4a97c9; }
 .chain-head .col-pe { color: #b77936; }
 
-.chain-body { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; outline: none; }
+.chain-grid {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.chain-grid:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.chain-body { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
 .chain-row {
   border-bottom: 1px solid #141c24;
   font-size: 11.5px;
@@ -1584,6 +1594,7 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 }
 
 .tab-content { flex: 1; overflow: auto; min-height: 0; }
+.tab-content:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .empty-state {
   display: grid;
   place-items: center;

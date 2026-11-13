@@ -3833,18 +3833,52 @@ function expiryOptionsHTML() {
   return html;
 }
 
+// updateChainActiveDescendant points the grid's aria-activedescendant at the
+// row for the selected strike so screen readers announce arrow-key movement.
+function updateChainActiveDescendant() {
+  const grid = $("chain-grid");
+  if (!grid) return;
+  const strike = selectedOption(S.selected.type)?.strike;
+  const row = strike ? $(`chain-row-${strike}`) : null;
+  if (row) grid.setAttribute("aria-activedescendant", row.id);
+  else grid.removeAttribute("aria-activedescendant");
+}
+
+// renderChartDataSummary keeps a visually hidden data table in sync with the
+// visible chain so the charts have a semantic alternative for screen readers.
+function renderChartDataSummary() {
+  const tbody = $("chart-data-tbody");
+  if (!tbody) return;
+  if (!S.chain.length) {
+    tbody.innerHTML = "";
+    return;
+  }
+  const atm = computeATM();
+  let index = S.chain.findIndex((row) => row.strike === atm);
+  if (index < 0) index = Math.floor(S.chain.length / 2);
+  const start = Math.max(0, index - 5);
+  const end = Math.min(S.chain.length, index + 6);
+  tbody.innerHTML = S.chain.slice(start, end).map((row) => `<tr>
+    <th scope="row">${fmtStrike(row.strike)}</th>
+    <td>${row.call ? fmt(row.call.ltp) : "—"}</td>
+    <td>${row.put ? fmt(row.put.ltp) : "—"}</td>
+  </tr>`).join("");
+}
+
 function renderChain(preserveScroll = false) {
   const body = $("chain-body");
   if (!S.chain.length) {
-    body.innerHTML = `<div class="empty-state">Waiting for the option chain…</div>`;
+    body.innerHTML = `<div class="empty-state" role="row"><span role="gridcell">Waiting for the option chain…</span></div>`;
     $("strike-meta").textContent = "—";
     renderChainMoreControls();
     renderPCR();
+    updateChainActiveDescendant();
+    renderChartDataSummary();
     return;
   }
   const scrollTop = preserveScroll ? body.scrollTop : 0;
   const atm = computeATM();
-  body.innerHTML = S.chain.map((row) => {
+  body.innerHTML = S.chain.map((row, index) => {
     const call = row.call;
     const put = row.put;
     const callSelected = S.selected.CE?.strike === row.strike;
@@ -3853,10 +3887,10 @@ function renderChain(preserveScroll = false) {
     const isATM = row.strike === atm;
     const callITM = atm ? row.strike < atm : false;
     const putITM = atm ? row.strike > atm : false;
-    return `<div class="chain-row${isATM ? " atm" : ""}${active ? " active" : ""}" data-strike="${row.strike}" role="row">
-      <button type="button" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span>` : "—"}</button>
-      <button type="button" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button>
-      <button type="button" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span>` : "—"}</button>
+    return `<div class="chain-row${isATM ? " atm" : ""}${active ? " active" : ""}" id="chain-row-${row.strike}" data-strike="${row.strike}" role="row" aria-rowindex="${index + 2}">
+      <button type="button" role="gridcell" aria-colindex="1" aria-selected="${callSelected}" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span><span class="sr-only"> · ${fmtSigned(call.changePct)}%${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}</span>` : "—"}</button>
+      <button type="button" role="gridcell" aria-colindex="2" aria-selected="${active}" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button>
+      <button type="button" role="gridcell" aria-colindex="3" aria-selected="${putSelected}" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span><span class="sr-only"> · ${fmtSigned(put.changePct)}%${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}</span>` : "—"}</button>
     </div>`;
   }).join("");
   const pcr = computePCR();
@@ -3870,10 +3904,12 @@ function renderChain(preserveScroll = false) {
 
   body.scrollTop = scrollTop;
   applyStrikeFilter();
+  updateChainActiveDescendant();
   if (!S.chainScrolled) {
     scrollATMIntoView();
     S.chainScrolled = true;
   }
+  renderChartDataSummary();
 }
 
 function applyStrikeFilter() {
@@ -3890,6 +3926,7 @@ function applyStrikeFilter() {
   $("strike-meta").textContent = query
     ? `${visible} matching strike${visible === 1 ? "" : "s"} · ${S.chain.length} available`
     : `${S.chain.length} strikes${pcrSummary} · ${expiryText(S.expiry)}`;
+  updateChainActiveDescendant();
 }
 
 function openStrikeModal(targetType = S.selected.type) {
@@ -4360,9 +4397,10 @@ function positionsHTML() {
     if (!groups.has(key)) groups.set(key, { label, list: [] });
     groups.get(key).list.push(p);
   }
-  let html = `<table class="book"><thead><tr>
-    <th>Contract</th><th title="Product type (MIS / NRML / CNC)">Type</th><th>Net</th><th>Avg</th><th>LTP</th><th>P&amp;L</th>
-    <th>Max P</th><th>Max L</th><th></th>
+  let html = `<table class="book">
+    <caption class="sr-only">Positions</caption><thead><tr>
+    <th scope="col">Contract</th><th scope="col" title="Product type (MIS / NRML / CNC)">Type</th><th scope="col">Net</th><th scope="col">Avg</th><th scope="col">LTP</th><th scope="col">P&amp;L</th>
+    <th scope="col">Max P</th><th scope="col">Max L</th><th scope="col"></th>
   </tr></thead><tbody>`;
   for (const { label, list } of groups.values()) {
     const hasOpenInGroup = list.some((p) => Math.abs(num(p.quantity)) > 0);
@@ -4551,8 +4589,9 @@ function openOrdersHTML() {
     <span class="open-orders-title">${open.length} Pending Limit Order${open.length === 1 ? "" : "s"}</span>
     <button type="button" class="ghost danger small" id="btn-cancel-all-open">Cancel All Open</button>
   </div>
-  <table class="book"><thead><tr>
-    <th>Contract</th><th>Side</th><th>Pending / Total</th><th>Limit Price</th><th>Status</th><th>Order ID</th><th>Time</th><th>Action</th>
+  <table class="book">
+    <caption class="sr-only">Pending limit orders</caption><thead><tr>
+    <th scope="col">Contract</th><th scope="col">Side</th><th scope="col">Pending / Total</th><th scope="col">Limit Price</th><th scope="col">Status</th><th scope="col">Order ID</th><th scope="col">Time</th><th scope="col">Action</th>
   </tr></thead><tbody>${open.map((o) => `<tr>
     <td class="sym font-bold">${esc(o.symbol || "—")}</td>
     <td class="${o.side === "B" ? "up" : "down"} font-bold">${o.side === "B" ? "BUY" : o.side === "S" ? "SELL" : esc(o.side)}</td>
@@ -4567,8 +4606,9 @@ function openOrdersHTML() {
 
 function ordersHTML() {
   if (!S.orders.length) return `<div class="empty-state">No orders yet.</div>`;
-  return `<table class="book"><thead><tr>
-    <th>Order ID</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th><th>Time</th><th>Action</th>
+  return `<table class="book">
+    <caption class="sr-only">Orders</caption><thead><tr>
+    <th scope="col">Order ID</th><th scope="col">Contract</th><th scope="col">Side</th><th scope="col">Qty</th><th scope="col">Price</th><th scope="col">Status</th><th scope="col">Time</th><th scope="col">Action</th>
   </tr></thead><tbody>${S.orders.map((o) => `<tr>
     <td class="sym"><button type="button" class="link-button" data-order-history="${esc(o.id)}" title="Click to view lifecycle audit history">${esc(o.id)}</button></td>
     <td class="sym">${esc(o.symbol)}</td>
@@ -4656,8 +4696,9 @@ async function onCancelAllOpenOrders() {
 
 function tradesHTML() {
   if (!S.trades.length) return `<div class="empty-state">No trades yet.</div>`;
-  return `<table class="book"><thead><tr>
-    <th>Trade</th><th>Contract</th><th>Side</th><th>Qty</th><th>Price</th><th>Value</th><th>Time</th>
+  return `<table class="book">
+    <caption class="sr-only">Trades</caption><thead><tr>
+    <th scope="col">Trade</th><th scope="col">Contract</th><th scope="col">Side</th><th scope="col">Qty</th><th scope="col">Price</th><th scope="col">Value</th><th scope="col">Time</th>
   </tr></thead><tbody>${S.trades.map((t) => `<tr>
     <td class="sym">${esc(t.id)}</td>
     <td class="sym">${esc(t.symbol)}</td>
@@ -4689,8 +4730,9 @@ function holdingsHTML() {
     <div><span class="muted">Overall P&amp;L:</span> <strong class="${directionClass(totalPnL)}">${fmtSigned(totalPnL, 2)} (${fmtSigned(totalPnLPct, 2)}%)</strong></div>
   </div>`;
 
-  html += `<table class="book"><thead><tr>
-    <th>Symbol</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>Invested</th><th>Current</th><th>P&amp;L</th><th>P&amp;L %</th>
+  html += `<table class="book">
+    <caption class="sr-only">Holdings</caption><thead><tr>
+    <th scope="col">Symbol</th><th scope="col">Qty</th><th scope="col">Avg Price</th><th scope="col">LTP</th><th scope="col">Invested</th><th scope="col">Current</th><th scope="col">P&amp;L</th><th scope="col">P&amp;L %</th>
   </tr></thead><tbody>`;
 
   for (const h of S.holdings) {
@@ -4737,8 +4779,9 @@ async function showOrderHistory(orderId) {
       `;
     }
 
-    let html = `<table class="book" style="width:100%; font-size:12px;"><thead><tr>
-      <th>Status</th><th>Filled / Total</th><th>Price</th><th>Avg Price</th><th>Reject Reason</th><th>Timestamp</th>
+    let html = `<table class="book" style="width:100%; font-size:12px;">
+    <caption class="sr-only">Order lifecycle history</caption><thead><tr>
+      <th scope="col">Status</th><th scope="col">Filled / Total</th><th scope="col">Price</th><th scope="col">Avg Price</th><th scope="col">Reject Reason</th><th scope="col">Timestamp</th>
     </tr></thead><tbody>`;
 
     for (const h of historyList) {
@@ -4815,16 +4858,16 @@ function renderOptionDepthPanel(type) {
       <table class="depth-table">
         <thead>
           <tr class="depth-title-row">
-            <th colspan="3" class="title-buyers">BUYERS</th>
-            <th colspan="3" class="title-sellers">SELLERS</th>
+            <th scope="col" colspan="3" class="title-buyers">BUYERS</th>
+            <th scope="col" colspan="3" class="title-sellers">SELLERS</th>
           </tr>
           <tr class="depth-header-row">
-            <th class="col-orders">ORDERS</th>
-            <th class="col-qty">QTY</th>
-            <th class="col-bid-px">PRICE</th>
-            <th class="col-ask-px">PRICE</th>
-            <th class="col-qty">QTY</th>
-            <th class="col-orders">ORDERS</th>
+            <th scope="col" class="col-orders">ORDERS</th>
+            <th scope="col" class="col-qty">QTY</th>
+            <th scope="col" class="col-bid-px">PRICE</th>
+            <th scope="col" class="col-ask-px">PRICE</th>
+            <th scope="col" class="col-qty">QTY</th>
+            <th scope="col" class="col-orders">ORDERS</th>
           </tr>
         </thead>
         <tbody>
@@ -5368,8 +5411,9 @@ function bracketsHTML() {
       ${hasFinished ? `<button type="button" class="ghost small" id="btn-clear-brackets" title="Remove completed and cancelled brackets from the list">Clear Finished</button>` : ""}
     </div>
   </div>
-  <table class="book"><thead><tr>
-    <th>Contract</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Target <span class="muted">SRV</span></th><th>SL <span class="muted">SRV</span></th><th>Backstop <span class="muted">EXCH</span></th><th>Live LTP</th><th>Isolated P&amp;L</th><th>Status</th><th>Action</th>
+  <table class="book">
+    <caption class="sr-only">Brackets</caption><thead><tr>
+    <th scope="col">Contract</th><th scope="col">Side</th><th scope="col">Qty</th><th scope="col">Entry Price</th><th scope="col">Target <span class="muted">SRV</span></th><th scope="col">SL <span class="muted">SRV</span></th><th scope="col">Backstop <span class="muted">EXCH</span></th><th scope="col">Live LTP</th><th scope="col">Isolated P&amp;L</th><th scope="col">Status</th><th scope="col">Action</th>
   </tr></thead><tbody>`;
 
   for (const b of [...brackets].reverse()) {
@@ -8236,13 +8280,15 @@ function bindEvents() {
     scrollATMIntoView(true);
   });
 
-  $("chain-body").addEventListener("keydown", (event) => {
+  $("chain-grid").addEventListener("keydown", (event) => {
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-    const rows = [...$("chain-body").querySelectorAll(".chain-row")];
+    const rows = [...$("chain-body").querySelectorAll(".chain-row")].filter((row) => !row.hidden);
     if (!rows.length) return;
     const current = rows.findIndex((row) => num(row.dataset.strike) === selectedOption(S.selected.type)?.strike);
     const next = Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
-    selectStrike(num(rows[next].dataset.strike), S.selected.type);
+    const strike = num(rows[next].dataset.strike);
+    selectStrike(strike, S.selected.type);
+    $("chain-grid").setAttribute("aria-activedescendant", `chain-row-${strike}`);
     event.preventDefault();
   });
 
