@@ -11,8 +11,20 @@ const $$: any = (selector: string, root: any = document) => [...root.querySelect
 function openDialog(id: string) {
   const el = $(id);
   if (!el) return null;
+  el.removeAttribute("hidden");
   if (typeof el.showModal === "function") {
-    if (!el.open) el.showModal();
+    if (!el.open) {
+      el.showModal();
+    } else {
+      // A fail-closed gate is rendered with the open attribute so it is
+      // visible without JS; promote it to a real modal once JS runs.
+      let isModal = false;
+      try { isModal = el.matches(":modal"); } catch { isModal = false; }
+      if (!isModal) {
+        el.close();
+        el.showModal();
+      }
+    }
   } else {
     el.hidden = false;
   }
@@ -22,8 +34,14 @@ function openDialog(id: string) {
 function closeDialog(id: string) {
   const el = $(id);
   if (!el) return;
-  if (typeof el.close === "function" && el.open) el.close();
-  else el.hidden = true;
+  if (typeof el.close === "function") {
+    if (el.open) el.close();
+    // Never leave a stale hidden attribute on a real dialog: it would make a
+    // later open() invisible.
+    el.removeAttribute("hidden");
+  } else {
+    el.hidden = true;
+  }
 }
 
 function dialogIsOpen(id: string) {
@@ -946,6 +964,15 @@ function normalizeHolding(raw) {
 /* ── Initialisation ────────────────────────────────────── */
 
 function init() {
+  // Open the access gate before anything else can throw. The dialog is also
+  // rendered with the open attribute so it stays visible if this script fails.
+  const serveAuthModal = $("serve-auth-modal");
+  const isTerminalLocked = Boolean(serveAuthModal);
+  if (serveAuthModal) {
+    serveAuthModal.addEventListener("cancel", (event) => event.preventDefault());
+    openDialog("serve-auth-modal");
+  }
+
   S.boot = parseBootstrap();
   const savedMode = localStorage.getItem("scalper-trading-mode");
   S.mode = savedMode === "paper" || savedMode === "live"
@@ -992,9 +1019,6 @@ function init() {
   }, 1000);
   window.setInterval(updateAIWinRateChip, 30000);
 
-  const serveAuthModal = $("serve-auth-modal");
-  const isTerminalLocked = Boolean(serveAuthModal);
-  if (serveAuthModal) openDialog("serve-auth-modal");
   updateBiometricButtons();
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -1057,26 +1081,19 @@ function syncColorSchemeMeta(theme) {
 
 function initTheme() {
   const theme = storedTheme() || systemTheme();
-  setTheme(theme, false);
+  setTheme(theme);
   const query = window.matchMedia("(prefers-color-scheme: dark)");
   const onChange = () => {
     if (storedTheme()) return;
     // No pinned override: follow the OS. setTheme() keeps the color-scheme
     // meta at "light dark" so the UA can pick the scheme.
-    setTheme(systemTheme(), false);
+    setTheme(systemTheme());
   };
   if (typeof query.addEventListener === "function") query.addEventListener("change", onChange);
   else if (typeof query.addListener === "function") query.addListener(onChange);
 }
 
-function setTheme(theme, persist = true) {
-  if (persist) {
-    try {
-      localStorage.setItem("scalper-theme", theme);
-    } catch (error) {
-      console.warn("Unable to save theme preference", error);
-    }
-  }
+function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   const toggle = $("theme-toggle");
   const nextTheme = theme === "dark" ? "light" : "dark";
@@ -1103,7 +1120,7 @@ function toggleTheme() {
   }
   // setTheme() re-reads the stored override and syncs the color-scheme meta:
   // the pinned value when an override exists, "light dark" otherwise.
-  setTheme(target, false);
+  setTheme(target);
 }
 
 /* ── Trade sound notifications ─────────────────────────── */
@@ -2139,7 +2156,7 @@ function handleTickData(data, { batch = false } = {}) {
     const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
     const cell = $("chain-body")?.querySelector(`button[data-select="${type}"][data-strike="${row.strike}"]`);
     if (cell) {
-      cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>`;
+      cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span><span class="sr-only"> · ${fmtSigned(opt.changePct)}%${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}</span>`;
       cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
       cell.classList.toggle("up", opt.changePct > 0);
       cell.classList.toggle("down", opt.changePct < 0);
@@ -3751,11 +3768,8 @@ function spotMenuOptions(): any[] {
 }
 
 function focusSpotMenuOption(row: any) {
-  const menu = $("spot-menu");
-  if (!menu || !row) return;
+  if (!row) return;
   row.focus();
-  const id = row.getAttribute("id");
-  if (id) menu.setAttribute("aria-activedescendant", id);
 }
 
 function focusSpotMenuSelection() {
@@ -3768,8 +3782,9 @@ function focusSpotMenuSelection() {
 function activateSpotMenuRow(row: any) {
   if (!row) return;
   const key = row.getAttribute("data-index");
-  if (!key || key === "INDIA VIX") return;
+  if (!key) return;
   setSpotMenuOpen(false);
+  if (key === "INDIA VIX") return;
   if (key === S.activeIndex) return;
   switchIndex(key);
 }
@@ -3787,7 +3802,6 @@ function setSpotMenuOpen(open: boolean) {
   }
   const hadFocus = menu.contains(document.activeElement);
   menu.hidden = true;
-  menu.removeAttribute("aria-activedescendant");
   trigger.setAttribute("aria-expanded", "false");
   if (hadFocus) trigger.focus();
 }
@@ -3797,11 +3811,11 @@ function renderFeed() {
   const label = $("feed-label");
   const feed = S.feed;
   const cls = feed === "live" ? "live" : feed === "polling" || feed === "degraded" ? "degraded" : "connecting";
-  badge.className = `feed-badge ${cls}`;
+  badge.className = `feed-badge ${cls} feed-badge-interactive`;
   label.textContent = feed;
   $("footer-feed").textContent = `${feed} feed`;
   const orderStatus = S.orderFeed || "disconnected";
-  $("order-feed-badge").className = `feed-badge ${orderStatus === "live" ? "live" : orderStatus === "connecting" ? "connecting" : "degraded"}`;
+  $("order-feed-badge").className = `feed-badge ${orderStatus === "live" ? "live" : orderStatus === "connecting" ? "connecting" : "degraded"} feed-badge-interactive`;
   $("order-feed-label").textContent = `orders ${orderStatus}`;
 }
 
@@ -3840,7 +3854,7 @@ function updateChainActiveDescendant() {
   if (!grid) return;
   const strike = selectedOption(S.selected.type)?.strike;
   const row = strike ? $(`chain-row-${strike}`) : null;
-  if (row) grid.setAttribute("aria-activedescendant", row.id);
+  if (row && !row.hidden) grid.setAttribute("aria-activedescendant", row.id);
   else grid.removeAttribute("aria-activedescendant");
 }
 
@@ -3888,9 +3902,9 @@ function renderChain(preserveScroll = false) {
     const callITM = atm ? row.strike < atm : false;
     const putITM = atm ? row.strike > atm : false;
     return `<div class="chain-row${isATM ? " atm" : ""}${active ? " active" : ""}" id="chain-row-${row.strike}" data-strike="${row.strike}" role="row" aria-rowindex="${index + 2}">
-      <button type="button" role="gridcell" aria-colindex="1" aria-selected="${callSelected}" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span><span class="sr-only"> · ${fmtSigned(call.changePct)}%${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}</span>` : "—"}</button>
-      <button type="button" role="gridcell" aria-colindex="2" aria-selected="${active}" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button>
-      <button type="button" role="gridcell" aria-colindex="3" aria-selected="${putSelected}" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span><span class="sr-only"> · ${fmtSigned(put.changePct)}%${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}</span>` : "—"}</button>
+      <div class="chain-cell" role="gridcell" aria-colindex="1" aria-selected="${callSelected}"><button type="button" tabindex="-1" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span><span class="sr-only"> · ${fmtSigned(call.changePct)}%${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}</span>` : "—"}</button></div>
+      <div class="chain-cell" role="gridcell" aria-colindex="2" aria-selected="${active}"><button type="button" tabindex="-1" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button></div>
+      <div class="chain-cell" role="gridcell" aria-colindex="3" aria-selected="${putSelected}"><button type="button" tabindex="-1" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span><span class="sr-only"> · ${fmtSigned(put.changePct)}%${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}</span>` : "—"}</button></div>
     </div>`;
   }).join("");
   const pcr = computePCR();
@@ -6639,8 +6653,12 @@ function closeChartQuickOrder() {
   const widget = $("chart-quick-order");
   if (widget) {
     widget.classList.remove("is-dragging");
-    if (typeof widget.close === "function" && widget.open) widget.close();
-    else widget.hidden = true;
+    if (typeof widget.close === "function") {
+      if (widget.open) widget.close();
+      widget.removeAttribute("hidden");
+    } else {
+      widget.hidden = true;
+    }
   }
 }
 
@@ -7050,6 +7068,9 @@ function toast(message, kind = "ok", ms = 3500) {
   const node = document.createElement("div");
   node.className = `toast ${kind}`;
   node.textContent = message;
+  // Errors are mirrored to the assertive region; hide the visual copy from AT
+  // so it is not announced twice.
+  if (kind === "error") node.setAttribute("aria-hidden", "true");
   $("toast-stack").appendChild(node);
   if (kind === "error") {
     // Mirror critical errors into an assertive live region. Clear first so a
@@ -8752,12 +8773,13 @@ function bindEvents() {
       patternPopoverEl.style.display = "none";
       return;
     }
-    if (S.quickOrder) {
-      closeChartQuickOrder();
-      return;
-    }
+    // Confirm sits above the quick-order card, so dismiss it first.
     if (dialogIsOpen("confirm-modal")) {
       closeConfirm(false);
+      return;
+    }
+    if (S.quickOrder) {
+      closeChartQuickOrder();
       return;
     }
     if (dialogIsOpen("pair-modal")) {
@@ -8774,6 +8796,11 @@ function bindEvents() {
     }
     if (dialogIsOpen("strike-modal")) {
       closeStrikeModal();
+      return;
+    }
+    // Native dialogs close themselves on Esc; don't also mutate the page.
+    if (dialogIsOpen("login-modal") || dialogIsOpen("ai-signals-modal") ||
+        dialogIsOpen("serve-auth-modal") || dialogIsOpen("server-down-modal")) {
       return;
     }
     if (S.focusedChart) setFocusedChart(null);
@@ -9252,6 +9279,8 @@ function handleAppBackButton() {
     { id: "confirm-modal", fn: () => closeConfirm(false) },
     { id: "pair-modal", fn: closePairModal },
     { id: "status-modal", fn: closeStatusModal },
+    { id: "order-history-modal", fn: () => closeDialog("order-history-modal") },
+    { id: "ai-signals-modal", fn: closeAISignalsModal },
     { id: "login-modal", fn: closeLogin },
   ];
 
@@ -9262,11 +9291,9 @@ function handleAppBackButton() {
     }
   }
 
-  // 4. Close quick order dialog if visible
-  const orderDialog = $("order-dialog");
-  if (orderDialog && !orderDialog.hidden && orderDialog.style.display !== "none") {
-    orderDialog.hidden = true;
-    orderDialog.style.display = "none";
+  // 4. Close the chart quick-order card if visible
+  if (S.quickOrder) {
+    closeChartQuickOrder();
     return true;
   }
 

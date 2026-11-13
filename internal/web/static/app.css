@@ -1254,7 +1254,19 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .chain-row.atm { background: #191b10; box-shadow: inset 3px 0 0 var(--accent); }
 .chain-row.atm:hover { background: #1f2114; }
 
-.chain-row > span, .chain-row > button {
+.chain-row .chain-cell {
+  display: flex;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.chain-row .chain-cell > button {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+.chain-row > span, .chain-row .chain-cell > button {
   padding: 3px 8px;
   text-align: right;
   border: 0;
@@ -1656,10 +1668,6 @@ table.book td {
   font-family: var(--mono);
   white-space: nowrap;
 }
-table.book tr {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 28px;
-}
 table.book tr:hover td { background: var(--surface-hover); }
 table.book tr.group-row td {
   background: var(--surface-alt);
@@ -1916,6 +1924,12 @@ dialog.modal-backdrop:not([open]) {
 dialog.modal-backdrop[open] {
   display: grid;
   place-items: center;
+  background: #030609b8;
+}
+/* Modal dialogs get their scrim from ::backdrop; the [open] background above
+   is the no-JS fallback for the fail-closed serve-auth gate. */
+dialog.modal-backdrop:modal {
+  background: transparent;
 }
 dialog.modal-backdrop::backdrop {
   background: #030609b8;
@@ -2860,6 +2874,7 @@ dialog.modal-backdrop::backdrop {
     padding: 0;
     border: 0;
     background: transparent;
+    color: inherit;
     justify-content: flex-end;
   }
   dialog.mobile-drawer-backdrop[open] {
@@ -4143,7 +4158,6 @@ dialog.modal-backdrop::backdrop {
 @media (prefers-reduced-motion: reduce) {
   .chart-quick-order,
   .toast,
-  .mobile-drawer,
   .install-banner,
   .chain-row.atm.pulse-atm {
     animation: none;

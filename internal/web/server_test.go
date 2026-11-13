@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -308,6 +309,76 @@ func TestIndexPage(t *testing.T) {
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+// TestTerminalTemplateContract locks down the structural parts of the UI that
+// are easy to regress: every overlay is a native <dialog>, the serve gate is
+// fail-closed, ARIA references resolve, and the live regions exist.
+func TestTerminalTemplateContract(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, token: true})
+
+	// No basic auth: ServeLocked is true, so the access gate is rendered.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "127.0.0.1:8080"
+	rec := do(t, s, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if strings.Contains(body, `<div class="modal-backdrop"`) {
+		t.Fatal("overlays must use <dialog>, found a div.modal-backdrop")
+	}
+
+	overlays := []string{
+		"status-modal", "order-history-modal", "pair-modal", "ai-signals-modal",
+		"serve-auth-modal", "login-modal", "server-down-modal", "confirm-modal",
+		"strike-modal", "chart-quick-order", "mobile-drawer-backdrop",
+	}
+	for _, id := range overlays {
+		re := regexp.MustCompile(`<dialog[^>]*\bid="` + regexp.QuoteMeta(id) + `"[^>]*>`)
+		if !re.MatchString(body) {
+			t.Errorf("missing <dialog id=%q>", id)
+		}
+	}
+
+	// Fail-closed: the gate is open in the static HTML even before JS runs.
+	gate := regexp.MustCompile(`<dialog[^>]*\bid="serve-auth-modal"[^>]*>`).FindString(body)
+	if gate == "" || !strings.Contains(gate, " open") {
+		t.Fatalf("serve-auth gate must render open, got %q", gate)
+	}
+	if !strings.Contains(gate, `closedby="none"`) {
+		t.Fatalf("serve-auth gate must not be dismissible with Esc, got %q", gate)
+	}
+
+	// Every aria-labelledby/aria-describedby target must exist in the page.
+	for _, attr := range []string{"aria-labelledby", "aria-describedby"} {
+		re := regexp.MustCompile(attr + `="([^"]+)"`)
+		for _, match := range re.FindAllStringSubmatch(body, -1) {
+			for _, id := range strings.Fields(match[1]) {
+				if !strings.Contains(body, `id="`+id+`"`) {
+					t.Errorf("%s target %q is missing", attr, id)
+				}
+			}
+		}
+	}
+
+	// Structural landmarks for the chain, books, charts, and live regions.
+	for _, want := range []string{
+		`id="chain-grid" role="grid" aria-label="Option chain"`,
+		`id="chain-body" role="rowgroup"`,
+		`id="tab-content" role="region"`,
+		`id="chart-data-table"`,
+		`<caption>Latest option chain values around the money</caption>`,
+		`id="toast-stack" aria-live="polite"`,
+		`id="toast-alert" role="alert" aria-live="assertive"`,
+		`id="strike-search-input"`,
+		`aria-label="Search strike"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("index body missing %q", want)
+		}
 	}
 }
 

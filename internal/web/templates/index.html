@@ -4,19 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0b0e14">
   <script>
     (function () {
       var theme = null;
       try { theme = localStorage.getItem("scalper-theme"); } catch (e) { theme = null; }
+      var scheme = document.querySelector('meta[name="color-scheme"]');
+      var chrome = document.querySelector('meta[name="theme-color"]');
       if (theme === "light" || theme === "dark") {
-        document.querySelector('meta[name="color-scheme"]').content = theme;
+        if (scheme) scheme.content = theme;
       } else {
         theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       }
       document.documentElement.dataset.theme = theme;
+      if (chrome) chrome.content = theme === "dark" ? "#0b0e14" : "#f8fafc";
     })();
   </script>
-  <meta name="theme-color" content="#0b0e14">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -178,7 +181,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart" aria-describedby="chart-data-table"></div>
+          <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart" aria-details="chart-data-table"></div>
           <div class="chart-tools" aria-label="CALL chart tools">
             <button type="button" class="chart-settings-btn" data-chart="ce" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -231,7 +234,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart" aria-describedby="chart-data-table"></div>
+          <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
           <div class="chart-tools" aria-label="Underlying chart tools">
             <button type="button" class="chart-settings-btn" data-chart="underlying" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -259,7 +262,7 @@
           </div>
         </div>
         <div class="chart-frame">
-          <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart" aria-describedby="chart-data-table"></div>
+          <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart" aria-details="chart-data-table"></div>
           <div class="chart-tools" aria-label="PUT chart tools">
             <button type="button" class="chart-settings-btn" data-chart="pe" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
@@ -673,7 +676,7 @@
 
   <!-- Serve mode lock modal -->
   {{if .ServeLocked}}
-  <dialog class="modal-backdrop" id="serve-auth-modal" closedby="none" aria-labelledby="serve-auth-title">
+  <dialog class="modal-backdrop" id="serve-auth-modal" closedby="none" aria-labelledby="serve-auth-title" open>
     <div class="modal login-modal">
       <div class="modal-head">
         <div>
@@ -761,7 +764,7 @@
   </dialog>
 
   <!-- Server down modal -->
-  <dialog class="modal-backdrop" id="server-down-modal" closedby="none" aria-labelledby="server-down-title">
+  <dialog class="modal-backdrop" id="server-down-modal" closedby="none" role="alertdialog" aria-labelledby="server-down-title">
     <div class="modal server-down-modal">
       <div class="modal-head">
         <h2 id="server-down-title">⚠ Server Disconnected</h2>
