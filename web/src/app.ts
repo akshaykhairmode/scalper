@@ -3674,11 +3674,11 @@ function spotStatus(key: string, spot: any): string {
   return "LIVE";
 }
 
-function spotMenuRowHTML(key: string): string {
+function spotMenuRowHTML(key: string, index: number): string {
   const spot = S.spots.get(key);
   const selected = key === S.activeIndex;
   const isStatic = key === "INDIA VIX";
-  return `<button type="button" class="spot-menu-row${selected ? " active" : ""}${isStatic ? " static" : ""}" data-index="${esc(key)}" role="option" aria-selected="${selected}"${isStatic ? ' aria-disabled="true"' : ""}>
+  return `<button type="button" id="spot-option-${index}" tabindex="-1" class="spot-menu-row${selected ? " active" : ""}${isStatic ? " static" : ""}" data-index="${esc(key)}" role="option" aria-selected="${selected}"${isStatic ? ' aria-disabled="true"' : ""}>
     <span class="spot-row-main">
       <span class="spot-row-name">${esc(spot?.displayName || key)}</span>
       <span class="spot-row-sub">${esc(key)}</span>
@@ -3744,13 +3744,52 @@ function renderSpotPicker(force = false) {
   });
 }
 
+function spotMenuOptions(): any[] {
+  const menu = $("spot-menu");
+  if (!menu) return [];
+  return $$(".spot-menu-row", menu).filter((row: any) => row.getAttribute("aria-disabled") !== "true");
+}
+
+function focusSpotMenuOption(row: any) {
+  const menu = $("spot-menu");
+  if (!menu || !row) return;
+  row.focus();
+  const id = row.getAttribute("id");
+  if (id) menu.setAttribute("aria-activedescendant", id);
+}
+
+function focusSpotMenuSelection() {
+  const options = spotMenuOptions();
+  if (!options.length) return;
+  const selected = options.find((row: any) => row.getAttribute("aria-selected") === "true");
+  focusSpotMenuOption(selected || options[0]);
+}
+
+function activateSpotMenuRow(row: any) {
+  if (!row) return;
+  const key = row.getAttribute("data-index");
+  if (!key || key === "INDIA VIX") return;
+  setSpotMenuOpen(false);
+  if (key === S.activeIndex) return;
+  switchIndex(key);
+}
+
 function setSpotMenuOpen(open: boolean) {
   const menu = $("spot-menu");
   const trigger = $("spot-current");
   if (!menu || !trigger) return;
-  if (open) renderSpotPicker(true);
-  menu.hidden = !open;
-  trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    renderSpotPicker(true);
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    focusSpotMenuSelection();
+    return;
+  }
+  const hadFocus = menu.contains(document.activeElement);
+  menu.hidden = true;
+  menu.removeAttribute("aria-activedescendant");
+  trigger.setAttribute("aria-expanded", "false");
+  if (hadFocus) trigger.focus();
 }
 
 function renderFeed() {
@@ -6838,6 +6877,10 @@ function loginError(message) {
   const box = $("login-error");
   box.textContent = message;
   box.hidden = !message;
+  for (const id of ["totp-input", "mpin-input"]) {
+    const input = $(id);
+    if (input) input.setAttribute("aria-invalid", message ? "true" : "false");
+  }
 }
 
 async function submitLogin(event) {
@@ -6964,6 +7007,17 @@ function toast(message, kind = "ok", ms = 3500) {
   node.className = `toast ${kind}`;
   node.textContent = message;
   $("toast-stack").appendChild(node);
+  if (kind === "error") {
+    // Mirror critical errors into an assertive live region. Clear first so a
+    // repeated identical message is announced again.
+    const alert = $("toast-alert");
+    if (alert) {
+      alert.textContent = "";
+      window.setTimeout(() => {
+        alert.textContent = message;
+      }, 30);
+    }
+  }
   window.setTimeout(() => {
     node.classList.add("leaving");
     window.setTimeout(() => node.remove(), 200);
@@ -8051,12 +8105,6 @@ function bindEvents() {
   const marginMetric = $("margin-metric");
   if (marginMetric) {
     marginMetric.addEventListener("click", refreshMargin);
-    marginMetric.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        refreshMargin();
-      }
-    });
   }
 
   $("spot-current")?.addEventListener("click", () => {
@@ -8064,19 +8112,51 @@ function bindEvents() {
     setSpotMenuOpen(menu?.hidden !== false);
   });
   $("spot-current")?.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setSpotMenuOpen(true);
-    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    setSpotMenuOpen(true);
   });
   $("spot-menu")?.addEventListener("click", (event) => {
-    const row = event.target.closest(".spot-menu-row");
-    if (!row) return;
-    const key = row.dataset.index;
-    if (!key || key === "INDIA VIX") return;
-    setSpotMenuOpen(false);
-    if (key === S.activeIndex) return;
-    switchIndex(key);
+    activateSpotMenuRow(event.target.closest(".spot-menu-row"));
+  });
+  $("spot-menu")?.addEventListener("keydown", (event) => {
+    const menu = $("spot-menu");
+    if (!menu || menu.hidden) return;
+    const options = spotMenuOptions();
+    if (!options.length) return;
+    const current = options.indexOf(document.activeElement);
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusSpotMenuOption(options[current < 0 ? 0 : (current + 1) % options.length]);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        focusSpotMenuOption(options[current < 0 ? options.length - 1 : (current - 1 + options.length) % options.length]);
+        return;
+      case "Home":
+        event.preventDefault();
+        focusSpotMenuOption(options[0]);
+        return;
+      case "End":
+        event.preventDefault();
+        focusSpotMenuOption(options[options.length - 1]);
+        return;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        activateSpotMenuRow(document.activeElement);
+        return;
+      case "Escape":
+        event.preventDefault();
+        setSpotMenuOpen(false);
+        return;
+      case "Tab":
+        // Do not trap focus: closing here returns focus to the trigger, and the
+        // browser then continues the Tab sequence from there.
+        setSpotMenuOpen(false);
+        return;
+    }
   });
   document.addEventListener("click", (event) => {
     const picker = $("spot-picker");
@@ -8302,9 +8382,15 @@ function bindEvents() {
   const serveAuthSubmit = $("serve-auth-submit");
 
   if (serveAuthForm && serveAuthModal) {
+    const setServeAuthInvalid = (invalid: boolean) => {
+      for (const input of [serveAuthUser, serveAuthPass]) {
+        if (input) input.setAttribute("aria-invalid", invalid ? "true" : "false");
+      }
+    };
     serveAuthForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       if (serveAuthErr) serveAuthErr.hidden = true;
+      setServeAuthInvalid(false);
       if (serveAuthSubmit) {
         serveAuthSubmit.disabled = true;
         serveAuthSubmit.textContent = "Verifying...";
@@ -8335,6 +8421,7 @@ function bindEvents() {
             serveAuthErr.textContent = data.error || "Invalid username or password";
             serveAuthErr.hidden = false;
           }
+          setServeAuthInvalid(true);
           if (serveAuthPass) {
             serveAuthPass.value = "";
             serveAuthPass.focus();
@@ -8345,6 +8432,7 @@ function bindEvents() {
           serveAuthErr.textContent = "Verification request failed. Please retry.";
           serveAuthErr.hidden = false;
         }
+        setServeAuthInvalid(true);
       } finally {
         if (serveAuthSubmit) {
           serveAuthSubmit.disabled = false;
@@ -8401,14 +8489,6 @@ function bindEvents() {
 
   $("feed-badge")?.addEventListener("click", openStatusModal);
   $("order-feed-badge")?.addEventListener("click", openStatusModal);
-  for (const id of ["feed-badge", "order-feed-badge"]) {
-    $(id)?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openStatusModal();
-      }
-    });
-  }
   $("status-close")?.addEventListener("click", closeStatusModal);
   $("status-modal-close-btn")?.addEventListener("click", closeStatusModal);
   $("status-refresh-button")?.addEventListener("click", () => refreshStatusModal(true));

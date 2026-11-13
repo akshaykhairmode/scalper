@@ -365,6 +365,8 @@ a { color: var(--blue); }
 
 .topbar-right { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
 .metric { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+/* #margin-metric is a <button>; strip native chrome so it keeps the metric look. */
+button.metric { border: 0; background: transparent; font: inherit; color: inherit; }
 .metric.metric-clickable {
   cursor: pointer;
   user-select: none;
@@ -385,6 +387,14 @@ a { color: var(--blue); }
 }
 .metric-label { color: var(--muted-2); font-size: 9px; letter-spacing: .12em; font-weight: 700; }
 .metric-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 650; }
+
+/* Feed badges are <button>s; reset native chrome, then let the .feed-badge
+   rules below paint the pill. */
+:where(button).feed-badge {
+  background: transparent;
+  font: inherit;
+  color: inherit;
+}
 
 .feed-badge {
   display: inline-flex;

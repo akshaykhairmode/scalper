@@ -51,13 +51,13 @@
     </div>
 
     <div class="topbar-right">
-      <div class="metric metric-clickable" id="margin-metric" role="button" tabindex="0" title="Click to refresh margin" aria-label="Account margin. Click to refresh.">
+      <button type="button" class="metric metric-clickable" id="margin-metric" title="Click to refresh margin" aria-label="Account margin. Click to refresh.">
         <span class="metric-label">MARGIN</span>
         <span class="metric-value" id="margin-chip">—</span>
-      </div>
+      </button>
       <span class="metric"><span class="metric-label">P&amp;L</span><span class="metric-value" id="pnl-chip">—</span></span>
-      <span class="feed-badge connecting feed-badge-interactive" id="feed-badge" role="button" tabindex="0" title="Market feed status (click for system status)"><i></i><span id="feed-label">connecting</span></span>
-      <span class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" role="button" tabindex="0" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></span>
+      <button type="button" class="feed-badge connecting feed-badge-interactive" id="feed-badge" title="Market feed status (click for system status)"><i></i><span id="feed-label">connecting</span></button>
+      <button type="button" class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></button>
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
       <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
@@ -692,12 +692,12 @@
         <label class="field">
           <span>Username</span>
           <input id="serve-auth-user" name="username" type="text" autocomplete="username"
-                 placeholder="Username" autofocus required>
+                 placeholder="Username" autofocus required aria-describedby="serve-auth-error">
         </label>
         <label class="field">
           <span>Password</span>
           <input id="serve-auth-pass" name="password" type="password" autocomplete="current-password"
-                 placeholder="Password" required>
+                 placeholder="Password" required aria-describedby="serve-auth-error">
         </label>
         <label class="field checkbox-field" style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; cursor:pointer;">
           <input type="checkbox" id="serve-auth-remember" name="remember_device" checked style="width:16px; height:16px; accent-color:var(--accent, #f59e0b);">
@@ -731,7 +731,7 @@
         <label class="field">
           <span>TOTP code</span>
           <input id="totp-input" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                 maxlength="6" pattern="[0-9]{6}" placeholder="000000">
+                 maxlength="6" pattern="[0-9]{6}" placeholder="000000" aria-describedby="totp-hint login-error">
         </label>
         <p class="field-hint" id="totp-hint">Invalid code? Sync your device time and try again.</p>
 
@@ -740,7 +740,7 @@
             <span>MPIN</span>
             <input id="mpin-input" name="mpin" type="password" inputmode="numeric"
                    autocomplete="off" maxlength="6" pattern="[0-9]{6}"
-                   placeholder="••••••" disabled>
+                   placeholder="••••••" disabled aria-describedby="login-error">
           </label>
           <p class="field-hint">MPIN is never stored by the app.</p>
         {{end}}
@@ -798,17 +798,17 @@
       <div class="strike-controls-row">
         <label class="strike-target-wrap" for="strike-target-select">
           <span class="sr-only">Target</span>
-          <select id="strike-target-select" aria-label="Apply searched strike to">
+          <select id="strike-target-select">
             <option value="CE">CALL</option>
             <option value="PE">PUT</option>
           </select>
         </label>
         <div class="strike-search-wrap">
-          <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)...">
+          <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)..." aria-label="Search strike" aria-describedby="strike-search-hint">
         </div>
         <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike (Current Spot Price)">⚡ ATM</button>
       </div>
-      <span class="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
+      <span class="strike-search-hint" id="strike-search-hint">Enter loads and selects an exact strike · choose CALL or PUT</span>
       <div class="strike-meta" id="strike-meta">Waiting for the option chain…</div>
       <button type="button" class="chain-more" id="load-more-above" hidden>Load more above</button>
       <div class="chain-head" role="row">
@@ -1086,6 +1086,7 @@
   </nav>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <div class="sr-only" id="toast-alert" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
   <script id="bootstrap" type="application/json">{{.Bootstrap}}</script>
   <script src="/static/klinecharts.min.js"></script>
