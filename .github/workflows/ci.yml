@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: "npm"
           cache-dependency-path: "web/package.json"
 
@@ -51,6 +51,10 @@ jobs:
       - name: Typecheck TypeScript
         working-directory: web
         run: npm run typecheck
+
+      - name: Web unit tests
+        working-directory: web
+        run: npm test
 
       - name: Build web assets
         working-directory: web

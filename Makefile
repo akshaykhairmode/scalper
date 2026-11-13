@@ -81,6 +81,13 @@ build: web-build compress
 test:
 	$(GO) test ./...
 
+web-test:
+	@if [ -d "web/node_modules" ]; then \
+		npm --prefix web test; \
+	else \
+		echo "skip web tests: run npm --prefix web install first"; \
+	fi
+
 race:
 	$(GO) test -race -count=1 ./...
 

@@ -3,6 +3,9 @@ import * as Indicators from "./chart/indicators";
 import { calculateFibLevels } from "./chart/fibonacci";
 import { buildVolumeProfile, suggestVolumeRanges } from "./chart/volumeProfile";
 
+// Minimum gap between volume-profile rebuilds while ticks stream in.
+const VOLUME_PROFILE_REFRESH_MS = 5000;
+
 const chartColors = (element) => {
   const styles = getComputedStyle(element);
   const color = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -1299,7 +1302,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates, bounding }) {
+    createPointFigures: function({ overlay, coordinates, bounding, yAxis }) {
       const data = overlay.extendData || {};
       const nodes = Array.isArray(data.nodes) ? data.nodes : [];
       const priceHigh = Number(data.priceHigh);
@@ -1312,11 +1315,25 @@ function registerCustomOverlays() {
 
       const width = bounding?.width || 800;
       const span = priceHigh - priceLow;
-      const yOf = (price) => top.y + ((priceHigh - price) / span) * (bottom.y - top.y);
+      // Prefer the axis conversion: it stays correct on log/percentage scales.
+      // The linear interpolation between the two anchor points is the fallback.
+      const yOf = (price) => {
+        const value = Number(price);
+        if (!Number.isFinite(value)) return NaN;
+        if (yAxis && typeof yAxis.convertToPixel === "function") {
+          const pixel = Number(yAxis.convertToPixel(value));
+          if (Number.isFinite(pixel)) return pixel;
+        }
+        return top.y + ((priceHigh - value) / span) * (bottom.y - top.y);
+      };
+      const palette = data.colors || {};
       const figures = [];
 
-      // Zones first so the histogram bars sit on top of them.
-      const band = (range, color) => {
+      // Zones first so the histogram bars sit on top of them. When the profile
+      // says "wait", keep the shelves visible but barely tinted so they do not
+      // read as an entry signal.
+      const waiting = data.bias === "none";
+      const band = (range, color, dimColor) => {
         if (!range) return;
         const y1 = yOf(Number(range.high));
         const y2 = yOf(Number(range.low));
@@ -1331,12 +1348,17 @@ function registerCustomOverlays() {
               { x: 0, y: y2 },
             ],
           },
-          styles: { style: "fill", color, borderColor: "transparent", borderSize: 0 },
+          styles: {
+            style: "fill",
+            color: waiting ? dimColor : color,
+            borderColor: "transparent",
+            borderSize: 0,
+          },
           ignoreEvent: true,
         });
       };
-      band(data.buy, "rgba(41, 179, 96, 0.12)");
-      band(data.sell, "rgba(240, 90, 90, 0.12)");
+      band(data.buy, "rgba(41, 179, 96, 0.12)", "rgba(41, 179, 96, 0.04)");
+      band(data.sell, "rgba(240, 90, 90, 0.12)", "rgba(240, 90, 90, 0.04)");
 
       let maxVolume = 0;
       for (const node of nodes) {
@@ -1373,6 +1395,8 @@ function registerCustomOverlays() {
         }
       }
 
+      const levelColor = palette.valueArea || "rgba(148, 163, 184, 0.7)";
+      const pocColor = palette.poc || "rgba(240, 180, 41, 0.95)";
       const level = (price, color, dashed, size) => {
         const value = Number(price);
         if (!Number.isFinite(value)) return;
@@ -1389,24 +1413,28 @@ function registerCustomOverlays() {
           ignoreEvent: true,
         });
       };
-      level(data.val, "rgba(148, 163, 184, 0.7)", true, 1);
-      level(data.vah, "rgba(148, 163, 184, 0.7)", true, 1);
-      level(data.poc, "rgba(240, 180, 41, 0.95)", false, 1.4);
+      level(data.val, levelColor, true, 1);
+      level(data.vah, levelColor, true, 1);
+      level(data.poc, pocColor, false, 1.4);
 
-      const pocPrice = Number(data.poc);
-      if (Number.isFinite(pocPrice)) {
+      const label = (price, text, color) => {
+        const value = Number(price);
+        if (!Number.isFinite(value)) return;
         figures.push({
           type: "text",
-          attrs: { x: 8, y: yOf(pocPrice) - 7, text: "POC", align: "left", baseline: "bottom" },
+          attrs: { x: 8, y: yOf(value) - 5, text, align: "left", baseline: "bottom" },
           styles: {
-            color: "#f0b429",
+            color,
             size: 9,
             weight: "bold",
             family: "system-ui, -apple-system, sans-serif",
           },
           ignoreEvent: true,
         });
-      }
+      };
+      label(data.poc, "POC", pocColor);
+      label(data.vah, "VAH", levelColor);
+      label(data.val, "VAL", levelColor);
       return figures;
     },
   });
@@ -2755,6 +2783,7 @@ export class CandleChart {
     this.vpLastKey = "";
     this.vpSuggestion = null;
     this._vpTimer = null;
+    this._vpLastRefresh = 0;
     this.onVolumeProfile = typeof onVolumeProfile === "function" ? onVolumeProfile : null;
     this.thetaMeta = null;
     this.thetaDataReady = false;
@@ -3206,6 +3235,11 @@ export class CandleChart {
   }
 
   toggleVolumeProfile(forceState) {
+    if (this._vpTimer) {
+      clearTimeout(this._vpTimer);
+      this._vpTimer = null;
+    }
+    this._vpLastRefresh = 0;
     this.showVolumeProfile = typeof forceState === "boolean" ? forceState : !this.showVolumeProfile;
     this.vpLastKey = "";
     this.refreshVolumeProfile(true);
@@ -3232,16 +3266,22 @@ export class CandleChart {
     }
   }
 
-  debounceVolumeProfile() {
-    if (this._vpTimer) clearTimeout(this._vpTimer);
+  // Throttle with a trailing edge: ticks can arrive far faster than the redraw
+  // budget, so a pure debounce would never fire during an active session.
+  scheduleVolumeProfile() {
+    if (this._vpTimer) return;
+    const now = Date.now();
+    const elapsed = now - (this._vpLastRefresh || 0);
+    const wait = elapsed >= VOLUME_PROFILE_REFRESH_MS ? 0 : VOLUME_PROFILE_REFRESH_MS - elapsed;
     this._vpTimer = setTimeout(() => {
       this._vpTimer = null;
+      this._vpLastRefresh = Date.now();
       if (this.showVolumeProfile) this.refreshVolumeProfile();
-    }, 1500);
+    }, wait);
   }
 
   refreshVolumeProfile(force = false) {
-    if (!this.showVolumeProfile || !this.chart || this.data.length < 8) {
+    if (!this.showVolumeProfile || !this.chart || this.data.length < 5) {
       this.clearVolumeProfile();
       this.vpSuggestion = null;
       this.vpLastKey = "";
@@ -3258,8 +3298,13 @@ export class CandleChart {
       this.emitVolumeProfile();
       return;
     }
+    // The key covers the levels AND the distribution: without the volume sum
+    // and the last bar time the histogram could keep stale bars while the
+    // actionable lines look current.
     const key = [
       profile.candles,
+      last?.time || 0,
+      Math.round(profile.total),
       profile.poc.toFixed(4),
       profile.vah.toFixed(4),
       profile.val.toFixed(4),
@@ -3278,6 +3323,11 @@ export class CandleChart {
           priceHigh: profile.high,
           priceLow: profile.low,
           nodes: profile.nodes,
+          bias: suggestion.bias,
+          colors: {
+            poc: this.colors.accent,
+            valueArea: this.colors.text,
+          },
           poc: profile.poc,
           vah: profile.vah,
           val: profile.val,
@@ -4154,6 +4204,7 @@ export class CandleChart {
       this.bracketLevelsKey = "";
       this.bracketData = null;
       this.indicatorSignature = "";
+      this.vpLastKey = "";
       try {
         this.chart?.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
       } catch (_) {}
@@ -4661,7 +4712,8 @@ export class CandleChart {
   update(candle) {
     if (!candle || !Number.isFinite(candle.time) || !this.chart) return;
     const lastIdx = this.data.length - 1;
-    if (lastIdx >= 0 && this.data[lastIdx].time === candle.time) {
+    const startedNewBar = !(lastIdx >= 0 && this.data[lastIdx].time === candle.time);
+    if (!startedNewBar) {
       this.data[lastIdx] = { ...this.data[lastIdx], ...candle };
     } else {
       this.data.push(candle);
@@ -4685,7 +4737,10 @@ export class CandleChart {
       this.debounceDepthRefresh();
     }
     if (this.showVolumeProfile) {
-      this.debounceVolumeProfile();
+      // A closed bar changes the distribution; intra-bar ticks only move the
+      // last candle, so throttle those.
+      if (startedNewBar) this.refreshVolumeProfile();
+      else this.scheduleVolumeProfile();
     }
   }
 
@@ -4736,6 +4791,10 @@ export class CandleChart {
     if (this._depthTimer) {
       clearTimeout(this._depthTimer);
       this._depthTimer = null;
+    }
+    if (this._vpTimer) {
+      clearTimeout(this._vpTimer);
+      this._vpTimer = null;
     }
     this.levelDrag = null;
     this.clearLevelDragPreview();

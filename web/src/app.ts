@@ -1,6 +1,6 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
-import { formatRange } from "./chart/volumeProfile";
+import { formatPrice, formatRange } from "./chart/volumeProfile";
 import { generateQRCodeSVG } from "./utils/qrcode";
 import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
@@ -1297,7 +1297,8 @@ function updateChartSettingsButtonState() {
     const active = Boolean(
       chart.showEMA || chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
       chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
-      chart.showMomentum || chart.showTheta || (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
+      chart.showMomentum || chart.showTheta || chart.showVolumeProfile ||
+      (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
     );
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
@@ -3200,8 +3201,14 @@ async function loadCharts(forceRefresh = false) {
     if (!chart) continue;
     if (!key) {
       chart.setData([], { symbol: "" });
+      renderVolumeProfileChip(pane, null);
       setChartHint(pane, defaultHint);
       continue;
+    }
+    // A different strike/index must not keep the previous instrument's ranges
+    // on screen while the new candles are still loading.
+    if (chart.currentSymbol && chart.currentSymbol !== key) {
+      renderVolumeProfileChip(pane, null);
     }
     const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
     let cached = S.historicalCache.get(cacheKey);
@@ -3479,19 +3486,26 @@ function renderVolumeProfileChip(pane, info) {
   const bias = info.bias || "none";
   const arrow = bias === "long" ? "▲" : bias === "short" ? "▼" : "•";
   const activeRange = bias === "short" ? info.sell : info.buy;
-  chip.hidden = false;
-  chip.className = `pane-vp-chip ${bias}`;
-  chip.textContent = bias === "none" ? "VP • wait" : `VP ${arrow} ${formatRange(activeRange)}`;
+  const text = bias === "none"
+    ? `VP • wait · ${formatRange(info.buy)}`
+    : `VP ${arrow} ${formatRange(activeRange)} · SL ${formatPrice(info.stop)} · T ${formatPrice(info.target)}`;
   const parts = [
     `Volume profile — ${info.note || ""}`.trim(),
     `Buy ${formatRange(info.buy)}`,
     `Sell ${formatRange(info.sell)}`,
-    `Stop ${formatRange({ low: info.stop, high: info.stop })}`,
-    `Target ${formatRange({ low: info.target, high: info.target })}`,
-    `POC ${formatRange({ low: info.profile?.poc, high: info.profile?.poc })}`,
+    `Stop ${formatPrice(info.stop)}`,
+    `Target ${formatPrice(info.target)}`,
+    `POC ${formatPrice(info.profile?.poc)}`,
   ];
-  chip.title = parts.join(" · ");
-  chip.setAttribute("aria-label", chip.title);
+  const title = parts.join(" · ");
+  // Only touch the live region when something actually changed, otherwise the
+  // identical write is re-announced by some screen readers.
+  if (chip.textContent !== text) chip.textContent = text;
+  if (chip.title !== title) chip.title = title;
+  if (chip.getAttribute("aria-label") !== title) chip.setAttribute("aria-label", title);
+  const className = `pane-vp-chip ${bias}`;
+  if (chip.className !== className) chip.className = className;
+  if (chip.hidden) chip.hidden = false;
 }
 
 function toggleVolumeProfile(forceState?) {

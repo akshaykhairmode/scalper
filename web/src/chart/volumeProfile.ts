@@ -103,10 +103,13 @@ export function buildVolumeProfile(
   const source = candles
     .filter((candle) =>
       candle &&
+      Number.isFinite(candle.open) &&
       Number.isFinite(candle.high) &&
       Number.isFinite(candle.low) &&
       Number.isFinite(candle.close) &&
       candle.high >= candle.low &&
+      candle.low > 0 &&
+      Number.isFinite(Number(candle.volume)) &&
       Number(candle.volume) > 0)
     .slice(-lookback);
   if (source.length < 5) return null;
@@ -260,7 +263,15 @@ export function suggestVolumeRanges(
 /** Compact "12.40–14.20" label used by the pane badge. */
 export function formatRange(range: PriceRange | null | undefined, decimals = 2): string {
   if (!range || !Number.isFinite(range.low) || !Number.isFinite(range.high)) return "—";
+  const digits = Number.isInteger(decimals) && decimals >= 0 ? Math.min(decimals, 6) : 2;
   const lo = Math.min(range.low, range.high);
   const hi = Math.max(range.low, range.high);
-  return `${lo.toFixed(decimals)}–${hi.toFixed(decimals)}`;
+  return `${lo.toFixed(digits)}–${hi.toFixed(digits)}`;
+}
+
+/** Single-price label ("12.40") — avoids the "12.40–12.40" range for levels. */
+export function formatPrice(value: number | null | undefined, decimals = 2): string {
+  if (!Number.isFinite(Number(value))) return "—";
+  const digits = Number.isInteger(decimals) && decimals >= 0 ? Math.min(decimals, 6) : 2;
+  return Number(value).toFixed(digits);
 }
