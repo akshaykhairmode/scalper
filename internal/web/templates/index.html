@@ -50,7 +50,7 @@
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
       <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate">🤖 AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
-      <span class="badge live" id="mode-badge">LIVE</span>
+      <span class="badge live" id="mode-badge">{{.Mode}}</span>
       <span class="clock" id="clock">{{.Now}}</span>
       <span class="session-chip" id="session-chip" title="Kotak session timer. Countdown before TOTP re-authentication is required." hidden>
         <span class="session-chip-dot"></span>

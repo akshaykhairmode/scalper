@@ -32,13 +32,13 @@ func (s *Store) CreateBracket(ctx context.Context, b bracket.Bracket) error {
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO brackets (
-			id, exchange_segment, trading_symbol, instrument_key,
+			id, mode, exchange_segment, trading_symbol, instrument_key,
 			transaction_type, quantity, product, entry_price, entry_order_id,
 			target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 			status, pnl, exchange_stop_mode, exchange_stop_order_id,
 			exchange_stop_price, exchange_stop_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, bracketMode(b.Mode), b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
 		b.TransactionType, b.Quantity, b.Product, b.EntryPrice, b.EntryOrderID,
 		b.TargetPrice, b.StopLossPrice, b.TrailingStop, b.ExitOrderID, b.ExitPrice,
 		b.Status, b.PnL, b.ExchangeStopMode, b.ExchangeStopOrderID,
@@ -68,6 +68,7 @@ func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE brackets SET
+			mode = ?,
 			exchange_segment = ?,
 			trading_symbol = ?,
 			instrument_key = ?,
@@ -89,7 +90,7 @@ func (s *Store) UpdateBracket(ctx context.Context, b bracket.Bracket) error {
 			exchange_stop_status = ?,
 			updated_at = ?
 		WHERE id = ?`,
-		b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
+		bracketMode(b.Mode), b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
 		b.TransactionType, b.Quantity, b.Product, b.EntryPrice, b.EntryOrderID,
 		b.TargetPrice, b.StopLossPrice, b.TrailingStop, b.ExitOrderID, b.ExitPrice,
 		b.Status, b.PnL, b.ExchangeStopMode, b.ExchangeStopOrderID,
@@ -114,7 +115,7 @@ func (s *Store) GetBracket(ctx context.Context, id string) (*bracket.Bracket, er
 		return nil, errors.New("store: database not open")
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, exchange_segment, trading_symbol, instrument_key,
+		SELECT id, mode, exchange_segment, trading_symbol, instrument_key,
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
@@ -140,7 +141,7 @@ func (s *Store) ListBrackets(ctx context.Context, limit int) ([]bracket.Bracket,
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, exchange_segment, trading_symbol, instrument_key,
+		SELECT id, mode, exchange_segment, trading_symbol, instrument_key,
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
@@ -173,12 +174,12 @@ func (s *Store) GetActiveBrackets(ctx context.Context) ([]bracket.Bracket, error
 		return nil, errors.New("store: database not open")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, exchange_segment, trading_symbol, instrument_key,
+		SELECT id, mode, exchange_segment, trading_symbol, instrument_key,
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
 		       exchange_stop_price, exchange_stop_status, created_at, updated_at
-		FROM brackets WHERE status IN ('PENDING_ENTRY', 'IN_POSITION')
+		FROM brackets WHERE status IN ('PENDING_ENTRY', 'IN_POSITION', 'EXIT_FAILED')
 		ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: get active brackets: %w", err)
@@ -209,7 +210,7 @@ func scanBracket(s rowScanner) (*bracket.Bracket, error) {
 	var b bracket.Bracket
 	var createdAtStr, updatedAtStr string
 	err := s.Scan(
-		&b.ID, &b.ExchangeSegment, &b.TradingSymbol, &b.InstrumentKey,
+		&b.ID, &b.Mode, &b.ExchangeSegment, &b.TradingSymbol, &b.InstrumentKey,
 		&b.TransactionType, &b.Quantity, &b.Product, &b.EntryPrice, &b.EntryOrderID,
 		&b.TargetPrice, &b.StopLossPrice, &b.TrailingStop, &b.ExitOrderID, &b.ExitPrice,
 		&b.Status, &b.PnL, &b.ExchangeStopMode, &b.ExchangeStopOrderID,
@@ -231,6 +232,15 @@ func scanBracket(s rowScanner) (*bracket.Bracket, error) {
 		}
 	}
 	return &b, nil
+}
+
+// bracketMode normalizes the mode column for older rows.
+func bracketMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "live"
+	}
+	return mode
 }
 
 var dbTimeLayouts = [...]string{

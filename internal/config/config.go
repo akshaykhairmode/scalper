@@ -141,6 +141,8 @@ type Charts struct {
 
 // Trading holds quantity, margin, session and risk settings.
 type Trading struct {
+	// Mode is the default account for new orders: live or paper.
+	Mode                     string   `yaml:"mode" json:"mode"`
 	DefaultProduct           string   `yaml:"default_product" json:"default_product"`
 	DefaultOrderType         string   `yaml:"default_order_type" json:"default_order_type"`
 	ConfirmLiveOrders        bool     `yaml:"confirm_live_orders" json:"confirm_live_orders"`
@@ -152,6 +154,19 @@ type Trading struct {
 	Risk                     Risk     `yaml:"risk" json:"risk"`
 	RiskView                 RiskView `yaml:"risk_view" json:"risk_view"`
 	Bracket                  Bracket  `yaml:"bracket" json:"bracket"`
+	Paper                    Paper    `yaml:"paper" json:"paper"`
+}
+
+// Paper configures the server-side paper trading account.
+type Paper struct {
+	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	StartingBalance float64 `yaml:"starting_balance" json:"starting_balance"`
+	SlippageTicks   float64 `yaml:"slippage_ticks" json:"slippage_ticks"`
+	// ShortMarginPct is the percentage of notional reserved for short paper
+	// positions.
+	ShortMarginPct float64 `yaml:"short_margin_pct" json:"short_margin_pct"`
+	ConfirmOrders  bool    `yaml:"confirm_orders" json:"confirm_orders"`
+	ExchangeStop   string  `yaml:"exchange_stop" json:"exchange_stop"`
 }
 
 // Bracket holds server-side bracket and exchange backstop defaults.
@@ -366,6 +381,7 @@ func Default() Config {
 			Persist:          true,
 		},
 		Trading: Trading{
+			Mode:                     "live",
 			DefaultProduct:           "MIS",
 			DefaultOrderType:         "MARKET",
 			ConfirmLiveOrders:        true,
@@ -411,6 +427,14 @@ func Default() Config {
 					ReconcileOnStartup: true,
 					AllowChartEdit:     false,
 				},
+			},
+			Paper: Paper{
+				Enabled:         true,
+				StartingBalance: 500000,
+				SlippageTicks:   0,
+				ShortMarginPct:  20,
+				ConfirmOrders:   false,
+				ExchangeStop:    "off",
 			},
 		},
 		Scrip: Scrip{

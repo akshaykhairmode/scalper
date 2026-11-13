@@ -39,6 +39,7 @@ const (
 // Bracket represents a bracket and OCO order configuration and current execution state.
 type Bracket struct {
 	ID              string  `json:"id"`
+	Mode            string  `json:"mode,omitempty"` // live or paper
 	ExchangeSegment string  `json:"exchange_segment"`
 	TradingSymbol   string  `json:"trading_symbol"`
 	InstrumentKey   string  `json:"instrument_key"`

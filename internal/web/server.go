@@ -36,11 +36,13 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/ai/jev"
 	"github.com/akshaykhairmode/scalper/internal/auth"
 	"github.com/akshaykhairmode/scalper/internal/bracket"
+	"github.com/akshaykhairmode/scalper/internal/broker"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
+	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/store"
 	"github.com/akshaykhairmode/scalper/internal/version"
@@ -104,28 +106,30 @@ type chainWindowAPI interface {
 
 // Options configures the HTTP server.
 type Options struct {
-	Logger        *slog.Logger
-	Config        config.Config
-	ConsumerKey   string
-	MPIN          string
-	AuthClient    auth.KotakAuthenticator
-	Market        MarketAPI
-	HSM           *market.HSMFeed
-	Kotak         *kotakapi.Client
-	OrderFeed     *orderfeed.Client
-	DB            DBPinger
-	CandleStore   CandleStore
-	BracketStore  bracket.ActiveStore
-	BracketEngine *bracket.Engine
-	SessionStore  auth.SessionStore
-	DeviceStore   DeviceStore
-	AIStore       AIStore
-	LogDegraded   func() bool
-	TokenPresent  func() bool
-	Started       time.Time
-	Now           func() time.Time
-	ServeMode     bool
-	ConfigPath    string
+	Logger            *slog.Logger
+	Config            config.Config
+	ConsumerKey       string
+	MPIN              string
+	AuthClient        auth.KotakAuthenticator
+	Market            MarketAPI
+	HSM               *market.HSMFeed
+	Kotak             *kotakapi.Client
+	OrderFeed         *orderfeed.Client
+	DB                DBPinger
+	CandleStore       CandleStore
+	BracketStore      bracket.ActiveStore
+	BracketEngine     *bracket.Engine
+	PaperStore        paper.Store
+	PaperBracketStore bracket.ActiveStore
+	SessionStore      auth.SessionStore
+	DeviceStore       DeviceStore
+	AIStore           AIStore
+	LogDegraded       func() bool
+	TokenPresent      func() bool
+	Started           time.Time
+	Now               func() time.Time
+	ServeMode         bool
+	ConfigPath        string
 }
 
 // Server holds the HTTP handler and its dependencies.
@@ -151,6 +155,8 @@ type Server struct {
 	kotak              *kotakapi.Client
 	orderFeed          *orderfeed.Client
 	bracketEngine      *bracket.Engine
+	paperEngine        *bracket.Engine
+	paperExec          *paper.Executor
 	aiStore            AIStore
 	watchlistStore     WatchlistStore
 	evaluator          *evaluator.Evaluator
@@ -220,6 +226,10 @@ type marginCacheEntry struct {
 type bootstrapConfig struct {
 	Indices                   []bootstrapIndex     `json:"indices"`
 	Commodities               []bootstrapCommodity `json:"commodities,omitempty"`
+	TradingMode               string               `json:"tradingMode"`
+	PaperEnabled              bool                 `json:"paperEnabled"`
+	PaperStartingBalance      float64              `json:"paperStartingBalance"`
+	PaperShortMarginPct       float64              `json:"paperShortMarginPct"`
 	Timeframes                []string             `json:"timeframes"`
 	DefaultTimeframe          string               `json:"defaultTimeframe"`
 	DefaultProduct            string               `json:"defaultProduct"`
@@ -267,6 +277,10 @@ type bootstrapCommodity struct {
 
 func newBootstrap(cfg config.Config, mpinConfigured bool) (template.JS, error) {
 	boot := bootstrapConfig{
+		TradingMode:               normalizeTradingMode(cfg.Trading.Mode),
+		PaperEnabled:              cfg.Trading.Paper.Enabled,
+		PaperStartingBalance:      cfg.Trading.Paper.StartingBalance,
+		PaperShortMarginPct:       cfg.Trading.Paper.ShortMarginPct,
 		Timeframes:                append([]string(nil), cfg.Charts.Timeframes...),
 		DefaultTimeframe:          cfg.Charts.DefaultTimeframe,
 		DefaultProduct:            cfg.Trading.DefaultProduct,
@@ -451,57 +465,6 @@ func New(opts Options) (*Server, error) {
 	if opts.BracketEngine != nil {
 		s.bracketEngine = opts.BracketEngine
 	} else {
-		placeOrder := func(ctx context.Context, o kotakapi.Order) (string, error) {
-			session, ok := s.brokerSessionValue()
-			if !ok {
-				return "", errors.New("kotak session unavailable or not authenticated")
-			}
-			raw, err := s.kotak.PlaceOrder(ctx, session, o)
-			if err != nil {
-				return "", err
-			}
-			s.books.expire(bookOrders, bookPositions, bookLimits)
-			var resp struct {
-				NOrdNo  string `json:"nOrdNo"`
-				OrderID string `json:"order_id"`
-				ID      string `json:"id"`
-			}
-			_ = json.Unmarshal(raw, &resp)
-			orderID := resp.NOrdNo
-			if orderID == "" {
-				orderID = resp.OrderID
-			}
-			if orderID == "" {
-				orderID = resp.ID
-			}
-			if orderID == "" {
-				return "", fmt.Errorf("kotak: order placement succeeded but order ID missing from response: %s", string(raw))
-			}
-			return orderID, nil
-		}
-		cancelOrder := func(ctx context.Context, id string) error {
-			session, ok := s.brokerSessionValue()
-			if !ok {
-				return errors.New("kotak session unavailable or not authenticated")
-			}
-			_, err := s.kotak.CancelOrder(ctx, session, id)
-			if err != nil {
-				return err
-			}
-			s.books.expire(bookOrders, bookPositions, bookLimits)
-			return nil
-		}
-		modifyOrder := func(ctx context.Context, id string, o kotakapi.Order) error {
-			session, ok := s.brokerSessionValue()
-			if !ok {
-				return errors.New("kotak session unavailable or not authenticated")
-			}
-			if _, err := s.kotak.ModifyOrder(ctx, session, id, o); err != nil {
-				return err
-			}
-			s.books.expire(bookOrders, bookPositions, bookLimits)
-			return nil
-		}
 		var bStore bracket.Store
 		if opts.BracketStore != nil {
 			bStore = opts.BracketStore
@@ -510,14 +473,60 @@ func New(opts Options) (*Server, error) {
 		} else if bs, ok := opts.DB.(bracket.Store); ok {
 			bStore = bs
 		}
-		engine := bracket.NewEngine(bStore, placeOrder, cancelOrder, s.log)
-		engine.SetModifyOrder(modifyOrder)
-		s.bracketEngine = engine
+		live := &broker.Live{
+			Client:  s.kotak,
+			Session: s.brokerSessionValue,
+			OnOrderChange: func() {
+				s.books.expire(bookOrders, bookPositions, bookLimits)
+			},
+			LookupFn: s.lookupBrokerOrder,
+		}
+		s.bracketEngine = bracket.NewEngine(bStore, live, s.log)
+		s.bracketEngine.SetMode("live")
+	}
+
+	if opts.PaperStore != nil && opts.Config.Trading.Paper.Enabled {
+		exec, perr := paper.New(s.feedCtx, paper.Options{
+			Store:           opts.PaperStore,
+			Logger:          s.log,
+			StartingBalance: opts.Config.Trading.Paper.StartingBalance,
+			Slippage:        opts.Config.Trading.Paper.SlippageTicks,
+			ShortMarginPct:  opts.Config.Trading.Paper.ShortMarginPct,
+			QuoteSource:     s.paperQuoteSource,
+			ShortNotional:   s.paperShortNotional,
+		})
+		if perr != nil {
+			return nil, perr
+		}
+		var pStore bracket.Store
+		if opts.PaperBracketStore != nil {
+			pStore = opts.PaperBracketStore
+		}
+		pEngine := bracket.NewEngine(pStore, exec, s.log)
+		pEngine.SetMode("paper")
+		exec.SetOnFill(func(f bracket.Fill) {
+			pEngine.OnFill(s.feedCtx, f)
+		})
+		s.paperExec = exec
+		s.paperEngine = pEngine
+		s.applyPaperExchangeStopConfig(opts.Config)
+		pEngine.SetAsync(true)
+		pEngine.SetOnChange(func(b bracket.Bracket) {
+			s.broadcast(map[string]any{
+				"type": "bracket_update",
+				"data": b,
+			})
+		})
+		if !opts.Config.Market.Background.Enabled {
+			s.log.Warn("paper trading is enabled but background collection is disabled; paper orders cannot fill while signed out of Kotak",
+				"event", "paper_tick_source_degraded")
+		}
+		s.reconcilePaperBrackets(s.feedCtx)
+		pEngine.Reconcile(s.feedCtx)
 	}
 
 	if s.bracketEngine != nil {
 		s.applyBracketExchangeStopConfig(opts.Config)
-		s.bracketEngine.SetOrderLookup(s.lookupBrokerOrder)
 	}
 
 	if s.bracketEngine != nil {
@@ -897,7 +906,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	displayVer := formatDisplayVersion(version.Version)
 	data := pageData{
 		Title:          "Scalper",
-		Mode:           "LIVE",
+		Mode:           strings.ToUpper(normalizeTradingMode(cfg.Trading.Mode)),
 		Version:        displayVer,
 		Commit:         version.Commit,
 		Underlyings:    underlyings,
@@ -1545,6 +1554,13 @@ func (s *Server) finishMPINLogin(w http.ResponseWriter, r *http.Request, flowID,
 				s.log.Debug("failed to restore watchlist subscriptions", "event", "watchlist_restore_failed", "error", err)
 			}
 		}
+		if s.paperExec != nil {
+			if keys := s.paperExec.OpenInstrumentKeys(); len(keys) > 0 {
+				if err := s.hsm.Subscribe(keys); err != nil {
+					s.log.Debug("failed to restore paper instrument subscriptions", "event", "paper_subscribe_failed", "error", err)
+				}
+			}
+		}
 	}
 	if s.orderFeed != nil {
 		if err := s.orderFeed.Start(s.feedCtx, orderfeed.Session{BaseURL: session.BaseURL, SID: session.BrokerSID, Token: session.BrokerToken}); err != nil {
@@ -1648,7 +1664,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) currentMode() string {
-	return "live"
+	return normalizeTradingMode(s.configSnapshot().Trading.Mode)
 }
 
 func (s *Server) healthChecks(ctx context.Context) map[string]healthCheck {

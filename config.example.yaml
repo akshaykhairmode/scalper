@@ -112,6 +112,9 @@ charts:
   persist: true
 
 trading:
+  # Default account for new orders. The UI can switch without a restart, and
+  # each order payload may override this default.
+  mode: "live"                   # live | paper
   default_product: "MIS"
   default_order_type: "MARKET"
   confirm_live_orders: true
@@ -166,6 +169,15 @@ trading:
       on_cancel_failure: "alert"   # alert | place_exit_anyway
       reconcile_on_startup: true
       allow_chart_edit: false      # v1: exchange stop is read-only on the chart
+  # Server-side paper trading. Orders are simulated locally from live feed
+  # ticks; no Kotak order API is called. SL/TP still run in the bracket engine.
+  paper:
+    enabled: true
+    starting_balance: 500000
+    slippage_ticks: 0            # rupees added to market buys / subtracted from sells
+    short_margin_pct: 20         # percent of notional reserved for short positions
+    confirm_orders: false
+    exchange_stop: "off"         # off | sl_m | sl_l
 
 scrip:
   refresh_at: "08:45"

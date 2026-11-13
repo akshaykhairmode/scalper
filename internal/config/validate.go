@@ -326,6 +326,29 @@ func (c Config) validateCharts() error {
 }
 
 func (c Config) validateTrading() error {
+	switch strings.ToLower(strings.TrimSpace(c.Trading.Mode)) {
+	case "", "live":
+	case "paper":
+		if !c.Trading.Paper.Enabled {
+			return fieldErr("trading.paper.enabled", "must be true when trading.mode is paper")
+		}
+	default:
+		return fieldErr("trading.mode", "must be live|paper, got %q", c.Trading.Mode)
+	}
+	if c.Trading.Paper.StartingBalance < 0 {
+		return fieldErr("trading.paper.starting_balance", "must be >= 0")
+	}
+	if c.Trading.Paper.SlippageTicks < 0 {
+		return fieldErr("trading.paper.slippage_ticks", "must be >= 0")
+	}
+	if c.Trading.Paper.ShortMarginPct <= 0 || c.Trading.Paper.ShortMarginPct > 100 {
+		return fieldErr("trading.paper.short_margin_pct", "must be between 1 and 100")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Trading.Paper.ExchangeStop)) {
+	case "", "off", "sl_m", "sl-m", "sl_l", "sl-l", "sl":
+	default:
+		return fieldErr("trading.paper.exchange_stop", "must be off|sl_m|sl_l, got %q", c.Trading.Paper.ExchangeStop)
+	}
 	switch c.Trading.DefaultProduct {
 	case "MIS", "NRML":
 	default:

@@ -14,6 +14,7 @@ import (
 
 	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
+	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
@@ -42,6 +43,14 @@ func (s *Server) brokerRead(w http.ResponseWriter, r *http.Request, call func(ko
 	s.writeRouteJSON(w, r, http.StatusOK, raw)
 }
 func (s *Server) handleBrokerOrders(w http.ResponseWriter, r *http.Request) {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperBook(w, r, bookOrders)
+		return
+	}
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
 		return s.getBook(r.Context(), bookOrders, x)
 	})
@@ -52,14 +61,38 @@ func (s *Server) handleBrokerOrder(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "order id is required", nil)
 		return
 	}
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperOrder(w, r, id, false)
+		return
+	}
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.Order(r.Context(), x, id) })
 }
 func (s *Server) handleBrokerTrades(w http.ResponseWriter, r *http.Request) {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperBook(w, r, bookTrades)
+		return
+	}
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) {
 		return s.getBook(r.Context(), bookTrades, x)
 	})
 }
 func (s *Server) handleBrokerPositions(w http.ResponseWriter, r *http.Request) {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperBook(w, r, bookPositions)
+		return
+	}
 	session, ok := s.brokerSession(w, r)
 	if !ok {
 		return
@@ -175,6 +208,14 @@ func jsonString(raw json.RawMessage) string {
 }
 
 func (s *Server) handleBrokerHoldings(w http.ResponseWriter, r *http.Request) {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperBook(w, r, bookHoldings)
+		return
+	}
 	if s.books != nil && (r.URL.Query().Get("fresh") == "true" || r.URL.Query().Get("fresh") == "1") {
 		s.books.expire(bookHoldings)
 	}
@@ -183,6 +224,14 @@ func (s *Server) handleBrokerHoldings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (s *Server) handleBrokerLimits(w http.ResponseWriter, r *http.Request) {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperBook(w, r, bookLimits)
+		return
+	}
 	if s.books != nil && (r.URL.Query().Get("fresh") == "true" || r.URL.Query().Get("fresh") == "1") {
 		s.books.expire(bookLimits)
 	}
@@ -196,12 +245,23 @@ func (s *Server) handleBrokerOrderHistory(w http.ResponseWriter, r *http.Request
 		s.writeRouteError(w, r, http.StatusBadRequest, "order id is required", nil)
 		return
 	}
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	if mode == modePaper {
+		s.writePaperOrder(w, r, id, true)
+		return
+	}
 	s.brokerRead(w, r, func(x kotakapi.Session) (json.RawMessage, error) { return s.kotak.OrderHistory(r.Context(), x, id) })
 }
 
 type liveOrderRequest struct {
 	kotakapi.Order
-	Confirm bool `json:"confirm"`
+	InstrumentKey string `json:"instrument_key"`
+	Mode          string `json:"mode"`
+	Intent        string `json:"intent"`
+	Confirm       bool   `json:"confirm"`
 }
 
 func (s *Server) decodeLiveOrder(w http.ResponseWriter, r *http.Request) (liveOrderRequest, bool) {
@@ -210,15 +270,30 @@ func (s *Server) decodeLiveOrder(w http.ResponseWriter, r *http.Request) (liveOr
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid broker order request: "+err.Error(), err)
 		return req, false
 	}
-	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
-		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
-		return req, false
+	if strings.TrimSpace(req.InstrumentKey) != "" {
+		req.Order.InstrumentKey = strings.TrimSpace(req.InstrumentKey)
 	}
 	return req, true
 }
 func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) {
 	req, ok := s.decodeLiveOrder(w, r)
 	if !ok {
+		return
+	}
+	mode := s.requestMode(r)
+	if strings.TrimSpace(req.Mode) != "" {
+		mode = normalizeTradingMode(req.Mode)
+	}
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	if mode == modePaper {
+		s.placePaperOrder(w, r, req)
+		return
+	}
+	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
+		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
 		return
 	}
 	session, ok := s.brokerSession(w, r)
@@ -241,6 +316,52 @@ func (s *Server) handleBrokerPlaceOrder(w http.ResponseWriter, r *http.Request) 
 	}
 	s.books.expire(bookPositions, bookOrders, bookLimits)
 	s.writeRouteJSON(w, r, http.StatusCreated, raw)
+}
+
+// placePaperOrder simulates an order against the paper account. No broker
+// session or Kotak endpoint is used.
+func (s *Server) placePaperOrder(w http.ResponseWriter, r *http.Request, req liveOrderRequest) {
+	if !s.paperAvailable() {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "paper account is not enabled", nil)
+		return
+	}
+	if s.configSnapshot().Trading.Paper.ConfirmOrders && !req.Confirm {
+		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for paper orders", nil)
+		return
+	}
+	if strings.TrimSpace(req.Order.InstrumentKey) == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "instrument_key is required for paper orders", nil)
+		return
+	}
+	if err := s.checkPaperOrderRisk(r.Context(), req.Order); err != nil {
+		s.writeRiskError(w, r, err)
+		return
+	}
+	if s.paperEngine != nil {
+		s.paperEngine.CancelExchangeStopsForInstrument(r.Context(),
+			req.ExchangeSegment, req.TradingSymbol, req.TransactionType)
+	}
+	id, err := s.paperExec.Place(r.Context(), req.Order)
+	if err != nil {
+		s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
+		return
+	}
+	s.ensurePaperSubscribed(req.Order.InstrumentKey)
+	if strings.EqualFold(strings.TrimSpace(req.Intent), "EXIT") {
+		s.disarmPaperBracketsForInstrument(r.Context(), req.InstrumentKey, req.ExchangeSegment, req.TradingSymbol)
+	}
+	status := paper.StatusComplete
+	if _, actual, _, lookupErr := s.paperExec.Lookup(r.Context(), id, ""); lookupErr == nil && actual != "" {
+		status = actual
+	}
+	s.writeRouteJSON(w, r, http.StatusCreated, map[string]any{
+		"nOrdNo":    id,
+		"order_id":  id,
+		"id":        id,
+		"status":    status,
+		"mode":      modePaper,
+		"simulated": true,
+	})
 }
 
 // enrichModifyOrder fills in the contract identity that Kotak's modify
@@ -295,6 +416,62 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "order id is required", nil)
+		return
+	}
+	mode := s.requestMode(r)
+	if strings.TrimSpace(req.Mode) != "" {
+		mode = normalizeTradingMode(req.Mode)
+	}
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	if mode == modePaper {
+		if !s.paperAvailable() {
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "paper account is not enabled", nil)
+			return
+		}
+		if s.configSnapshot().Trading.Paper.ConfirmOrders && !req.Confirm {
+			s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for paper orders", nil)
+			return
+		}
+		existing, found := s.paperExec.Order(id)
+		if !found {
+			s.writeRouteError(w, r, http.StatusNotFound, "paper order not found", nil)
+			return
+		}
+		riskOrder := req.Order
+		riskOrder.InstrumentKey = existing.InstrumentKey
+		riskOrder.ExchangeSegment = existing.ExchangeSegment
+		riskOrder.TradingSymbol = existing.TradingSymbol
+		riskOrder.TransactionType = existing.TransactionType
+		riskOrder.Product = existing.Product
+		if riskOrder.Quantity <= 0 {
+			riskOrder.Quantity = existing.Quantity
+		}
+		if riskOrder.Price <= 0 {
+			riskOrder.Price = existing.Price
+		}
+		if err := s.checkPaperOrderRisk(r.Context(), riskOrder); err != nil {
+			s.writeRiskError(w, r, err)
+			return
+		}
+		if err := s.paperExec.Modify(r.Context(), id, req.Order); err != nil {
+			s.writeRouteError(w, r, http.StatusUnprocessableEntity, err.Error(), err)
+			return
+		}
+		if s.paperEngine != nil {
+			s.paperEngine.OnOrderModified(r.Context(), id, req.Price)
+		}
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"order_id": id, "success": true, "mode": modePaper})
+		return
+	}
+	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
+		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
+		return
+	}
 	session, ok := s.brokerSession(w, r)
 	if !ok {
 		return
@@ -317,19 +494,44 @@ func (s *Server) handleBrokerModifyOrder(w http.ResponseWriter, r *http.Request)
 }
 func (s *Server) handleBrokerCancelOrder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Confirm bool `json:"confirm"`
+		Confirm bool   `json:"confirm"`
+		Mode    string `json:"mode"`
 	}
 	if err := decodeRequest(w, r, &req); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid cancel request: "+err.Error(), err)
 		return
 	}
-	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
-		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		s.writeRouteError(w, r, http.StatusBadRequest, "order id is required", nil)
+		return
+	}
+	mode := s.requestMode(r)
+	if strings.TrimSpace(req.Mode) != "" {
+		mode = normalizeTradingMode(req.Mode)
+	}
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	if mode == modePaper {
+		if !s.paperAvailable() {
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "paper account is not enabled", nil)
+			return
+		}
+		if s.configSnapshot().Trading.Paper.ConfirmOrders && !req.Confirm {
+			s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for paper orders", nil)
+			return
+		}
+		if err := s.paperExec.Cancel(r.Context(), id); err != nil {
+			s.writeRouteError(w, r, http.StatusBadGateway, err.Error(), err)
+			return
+		}
+		s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"order_id": id, "success": true, "mode": modePaper})
+		return
+	}
+	if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
+		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
 		return
 	}
 	session, ok := s.brokerSession(w, r)
@@ -352,19 +554,47 @@ type brokerSquareOffAllResponse struct {
 }
 
 func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request) {
-	session, ok := s.brokerSession(w, r)
-	if !ok {
-		return
-	}
-
 	var req struct {
-		Confirm bool `json:"confirm"`
+		Confirm bool   `json:"confirm"`
+		Mode    string `json:"mode"`
 	}
+	mode := s.requestMode(r)
 	if r.ContentLength > 0 || r.Header.Get("Content-Type") != "" {
 		if err := decodeRequest(w, r, &req); err != nil {
 			s.writeRouteError(w, r, http.StatusBadRequest, "invalid square-off request: "+err.Error(), err)
 			return
 		}
+	}
+	if strings.TrimSpace(req.Mode) != "" {
+		mode = normalizeTradingMode(req.Mode)
+	}
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	if mode == modePaper {
+		if !s.paperAvailable() {
+			s.writeRouteError(w, r, http.StatusServiceUnavailable, "paper account is not enabled", nil)
+			return
+		}
+		if !req.Confirm {
+			s.writeRouteError(w, r, http.StatusBadRequest, "explicit confirmation is required to square off all positions", nil)
+			return
+		}
+		if s.paperEngine != nil {
+			s.paperEngine.CancelAllExchangeStops(r.Context())
+		}
+		closed, errs := s.squareOffPaper(r.Context())
+		s.writeRouteJSON(w, r, http.StatusOK, brokerSquareOffAllResponse{
+			Success:         len(errs) == 0,
+			ClosedPositions: closed,
+			Errors:          errs,
+		})
+		return
+	}
+	session, ok := s.brokerSession(w, r)
+	if !ok {
+		return
 	}
 	if !req.Confirm {
 		s.writeRouteError(w, r, http.StatusBadRequest, "explicit confirmation is required to square off all positions", nil)
@@ -492,13 +722,39 @@ func (s *Server) handleBrokerSquareOffAll(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleBrokerMarginRequired(w http.ResponseWriter, r *http.Request) {
-	session, ok := s.brokerSession(w, r)
+	mode, ok := s.requireRequestMode(w, r)
 	if !ok {
 		return
+	}
+	paperMode := mode == modePaper
+	var session kotakapi.Session
+	if !paperMode {
+		var ok bool
+		session, ok = s.brokerSession(w, r)
+		if !ok {
+			return
+		}
 	}
 	var req kotakapi.MarginRequest
 	if err := decodeRequest(w, r, &req); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, "invalid margin request: "+err.Error(), err)
+		return
+	}
+	if paperMode {
+		price := req.Price
+		instrumentKey := ""
+		if option, ok := s.findOrderOption(kotakapi.Order{
+			ExchangeSegment: req.ExchangeSegment,
+			TradingSymbol:   req.TradingSymbol,
+		}); ok {
+			instrumentKey = option.InstrumentKey
+			if price <= 0 {
+				if ltp, ok := s.cachedLTP(option.InstrumentKey, 10*time.Second); ok {
+					price = ltp
+				}
+			}
+		}
+		s.writeRouteJSON(w, r, http.StatusOK, s.paperMarginPreview(price, req.Quantity, req.TransactionType, instrumentKey))
 		return
 	}
 

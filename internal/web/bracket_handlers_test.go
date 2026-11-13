@@ -14,6 +14,23 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 )
 
+// bracketTestExec is a minimal bracket.Executor for handler tests.
+type bracketTestExec struct {
+	place func(context.Context, kotakapi.Order) (string, error)
+}
+
+func (e bracketTestExec) Place(ctx context.Context, o kotakapi.Order) (string, error) {
+	return e.place(ctx, o)
+}
+
+func (e bracketTestExec) Cancel(context.Context, string) error { return nil }
+
+func (e bracketTestExec) Modify(context.Context, string, kotakapi.Order) error { return nil }
+
+func (e bracketTestExec) Lookup(context.Context, string, string) (string, string, float64, error) {
+	return "", "", 0, nil
+}
+
 //nolint:unparam
 func localRequestWithBody(method, target string, body []byte) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
@@ -28,9 +45,9 @@ func TestBracketHandlers(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	defer s.Close()
 
-	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+	engine := bracket.NewEngine(nil, bracketTestExec{place: func(_ context.Context, _ kotakapi.Order) (string, error) {
 		return "ord-exit-ok", nil
-	}, nil, testLogger())
+	}}, testLogger())
 	s.bracketEngine = engine
 
 	// 1. List brackets initially (empty)
@@ -166,9 +183,9 @@ func TestBracketCreateEnforcesRiskLimits(t *testing.T) {
 		BaseURL: "https://cis.kotaksecurities.com",
 	}, auth.LoginMethodTOTP)
 
-	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+	engine := bracket.NewEngine(nil, bracketTestExec{place: func(_ context.Context, _ kotakapi.Order) (string, error) {
 		return "ord-1", nil
-	}, nil, testLogger())
+	}}, testLogger())
 	s.bracketEngine = engine
 
 	// Create a bracket violating max_lots_per_order (lot size is 75, quantity is 150 = 2 lots)
@@ -195,9 +212,9 @@ func TestBracketHandlersExchangeStop(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}})
 	defer s.Close()
 
-	engine := bracket.NewEngine(nil, func(_ context.Context, _ kotakapi.Order) (string, error) {
+	engine := bracket.NewEngine(nil, bracketTestExec{place: func(_ context.Context, _ kotakapi.Order) (string, error) {
 		return "ord-exit-ok", nil
-	}, nil, testLogger())
+	}}, testLogger())
 	engine.SetExchangeStopConfig(bracket.ExchangeStopConfig{
 		Mode:               "sl_m",
 		DistanceMode:       "multiplier",

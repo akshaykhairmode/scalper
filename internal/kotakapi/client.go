@@ -71,7 +71,10 @@ func NewClient(logger *slog.Logger, transport ...http.RoundTripper) *Client {
 
 // Order contains fields accepted by Kotak's place and modify order endpoints.
 type Order struct {
-	Tag             string  `json:"tag,omitempty"`
+	Tag string `json:"tag,omitempty"`
+	// InstrumentKey is the internal instrument identifier used by the paper
+	// simulator. It is never sent to Kotak.
+	InstrumentKey   string  `json:"-"`
 	ExchangeSegment string  `json:"exchange_segment"`
 	TradingSymbol   string  `json:"trading_symbol"`
 	TransactionType string  `json:"transaction_type"`

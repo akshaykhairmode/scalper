@@ -424,6 +424,7 @@ a { color: var(--blue); }
 }
 .badge { cursor: pointer; font: inherit; }
 .badge.live { color: var(--red); border-color: #5a1f1c; background: #210f0e; }
+.badge.paper { color: #58a6ff; border-color: #1f3a5a; background: #0d1726; }
 
 .clock { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 
@@ -2301,6 +2302,7 @@ body[data-theme="light"] .feed-badge.live i { background: #16a34a; box-shadow: 0
 body[data-theme="light"] .feed-badge.degraded { border-color: #fde68a; background: #fffbeb; color: #b45309; }
 body[data-theme="light"] .feed-badge.degraded i { background: #b45309; }
 body[data-theme="light"] .badge.live { border-color: #fca5a5; background: #fef2f2; color: #b91c1c; font-weight: 800; }
+body[data-theme="light"] .badge.paper { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; font-weight: 800; }
 body[data-theme="light"] .ghost:hover { border-color: var(--border-strong); background: var(--surface-hover); }
 body[data-theme="light"] .tf-group { background: var(--panel); }
 body[data-theme="light"] .tf-group button { color: var(--muted); border-right-color: var(--line-soft); }

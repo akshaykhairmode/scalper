@@ -156,7 +156,67 @@ function parseBootstrap() {
 }
 
 function tradingMode() {
-  return "live";
+  return S.mode === "paper" ? "paper" : "live";
+}
+
+function requiresBrokerLogin() {
+  return !S.session?.authenticated && tradingMode() !== "paper";
+}
+
+function updateModeBadges() {
+  const mode = tradingMode();
+  const badge = $("mode-badge");
+  if (badge) {
+    badge.textContent = mode.toUpperCase();
+    badge.classList.toggle("paper", mode === "paper");
+    badge.classList.toggle("live", mode !== "paper");
+    badge.title = "Click to switch between LIVE and PAPER trading";
+  }
+  const drawerBadge = $("drawer-mode-badge");
+  if (drawerBadge) {
+    drawerBadge.textContent = mode.toUpperCase();
+    drawerBadge.classList.toggle("paper", mode === "paper");
+    drawerBadge.classList.toggle("live", mode !== "paper");
+  }
+}
+
+function setTradingMode(mode) {
+  mode = mode === "paper" ? "paper" : "live";
+  if (mode === "paper" && !S.boot.paperEnabled) {
+    toast("Paper trading is disabled in configuration.", "warn");
+    return;
+  }
+  if (S.mode === mode) return;
+  saveAutoTargets();
+  S.mode = mode;
+  S.bookMode = mode;
+  localStorage.setItem("scalper-trading-mode", mode);
+  S.autoTargets = loadAutoTargets(mode);
+  clearBooksForMode(mode);
+  updateModeBadges();
+  if (S.session?.authenticated || mode === "paper") {
+    connectWebSocket();
+    refreshBooksFromAPI(true).catch(() => {});
+    startLivePolling();
+  } else {
+    openLogin();
+  }
+  toast(`Switched to ${mode === "paper" ? "PAPER" : "LIVE"} trading.`, "info");
+}
+
+async function toggleTradingMode() {
+  const next = tradingMode() === "paper" ? "live" : "paper";
+  if (next === "paper" && !S.boot.paperEnabled) {
+    toast("Paper trading is disabled in configuration.", "warn");
+    return;
+  }
+  const ok = await confirmAction({
+    title: "Switch trading account",
+    body: `Switch to <b>${next.toUpperCase()}</b> trading?<br><span class="muted">Open ${next === "paper" ? "live" : "paper"} brackets and positions stay in that account.</span>`,
+    okLabel: `Switch to ${next.toUpperCase()}`,
+    danger: next === "live",
+  });
+  if (ok) setTradingMode(next);
 }
 
 const S: any = {
@@ -303,15 +363,18 @@ const patchJSON = (url, body) => requestJSON(url, { method: "PATCH", body: JSON.
 
 function postOrder(payload) {
 	return postJSON("/api/broker/orders", {
+		instrument_key: payload.instrument_key || "",
 		exchange_segment: payload.exchange_segment,
 		trading_symbol: payload.trading_symbol || payload.symbol,
-		transaction_type: payload.side,
+		transaction_type: payload.side || payload.transaction_type,
 		product: payload.product,
 		order_type: payload.order_type,
-		quantity: payload.quantity,
+		quantity: payload.quantity || payload.qty,
 		price: payload.price,
 		trigger_price: payload.trigger_price || 0,
 		validity: payload.validity || "DAY",
+		intent: payload.intent || "ENTRY",
+		mode: payload.mode || tradingMode(),
 		confirm: true,
 	});
 }
@@ -857,11 +920,19 @@ function normalizeHolding(raw) {
 
 function init() {
   S.boot = parseBootstrap();
-  S.mode = "live";
+  const savedMode = localStorage.getItem("scalper-trading-mode");
+  S.mode = savedMode === "paper" || savedMode === "live"
+    ? savedMode
+    : (S.boot.tradingMode === "paper" ? "paper" : "live");
+  if (S.mode === "paper" && !S.boot.paperEnabled) S.mode = "live";
   S.bookMode = S.mode;
   initTheme();
   initSound();
-  S.autoTargets = loadAutoTargets();
+  S.autoTargets = loadAutoTargets(S.mode);
+  if (S.mode === "paper" && num(S.boot.paperStartingBalance) > 0) {
+    const balance = num(S.boot.paperStartingBalance);
+    S.limits = { available: balance, used: 0, total: balance, loaded: false, error: "" };
+  }
   S.timeframe = S.boot.defaultTimeframe || "5m";
   S.product = S.boot.defaultProduct || "MIS";
   const defaultLots = Math.max(1, num(S.boot.defaultLots, 1));
@@ -917,7 +988,7 @@ let sessionRefreshTimer = null;
 async function startTerminalSession() {
   checkVersionUpdate();
   await refreshSession();
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     return;
   }
@@ -1427,11 +1498,14 @@ async function refreshSession() {
   } catch {
     S.session = null;
   }
-  if (!S.session?.authenticated) clearBooksForMode("live");
+  if (!S.session?.authenticated && tradingMode() !== "paper") clearBooksForMode(tradingMode());
+  else if (S.bookMode !== tradingMode()) clearBooksForMode(tradingMode());
   updateAuthButton();
 }
 
 function clearBooksForMode(mode) {
+  booksGeneration += 1;
+  booksInFlight = null;
   S.bookMode = mode;
   S.positions = [];
   S.positionsLoaded = false;
@@ -1448,7 +1522,8 @@ function clearBooksForMode(mode) {
 async function checkSession() {
   await refreshSession();
   const wantsLogin = location.hash === "#login";
-  if (wantsLogin || !S.session?.authenticated) {
+  const paperWithoutLogin = tradingMode() === "paper" && S.boot.paperEnabled !== false;
+  if (wantsLogin || (!S.session?.authenticated && !paperWithoutLogin)) {
     openLogin();
   } else {
     closeLogin();
@@ -1528,13 +1603,13 @@ function updateSessionCountdown() {
 /* ── Market loading ────────────────────────────────────── */
 
 async function loadMarket() {
-  if (!S.session?.authenticated) return;
+  if (!S.session?.authenticated && tradingMode() !== "paper") return;
   try {
     await loadFromAPI();
-    if (S.feed !== "live") S.feed = S.session?.authenticated ? "connecting" : "degraded";
+    if (S.feed !== "live") S.feed = S.session?.authenticated ? "connecting" : "polling";
     S.apiAvailable = true;
     startLivePolling();
-    if (S.session?.authenticated) connectWebSocket();
+    if (S.session?.authenticated || tradingMode() === "paper") connectWebSocket();
   } catch (error) {
     console.error("live market data unavailable", error);
     S.feed = "degraded";
@@ -1636,29 +1711,33 @@ function pickExpiry(list) {
 }
 
 async function refreshBooksFromAPI(includePositions = true) {
-  if (!S.session?.authenticated) return;
+  if (!S.session?.authenticated && tradingMode() !== "paper") return;
   if (booksInFlight) return booksInFlight;
+  const generation = booksGeneration;
   booksInFlight = loadBooksFromAPI(includePositions);
   try {
     await booksInFlight;
   } finally {
-    booksInFlight = null;
+    if (generation === booksGeneration) booksInFlight = null;
   }
 }
 
 let booksInFlight = null;
+let booksGeneration = 0;
 
 async function loadBooksFromAPI(includePositions = true) {
   S.lastBooksRefresh = Date.now();
+  const mode = tradingMode();
+  const q = `?mode=${encodeURIComponent(mode)}`;
   const [positions, orders, trades, limits, brackets, holdings] = await Promise.allSettled([
-    includePositions ? getJSON("/api/broker/positions") : Promise.resolve(null),
-    getJSON("/api/broker/orders"),
-    getJSON("/api/broker/trades"),
-    getJSON("/api/broker/limits"),
-    getJSON("/api/brackets"),
-    getJSON("/api/broker/holdings"),
+    includePositions ? getJSON(`/api/broker/positions${q}`) : Promise.resolve(null),
+    getJSON(`/api/broker/orders${q}`),
+    getJSON(`/api/broker/trades${q}`),
+    getJSON(`/api/broker/limits${q}`),
+    getJSON(`/api/brackets${q}`),
+    getJSON(`/api/broker/holdings${q}`),
   ]);
-  if (S.bookMode !== "live" || tradingMode() !== S.bookMode) return;
+  if (mode !== S.bookMode) return;
   if (orders.status === "fulfilled") {
     S.orders = toArray(orders.value).map(normalizeOrder);
   }
@@ -1736,14 +1815,14 @@ function applyLimitsData(value) {
 }
 
 async function refreshMargin() {
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     return;
   }
   const metric = $("margin-metric");
   if (metric) metric.classList.add("refreshing");
   try {
-    const res = await getJSON("/api/broker/limits?fresh=1");
+    const res = await getJSON(`/api/broker/limits?fresh=1&mode=${encodeURIComponent(tradingMode())}`);
     applyLimitsData(res);
     renderHeader();
     renderOrderPad();
@@ -1775,12 +1854,12 @@ let underlyingTimer = null;
 let booksRefreshTimer = null;
 let chainPollCounter = 0;
 function startLivePolling() {
-  if (!S.session?.authenticated) return;
+  if (!S.session?.authenticated && tradingMode() !== "paper") return;
   if (!liveTimer) {
     // Safety-net poll only; order/position/margin events refresh immediately
     // via scheduleBooksRefresh(). This cuts broker REST traffic substantially.
     liveTimer = window.setInterval(() => {
-      if (document.hidden || !S.session?.authenticated) return;
+      if (document.hidden || (!S.session?.authenticated && tradingMode() !== "paper")) return;
       refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
     }, 60000);
   }
@@ -1852,7 +1931,7 @@ async function pollLive({ refreshChain = false } = {}) {
 
 function connectWebSocket() {
   if (S.ws) return;
-  if (!S.session?.authenticated) return;
+  if (!S.session?.authenticated && tradingMode() !== "paper") return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   try {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -1877,7 +1956,7 @@ function connectWebSocket() {
       S.feedSubscriptions = [];
       S.feed = "degraded";
       renderFeed();
-      if (S.session?.authenticated && !S.wsTimer) {
+      if ((S.session?.authenticated || tradingMode() === "paper") && !S.wsTimer) {
         S.wsFailCount = (S.wsFailCount || 0) + 1;
         if (S.wsFailCount >= 2) showServerDownModal(S.wsFailCount);
         S.wsTimer = window.setTimeout(() => {
@@ -2042,7 +2121,8 @@ function handleSocketEvent(event) {
     return;
   }
   if (event.type === "bracket_update") {
-    handleBracketUpdate(data);
+    const bracketMode = String(data?.mode || "live").toLowerCase() === "paper" ? "paper" : "live";
+    if (bracketMode === tradingMode()) handleBracketUpdate(data);
     return;
   }
   if (event.type === "ai_call_outcome" || event.type === "ai_call_new" || event.type === "ai_scanner_status") {
@@ -2812,7 +2892,7 @@ async function handleChartLevelDrop(pane, info) {
   const price = roundToTick(info.price);
   const previous = roundToTick(info.previousPrice);
   if (!Number.isFinite(price) || price <= 0 || Math.abs(price - previous) < 0.025) return;
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before modifying orders.", "warn");
     return;
@@ -2861,7 +2941,8 @@ async function handleChartLevelDrop(pane, info) {
       if (kind === "ENTRY") payload.entry_price = price;
       else if (kind === "TARGET") payload.target_price = price;
       else payload.stop_loss_price = price;
-      const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}`, payload);
+      const bracketMode = bracket.mode || tradingMode();
+      const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}?mode=${encodeURIComponent(bracketMode)}`, payload);
       const updated = normalizeBracket(response?.bracket || response);
       if (updated && updated.id) {
         upsertBracket(updated);
@@ -2876,12 +2957,13 @@ async function handleChartLevelDrop(pane, info) {
       scheduleBooksRefresh(500);
       toast(`${levelLabel} moved to ₹${fmt(price)}${bracket.symbol ? ` (${bracket.symbol})` : ""}.`, "ok", 3500);
     } else {
-      await patchJSON(`/api/broker/orders/${encodeURIComponent(String(order.id))}`, {
+      await patchJSON(`/api/broker/orders/${encodeURIComponent(String(order.id))}?mode=${encodeURIComponent(tradingMode())}`, {
         price,
         quantity: order.quantity,
         order_type: "LIMIT",
         validity: "DAY",
         confirm: true,
+        mode: tradingMode(),
       });
       toast(`Order ${order.id} modified to ₹${fmt(price)}.`, "ok", 3500);
       scheduleBooksRefresh(300);
@@ -2895,7 +2977,7 @@ async function handleChartLevelRemove(pane, info) {
   if (!info) return;
   const kind = String(info.kind || "").toUpperCase();
   if (kind !== "TARGET" && kind !== "STOP" && kind !== "ENTRY") return;
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before modifying orders.", "warn");
     return;
@@ -2965,7 +3047,8 @@ async function handleChartLevelRemove(pane, info) {
     const payload: any = { confirm: true };
     if (kind === "TARGET") payload.target_price = 0;
     else payload.stop_loss_price = 0;
-    const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}`, payload);
+    const bracketMode = bracket.mode || tradingMode();
+    const response = await patchJSON(`/api/brackets/${encodeURIComponent(bracket.id)}?mode=${encodeURIComponent(bracketMode)}`, payload);
     const updated = normalizeBracket(response?.bracket || response);
     if (updated && updated.id) {
       upsertBracket(updated);
@@ -3504,7 +3587,7 @@ function renderHeader() {
   }
   pnlChip.className = "metric-value " + directionClass(totalPnl);
 
-  $("mode-badge").textContent = "LIVE";
+  updateModeBadges();
   renderFeed();
 }
 
@@ -3779,7 +3862,7 @@ function requestBrokerMargin(type: "CE" | "PE", option: any, shares: number) {
 
     // Buy margin
     try {
-      const res = await postJSON("/api/broker/margin/required", {
+      const res = await postJSON(`/api/broker/margin/required?mode=${encodeURIComponent(tradingMode())}`, {
         exchange_segment: seg,
         instrument_token: token,
         trading_symbol: option.symbol,
@@ -3808,7 +3891,7 @@ function requestBrokerMargin(type: "CE" | "PE", option: any, shares: number) {
 
     // Sell margin
     try {
-      const res = await postJSON("/api/broker/margin/required", {
+      const res = await postJSON(`/api/broker/margin/required?mode=${encodeURIComponent(tradingMode())}`, {
         exchange_segment: seg,
         instrument_token: token,
         trading_symbol: option.symbol,
@@ -3985,6 +4068,12 @@ function requiredMargin(option, shares, side) {
   const closing = Math.min(shares, heldQuantity(option.instrumentKey));
   const opening = Math.max(0, shares - closing);
   if (opening === 0) return 0;
+  if (tradingMode() === "paper") {
+    const perShare = num(option.strike) > 0
+      ? num(option.strike)
+      : (S.spots.get(option.underlying)?.ltp || option.ltp);
+    return perShare * opening * (num(S.boot.paperShortMarginPct, 20) / 100);
+  }
   const spot = S.spots.get(option.underlying)?.ltp || 0;
   if (spot <= 0) return Infinity;
   return spot * opening * (num(S.boot.shortMarginPct, 15) / 100) + option.ltp * opening;
@@ -4383,14 +4472,14 @@ function ordersHTML() {
 }
 
 function cancelBrokerOrder(orderId) {
-  return requestJSON(`/api/broker/orders/${encodeURIComponent(orderId)}`, {
+  return requestJSON(`/api/broker/orders/${encodeURIComponent(orderId)}?mode=${encodeURIComponent(tradingMode())}`, {
     method: "DELETE",
-    body: JSON.stringify({ confirm: true }),
+    body: JSON.stringify({ confirm: true, mode: tradingMode() }),
   });
 }
 
 async function onCancelOrder(orderId) {
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before managing orders.", "warn");
     return;
@@ -4418,7 +4507,7 @@ async function onCancelOrder(orderId) {
 }
 
 async function onCancelAllOpenOrders() {
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before managing orders.", "warn");
     return;
@@ -4521,7 +4610,7 @@ async function showOrderHistory(orderId) {
   if (meta) meta.innerHTML = `<span>Order ID: <strong>${esc(orderId)}</strong></span>`;
 
   try {
-    const raw = await getJSON(`/api/broker/orders/${encodeURIComponent(orderId)}/history`);
+    const raw = await getJSON(`/api/broker/orders/${encodeURIComponent(orderId)}/history?mode=${encodeURIComponent(tradingMode())}`);
     const historyList = toArray(raw);
     if (!historyList || !historyList.length) {
       body.innerHTML = `<div class="empty-state">No lifecycle events recorded for order ${esc(orderId)}.</div>`;
@@ -4687,7 +4776,7 @@ async function onTrade(action, type) {
     return;
   }
   const orderMode = tradingMode();
-  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before placing an order.", "warn"); return; }
+  if (requiresBrokerLogin()) { openLogin(); toast("Sign in with Kotak before placing an order.", "warn"); return; }
   const option = selectedOption(type);
   if (!option) {
     toast(`Select a ${type} strike first.`, "warn");
@@ -4741,7 +4830,7 @@ async function onTrade(action, type) {
     const result = await postOrder(payload);
     lastUiOrderTime = Date.now();
     playTradeSound(action);
-    toast(`Live order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
+    toast(`${orderMode === "paper" ? "Paper" : "Live"} order ${result?.status?.toLowerCase() || "submitted"}.`, "ok");
     scheduleBooksRefresh(400);
   } catch (err) {
     playTradeSound("reject");
@@ -4751,7 +4840,7 @@ async function onTrade(action, type) {
 
 async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice = 0, autoStopPrice = 0, exchangeStop = null) {
   const orderMode = tradingMode();
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before placing an order.", "warn");
     return;
@@ -4811,12 +4900,13 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
     lastUiOrderTime = Date.now();
     playTradeSound(action);
     const orderId = String(result?.nOrdNo ?? result?.order_id ?? result?.id ?? "");
-    toast(`Live ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
+    toast(`${orderMode === "paper" ? "Paper" : "Live"} ${action === "buy" ? "Buy" : "Sell"} Limit order placed: ${qty} shares @ ₹${fmt(price)}.`, "ok", 4000);
 
     const hasExchangeBackstop = exchangeStop && (exchangeStop.mode === "SL-M" || exchangeStop.mode === "SL");
     if (autoTargetPrice > 0 || autoStopPrice > 0 || hasExchangeBackstop) {
       const newTarget = {
         id: "tgt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+        mode: orderMode,
         orderId,
         symbol: option.symbol,
         instrumentKey: option.instrumentKey,
@@ -4844,6 +4934,8 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
       registerAutoTarget(newTarget);
       postJSON("/api/brackets", {
         id: newTarget.id,
+        mode: orderMode,
+        confirm: true,
         exchange_segment: option.exchangeSegment,
         trading_symbol: option.symbol,
         instrument_key: option.instrumentKey,
@@ -4884,23 +4976,34 @@ async function onLimitTrade(action, type, targetPrice, shares, autoTargetPrice =
 
 /* ── Auto-Target (Take-Profit Bracket) ─────────────────── */
 
-function loadAutoTargets() {
+function loadAutoTargetStore() {
   try {
     const raw = localStorage.getItem("scalper-auto-targets");
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    const now = Date.now();
-    return Array.isArray(list)
-      ? list.map(normalizeBracket).filter((t) => t && (now - (t.createdAt || 0)) < 86400000)
-      : [];
+    if (!raw) return { live: [], paper: [] };
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return { live: parsed, paper: [] };
+    return {
+      live: Array.isArray(parsed?.live) ? parsed.live : [],
+      paper: Array.isArray(parsed?.paper) ? parsed.paper : [],
+    };
   } catch (_) {
-    return [];
+    return { live: [], paper: [] };
   }
+}
+
+function loadAutoTargets(mode = tradingMode()) {
+  const store = loadAutoTargetStore();
+  const list = mode === "paper" ? store.paper : store.live;
+  const now = Date.now();
+  return list.map(normalizeBracket).filter((t) => t && (now - (t.createdAt || 0)) < 86400000);
 }
 
 function saveAutoTargets() {
   try {
-    localStorage.setItem("scalper-auto-targets", JSON.stringify(S.autoTargets || []));
+    const store = loadAutoTargetStore();
+    if (tradingMode() === "paper") store.paper = S.autoTargets || [];
+    else store.live = S.autoTargets || [];
+    localStorage.setItem("scalper-auto-targets", JSON.stringify(store));
   } catch (_) {}
 }
 
@@ -4964,6 +5067,7 @@ function normalizeBracket(raw) {
 
   return {
     id,
+    mode: String(raw.mode ?? raw.Mode ?? "live").toLowerCase() === "paper" ? "paper" : "live",
     orderId: String(raw.order_id ?? raw.orderId ?? raw.OrderId ?? ""),
     symbol: sym,
     instrumentKey: key,
@@ -5036,7 +5140,10 @@ function applyServerBrackets(data) {
   const list = Array.isArray(data) ? data : (data.brackets || data.data || []);
   if (!Array.isArray(list)) return;
 
-  const normalized = list.map(normalizeBracket).filter(Boolean);
+  const mode = tradingMode();
+  const normalized = list
+    .map(normalizeBracket)
+    .filter((b) => b && b.mode === mode);
   if (!S.autoTargets) S.autoTargets = [];
 
   for (const b of normalized) {
@@ -5049,9 +5156,9 @@ function applyServerBrackets(data) {
 }
 
 async function fetchBrackets() {
-  if (!S.session?.authenticated) return;
+  if (!S.session?.authenticated && tradingMode() !== "paper") return;
   try {
-    const res = await getJSON("/api/brackets");
+    const res = await getJSON(`/api/brackets?mode=${encodeURIComponent(tradingMode())}`);
     if (res) applyServerBrackets(res);
   } catch (_) {}
 }
@@ -5224,7 +5331,7 @@ function bracketsHTML() {
 }
 
 async function onExitBracket(bracketId) {
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before managing orders.", "warn");
     return;
@@ -5249,7 +5356,7 @@ async function onExitBracket(bracketId) {
 
   try {
     toast("Exiting bracket position @ Market…", "info", 2000);
-    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/exit`, { confirm: true });
+    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/exit?mode=${encodeURIComponent(bracket.mode || tradingMode())}`, { confirm: true });
     lastUiOrderTime = Date.now();
     playTradeSound(bracket.action === "buy" ? "sell" : "buy");
     bracket.status = "EXITED_MANUAL";
@@ -5266,7 +5373,7 @@ async function onExitBracket(bracketId) {
 }
 
 async function onCancelBracket(bracketId) {
-  if (!S.session?.authenticated) {
+  if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before managing orders.", "warn");
     return;
@@ -5283,7 +5390,7 @@ async function onCancelBracket(bracketId) {
 
   try {
     toast("Cancelling bracket entry order…", "info", 2000);
-    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/cancel`, { confirm: true });
+    await postJSON(`/api/brackets/${encodeURIComponent(bracketId)}/cancel?mode=${encodeURIComponent(bracket.mode || tradingMode())}`, { confirm: true });
     bracket.status = "CANCELLED";
     saveAutoTargets();
     if (bracket.orderId && bracket.orderId !== "—") {
@@ -6401,7 +6508,7 @@ async function submitQuickOrder(action) {
 
 async function onExit(instrumentKey) {
   const orderMode = tradingMode();
-  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before exiting a position.", "warn"); return; }
+  if (requiresBrokerLogin()) { openLogin(); toast("Sign in with Kotak before exiting a position.", "warn"); return; }
   const position = S.positions.find((p) => p.instrument_key === instrumentKey);
   if (!position) return;
   const side = position.quantity > 0 ? "S" : "B";
@@ -6439,7 +6546,7 @@ async function onExit(instrumentKey) {
     });
     lastUiOrderTime = Date.now();
     playTradeSound(side === "B" ? "buy" : "sell");
-    toast("Live exit order submitted.", "ok");
+    toast(`${orderMode === "paper" ? "Paper" : "Live"} exit order submitted.`, "ok");
     scheduleBooksRefresh(400);
   } catch (err) {
     playTradeSound("reject");
@@ -6449,7 +6556,7 @@ async function onExit(instrumentKey) {
 
 async function onSquareOffAll() {
   const orderMode = tradingMode();
-  if (!S.session?.authenticated) { openLogin(); toast("Sign in with Kotak before squaring off positions.", "warn"); return; }
+  if (requiresBrokerLogin()) { openLogin(); toast("Sign in with Kotak before squaring off positions.", "warn"); return; }
   const openPositions = S.positions.filter((p) => Math.abs(num(p.quantity)) > 0);
   if (!openPositions.length) {
     toast("No open positions to square off.", "warn");
@@ -6469,11 +6576,11 @@ async function onSquareOffAll() {
   }
 
   try {
-    const res = await postJSON("/api/broker/square-off-all", { confirm: true });
+    const res = await postJSON(`/api/broker/square-off-all?mode=${encodeURIComponent(orderMode)}`, { confirm: true, mode: orderMode });
     lastUiOrderTime = Date.now();
     playTradeSound("sell");
     const count = res?.closed_positions ?? openPositions.length;
-    toast(`Live square-off completed (${count} position${count === 1 ? "" : "s"} closed).`, "ok");
+    toast(`${orderMode === "paper" ? "Paper" : "Live"} square-off completed (${count} position${count === 1 ? "" : "s"} closed).`, "ok");
     scheduleBooksRefresh(400);
   } catch (err) {
     playTradeSound("reject");
@@ -6719,7 +6826,7 @@ async function logout() {
   $("totp-input").value = "";
   if ($("mpin-input")) $("mpin-input").value = "";
   S.session = { authenticated: false };
-  clearBooksForMode("live");
+  clearBooksForMode(tradingMode());
   if (S.wsTimer) {
     window.clearTimeout(S.wsTimer);
     S.wsTimer = null;
@@ -6743,6 +6850,13 @@ async function logout() {
   }
   updateAuthButton();
   renderHeader();
+  if (tradingMode() === "paper" && S.boot.paperEnabled) {
+    connectWebSocket();
+    refreshBooksFromAPI(true).catch(() => {});
+    startLivePolling();
+    toast("Signed out of Kotak. PAPER trading remains available.", "info");
+    return;
+  }
   openLogin();
   toast("Signed out. Sign in with Kotak to view account data or place orders.", "warn");
 }
@@ -8006,6 +8120,8 @@ function bindEvents() {
   }
 
   $("mobile-panic-exit-btn")?.addEventListener("click", onSquareOffAll);
+  $("mode-badge")?.addEventListener("click", toggleTradingMode);
+  $("drawer-mode-badge")?.addEventListener("click", toggleTradingMode);
 
   function openMobileDrawer() {
     const backdrop = $("mobile-drawer-backdrop");

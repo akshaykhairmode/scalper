@@ -10,7 +10,7 @@ import (
 
 func BenchmarkEngine_OnTick_Eval(b *testing.B) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 	engine.SetAsync(true)
 
 	for i := 0; i < 10; i++ {
@@ -41,7 +41,7 @@ func BenchmarkEngine_OnTick_Trigger_Async(b *testing.B) {
 	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) {
 		return "ord-exit", nil
 	}
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 	engine.SetAsync(true)
 
 	b.ReportAllocs()
@@ -73,7 +73,7 @@ func BenchmarkEngine_OnTick_Trigger_Sync(b *testing.B) {
 	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) {
 		return "ord-exit", nil
 	}
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 	engine.SetAsync(false)
 
 	b.ReportAllocs()

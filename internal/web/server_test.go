@@ -24,11 +24,13 @@ import (
 	"github.com/andybalholm/brotli"
 
 	"github.com/akshaykhairmode/scalper/internal/auth"
+	"github.com/akshaykhairmode/scalper/internal/bracket"
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/kotakapi"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
 	"github.com/akshaykhairmode/scalper/internal/orderfeed"
+	"github.com/akshaykhairmode/scalper/internal/paper"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 	"github.com/akshaykhairmode/scalper/internal/store"
 )
@@ -51,21 +53,24 @@ func testConfig() config.Config {
 }
 
 type serverOpts struct {
-	db           DBPinger
-	sessionStore auth.SessionStore
-	deviceStore  DeviceStore
-	degraded     bool
-	token        bool
-	mpin         string
-	consumerKey  string
-	kotak        *kotakapi.Client
-	now          func() time.Time
-	started      time.Time
-	cfg          *config.Config
-	authClient   auth.KotakAuthenticator
-	marketAPI    MarketAPI
-	noTokenFunc  bool
-	configPath   string
+	db                DBPinger
+	sessionStore      auth.SessionStore
+	deviceStore       DeviceStore
+	degraded          bool
+	token             bool
+	mpin              string
+	consumerKey       string
+	kotak             *kotakapi.Client
+	now               func() time.Time
+	started           time.Time
+	cfg               *config.Config
+	authClient        auth.KotakAuthenticator
+	marketAPI         MarketAPI
+	noTokenFunc       bool
+	configPath        string
+	bracketStore      bracket.ActiveStore
+	paperStore        paper.Store
+	paperBracketStore bracket.ActiveStore
 }
 
 func newTestServer(t *testing.T, o serverOpts) *Server {
@@ -83,20 +88,23 @@ func newTestServer(t *testing.T, o serverOpts) *Server {
 		started = now().Add(-90 * time.Minute)
 	}
 	opts := Options{
-		Logger:       testLogger(),
-		Config:       cfg,
-		ConfigPath:   o.configPath,
-		ConsumerKey:  o.consumerKey,
-		Kotak:        o.kotak,
-		MPIN:         o.mpin,
-		AuthClient:   o.authClient,
-		Market:       o.marketAPI,
-		DB:           o.db,
-		SessionStore: o.sessionStore,
-		DeviceStore:  o.deviceStore,
-		LogDegraded:  func() bool { return o.degraded },
-		Started:      started,
-		Now:          now,
+		Logger:            testLogger(),
+		Config:            cfg,
+		ConfigPath:        o.configPath,
+		ConsumerKey:       o.consumerKey,
+		Kotak:             o.kotak,
+		MPIN:              o.mpin,
+		AuthClient:        o.authClient,
+		Market:            o.marketAPI,
+		DB:                o.db,
+		BracketStore:      o.bracketStore,
+		PaperStore:        o.paperStore,
+		PaperBracketStore: o.paperBracketStore,
+		SessionStore:      o.sessionStore,
+		DeviceStore:       o.deviceStore,
+		LogDegraded:       func() bool { return o.degraded },
+		Started:           started,
+		Now:               now,
 	}
 	if !o.noTokenFunc {
 		opts.TokenPresent = func() bool { return o.token }

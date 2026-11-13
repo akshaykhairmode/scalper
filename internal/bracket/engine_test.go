@@ -80,6 +80,42 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+// testExec adapts optional test hooks to the Executor interface.
+type testExec struct {
+	place  func(context.Context, kotakapi.Order) (string, error)
+	cancel func(context.Context, string) error
+	modify func(context.Context, string, kotakapi.Order) error
+	lookup func(context.Context, string, string) (string, string, float64, error)
+}
+
+func (e *testExec) Place(ctx context.Context, o kotakapi.Order) (string, error) {
+	if e.place == nil {
+		return "", ErrExecutorUnavailable
+	}
+	return e.place(ctx, o)
+}
+
+func (e *testExec) Cancel(ctx context.Context, id string) error {
+	if e.cancel == nil {
+		return nil
+	}
+	return e.cancel(ctx, id)
+}
+
+func (e *testExec) Modify(ctx context.Context, id string, o kotakapi.Order) error {
+	if e.modify == nil {
+		return ErrExecutorUnavailable
+	}
+	return e.modify(ctx, id, o)
+}
+
+func (e *testExec) Lookup(ctx context.Context, id, tag string) (string, string, float64, error) {
+	if e.lookup == nil {
+		return "", "", 0, ErrExecutorUnavailable
+	}
+	return e.lookup(ctx, id, tag)
+}
+
 func TestEngineCreate(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore()
@@ -93,7 +129,7 @@ func TestEngineCreate(t *testing.T) {
 	}
 	cancelOrder := func(_ context.Context, _ string) error { return nil }
 
-	engine := NewEngine(store, placeOrder, cancelOrder, testLogger())
+	engine := NewEngine(store, &testExec{place: placeOrder, cancel: cancelOrder}, testLogger())
 
 	// 1. Validation errors
 	if _, err := engine.Create(ctx, Bracket{}); err == nil {
@@ -187,7 +223,7 @@ func TestEngineCancel(t *testing.T) {
 		return nil
 	}
 
-	engine := NewEngine(store, nil, cancelOrder, testLogger())
+	engine := NewEngine(store, &testExec{cancel: cancelOrder}, testLogger())
 
 	// Cancel non-existent bracket
 	if err := engine.Cancel(ctx, "non-existent"); err == nil {
@@ -248,7 +284,7 @@ func TestEngineExitManual(t *testing.T) {
 		return fmt.Sprintf("exit-%d", len(placedOrders)), nil
 	}
 
-	engine := NewEngine(store, placeOrder, cancelOrder, testLogger())
+	engine := NewEngine(store, &testExec{place: placeOrder, cancel: cancelOrder}, testLogger())
 
 	// 1. Manual exit on PENDING_ENTRY cancels entry order and marks CANCELLED
 	pending, _ := engine.Create(ctx, Bracket{
@@ -315,7 +351,7 @@ func TestEngineExitManual(t *testing.T) {
 
 func TestEngineOnOrderEventEntryFilled(t *testing.T) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 
 	b, err := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -403,7 +439,7 @@ func TestEngineOnTickTargetHitLong(t *testing.T) {
 		return nil
 	}
 
-	engine := NewEngine(nil, placeOrder, cancelOrder, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder, cancel: cancelOrder}, testLogger())
 
 	b, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -480,7 +516,7 @@ func TestEngineOnTickSLHitLong(t *testing.T) {
 		return "exit-sl-order", nil
 	}
 
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 
 	b, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -523,7 +559,7 @@ func TestEngineOnTickShortTargetAndSL(t *testing.T) {
 	}
 
 	// 1. Short Target Hit (price <= target)
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 	bTarget, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
 		TradingSymbol:   "BANKNIFTY-FUT",
@@ -550,7 +586,7 @@ func TestEngineOnTickShortTargetAndSL(t *testing.T) {
 	}
 
 	// 2. Short Stop Loss Hit (price >= SL)
-	engine2 := NewEngine(nil, placeOrder, nil, testLogger())
+	engine2 := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 	bSL, _ := engine2.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
 		TradingSymbol:   "BANKNIFTY-FUT",
@@ -580,7 +616,7 @@ func TestEngineTrailingStop(t *testing.T) {
 		return "trail-exit", nil
 	}
 
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 
 	// Long position with Entry=100, Initial SL=90, Target=150, TrailingStop=5
 	b, _ := engine.Create(ctx, Bracket{
@@ -630,7 +666,7 @@ func TestEngineTrailingStop(t *testing.T) {
 
 func TestEngineListAndGet(t *testing.T) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 
 	now := time.Now()
 	b1, _ := engine.Create(ctx, Bracket{
@@ -697,7 +733,7 @@ func TestEngineConcurrentAccessRaceFree(_ *testing.T) {
 		return nil
 	}
 
-	engine := NewEngine(nil, placeOrder, cancelOrder, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder, cancel: cancelOrder}, testLogger())
 
 	// Create 10 brackets
 	for i := 0; i < 10; i++ {
@@ -757,7 +793,7 @@ func TestEngineConcurrentAccessRaceFree(_ *testing.T) {
 
 func TestCancelOnInPositionFails(t *testing.T) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 
 	b, err := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -783,7 +819,7 @@ func TestCancelOnInPositionFails(t *testing.T) {
 
 func TestDirectionalPriceValidation(t *testing.T) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 
 	// BUY: Target <= Entry must fail
 	_, err := engine.Create(ctx, Bracket{
@@ -839,7 +875,7 @@ func TestExitFailedStatusOnBrokerError(t *testing.T) {
 		return "", errors.New("502 Bad Gateway: broker down")
 	}
 
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 
 	b, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -870,7 +906,7 @@ func TestExitFailedStatusOnBrokerError(t *testing.T) {
 
 func TestExitOrderCancellation(t *testing.T) {
 	ctx := context.Background()
-	engine := NewEngine(nil, nil, nil, testLogger())
+	engine := NewEngine(nil, nil, testLogger())
 
 	b, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -906,7 +942,7 @@ func TestFastFillOrderEventPrecedesHTTP(t *testing.T) {
 		return "kotak-ord-999", nil
 	}
 
-	engine = NewEngine(nil, placeOrder, nil, testLogger())
+	engine = NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 
 	b, err := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -946,8 +982,7 @@ func TestEngineUpdateLevels(t *testing.T) {
 	}
 	placeOrder := func(_ context.Context, _ kotakapi.Order) (string, error) { return "ord-entry-1", nil }
 
-	engine := NewEngine(store, placeOrder, nil, testLogger())
-	engine.SetModifyOrder(modifyOrder)
+	engine := NewEngine(store, &testExec{place: placeOrder, modify: modifyOrder}, testLogger())
 
 	b, err := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",
@@ -1050,7 +1085,7 @@ func TestDisarmManualSquareOff(t *testing.T) {
 		orderPlaced = true
 		return "ord-err", nil
 	}
-	engine := NewEngine(nil, placeOrder, nil, testLogger())
+	engine := NewEngine(nil, &testExec{place: placeOrder}, testLogger())
 
 	b, _ := engine.Create(ctx, Bracket{
 		ExchangeSegment: "NSE",

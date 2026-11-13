@@ -26,9 +26,8 @@ import (
 type Engine struct {
 	mu                  sync.RWMutex
 	store               Store
-	placeOrder          func(ctx context.Context, o kotakapi.Order) (string, error)
-	cancelOrder         func(ctx context.Context, id string) error
-	modifyOrder         func(ctx context.Context, id string, o kotakapi.Order) error
+	exec                Executor
+	mode                string
 	log                 *slog.Logger
 	brackets            map[string]*Bracket
 	onChange            func(b Bracket)
@@ -39,8 +38,19 @@ type Engine struct {
 	asyncExecution      bool
 	unmatchedOrders     map[string]parsedOrder
 	exchangeStopCfg     ExchangeStopConfig
-	orderLookup         func(ctx context.Context, orderID, tag string) (string, string, float64, error)
 	exchangeStopRetries map[string]int
+}
+
+// SetMode pins the account mode for every bracket created by this engine.
+// Empty leaves the caller-supplied mode untouched.
+func (e *Engine) SetMode(mode string) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "live" && mode != "paper" {
+		mode = ""
+	}
+	e.mu.Lock()
+	e.mode = mode
+	e.mu.Unlock()
 }
 
 // SetAsync configures whether OnTick executes triggers in asynchronous background goroutines.
@@ -50,19 +60,11 @@ func (e *Engine) SetAsync(async bool) {
 	e.mu.Unlock()
 }
 
-// SetModifyOrder configures the broker order modification function used when a
-// pending bracket entry price is changed from the chart.
-func (e *Engine) SetModifyOrder(fn func(ctx context.Context, id string, o kotakapi.Order) error) {
-	e.mu.Lock()
-	e.modifyOrder = fn
-	e.mu.Unlock()
-}
-
-// NewEngine creates a new bracket and OCO engine.
+// NewEngine creates a new bracket and OCO engine. A nil executor means the
+// engine runs without order placement (useful for read-only or test engines).
 func NewEngine(
 	store Store,
-	placeOrder func(ctx context.Context, o kotakapi.Order) (string, error),
-	cancelOrder func(ctx context.Context, id string) error,
+	exec Executor,
 	log *slog.Logger,
 ) *Engine {
 	if log == nil {
@@ -70,8 +72,7 @@ func NewEngine(
 	}
 	e := &Engine{
 		store:               store,
-		placeOrder:          placeOrder,
-		cancelOrder:         cancelOrder,
+		exec:                exec,
 		log:                 log,
 		brackets:            make(map[string]*Bracket),
 		activeByInstrument:  make(map[string]map[string]*Bracket),
@@ -226,6 +227,19 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	if b.ID == "" {
 		b.ID = generateID()
 	}
+	b.Mode = strings.ToLower(strings.TrimSpace(b.Mode))
+	e.mu.RLock()
+	engineMode := e.mode
+	e.mu.RUnlock()
+	if engineMode != "" {
+		b.Mode = engineMode
+	}
+	if b.Mode == "" {
+		b.Mode = "live"
+	}
+	if b.Mode != "live" && b.Mode != "paper" {
+		return nil, fmt.Errorf("bracket: unsupported mode %q", b.Mode)
+	}
 	if b.Status == "" {
 		b.Status = StatusPendingEntry
 	}
@@ -253,20 +267,31 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 		}
 	}
 
-	// Pre-register bracket in memory so fast WebSocket fill events arriving in 10-20ms will match
+	// Pre-register bracket in memory so fast fill events arriving immediately
+	// after placement will match.
 	e.mu.Lock()
 	bracketCopy := b
 	e.brackets[b.ID] = &bracketCopy
 	e.mu.Unlock()
 
+	// Persist the pending row before placing the entry order. Paper fills are
+	// delivered as soon as Place returns, and the fill handler must be able to
+	// update an existing row.
+	if e.store != nil {
+		if err := e.store.CreateBracket(ctx, bracketCopy); err != nil {
+			e.log.Error("failed to persist bracket in store", "id", b.ID, "error", err)
+		}
+	}
+
 	// If entry order has not yet been placed and bracket is in PENDING_ENTRY, submit it
-	if b.Status == StatusPendingEntry && b.EntryOrderID == "" && e.placeOrder != nil {
+	if b.Status == StatusPendingEntry && b.EntryOrderID == "" && e.exec != nil {
 		orderType := "L"
 		if b.EntryPrice <= 0 {
 			orderType = "MKT"
 		}
 		o := kotakapi.Order{
 			Tag:             b.ID,
+			InstrumentKey:   b.InstrumentKey,
 			ExchangeSegment: b.ExchangeSegment,
 			TradingSymbol:   b.TradingSymbol,
 			TransactionType: b.TransactionType,
@@ -276,11 +301,25 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 			Price:           b.EntryPrice,
 			Validity:        "DAY",
 		}
-		orderID, err := e.placeOrder(ctx, o)
+		orderID, err := e.exec.Place(ctx, o)
+		if err == nil && orderID == "" {
+			err = errors.New("executor returned an empty order id")
+		}
 		if err != nil {
 			e.mu.Lock()
+			if curr, ok := e.brackets[b.ID]; ok {
+				curr.Status = StatusCancelled
+				curr.UpdatedAt = time.Now()
+				bracketCopy = *curr
+			}
 			delete(e.brackets, b.ID)
 			e.mu.Unlock()
+			if e.store != nil {
+				if uerr := e.store.UpdateBracket(ctx, bracketCopy); uerr != nil {
+					e.log.Error("failed to persist cancelled bracket after entry failure",
+						"id", b.ID, "error", uerr)
+				}
+			}
 			return nil, fmt.Errorf("bracket: place entry order: %w", err)
 		}
 
@@ -325,7 +364,7 @@ func (e *Engine) Create(ctx context.Context, b Bracket) (*Bracket, error) {
 	}
 
 	if e.store != nil {
-		if err := e.store.CreateBracket(ctx, bracketCopy); err != nil {
+		if err := e.store.UpdateBracket(ctx, bracketCopy); err != nil {
 			e.log.Error("failed to persist bracket in store", "id", b.ID, "error", err)
 		}
 	}
@@ -391,7 +430,7 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 		return nil, errors.New("bracket not found")
 	}
 	snapshot := *current
-	modifyOrder := e.modifyOrder
+	exec := e.exec
 	e.mu.RUnlock()
 
 	if snapshot.Status != StatusPendingEntry && snapshot.Status != StatusInPosition {
@@ -437,10 +476,11 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 	}
 
 	if updates.EntryPrice != nil && snapshot.EntryOrderID != "" {
-		if modifyOrder == nil {
+		if exec == nil {
 			return nil, errors.New("order modification is not available")
 		}
 		order := kotakapi.Order{
+			InstrumentKey:   snapshot.InstrumentKey,
 			ExchangeSegment: snapshot.ExchangeSegment,
 			TradingSymbol:   snapshot.TradingSymbol,
 			TransactionType: snapshot.TransactionType,
@@ -450,7 +490,7 @@ func (e *Engine) UpdateLevels(ctx context.Context, id string, updates LevelUpdat
 			Price:           entry,
 			Validity:        "DAY",
 		}
-		if err := modifyOrder(ctx, snapshot.EntryOrderID, order); err != nil {
+		if err := exec.Modify(ctx, snapshot.EntryOrderID, order); err != nil {
 			return nil, fmt.Errorf("bracket: modify entry order: %w", err)
 		}
 	}
@@ -538,8 +578,8 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 		}
 	}
 
-	if orderToCancel != "" && e.cancelOrder != nil {
-		if err := e.cancelOrder(ctx, orderToCancel); err != nil {
+	if orderToCancel != "" && e.exec != nil {
+		if err := e.exec.Cancel(ctx, orderToCancel); err != nil {
 			e.log.Warn("failed to cancel order on bracket cancel", "id", id, "order_id", orderToCancel, "error", err)
 		}
 	}
@@ -592,6 +632,97 @@ func (e *Engine) Disarm(ctx context.Context, id string) error {
 	return nil
 }
 
+// MarkExternalExit records an exit that was executed outside the engine, such
+// as a paper square-off. It never places an order.
+func (e *Engine) MarkExternalExit(ctx context.Context, id string, price float64) error {
+	e.mu.Lock()
+	b, ok := e.brackets[id]
+	if !ok {
+		e.mu.Unlock()
+		return errors.New("bracket not found")
+	}
+	if b.Status == StatusCancelled {
+		e.mu.Unlock()
+		return nil
+	}
+	e.unindexActiveInPosition(b)
+	wasPending := b.Status == StatusPendingEntry
+	entryOrderID := b.EntryOrderID
+	if wasPending {
+		b.Status = StatusCancelled
+	} else {
+		b.Status = StatusExitedManual
+	}
+	if price > 0 && !wasPending {
+		b.ExitPrice = price
+		if b.TransactionType == "BUY" {
+			b.PnL = (b.ExitPrice - b.EntryPrice) * float64(b.Quantity)
+		} else {
+			b.PnL = (b.EntryPrice - b.ExitPrice) * float64(b.Quantity)
+		}
+	}
+	if b.ExchangeStopStatus == ExchangeStopWorking || b.ExchangeStopStatus == ExchangeStopPlacing {
+		b.ExchangeStopStatus = ExchangeStopCancelled
+	}
+	b.UpdatedAt = time.Now()
+	updated := *b
+	e.mu.Unlock()
+
+	// A pending bracket must not leave a live entry order behind.
+	if wasPending && entryOrderID != "" && e.exec != nil {
+		if err := e.exec.Cancel(ctx, entryOrderID); err != nil {
+			e.log.Warn("failed to cancel entry order on external exit", "id", id, "order_id", entryOrderID, "error", err)
+		}
+	}
+
+	if e.store != nil {
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := e.store.UpdateBracket(pctx, updated); err != nil {
+			e.log.Error("failed to persist external bracket exit", "id", id, "error", err)
+		}
+	}
+	e.notify(updated)
+	return nil
+}
+
+// OnOrderModified keeps a pending bracket's entry price in sync when its
+// resting order is changed through the order API rather than the engine.
+func (e *Engine) OnOrderModified(ctx context.Context, orderID string, price float64) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" || price <= 0 {
+		return
+	}
+	e.mu.Lock()
+	var updated *Bracket
+	for _, b := range e.brackets {
+		if b.EntryOrderID != orderID || b.Status != StatusPendingEntry {
+			continue
+		}
+		if err := validateLevels(b.TransactionType, price, b.TargetPrice, b.StopLossPrice); err != nil {
+			e.log.Warn("rejected invalid bracket entry modification", "id", b.ID, "price", price, "error", err)
+			break
+		}
+		b.EntryPrice = price
+		b.UpdatedAt = time.Now()
+		cp := *b
+		updated = &cp
+		break
+	}
+	e.mu.Unlock()
+	if updated == nil {
+		return
+	}
+	if e.store != nil {
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := e.store.UpdateBracket(pctx, *updated); err != nil {
+			e.log.Error("failed to persist modified bracket entry", "id", updated.ID, "error", err)
+		}
+	}
+	e.notify(*updated)
+}
+
 // Exit squares off a bracket manually by cancelling resting orders and placing a market exit order.
 func (e *Engine) Exit(ctx context.Context, id string) error {
 	e.mu.Lock()
@@ -614,8 +745,8 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		bracketCopy := *b
 		e.mu.Unlock()
 
-		if orderToCancel != "" && e.cancelOrder != nil {
-			_ = e.cancelOrder(ctx, orderToCancel)
+		if orderToCancel != "" && e.exec != nil {
+			_ = e.exec.Cancel(ctx, orderToCancel)
 		}
 		if e.store != nil {
 			_ = e.store.UpdateBracket(ctx, bracketCopy)
@@ -640,6 +771,7 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 	}
 	exitOrder := kotakapi.Order{
 		Tag:             "exit_" + b.ID,
+		InstrumentKey:   b.InstrumentKey,
 		ExchangeSegment: b.ExchangeSegment,
 		TradingSymbol:   b.TradingSymbol,
 		TransactionType: exitSide,
@@ -679,13 +811,13 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 		e.setExchangeStopStatus(ctx, id, ExchangeStopCancelled)
 	}
 
-	if restingOrder != "" && e.cancelOrder != nil {
-		_ = e.cancelOrder(ctx, restingOrder)
+	if restingOrder != "" && e.exec != nil {
+		_ = e.exec.Cancel(ctx, restingOrder)
 	}
 
 	var exitErr error
 	var orderID string
-	if e.placeOrder != nil {
+	if e.exec != nil {
 	exitRetryLoop:
 		for attempt := 0; attempt < 3; attempt++ {
 			if attempt > 0 {
@@ -696,10 +828,13 @@ func (e *Engine) Exit(ctx context.Context, id string) error {
 				case <-time.After(50 * time.Millisecond):
 				}
 			}
-			orderID, exitErr = e.placeOrder(ctx, exitOrder)
+			orderID, exitErr = e.exec.Place(ctx, exitOrder)
 			if exitErr == nil && orderID != "" {
 				break exitRetryLoop
 			}
+		}
+		if exitErr == nil && orderID == "" {
+			exitErr = errors.New("executor returned an empty order id")
 		}
 	}
 
@@ -797,6 +932,20 @@ func (e *Engine) OnOrderEvent(ctx context.Context, event orderfeed.Event) {
 	for _, ord := range orders {
 		e.handleOrderUpdate(ctx, ord)
 	}
+}
+
+// OnFill applies a normalized fill delivered by an Executor. Live order-feed
+// events and paper-simulated fills both converge here.
+func (e *Engine) OnFill(ctx context.Context, fill Fill) {
+	if strings.TrimSpace(fill.OrderID) == "" && strings.TrimSpace(fill.Tag) == "" {
+		return
+	}
+	e.handleOrderUpdate(ctx, parsedOrder{
+		OrderID:     fill.OrderID,
+		Tag:         fill.Tag,
+		Status:      fill.Status,
+		FilledPrice: fill.Price,
+	})
 }
 
 type parsedOrder struct {
@@ -962,6 +1111,9 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 			matched = true
 			if isFilledStatus(ord.Status) {
 				e.unindexActiveInPosition(b)
+				if b.Status == StatusInPosition || b.Status == StatusExitFailed {
+					b.Status = StatusExitedManual
+				}
 				if ord.FilledPrice > 0 {
 					b.ExitPrice = ord.FilledPrice
 					if b.TransactionType == "BUY" {
@@ -1017,6 +1169,7 @@ type tickTrigger struct {
 	bracketID         string
 	exitSide          string
 	exitQuantity      int64
+	instrumentKey     string
 	segment           string
 	symbol            string
 	product           string
@@ -1130,6 +1283,7 @@ func (e *Engine) OnTick(ctx context.Context, instrumentKey string, ltp float64) 
 			bracketID:         b.ID,
 			exitSide:          exitSide,
 			exitQuantity:      b.Quantity,
+			instrumentKey:     b.InstrumentKey,
 			segment:           b.ExchangeSegment,
 			symbol:            b.TradingSymbol,
 			product:           b.Product,
@@ -1185,17 +1339,18 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 		}
 	}
 
-	if trg.restingOrder != "" && e.cancelOrder != nil {
-		if err := e.cancelOrder(ctx, trg.restingOrder); err != nil {
+	if trg.restingOrder != "" && e.exec != nil {
+		if err := e.exec.Cancel(ctx, trg.restingOrder); err != nil {
 			e.log.Warn("failed to cancel resting order on bracket trigger", "bracket_id", trg.bracketID, "order_id", trg.restingOrder, "error", err)
 		}
 	}
 
 	var placedOrderID string
 	var placeErr error
-	if e.placeOrder != nil {
+	if e.exec != nil {
 		exitOrder := kotakapi.Order{
 			Tag:             "exit_" + trg.bracketID,
+			InstrumentKey:   trg.instrumentKey,
 			ExchangeSegment: trg.segment,
 			TradingSymbol:   trg.symbol,
 			TransactionType: trg.exitSide,
@@ -1214,10 +1369,13 @@ func (e *Engine) processTriggerExit(ctx context.Context, trg tickTrigger) {
 				case <-time.After(50 * time.Millisecond):
 				}
 			}
-			placedOrderID, placeErr = e.placeOrder(ctx, exitOrder)
+			placedOrderID, placeErr = e.exec.Place(ctx, exitOrder)
 			if placeErr == nil && placedOrderID != "" {
 				break triggerRetryLoop
 			}
+		}
+		if placeErr == nil && placedOrderID == "" {
+			placeErr = errors.New("executor returned an empty order id")
 		}
 	}
 

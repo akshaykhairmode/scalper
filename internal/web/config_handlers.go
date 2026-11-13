@@ -375,6 +375,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	s.applyBracketExchangeStopConfig(newCfg)
+	s.applyPaperRuntimeConfig(newCfg)
 
 	// These run outside configMu: evaluator.ScannerStatus() calls back into
 	// Server.configSnapshot(), which would self-deadlock if the write lock were held.
@@ -427,6 +428,9 @@ func restartRequiredFields(oldCfg, newCfg config.Config) []string {
 	}
 	if oldCfg.Web.OpenBrowser != newCfg.Web.OpenBrowser {
 		fields = append(fields, "web.open_browser")
+	}
+	if oldCfg.Trading.Paper.Enabled != newCfg.Trading.Paper.Enabled {
+		fields = append(fields, "trading.paper.enabled")
 	}
 	return fields
 }

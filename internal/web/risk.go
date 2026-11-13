@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -134,8 +135,178 @@ func (s *Server) checkOrderRisk(ctx context.Context, session kotakapi.Session, o
 	return nil
 }
 
+// checkPaperOrderRisk applies the same self-imposed risk caps to the paper
+// account, using paper positions and paper available margin instead of the
+// broker's books. Only the part of an order that opens new exposure is capped;
+// the reducing part of an exit is always allowed.
+func (s *Server) checkPaperOrderRisk(ctx context.Context, o kotakapi.Order) error {
+	if s.paperExec == nil {
+		return errors.New("order blocked: paper account is not available")
+	}
+	trading := s.configSnapshot().Trading
+	cfg := trading.Risk
+
+	option, hasOption := s.findOrderOption(o)
+	lotSize := int64(1)
+	if hasOption && option.LotSize > 0 {
+		lotSize = option.LotSize
+	}
+	key := strings.TrimSpace(o.InstrumentKey)
+	if key == "" && hasOption {
+		key = option.InstrumentKey
+	}
+	if hasOption && lotSize > 1 && o.Quantity%lotSize != 0 {
+		return fmt.Errorf("order blocked: quantity %d is not a multiple of lot size %d", o.Quantity, lotSize)
+	}
+	_, opening := s.paperExposureForOrder(o, key)
+	openingLots := quantityLots(opening, lotSize)
+
+	if opening > 0 && cfg.MaxLotsPerOrder > 0 && openingLots > int64(cfg.MaxLotsPerOrder) {
+		return fmt.Errorf("order blocked: %d opening lots exceeds max_lots_per_order=%d", openingLots, cfg.MaxLotsPerOrder)
+	}
+	if opening > 0 {
+		if err := s.checkMarketDataFreshness(cfg.BlockOnDataStaleMS); err != nil {
+			return err
+		}
+	}
+
+	price, priceErr := s.orderPrice(ctx, o)
+	if priceErr != nil && key != "" {
+		if ltp, ok := s.cachedLTP(key, 10*time.Second); ok {
+			price = ltp
+			priceErr = nil
+		}
+	}
+	if priceErr != nil && opening > 0 {
+		return fmt.Errorf("order blocked: live price unavailable for paper risk check: %w", priceErr)
+	}
+	if priceErr != nil {
+		price = 0
+	}
+	orderValue := price * float64(opening)
+	if cfg.MaxOrderValueINR > 0 && opening > 0 && orderValue > float64(cfg.MaxOrderValueINR) {
+		return fmt.Errorf("order blocked: opening value ₹%.2f exceeds max_order_value_inr=%d", orderValue, cfg.MaxOrderValueINR)
+	}
+	if opening > 0 && trading.Margin.CheckBeforeOrder {
+		required := orderValue
+		if isShortSide(o.TransactionType) {
+			perShare := price
+			if v, ok := s.paperShortNotional(key); ok {
+				perShare = v
+			}
+			required = float64(opening) * perShare
+			if pct := trading.Paper.ShortMarginPct; pct > 0 {
+				required *= pct / 100
+			}
+		}
+		limits := s.paperExec.Limits()
+		if required > limits.Available {
+			return fmt.Errorf("order blocked: required margin ₹%.2f exceeds paper available ₹%.2f", required, limits.Available)
+		}
+	}
+	if cfg.MaxDailyLossINR > 0 && opening > 0 && s.paperExec.PnL() <= -float64(cfg.MaxDailyLossINR) {
+		return fmt.Errorf("order blocked: paper daily loss exceeds max_daily_loss_inr=%d", cfg.MaxDailyLossINR)
+	}
+	if cfg.MaxOpenLotsPerIndex > 0 && opening > 0 {
+		underlying := paperUnderlying(o, option, hasOption)
+		exposure := s.paperOpenLots(underlying, key)
+		if exposure+openingLots > int64(cfg.MaxOpenLotsPerIndex) {
+			return fmt.Errorf("order blocked: %s paper exposure would be %d lots (max_open_lots_per_index=%d)",
+				underlying, exposure+openingLots, cfg.MaxOpenLotsPerIndex)
+		}
+	}
+	if s.risk != nil {
+		if err := s.risk.reserve("paper", strings.ToUpper(o.TransactionType), cfg, s.now(), opening == 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// paperExposureForOrder returns the current net position and the quantity of
+// new exposure the order would open.
+func (s *Server) paperExposureForOrder(o kotakapi.Order, key string) (current, opening int64) {
+	if s.paperExec == nil || key == "" {
+		return 0, o.Quantity
+	}
+	for _, p := range s.paperExec.Positions() {
+		if p.InstrumentKey == key {
+			current = p.NetQuantity
+			break
+		}
+	}
+	delta := o.Quantity
+	if !isBuySide(o.TransactionType) {
+		delta = -delta
+	}
+	if current == 0 {
+		return 0, absInt64(delta)
+	}
+	sameDirection := (current > 0 && delta > 0) || (current < 0 && delta < 0)
+	if sameDirection {
+		return current, absInt64(delta)
+	}
+	if absInt64(delta) <= absInt64(current) {
+		return current, 0
+	}
+	return current, absInt64(delta) - absInt64(current)
+}
+
+func (s *Server) paperOpenLots(underlying, excludeKey string) int64 {
+	if s.paperExec == nil {
+		return 0
+	}
+	var total int64
+	for _, p := range s.paperExec.Positions() {
+		if p.NetQuantity == 0 || p.InstrumentKey == excludeKey {
+			continue
+		}
+		lot := int64(1)
+		u := p.TradingSymbol
+		if s.market != nil {
+			if opt, ok := s.market.Option(p.InstrumentKey); ok {
+				if opt.LotSize > 0 {
+					lot = opt.LotSize
+				}
+				if opt.Underlying != "" {
+					u = opt.Underlying
+				}
+			}
+		}
+		if sameUnderlying(u, underlying) {
+			total += quantityLots(absInt64(p.NetQuantity), lot)
+		}
+	}
+	return total
+}
+
+func paperUnderlying(o kotakapi.Order, option scrip.Option, hasOption bool) string {
+	if hasOption && strings.TrimSpace(option.Underlying) != "" {
+		return option.Underlying
+	}
+	return strings.TrimSpace(o.TradingSymbol)
+}
+
+func isBuySide(side string) bool {
+	switch strings.ToUpper(strings.TrimSpace(side)) {
+	case "B", "BUY":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShortSide(side string) bool {
+	switch strings.ToUpper(strings.TrimSpace(side)) {
+	case "S", "SELL":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) writeRiskError(w http.ResponseWriter, r *http.Request, err error) {
-	s.log.Warn("live order blocked by risk control", "event", "order_risk_blocked",
+	s.log.Warn("order blocked by risk control", "event", "order_risk_blocked",
 		"path", r.URL.Path, "error", err, "request_id", logging.RequestID(r.Context()))
 	_ = writeJSONError(w, http.StatusConflict, err.Error(), logging.RequestID(r.Context()))
 }

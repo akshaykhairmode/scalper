@@ -155,6 +155,80 @@
 
         <div class="card">
           <div class="card-header">
+            <h2>Paper Trading Account</h2>
+            <p class="card-desc">Server-side simulated account. Orders fill from live feed ticks and never reach the broker. SL/TP still run in the bracket engine.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="trading.mode">
+              <label for="f-trading-mode">Default Trading Mode</label>
+              <select id="f-trading-mode">
+                <option value="live">Live (broker)</option>
+                <option value="paper">Paper (simulated)</option>
+              </select>
+              <span class="form-help">Default account for new orders. The terminal toggle can override it per order.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="trading.paper.enabled">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-paper-enabled">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Enable Paper Account</strong>
+                  <span class="form-help">Starts the local simulator at boot.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.paper.starting_balance">
+              <label for="f-paper-balance">Starting Balance (&#8377;)</label>
+              <input type="number" id="f-paper-balance" min="0" step="1000" value="500000">
+              <span class="form-help">Used only when the paper account is first created.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.paper.slippage_ticks">
+              <label for="f-paper-slippage">Slippage (&#8377;)</label>
+              <input type="number" id="f-paper-slippage" min="0" step="0.05" value="0">
+              <span class="form-help">Added to market buys and subtracted from market sells.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.paper.short_margin_pct">
+              <label for="f-paper-short-margin">Short Margin (%)</label>
+              <input type="number" id="f-paper-short-margin" min="1" max="100" step="1" value="20">
+              <span class="form-help">Percent of notional reserved for short positions.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="trading.paper.confirm_orders">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-paper-confirm">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Require Confirmation for Paper Orders</strong>
+                  <span class="form-help">Displays a confirmation modal before simulated orders.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.paper.exchange_stop">
+              <label for="f-paper-exchange-stop">Paper Exchange Backstop</label>
+              <select id="f-paper-exchange-stop">
+                <option value="off">Off (server SL/TP only)</option>
+                <option value="sl_m">SL-M</option>
+                <option value="sl_l">SL-L</option>
+              </select>
+              <span class="form-help">Optional simulated catastrophe stop. Off is recommended.</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
             <h2>Exchange Backstop Stop-Loss</h2>
             <p class="card-desc">Default for new orders. Kotak allows only one live sell per long, so this is a single wide SL-M/SL order placed by the server after the entry fills. The normal TP/SL stay server-side. A per-order choice in the quick order panel always wins.</p>
           </div>

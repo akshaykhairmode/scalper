@@ -492,6 +492,13 @@
       { id: 'f-allow-outside-hours', path: ['trading', 'session', 'allow_outside_hours'], type: 'bool' },
       { id: 'f-margin-check', path: ['trading', 'margin', 'check_before_order'], type: 'bool' },
       { id: 'f-margin-fail-closed', path: ['trading', 'margin', 'fail_closed'], type: 'bool' },
+      { id: 'f-trading-mode', path: ['trading', 'mode'], type: 'string' },
+      { id: 'f-paper-enabled', path: ['trading', 'paper', 'enabled'], type: 'bool' },
+      { id: 'f-paper-balance', path: ['trading', 'paper', 'starting_balance'], type: 'float' },
+      { id: 'f-paper-slippage', path: ['trading', 'paper', 'slippage_ticks'], type: 'float' },
+      { id: 'f-paper-short-margin', path: ['trading', 'paper', 'short_margin_pct'], type: 'float' },
+      { id: 'f-paper-confirm', path: ['trading', 'paper', 'confirm_orders'], type: 'bool' },
+      { id: 'f-paper-exchange-stop', path: ['trading', 'paper', 'exchange_stop'], type: 'string' },
 
       // Market
       { id: 'f-data-mode', path: ['market', 'data_mode'], type: 'string' },

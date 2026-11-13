@@ -17,11 +17,17 @@ type bracketListResponse struct {
 }
 
 func (s *Server) handleListBrackets(w http.ResponseWriter, r *http.Request) {
-	if s.bracketEngine == nil {
+	mode := s.requestMode(r)
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	engine := s.engineFor(mode)
+	if engine == nil {
 		s.writeRouteJSON(w, r, http.StatusOK, bracketListResponse{Brackets: []bracket.Bracket{}})
 		return
 	}
-	list, err := s.bracketEngine.List(100)
+	list, err := engine.List(100)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusInternalServerError, err.Error(), err)
 		return
@@ -30,25 +36,42 @@ func (s *Server) handleListBrackets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
-	if s.bracketEngine == nil {
-		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)
+	var req struct {
+		bracket.Bracket
+		Confirm bool `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket payload: "+err.Error(), err)
 		return
 	}
-	var b bracket.Bracket
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		s.writeRouteError(w, r, http.StatusBadRequest, "invalid bracket payload: "+err.Error(), err)
+	b := req.Bracket
+	mode := s.requestMode(r)
+	if strings.TrimSpace(b.Mode) != "" {
+		mode = normalizeTradingMode(b.Mode)
+	}
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	b.Mode = mode
+	engine := s.engineFor(mode)
+	if engine == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable for "+mode, nil)
 		return
 	}
 	if err := normalizeBracketExchangeStop(&b); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
 		return
 	}
+	if mode == modePaper && s.configSnapshot().Trading.Paper.ConfirmOrders && !req.Confirm {
+		s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for paper brackets", nil)
+		return
+	}
 
 	// If the bracket needs an entry order placed (EntryOrderID is empty), enforce risk controls
 	if (b.Status == "" || b.Status == bracket.StatusPendingEntry) && b.EntryOrderID == "" {
-		session, _ := s.brokerSessionValue()
-
 		entryOrder := kotakapi.Order{
+			InstrumentKey:   b.InstrumentKey,
 			ExchangeSegment: b.ExchangeSegment,
 			TradingSymbol:   b.TradingSymbol,
 			TransactionType: b.TransactionType,
@@ -61,16 +84,27 @@ func (s *Server) handleCreateBracket(w http.ResponseWriter, r *http.Request) {
 		if b.EntryPrice <= 0 {
 			entryOrder.OrderType = "MKT"
 		}
-		if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
-			s.writeRiskError(w, r, err)
-			return
+		if mode == modePaper {
+			if err := s.checkPaperOrderRisk(r.Context(), entryOrder); err != nil {
+				s.writeRiskError(w, r, err)
+				return
+			}
+		} else {
+			session, _ := s.brokerSessionValue()
+			if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
+				s.writeRiskError(w, r, err)
+				return
+			}
 		}
 	}
 
-	created, err := s.bracketEngine.Create(r.Context(), b)
+	created, err := engine.Create(r.Context(), b)
 	if err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
 		return
+	}
+	if mode == modePaper {
+		s.ensurePaperSubscribed(created.InstrumentKey)
 	}
 	s.writeRouteJSON(w, r, http.StatusCreated, created)
 }
@@ -85,8 +119,14 @@ type bracketUpdateRequest struct {
 }
 
 func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
-	if s.bracketEngine == nil {
-		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)
+	mode := s.requestMode(r)
+	if mode == "" {
+		s.writeRouteError(w, r, http.StatusBadRequest, "mode must be live or paper", nil)
+		return
+	}
+	engine := s.engineFor(mode)
+	if engine == nil {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable for "+mode, nil)
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -109,20 +149,17 @@ func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.EntryPrice != nil {
-		if s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
+		if mode == modeLive && s.configSnapshot().Trading.ConfirmLiveOrders && !req.Confirm {
 			s.writeRouteError(w, r, http.StatusConflict, "explicit confirmation is required for live orders", nil)
 			return
 		}
-		session, ok := s.brokerSession(w, r)
-		if !ok {
-			return
-		}
-		existing, found := s.bracketEngine.Get(id)
+		existing, found := engine.Get(id)
 		if !found {
 			s.writeRouteError(w, r, http.StatusNotFound, "bracket not found", nil)
 			return
 		}
 		entryOrder := kotakapi.Order{
+			InstrumentKey:   existing.InstrumentKey,
 			ExchangeSegment: existing.ExchangeSegment,
 			TradingSymbol:   existing.TradingSymbol,
 			TransactionType: existing.TransactionType,
@@ -132,13 +169,24 @@ func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
 			Price:           *req.EntryPrice,
 			Validity:        "DAY",
 		}
-		if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
-			s.writeRiskError(w, r, err)
-			return
+		if mode == modePaper {
+			if err := s.checkPaperOrderRisk(r.Context(), entryOrder); err != nil {
+				s.writeRiskError(w, r, err)
+				return
+			}
+		} else {
+			session, ok := s.brokerSession(w, r)
+			if !ok {
+				return
+			}
+			if err := s.checkOrderRisk(r.Context(), session, entryOrder); err != nil {
+				s.writeRiskError(w, r, err)
+				return
+			}
 		}
 	}
 
-	updated, err := s.bracketEngine.UpdateLevels(r.Context(), id, bracket.LevelUpdates{
+	updated, err := engine.UpdateLevels(r.Context(), id, bracket.LevelUpdates{
 		EntryPrice:       req.EntryPrice,
 		TargetPrice:      req.TargetPrice,
 		StopLossPrice:    req.StopLossPrice,
@@ -152,7 +200,12 @@ func (s *Server) handleUpdateBracket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelBracket(w http.ResponseWriter, r *http.Request) {
-	if s.bracketEngine == nil {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	engine := s.engineFor(mode)
+	if engine == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)
 		return
 	}
@@ -161,7 +214,7 @@ func (s *Server) handleCancelBracket(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "bracket id required", nil)
 		return
 	}
-	if err := s.bracketEngine.Cancel(r.Context(), id); err != nil {
+	if err := engine.Cancel(r.Context(), id); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
 		return
 	}
@@ -169,7 +222,12 @@ func (s *Server) handleCancelBracket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExitBracket(w http.ResponseWriter, r *http.Request) {
-	if s.bracketEngine == nil {
+	mode, ok := s.requireRequestMode(w, r)
+	if !ok {
+		return
+	}
+	engine := s.engineFor(mode)
+	if engine == nil {
 		s.writeRouteError(w, r, http.StatusServiceUnavailable, "bracket engine unavailable", nil)
 		return
 	}
@@ -178,7 +236,7 @@ func (s *Server) handleExitBracket(w http.ResponseWriter, r *http.Request) {
 		s.writeRouteError(w, r, http.StatusBadRequest, "bracket id required", nil)
 		return
 	}
-	if err := s.bracketEngine.Exit(r.Context(), id); err != nil {
+	if err := engine.Exit(r.Context(), id); err != nil {
 		s.writeRouteError(w, r, http.StatusBadRequest, err.Error(), err)
 		return
 	}

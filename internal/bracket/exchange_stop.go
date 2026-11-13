@@ -77,15 +77,6 @@ func (e *Engine) SetExchangeStopConfig(cfg ExchangeStopConfig) {
 	e.mu.Unlock()
 }
 
-// SetOrderLookup installs a broker order lookup used to confirm cancellations
-// and reconcile exchange stops after a restart. When orderID is empty, the
-// lookup searches the order book for the given tag.
-func (e *Engine) SetOrderLookup(fn func(ctx context.Context, orderID, tag string) (string, string, float64, error)) {
-	e.mu.Lock()
-	e.orderLookup = fn
-	e.mu.Unlock()
-}
-
 func (e *Engine) exchangeStopConfig() ExchangeStopConfig {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -166,7 +157,7 @@ func (e *Engine) ensureExchangeStop(ctx context.Context, bracketID string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if e.placeOrder == nil {
+	if e.exec == nil {
 		return
 	}
 
@@ -238,6 +229,7 @@ func (e *Engine) ensureExchangeStop(ctx context.Context, bracketID string) {
 
 	order := kotakapi.Order{
 		Tag:             exchangeStopTag(b.ID),
+		InstrumentKey:   b.InstrumentKey,
 		ExchangeSegment: b.ExchangeSegment,
 		TradingSymbol:   b.TradingSymbol,
 		TransactionType: exitSide,
@@ -279,10 +271,13 @@ placeLoop:
 			case <-time.After(e.exchangeStopConfig().CancelRetryDelay):
 			}
 		}
-		orderID, placeErr = e.placeOrder(ctx, order)
+		orderID, placeErr = e.exec.Place(ctx, order)
 		if placeErr == nil && orderID != "" {
 			break
 		}
+	}
+	if placeErr == nil && orderID == "" {
+		placeErr = errors.New("executor returned an empty order id")
 	}
 
 	e.mu.Lock()
@@ -429,7 +424,7 @@ func (e *Engine) cancelExchangeStopOrder(ctx context.Context, orderID string) (f
 	if orderID == "" {
 		return false, 0, nil
 	}
-	if e.cancelOrder == nil {
+	if e.exec == nil {
 		return false, 0, errors.New("order cancellation is not available")
 	}
 	cfg := e.exchangeStopConfig()
@@ -446,30 +441,31 @@ func (e *Engine) cancelExchangeStopOrder(ctx context.Context, orderID string) (f
 			case <-time.After(cfg.CancelRetryDelay):
 			}
 		}
-		cancelErr := error(nil)
-		if e.cancelOrder != nil {
-			cancelErr = e.cancelOrder(ctx, orderID)
-		}
+		cancelErr := e.exec.Cancel(ctx, orderID)
 		lastErr = cancelErr
 
-		if e.orderLookup != nil {
-			for poll := 0; poll < 5; poll++ {
-				_, status, price, lookupErr := e.orderLookup(ctx, orderID, "")
-				if lookupErr == nil {
-					if isFilledStatus(status) {
-						return true, price, nil
-					}
-					if exchangeStopTerminalStatus(status) != "" {
-						return false, 0, nil
-					}
+		lookupMissing := false
+		for poll := 0; poll < 5; poll++ {
+			_, status, price, lookupErr := e.exec.Lookup(ctx, orderID, "")
+			if errors.Is(lookupErr, ErrExecutorUnavailable) {
+				lookupMissing = true
+				break
+			}
+			if lookupErr == nil {
+				if isFilledStatus(status) {
+					return true, price, nil
 				}
-				select {
-				case <-ctx.Done():
-					return false, 0, ctx.Err()
-				case <-time.After(50 * time.Millisecond):
+				if exchangeStopTerminalStatus(status) != "" {
+					return false, 0, nil
 				}
 			}
-		} else if cancelErr == nil {
+			select {
+			case <-ctx.Done():
+				return false, 0, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		if lookupMissing && cancelErr == nil {
 			return false, 0, nil
 		}
 	}
@@ -595,6 +591,7 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 	mode := e.resolveExchangeStopModeLocked(b)
 	orderID := b.ExchangeStopOrderID
 	status := b.ExchangeStopStatus
+	bracketMode := b.Mode
 	e.mu.RUnlock()
 
 	if mode == "" || mode == ExchangeStopOff {
@@ -605,11 +602,20 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 	}
 
 	if orderID != "" {
-		if e.orderLookup == nil {
+		if e.exec == nil {
 			return
 		}
-		_, brokerStatus, price, err := e.orderLookup(ctx, orderID, "")
+		_, brokerStatus, price, err := e.exec.Lookup(ctx, orderID, "")
 		if err != nil {
+			if errors.Is(err, ErrExecutorUnavailable) && bracketMode == "paper" {
+				// Paper orders are local; an unknown ID means the order was
+				// never persisted, so it is safe to retry.
+				e.setExchangeStopStatus(ctx, bracketID, ExchangeStopFailed)
+				if e.allowExchangeStopRetry(bracketID) {
+					e.ensureExchangeStop(ctx, bracketID)
+				}
+				return
+			}
 			// Unknown state: never place a second sell.
 			e.log.Error("CRITICAL: could not verify exchange backstop on startup; verify manually",
 				"bracket_id", bracketID, "order_id", orderID, "error", err)
@@ -631,11 +637,18 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 	}
 
 	if status == ExchangeStopPlacing {
-		if e.orderLookup == nil {
+		if e.exec == nil {
 			return
 		}
-		foundID, brokerStatus, price, err := e.orderLookup(ctx, "", exchangeStopTag(bracketID))
+		foundID, brokerStatus, price, err := e.exec.Lookup(ctx, "", exchangeStopTag(bracketID))
 		if err != nil || foundID == "" {
+			if bracketMode == "paper" && (err == nil || errors.Is(err, ErrExecutorUnavailable)) {
+				e.setExchangeStopStatus(ctx, bracketID, ExchangeStopFailed)
+				if e.allowExchangeStopRetry(bracketID) {
+					e.ensureExchangeStop(ctx, bracketID)
+				}
+				return
+			}
 			// The process may have died mid-placement. Do not risk a second
 			// live sell; surface it for manual verification instead.
 			e.log.Error("CRITICAL: exchange backstop was mid-placement at shutdown; verify manually",

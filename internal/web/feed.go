@@ -40,7 +40,8 @@ type feedCommand struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if s.configSnapshot().App.ServeMode && s.a != nil && s.a.CurrentSession() == nil {
+	if s.configSnapshot().App.ServeMode && s.a != nil && s.a.CurrentSession() == nil &&
+		!s.configSnapshot().Trading.Paper.Enabled {
 		http.Error(w, "broker authentication required", http.StatusUnauthorized)
 		return
 	}
@@ -272,11 +273,9 @@ func (s *Server) forwardHSMEvents() {
 				}
 			}
 			s.setLiveQuote(key, event.Quote, ts)
-			if s.bracketEngine != nil {
-				s.bracketEngine.OnTick(s.feedCtx, key, event.Quote.LTP)
-				if event.Quote.InstrumentKey != key {
-					s.bracketEngine.OnTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP)
-				}
+			s.onTick(s.feedCtx, key, event.Quote.LTP, event.Quote.Bid, event.Quote.Ask)
+			if event.Quote.InstrumentKey != key {
+				s.onTick(s.feedCtx, event.Quote.InstrumentKey, event.Quote.LTP, event.Quote.Bid, event.Quote.Ask)
 			}
 			if s.evaluator != nil {
 				s.evaluator.OnTick(s.feedCtx, key, event.Quote.LTP)

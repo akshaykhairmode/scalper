@@ -89,9 +89,8 @@ func newExchangeStopEngine(t *testing.T, cfg ExchangeStopConfig) (*Engine, *exch
 	t.Helper()
 	h := newExchangeStopHarness()
 	store := newMockStore()
-	engine := NewEngine(store, h.placeOrder, h.cancelOrder, testLogger())
+	engine := NewEngine(store, &testExec{place: h.placeOrder, cancel: h.cancelOrder, lookup: h.lookupOrder}, testLogger())
 	engine.SetExchangeStopConfig(cfg)
-	engine.SetOrderLookup(h.lookupOrder)
 	return engine, h, store
 }
 

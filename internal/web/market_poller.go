@@ -193,6 +193,7 @@ func (s *Server) applyPolledQuote(key string, quote market.Quote, fallback time.
 		}
 	}
 	s.setLiveQuoteFromMarket(key, quote, ts)
+	s.onTick(s.feedCtx, key, quote.LTP, quote.Bid, quote.Ask)
 	if s.candleAgg != nil && s.candleSessionAllows(key, ts) {
 		s.candleAgg.OnTick(key, quote.LTP, quote.Volume, quote.OI, ts)
 	}
@@ -257,6 +258,7 @@ func (s *Server) ingestChainQuotes(rows []market.ChainRow) {
 				Bids:          quote.Bids,
 				Asks:          quote.Asks,
 			}, now)
+			s.onTick(s.feedCtx, quote.InstrumentKey, quote.LTP, quote.Bid, quote.Ask)
 			s.candleAgg.OnTick(quote.InstrumentKey, quote.LTP, quote.Volume, quote.OI, now)
 		}
 	}
@@ -327,6 +329,11 @@ func (s *Server) backgroundKeys(ctx context.Context, bg config.BackgroundCollect
 	}
 	if bg.IncludeOpenPositions && s.evaluator != nil {
 		for key := range s.evaluator.TrackedInstrumentKeys() {
+			set[key] = true
+		}
+	}
+	if s.paperExec != nil {
+		for _, key := range s.paperExec.OpenInstrumentKeys() {
 			set[key] = true
 		}
 	}
