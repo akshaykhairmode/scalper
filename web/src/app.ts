@@ -7102,7 +7102,14 @@ function completeLogin(result) {
   closeLogin();
   toast("Session active. Feeds are connecting.", "ok");
   connectWebSocket();
-  if (!S.expiry) loadMarket();
+  if (!S.expiry) {
+    loadMarket();
+  } else {
+    // A paper-mode page can render the chain before a broker session exists.
+    // Historical candles require auth, so backfill the charts now that the
+    // session is active instead of leaving them with live ticks only.
+    loadCharts();
+  }
   refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
 }
 
