@@ -23,7 +23,10 @@ Session was authenticated with `akshay` / device-binding session token so the te
 
 ## 2. Summary
 
-> **Status after the follow-up fix pass (2026-11-16):** M1, M2, M4, M6, M8–M16 are fixed and verified at 320–1024 px plus landscape; M12's raw-error dump and the install-banner overlap are fixed; the review-found short-phone clipping (order pad pushed off screen at ≤375×667) is fixed. Still open and tracked below: **M3** (depth panel covers the candles), **M5** (1× canvas backing store → blurry chart *and* blurry image exports), **M7** (clipped right-most x-axis label), **M17/M18** (right-edge tag collisions), **M19/M20** (subtitle truncation, drawer density).
+> **Status after the follow-up fix pass (2026-11-16/17):** every finding below is closed and verified at 320–1600 px plus landscape, with one follow-up review pass on the chart engine and one on the desktop breakpoint.
+>
+> - **Fixed:** M1, M2, M4, M6, M8–M16, M12's raw-error dump, M3 (compact ladder ≤ ~28 % of the plot), M5 (canvases backed at `css × min(dpr,3)`; exports 3× and crisp), M7 (axis labels/tags clamped inside the canvas), M17/M18 (axis badges stack with 2 px gaps, in-plot read-out suppressed on narrow panes), M19 (`title`/`aria-label` on clipped labels), M20 (drawer content-height, 52 px rows), and the desktop 1025–1366 horizontal overflow (header/toolbar wrap, no control hidden, `BUY/SELL/ASK` inside every pad).
+> - **Accepted residuals:** at 320×568 the candle pane is 100 px (the volume pane collapses to keep the price pane usable); at 832×384 it is 89 px (the landscape chart is short but functional); the retina bitmap is capped at 3× so a 3.75 dppx panel is slightly downsampled; the AI evaluator's VWAP comes from the broker's `avg_cost` because the feed exposes no per-trade size.
 
 | ID | Area | Severity | Issue |
 |----|------|----------|-------|

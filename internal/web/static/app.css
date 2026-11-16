@@ -127,9 +127,12 @@ a { color: var(--blue); }
 /* ── Top bar ─────────────────────────────────────────────── */
 .topbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* The trailing track is allowed to shrink: a wrapping flex container's
+     *min-content* is its widest item, so the header wraps instead of handing
+     the cluster its one-line max-content and widening the page. */
+  grid-template-columns: auto minmax(170px, 1fr) minmax(0, auto);
   align-items: center;
-  gap: 18px;
+  gap: 8px 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, var(--panel), var(--bg-2));
@@ -364,7 +367,21 @@ a { color: var(--blue); }
 }
 .spot-badge.closed { color: var(--muted-2); }
 
-.topbar-right { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
+/* The right-hand cluster carries ~1060 px of controls at full width. It is
+   the grid's auto track, so letting it wrap (and tightening its gap) lets the
+   track shrink to whatever is left of the row instead of forcing the page
+   wider at some intermediate breakpoint. All widths above the mobile
+   breakpoint share this one behaviour; there is no max-width cliff. */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+}
 .metric { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
 /* #margin-metric is a <button>; strip native chrome so it keeps the metric look. */
 button.metric { border: 0; background: transparent; font: inherit; color: inherit; }
@@ -554,14 +571,19 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .danger:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Toolbar ─────────────────────────────────────────────── */
+/* Same discipline as the header: the control strip is ~1360-1390 px at its
+   natural width, so it wraps onto a second row instead of widening the page
+   between the 3-pane breakpoint and the width where it happens to fit. */
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding: 7px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-2);
   min-height: 44px;
+  min-width: 0;
 }
 .toolbar-spacer { flex: 1; }
 
@@ -1334,15 +1356,22 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .atm-dot { font-size: 7px; color: var(--accent); }
 
 /* ── Per-leg order pads ──────────────────────────────────── */
+/* A three-pane row can leave this pad ~325 px wide while its content
+   (margin read-out + lot control + BUY/SELL/ASK) needs ~370 px. Both the pad
+   and its action cluster wrap so the primary order row is never clipped;
+   the trade buttons keep their full size (44 px targets on touch layouts)
+   and simply move to their own line. */
 .leg-orderpad {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 8px 8px;
   border-top: 1px solid var(--line-soft);
   background: var(--surface-toolbar);
   overflow: hidden;
+  min-width: 0;
 }
 .leg-order-info { display: flex; flex-direction: column; min-width: 65px; gap: 2px; flex-shrink: 0; }
 .leg-margin-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; color: var(--muted-2); text-transform: uppercase; }
@@ -1357,7 +1386,7 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .leg-orderpad.put .leg-name { color: var(--put); }
 .leg-name { font-size: 10px; font-weight: 800; letter-spacing: .08em; }
 .leg-size { color: var(--muted-2); font-size: 9px; }
-.leg-order-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.leg-order-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; flex-shrink: 0; min-width: 0; margin-left: auto; }
 .lot-control {
   display: flex;
   align-items: center;
@@ -1418,7 +1447,9 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 .trade-buttons-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
+  row-gap: 6px;
   flex-shrink: 0;
 }
 .leg-orderpad .trade {
@@ -2576,11 +2607,12 @@ dialog.modal-backdrop::backdrop {
   .metric:nth-child(1) { display: none; }
 }
 
-/* Tablet / small laptop: single-column stack, above the mobile breakpoint. */
-@media (min-width: 1025px) and (max-width: 1100px) {
-  .charts-row { grid-template-columns: 1fr !important; }
-  .pane { min-height: 240px; }
-}
+/* ── Desktop chrome wrapping (≥1025 px) ──────────────────────
+   The header cluster and toolbar are wider than a 1025-1380 px laptop
+   viewport at their natural size. Both strips wrap onto extra rows (see the
+   base .topbar-right / .toolbar rules) so the page never grows a horizontal
+   scrollbar anywhere between the 3-pane breakpoint and ultra-wide screens;
+   no max-width tier is needed. */
 
 /* ── Mobile Base Elements (Hidden on Desktop) ──────────────── */
 .mobile-menu-btn {
@@ -2595,8 +2627,8 @@ dialog.modal-backdrop::backdrop {
 
 /* ── Mobile Responsive Terminal ───────────────────────────────
    Phones and tablets/laptops in landscape get the stacked app chrome.
-   The desktop 3-pane grid needs ~1400px, so anything below 1025px (plus
-   short landscape viewports up to 1366px) keeps the single-column stack. */
+   Anything up to 1024px (plus short landscape viewports up to 1366px)
+   keeps the single-column stack; ≥1025px uses the 3-pane grid. */
 @media (max-width: 1024px), (max-width: 1366px) and (max-height: 500px) {
   html, body {
     height: 100%;
@@ -2919,7 +2951,9 @@ dialog.modal-backdrop::backdrop {
     transform: scale(0.97);
   }
 
-  /* Mobile Slide-Out Drawer */
+  /* Mobile Slide-Out Drawer: content-height sheet (it used to be a
+     full-height 100dvh panel with ~200-400 px of dead space below six
+     actions). The dialog itself scrolls on short viewports. */
   dialog.mobile-drawer-backdrop {
     position: fixed;
     inset: 0;
@@ -2930,10 +2964,17 @@ dialog.modal-backdrop::backdrop {
     max-height: none;
     margin: 0;
     padding: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
     border: 0;
     background: transparent;
     color: inherit;
     justify-content: flex-end;
+    align-items: flex-start;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   dialog.mobile-drawer-backdrop[open] {
     display: flex;
@@ -2945,7 +2986,7 @@ dialog.modal-backdrop::backdrop {
   .mobile-drawer {
     width: 310px;
     max-width: 86vw;
-    height: 100%;
+    height: auto;
     background: var(--panel);
     border-left: 1px solid var(--line);
     display: flex;
@@ -2957,7 +2998,7 @@ dialog.modal-backdrop::backdrop {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 16px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--line);
   }
   .mobile-drawer-brand {
@@ -2979,18 +3020,16 @@ dialog.modal-backdrop::backdrop {
     color: var(--muted);
   }
   .mobile-drawer-body {
-    flex: 1 1 auto;
-    overflow-y: auto;
-    padding: 16px;
+    flex: 0 0 auto;
+    padding: 12px 14px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    -webkit-overflow-scrolling: touch;
+    gap: 14px;
   }
   .mobile-drawer-section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
   .mobile-drawer-section-title {
     font-size: 11px;
@@ -2998,7 +3037,7 @@ dialog.modal-backdrop::backdrop {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--muted);
-    padding-bottom: 4px;
+    padding-bottom: 3px;
     border-bottom: 1px solid var(--line-soft);
   }
   .mobile-drawer-row {
@@ -3013,7 +3052,7 @@ dialog.modal-backdrop::backdrop {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 44px;
+    min-height: 52px;
     padding: 8px 12px;
     border-radius: 8px;
     background: var(--panel-2);
@@ -3034,12 +3073,11 @@ dialog.modal-backdrop::backdrop {
     font-size: 17px;
   }
   .mobile-drawer-footer {
-    margin-top: auto;
-    padding-top: 12px;
+    padding-top: 10px;
   }
   .drawer-logout-btn {
     width: 100%;
-    min-height: 44px;
+    min-height: 52px;
     border-radius: 8px;
     background: var(--red-soft);
     border: 1px solid var(--red);

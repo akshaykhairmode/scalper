@@ -92,6 +92,453 @@ const formatVolume = (val) => {
   return String(Math.round(val));
 };
 
+/* ── Chart rendering geometry ─────────────────────────────── */
+
+// Every klinecharts canvas is backed by cssSize × pixelRatio device pixels.
+// Rendering above 3x triples the bitmap for no visible gain, so it is capped.
+const MAX_CANVAS_PIXEL_RATIO = 3;
+// A chart container narrower than this cannot show the full DOM ladder or the
+// indicator read-outs without covering the candles, so both switch to compact
+// layouts. 1440x900 desktop panes measure ~463px; phone panes 370px or less.
+// Compare it against the full pane width, never the plot width: the price axis
+// is 48-68px depending on the digits, so a plot-width test flips two panes of
+// the same screen into different layouts on a one-pixel difference.
+const NARROW_PANE_WIDTH = 440;
+// Blank strip kept inside the y-axis canvas so price tags never touch the edge.
+const RIGHT_AXIS_GUTTER = 6;
+// Blank strip kept inside the x-axis canvas so the last time label is not cut.
+const X_AXIS_EDGE_GUTTER = 8;
+// Minimum vertical gap between two stacked price tags on the axis.
+const TAG_STACK_GAP = 2;
+
+// The candle pane must keep a readable plot: on a 126px phone container the
+// library's default stack of 100px indicator panes squeezes it to zero, so the
+// indicator panes give way instead.
+const CANDLE_MIN_HEIGHT = 120;
+// An indicator pane shorter than this cannot show a usable plot, so it is
+// hidden entirely rather than squeezed into an unreadable sliver.
+const INDICATOR_PANE_MIN_HEIGHT = 44;
+// When the pane stack does not fit, indicator panes may take at most this share
+// of the container height.
+const INDICATOR_MAX_HEIGHT_RATIO = 0.3;
+// klinecharts' defaults for indicator panes, used when restoring their size.
+const DEFAULT_INDICATOR_PANE_HEIGHT = 100;
+const LIBRARY_PANE_MIN_HEIGHT = 30;
+// Measured x-axis height (tick size + margins) until the pane has laid out.
+const DEFAULT_X_AXIS_HEIGHT = 25;
+
+// The raw ratio drives the matchMedia watcher; only the bitmap allocation is
+// capped, so a 3.75dppx phone still arms a `(resolution: 3.75dppx)` listener.
+const rawDevicePixelRatio = () => {
+  const ratio = Number(typeof window === "undefined" ? 1 : window.devicePixelRatio);
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+};
+
+const canvasPixelRatio = () => Math.min(rawDevicePixelRatio(), MAX_CANVAS_PIXEL_RATIO);
+
+let measureContext: CanvasRenderingContext2D | null = null;
+const measureTextWidth = (text, size, weight, family) => {
+  const value = String(text == null ? "" : text);
+  if (!value) return 0;
+  if (!measureContext) {
+    measureContext = document.createElement("canvas").getContext("2d");
+  }
+  if (!measureContext) return value.length * (Number(size) || 12) * 0.6;
+  measureContext.font = `${weight || "normal"} ${Number(size) || 12}px ${family || "Helvetica Neue"}`;
+  return measureContext.measureText(value).width;
+};
+
+/**
+ * Keep an overlay's text pill inside the plot: labels anchored to a candle (or
+ * a signal marker) near the right edge would otherwise be sliced by the canvas.
+ */
+const clampTextFigureX = (attrs, styles, width) => {
+  const total = Number(width) || 0;
+  if (!attrs || !(total > 0) || !Number.isFinite(attrs.x)) return attrs;
+  const text = String(attrs.text == null ? "" : attrs.text);
+  if (!text) return attrs;
+  const boxWidth = (Number(styles?.paddingLeft) || 0)
+    + measureTextWidth(text, styles?.size, styles?.weight, styles?.family)
+    + (Number(styles?.paddingRight) || 0)
+    + 2 * (Number(styles?.borderSize) || 0);
+  const align = attrs.align || "left";
+  if (align === "center") {
+    if (attrs.x + boxWidth / 2 > total) {
+      attrs.x = total - 1;
+      attrs.align = "right";
+    } else if (attrs.x - boxWidth / 2 < 0) {
+      attrs.x = 1;
+      attrs.align = "left";
+    }
+  } else if (align === "right") {
+    if (attrs.x > total - 1) attrs.x = total - 1;
+    if (attrs.x - boxWidth < 0) attrs.x = boxWidth;
+  } else {
+    if (attrs.x < 0) attrs.x = 0;
+    if (attrs.x + boxWidth > total) attrs.x = total - boxWidth;
+  }
+  return attrs;
+};
+
+const paneWidth = (container) => {
+  const width = Number(container?.clientWidth);
+  return Number.isFinite(width) && width > 0 ? width : 0;
+};
+
+// Every canvas of a chart: pane main/overlay layers, price axes and the time axis.
+const chartCanvasWidgets = (chart) => {
+  const widgets = [];
+  if (!chart) return widgets;
+  const panes = [];
+  try {
+    panes.push(...(chart.getDrawPanes?.() || []));
+  } catch (_) {}
+  try {
+    panes.push(chart.getXAxisPane?.());
+  } catch (_) {}
+  for (const pane of panes) {
+    if (!pane) continue;
+    if (pane._mainWidget) widgets.push(pane._mainWidget);
+    const yWidgets = pane._yAxisWidgets;
+    if (yWidgets && typeof yWidgets.values === "function") {
+      for (const widget of yWidgets.values()) widgets.push(widget);
+    }
+  }
+  const canvases = [];
+  for (const widget of widgets) {
+    if (widget._mainCanvas) canvases.push(widget._mainCanvas);
+    if (widget._overlayCanvas) canvases.push(widget._overlayCanvas);
+  }
+  return canvases;
+};
+
+// True for light chart backgrounds (#fff, #f8f9fa, ...), used to pick DOM row
+// colours that stay legible on both themes.
+const isLightBackground = (color) => {
+  const value = String(color || "").trim();
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+  if (!match) return false;
+  const hex = match[1].length === 3
+    ? match[1].split("").map((c) => c + c).join("")
+    : match[1];
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.6;
+};
+
+const domRowColors = (background = null) => (isLightBackground(background)
+  ? {
+      panelBg: "rgba(255, 255, 255, 0.55)",
+      spine: "rgba(15, 23, 42, 0.2)",
+      buyText: "#15803d",
+      buyPill: "rgba(240, 253, 244, 0.92)",
+      sellText: "#b91c1c",
+      sellPill: "rgba(254, 242, 242, 0.92)",
+    }
+  : {
+      panelBg: "rgba(15, 23, 42, 0.45)",
+      spine: "rgba(255, 255, 255, 0.22)",
+      buyText: "#86efac",
+      buyPill: "rgba(6, 30, 18, 0.82)",
+      sellText: "#fca5a5",
+      sellPill: "rgba(38, 8, 8, 0.82)",
+    });
+
+// The DOM ladder keeps its original desktop footprint; on narrow panes it
+// shrinks to a compact two-number strip that covers ~25% of the plot instead of
+// the old 150px floor (47% of a 322px phone canvas). `plotWidth` is the drawing
+// area; `paneWidth` (plot + price axis) decides the layout so every pane of the
+// same width picks the same style regardless of how many digits its prices have.
+const depthLadderLayout = (plotWidth, paneWidth = plotWidth) => {
+  const total = Number(plotWidth) || 0;
+  const pane = Number(paneWidth) || total;
+  const compact = pane > 0 && pane < NARROW_PANE_WIDTH;
+  const panelWidth = compact
+    ? Math.min(112, Math.max(64, Math.round(total * 0.28)))
+    : Math.min(240, Math.max(150, Math.round(total * 0.28)));
+  const right = total - 4;
+  return { compact, panelWidth, right, left: right - panelWidth };
+};
+
+// Full pane width of a y-axis, or the plot width when the axis internals are
+// unavailable (overlay sizing must never throw).
+const axisPaneWidth = (axis, plotWidth) => {
+  try {
+    const width = Number(axis?.getParent?.()?.getBounding?.().width);
+    return Number.isFinite(width) && width > 0 ? width : plotWidth;
+  } catch (_) {
+    return plotWidth;
+  }
+};
+
+let canvasPixelRatioPatched = false;
+// A klinecharts bump that renames the internals only has to be detected once:
+// after that every chart keeps the library's own scheduler.
+let canvasPixelRatioDisabled = false;
+/**
+ * klinecharts v10 backs its canvases with `window.devicePixelRatio`, but its
+ * `device-pixel-content-box` ResizeObserver path reports CSS pixels in some
+ * Chromium builds (and in emulated mobile viewports), which leaves the whole
+ * pane on a 1x bitmap. Take over the canvas draw scheduler so the bitmap is
+ * always allocated from the final CSS box × pixelRatio at paint time: that also
+ * removes the 1x-then-3x re-allocation flash when a pane is first measured.
+ */
+function patchCanvasPixelRatio(chart) {
+  if (canvasPixelRatioPatched || canvasPixelRatioDisabled) return;
+  try {
+    const panes = chart?.getDrawPanes?.() || chart?._drawPanes || [];
+    let canvasWidget = null;
+    for (const pane of panes) {
+      canvasWidget = pane?._mainWidget?._mainCanvas || null;
+      if (canvasWidget) break;
+    }
+    const proto = canvasWidget ? Object.getPrototypeOf(canvasWidget) : null;
+    if (!proto || typeof proto._scheduleDraw !== "function") return;
+    // The replacement drives the library's own draw listener; only take over
+    // when the expected internals are present.
+    if (typeof canvasWidget._listener !== "function" || typeof canvasWidget._ctx?.scale !== "function") return;
+    if (!canvasWidget._element || typeof canvasWidget._element.getContext !== "function") return;
+    const originalScheduleDraw = proto._scheduleDraw;
+    let verified = false;
+    const restore = (reason) => {
+      // A klinecharts upgrade that renames the internals we allocate around
+      // must leave the library in charge instead of blanking every canvas.
+      canvasPixelRatioPatched = false;
+      try {
+        proto._scheduleDraw = originalScheduleDraw;
+      } catch (_) {}
+      if (!canvasPixelRatioDisabled) {
+        canvasPixelRatioDisabled = true;
+        console.warn(`chart canvas pixel ratio patch disabled (${reason}); using the library scheduler`);
+      }
+    };
+    canvasPixelRatioPatched = true;
+
+    proto._scheduleDraw = function(pending = false) {
+      const widget = this;
+      if (!widget._element || typeof widget._element.getContext !== "function") {
+        restore("canvas element missing");
+        return;
+      }
+      // -1 is the library's "no frame queued" sentinel for this field.
+      const idle = -1;
+      if (!widget._resizePending) widget._resizePending = Boolean(pending);
+      if (widget._requestAnimationId !== undefined && widget._requestAnimationId !== null && widget._requestAnimationId !== idle) return;
+      const frame = typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (callback) => setTimeout(callback, 16);
+      widget._requestAnimationId = frame(() => {
+        widget._requestAnimationId = idle;
+        if (widget._destroyed) return;
+        const element = widget._element;
+        // Let the restored (library) scheduler paint this widget, so disabling
+        // the patch cannot leave the pane blank until the next data tick.
+        const resumeLibrary = () => {
+          try {
+            originalScheduleDraw.call(widget, pending);
+          } catch (_) {}
+        };
+        // `_ctx` belongs to the widget, so check it per widget at paint time
+        // rather than once on the instance the patch was installed from.
+        const ctx = widget._ctx;
+        if (!element || typeof element.getContext !== "function" || !ctx || typeof ctx.setTransform !== "function") {
+          restore("canvas context missing");
+          return;
+        }
+        const width = Number(widget._width) || 0;
+        const height = Number(widget._height) || 0;
+        if (!Number.isFinite(Number(widget._width)) || !Number.isFinite(Number(widget._height))) {
+          // Renamed fields would compute a NaN pixel size below.
+          restore("internal dimensions missing");
+          resumeLibrary();
+          return;
+        }
+        // A sized-and-visible canvas whose internal CSS box reads 0 means the
+        // `_width`/`_height` fields were renamed: bail out before overwriting
+        // its bitmap with a zero-sized one.
+        const styled = /px$/.test(String(element.style?.width || ""))
+          && /px$/.test(String(element.style?.height || ""));
+        const sized = Number(element.clientWidth) > 0 && Number(element.clientHeight) > 0;
+        if ((!(width > 0) || !(height > 0)) && styled && sized) {
+          restore("internal dimensions changed");
+          resumeLibrary();
+          return;
+        }
+        if (widget._resizePending) {
+          widget._resizePending = false;
+          if (width > 0 && height > 0) {
+            const ratio = canvasPixelRatio();
+            widget._pixelWidth = Math.max(1, Math.round(width * ratio));
+            widget._pixelHeight = Math.max(1, Math.round(height * ratio));
+            widget._nextPixelWidth = widget._pixelWidth;
+            widget._nextPixelHeight = widget._pixelHeight;
+            element.width = widget._pixelWidth;
+            element.height = widget._pixelHeight;
+          } else {
+            // Hidden pane: the library computes a negative plot width from a
+            // zero-sized container. Keep the canvas empty instead of writing an
+            // invalid bitmap size, which throws and aborts the next paint.
+            widget._pixelWidth = 0;
+            widget._pixelHeight = 0;
+            widget._nextPixelWidth = 0;
+            widget._nextPixelHeight = 0;
+            element.width = 0;
+            element.height = 0;
+          }
+        } else if (width > 0 && height > 0) {
+          // Self-heal a stale backing store (monitor/zoom DPR change, or a pane
+          // that was re-shown at the size it had before it was hidden).
+          const ratio = canvasPixelRatio();
+          const expectedWidth = Math.max(1, Math.round(width * ratio));
+          const expectedHeight = Math.max(1, Math.round(height * ratio));
+          if (widget._pixelWidth !== expectedWidth || widget._pixelHeight !== expectedHeight) {
+            widget._pixelWidth = expectedWidth;
+            widget._pixelHeight = expectedHeight;
+            widget._nextPixelWidth = expectedWidth;
+            widget._nextPixelHeight = expectedHeight;
+            element.width = expectedWidth;
+            element.height = expectedHeight;
+          }
+        }
+        // Prove on the first patched frame that the bitmap we allocated is the
+        // one the library's fields describe. If a klinecharts bump renames
+        // `_width`/`_height`, this mismatch restores the original scheduler.
+        if (!verified && width > 0 && height > 0) {
+          const ratio = canvasPixelRatio();
+          const expectedWidth = Math.max(1, Math.round(width * ratio));
+          const expectedHeight = Math.max(1, Math.round(height * ratio));
+          if (element.width !== expectedWidth || element.height !== expectedHeight) {
+            restore(`bitmap size mismatch (${element.width}x${element.height} != ${expectedWidth}x${expectedHeight})`);
+            resumeLibrary();
+            return;
+          }
+          verified = true;
+        }
+        if (!(widget._pixelWidth > 0) || !(widget._pixelHeight > 0)) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, widget._pixelWidth, widget._pixelHeight);
+        ctx.save();
+        if (width > 0 && height > 0) {
+          ctx.scale(widget._pixelWidth / width, widget._pixelHeight / height);
+        }
+        try {
+          widget._listener();
+        } finally {
+          ctx.restore();
+        }
+      });
+    };
+  } catch (error) {
+    console.warn("chart canvas pixel ratio patch failed", error);
+  }
+}
+
+let yAxisGutterPatched = false;
+/**
+ * The library draws the last-price / crosshair / indicator tags flush against
+ * the y-axis canvas edge. Shift those label views a few pixels left so every
+ * tag keeps its right padding inside the canvas.
+ */
+function patchYAxisRightGutter(chart) {
+  if (yAxisGutterPatched) return;
+  try {
+    const panes = chart?.getDrawPanes?.() || chart?._drawPanes || [];
+    let view = null;
+    for (const pane of panes) {
+      const widgets = pane?._yAxisWidgets;
+      if (!widgets || typeof widgets.values !== "function") continue;
+      const widget = widgets.values().next()?.value;
+      view = widget?._candleLastPriceLabelView || null;
+      if (view) break;
+    }
+    if (!view) return;
+    yAxisGutterPatched = true;
+    // Each tag view owns its own `drawImp`; patch the concrete classes so the
+    // translate stays scoped to the y-axis label drawing.
+    const seen = new Set();
+    for (const name of ["_candleLastPriceLabelView", "_crosshairHorizontalLabelView"]) {
+      let instance = null;
+      for (const pane of panes) {
+        const widgets = pane?._yAxisWidgets;
+        if (!widgets || typeof widgets.values !== "function") continue;
+        for (const widget of widgets.values()) {
+          instance = widget?.[name] || instance;
+          if (instance) break;
+        }
+        if (instance) break;
+      }
+      if (!instance) continue;
+      const proto = Object.getPrototypeOf(instance);
+      if (!proto || seen.has(proto) || typeof proto.drawImp !== "function") continue;
+      seen.add(proto);
+      const drawImp = proto.drawImp;
+      proto.drawImp = function(ctx) {
+        // The library anchors these labels on the inner edge of the axis column
+        // when the axis reports `isFromZero` (its right-side/outside default):
+        // x = 0 with align "left", i.e. the pill starts at the plot border. The
+        // +gutter shift moves it into the canvas, adding left padding and eating
+        // into the axis' marginEnd (8px), so a 6px shift still leaves ~2px of
+        // right margin. For the inside/left axis the pill is right-aligned on
+        // the canvas edge, so the same shift goes negative and buys right
+        // padding. Either way the tag keeps clear of the canvas border.
+        let fromZero = false;
+        try {
+          fromZero = Boolean(this.getWidget?.().getAxisComponent?.().isFromZero?.());
+        } catch (_) {}
+        const shift = fromZero ? RIGHT_AXIS_GUTTER : -RIGHT_AXIS_GUTTER;
+        ctx.save();
+        ctx.translate(shift, 0);
+        try {
+          return drawImp.call(this, ctx);
+        } finally {
+          ctx.restore();
+        }
+      };
+    }
+  } catch (error) {
+    console.warn("chart axis gutter patch failed", error);
+  }
+}
+
+let xAxisTickPatched = false;
+/**
+ * x-axis time labels are centred on their tick and have no edge guard, so the
+ * newest label is clipped (`15:0…`). Pull the first/last label inside the plot
+ * and right/left-align it instead of letting it run past the canvas.
+ */
+function patchXAxisTickLabels(chart) {
+  if (xAxisTickPatched) return;
+  try {
+    const view = chart?.getXAxisPane?.()?._mainWidget?._xAxisView;
+    const proto = view ? Object.getPrototypeOf(view) : null;
+    if (!proto || typeof proto.createTickTexts !== "function") return;
+    xAxisTickPatched = true;
+
+    const createTickTexts = proto.createTickTexts;
+    proto.createTickTexts = function(ticks, bounding, styles) {
+      const attrs = createTickTexts.call(this, ticks, bounding, styles);
+      const width = Number(bounding?.width) || 0;
+      if (!Array.isArray(attrs) || width <= 0) return attrs;
+      const text = styles?.tickText || {};
+      for (const attr of attrs) {
+        if (!attr || !Number.isFinite(attr.x)) continue;
+        const half = measureTextWidth(attr.text, text.size, text.weight, text.family) / 2;
+        if (attr.x + half > width - X_AXIS_EDGE_GUTTER) {
+          attr.x = width - X_AXIS_EDGE_GUTTER;
+          attr.align = "right";
+        } else if (attr.x - half < X_AXIS_EDGE_GUTTER) {
+          attr.x = X_AXIS_EDGE_GUTTER;
+          attr.align = "left";
+        }
+      }
+      return attrs;
+    };
+  } catch (error) {
+    console.warn("chart x-axis gutter patch failed", error);
+  }
+}
+
 function calculateSRLevels(candles, maxLevels = 3) {
   if (!Array.isArray(candles) || candles.length < 5) {
     return { supports: [], resistances: [] };
@@ -409,12 +856,13 @@ function buildStyles(colors) {
     xAxis: {
       axisLine: { show: true, size: 1, color: colors.border },
       tickLine: { show: true, size: 1, color: colors.border },
-      tickText: { show: true, color: colors.text, size: 11 },
+      tickText: { show: true, color: colors.text, size: 11, marginStart: 4 },
     },
     yAxis: {
       axisLine: { show: true, size: 1, color: colors.border },
       tickLine: { show: true, size: 1, color: colors.border },
-      tickText: { show: true, color: colors.text, size: 11 },
+      // marginEnd is the gap between the last price glyph and the canvas edge.
+      tickText: { show: true, color: colors.text, size: 11, marginStart: 4, marginEnd: 8 },
     },
     separator: { size: 1, color: colors.border },
     crosshair: {
@@ -731,7 +1179,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates }) {
+    createPointFigures: function({ overlay, coordinates, bounding }) {
       if (!coordinates || !coordinates.length) return [];
       const coord = coordinates[0];
       if (!coord || !Number.isFinite(coord.x) || !Number.isFinite(coord.y)) return [];
@@ -764,27 +1212,28 @@ function registerCustomOverlays() {
         });
 
         const label = data.text || (arrowUp ? "▲ BUY" : "▼ SELL");
+        const labelStyles = {
+          color: "#ffffff",
+          backgroundColor: color,
+          size: 10,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 5,
+          paddingRight: 5,
+          paddingTop: 1.5,
+          paddingBottom: 1.5,
+          borderRadius: 3,
+        };
         figures.push({
           type: "text",
-          attrs: {
+          attrs: clampTextFigureX({
             x: coord.x,
             y: textY,
             text: label,
             align: "center",
             baseline,
-          },
-          styles: {
-            color: "#ffffff",
-            backgroundColor: color,
-            size: 10,
-            weight: "bold",
-            family: "system-ui, -apple-system, sans-serif",
-            paddingLeft: 5,
-            paddingRight: 5,
-            paddingTop: 1.5,
-            paddingBottom: 1.5,
-            borderRadius: 3,
-          },
+          }, labelStyles, bounding?.width),
+          styles: labelStyles,
           ignoreEvent: true,
         });
       } else {
@@ -813,13 +1262,13 @@ function registerCustomOverlays() {
 
         figures.push({
           type: "text",
-          attrs: {
+          attrs: clampTextFigureX({
             x: coord.x,
             y: textY,
             text: label,
             align: "center",
             baseline,
-          },
+          }, { size: 10, weight: "bold", paddingLeft: 5, paddingRight: 5, borderSize: 0 }, bounding?.width),
           styles: {
             color: "#ffffff",
             backgroundColor: color,
@@ -846,7 +1295,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates, bounding }) {
+    createPointFigures: function({ overlay, coordinates, bounding, yAxis }) {
       if (!coordinates || !coordinates.length) return [];
       const coord = coordinates[0];
       if (!coord || !Number.isFinite(coord.y)) return [];
@@ -863,17 +1312,84 @@ function registerCustomOverlays() {
         const sellVol = Number(data.sellVol || 0);
         const maxVol = Number(data.maxVol || Math.max(buyVol, sellVol, 1));
 
-        const panelWidth = Math.min(240, Math.max(150, Math.round(width * 0.28)));
-        const xRight = width - 4;
-        const xLeft = xRight - panelWidth;
-        const xCenter = Math.round(xLeft + panelWidth * 0.5);
-        const halfWidth = Math.round((panelWidth - 14) * 0.48);
-
-        const barHeight = 14;
+        const layout = depthLadderLayout(width, axisPaneWidth(yAxis, width));
+        const step = Number(data.step) || 0;
+        // Row height follows the real pixel distance between two ladder steps
+        // so bubbles never overlap when the axis is zoomed out on a short pane.
+        let rowPx = 0;
+        if (step > 0 && yAxis && typeof yAxis.convertToPixel === "function") {
+          const here = Number(yAxis.convertToPixel(Number(data.price)));
+          const next = Number(yAxis.convertToPixel(Number(data.price) - step));
+          if (Number.isFinite(here) && Number.isFinite(next)) rowPx = Math.abs(next - here);
+        }
+        const barHeight = rowPx > 0
+          ? Math.max(7, Math.min(14, Math.round(rowPx) - 4))
+          : 14;
         const yTop = y - barHeight / 2;
         const yBottom = y + barHeight / 2;
 
         const figures = [];
+
+        if (layout.compact) {
+          // Compact strip: just the two volumes per row, right aligned. No wide
+          // panel background, so the candles behind stay visible.
+          const xRight = layout.right;
+          const xLeft = xRight - layout.panelWidth;
+          const xCenter = Math.round(xLeft + layout.panelWidth * 0.5);
+          const pill = {
+            paddingLeft: 3,
+            paddingRight: 3,
+            paddingTop: 1,
+            paddingBottom: 1,
+            borderSize: 0,
+            borderRadius: 2,
+            size: 9,
+            weight: "bold",
+            family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          };
+          const rowColors = data.rowColors || domRowColors();
+
+          if (buyVol > 0) {
+            figures.push({
+              type: "text",
+              attrs: {
+                x: xCenter - 2,
+                y,
+                text: formatDOMQty(buyVol),
+                align: "right",
+                baseline: "middle",
+              },
+              styles: Object.assign({}, pill, {
+                color: rowColors.buyText,
+                backgroundColor: rowColors.buyPill,
+              }),
+              ignoreEvent: true,
+            });
+          }
+          if (sellVol > 0) {
+            figures.push({
+              type: "text",
+              attrs: {
+                x: xCenter + 2,
+                y,
+                text: formatDOMQty(sellVol),
+                align: "left",
+                baseline: "middle",
+              },
+              styles: Object.assign({}, pill, {
+                color: rowColors.sellText,
+                backgroundColor: rowColors.sellPill,
+              }),
+              ignoreEvent: true,
+            });
+          }
+          return figures;
+        }
+
+        const xRight = layout.right;
+        const xLeft = layout.left;
+        const xCenter = Math.round(xLeft + layout.panelWidth * 0.5);
+        const halfWidth = Math.round((layout.panelWidth - 14) * 0.48);
 
         // Background container pill for readability
         figures.push({
@@ -886,7 +1402,7 @@ function registerCustomOverlays() {
               { x: xLeft, y: yBottom },
             ],
           },
-          styles: { style: "fill", color: "rgba(15, 23, 42, 0.45)" },
+          styles: { style: "fill", color: (data.rowColors || domRowColors()).panelBg },
           ignoreEvent: true,
         });
 
@@ -899,7 +1415,7 @@ function registerCustomOverlays() {
               { x: xCenter, y: yBottom + 1 },
             ],
           },
-          styles: { style: "solid", size: 1.5, color: "rgba(255, 255, 255, 0.22)" },
+          styles: { style: "solid", size: 1.5, color: (data.rowColors || domRowColors()).spine },
           ignoreEvent: true,
         });
 
@@ -947,9 +1463,16 @@ function registerCustomOverlays() {
               baseline: "middle",
             },
             styles: {
-              color: "#86efac",
+              color: (data.rowColors || domRowColors()).buyText,
+              backgroundColor: (data.rowColors || domRowColors()).buyPill,
               size: 9,
               weight: "bold",
+              paddingLeft: 3,
+              paddingRight: 3,
+              paddingTop: 1,
+              paddingBottom: 1,
+              borderSize: 0,
+              borderRadius: 2,
               family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             },
             ignoreEvent: true,
@@ -1000,9 +1523,16 @@ function registerCustomOverlays() {
               baseline: "middle",
             },
             styles: {
-              color: "#fca5a5",
+              color: (data.rowColors || domRowColors()).sellText,
+              backgroundColor: (data.rowColors || domRowColors()).sellPill,
               size: 9,
               weight: "bold",
+              paddingLeft: 3,
+              paddingRight: 3,
+              paddingTop: 1,
+              paddingBottom: 1,
+              borderSize: 0,
+              borderRadius: 2,
               family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             },
             ignoreEvent: true,
@@ -1020,13 +1550,21 @@ function registerCustomOverlays() {
 
       const baseColor = isBuy ? "#29b360" : "#f05a5a";
       const fillColor = isBuy ? "rgba(41, 179, 96, 0.35)" : "rgba(240, 90, 90, 0.35)";
-      const barHeight = 16;
+      const layout = depthLadderLayout(width, axisPaneWidth(yAxis, width));
+      const step = Number(data.step) || 0;
+      let rowPx = 0;
+      if (step > 0 && yAxis && typeof yAxis.convertToPixel === "function") {
+        const here = Number(yAxis.convertToPixel(Number(data.price)));
+        const next = Number(yAxis.convertToPixel(Number(data.price) - step));
+        if (Number.isFinite(here) && Number.isFinite(next)) rowPx = Math.abs(next - here);
+      }
+      const barHeight = rowPx > 0 ? Math.max(8, Math.min(16, Math.round(rowPx) - 4)) : 16;
 
       const ratio = Math.max(0.08, Math.min(1.0, qty / (maxQty || 1)));
       const maxBarWidth = Math.min(220, Math.max(90, width * 0.26));
       const barWidth = Math.round(ratio * maxBarWidth);
 
-      const x2 = width - 4;
+      const x2 = layout.right;
       const x1 = x2 - barWidth;
       const yTop = y - barHeight / 2;
       const yBottom = y + barHeight / 2;
@@ -1303,7 +1841,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates, bounding }) {
+    createPointFigures: function({ overlay, coordinates, bounding, yAxis }) {
       if (!coordinates || !coordinates.length) return [];
       const coord = coordinates[0];
       if (!coord || !Number.isFinite(coord.y)) return [];
@@ -1312,6 +1850,11 @@ function registerCustomOverlays() {
       const price = Number(data.price || overlay.points?.[0]?.value || 0);
       const width = bounding?.width || 800;
       const color = data.color || "#c084fc";
+      // The DOM ladder owns the right strip of the plot; park the tag just to
+      // its left so neither hides the other and neither is clipped.
+      const x = data.depthVisible
+        ? Math.max(8, depthLadderLayout(width, axisPaneWidth(yAxis, width)).left - 6)
+        : Math.max(8, width - 8);
       return [
         {
           type: "line",
@@ -1322,7 +1865,7 @@ function registerCustomOverlays() {
         {
           type: "text",
           attrs: {
-            x: width - 8,
+            x,
             y,
             text: `MP: ${Math.round(price).toLocaleString("en-IN")}`,
             align: "right",
@@ -1338,6 +1881,7 @@ function registerCustomOverlays() {
             paddingRight: 6,
             paddingTop: 2,
             paddingBottom: 2,
+            borderSize: 0,
             borderRadius: 3,
           },
           ignoreEvent: true,
@@ -2465,7 +3009,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates }) {
+    createPointFigures: function({ overlay, coordinates, bounding }) {
       if (!coordinates || !coordinates.length) return [];
       const coord = coordinates[0];
       if (!coord || !Number.isFinite(coord.x) || !Number.isFinite(coord.y)) return [];
@@ -2494,27 +3038,28 @@ function registerCustomOverlays() {
       ];
 
       if (data.label) {
+        const labelStyles = {
+          color: "#ffffff",
+          backgroundColor: color,
+          size: 9,
+          weight: "bold",
+          family: "system-ui, -apple-system, sans-serif",
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1,
+          paddingBottom: 1,
+          borderRadius: 2,
+        };
         figures.push({
           type: "text",
-          attrs: {
+          attrs: clampTextFigureX({
             x: coord.x,
             y: up ? baseY + 2 : baseY - 2,
             text: String(data.label),
             align: "center",
             baseline: up ? "top" : "bottom",
-          },
-          styles: {
-            color: "#ffffff",
-            backgroundColor: color,
-            size: 9,
-            weight: "bold",
-            family: "system-ui, -apple-system, sans-serif",
-            paddingLeft: 4,
-            paddingRight: 4,
-            paddingTop: 1,
-            paddingBottom: 1,
-            borderRadius: 2,
-          },
+          }, labelStyles, bounding?.width),
+          styles: labelStyles,
           ignoreEvent: true,
         });
       }
@@ -2529,7 +3074,7 @@ function registerCustomOverlays() {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates }) {
+    createPointFigures: function({ overlay, coordinates, bounding }) {
       if (!coordinates || coordinates.length < 2) return [];
       const [a, b] = coordinates;
       if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x)) return [];
@@ -2562,13 +3107,13 @@ function registerCustomOverlays() {
 
       figures.push({
         type: "text",
-        attrs: {
+        attrs: clampTextFigureX({
           x: b.x,
           y: isBull ? b.y + 16 : b.y - 16,
           text: isBull ? "BULL DIV" : "BEAR DIV",
           align: "center",
           baseline: isBull ? "top" : "bottom",
-        },
+        }, { size: 9, weight: "bold", paddingLeft: 4, paddingRight: 4, borderSize: 0 }, bounding?.width),
         styles: {
           color: "#ffffff",
           backgroundColor: isBull ? "#14532d" : "#7f1d1d",
@@ -2801,6 +3346,10 @@ function patchIndicatorLastValueView(chart) {
       const decimalFold = chartStore.getDecimalFold();
       const thousands = chartStore.getThousandsSeparator();
 
+      // Collect first: badges that land within a few pixels of each other (VWAP
+      // next to the last price, two MAs on the same tick) are stacked apart
+      // instead of painted on top of each other.
+      const badges = [];
       indicators.forEach((ind) => {
         const lastResult = ind.result?.[lastIdx];
         if (!lastResult || !ind.visible) return;
@@ -2825,10 +3374,6 @@ function patchIndicatorLastValueView(chart) {
             text = decimalFold.format(thousands.format(text));
           }
 
-          const isFromZero = typeof axis.isFromZero === "function" ? axis.isFromZero() : false;
-          const x = isFromZero ? 0 : bounding.width;
-          const align = isFromZero ? "left" : "right";
-
           const lastBar = dataList[lastIdx];
           const isUp = lastBar && lastBar.close >= lastBar.open;
           let bgColor = fig.key === "volume"
@@ -2840,14 +3385,102 @@ function patchIndicatorLastValueView(chart) {
             bgColor = bgColor.slice(0, 7);
           }
 
-          const figure = this.createFigure({
-            name: "text",
-            attrs: { x, y, text, align, baseline: "middle" },
-            styles: Object.assign({}, textStyle, { backgroundColor: bgColor }),
-          });
-          if (figure) figure.draw(ctx);
+          badges.push({ y, text, bgColor });
         });
       });
+      if (!badges.length) return;
+
+      const size = Number(textStyle?.size) || 11;
+      const paddingTop = Number(textStyle?.paddingTop) || 0;
+      const paddingBottom = Number(textStyle?.paddingBottom) || 0;
+      const halfHeight = (size + paddingTop + paddingBottom) / 2 + 1;
+      const paneHeight = Number(bounding.height) || 0;
+      if (!(paneHeight > 0)) return;
+      const maxY = Math.max(halfHeight, paneHeight - halfHeight);
+
+      // The library's last-price tag is painted before this view, so reserve
+      // its slot and push our badges around it.
+      const occupied = [];
+      const candleStyles = chartStore.getStyles().candle;
+      const lastMark = candleStyles?.priceMark;
+      if (pane.getId() === "candle_pane" && lastMark?.show && lastMark.last?.show && lastMark.last.text?.show) {
+        const close = Number(dataList[lastIdx]?.close);
+        if (Number.isFinite(close)) {
+          const priceY = axis.convertToNicePixel(close);
+          // The tag height is size + both paddings; the `|| 12` only replaces a
+          // missing size, it must not swallow the paddings too.
+          const priceSize = Number(lastMark.last.text.size) || 12;
+          const priceHalf = (priceSize
+            + (Number(lastMark.last.text.paddingTop) || 0)
+            + (Number(lastMark.last.text.paddingBottom) || 0)) / 2 + 1;
+          if (Number.isFinite(priceY)) occupied.push({ top: priceY - priceHalf, bottom: priceY + priceHalf });
+        }
+      }
+
+      const isFromZero = typeof axis.isFromZero === "function" ? axis.isFromZero() : false;
+      const x = isFromZero ? RIGHT_AXIS_GUTTER : Math.max(0, (Number(bounding.width) || 0) - RIGHT_AXIS_GUTTER);
+      const align = isFromZero ? "left" : "right";
+
+      badges.sort((a, b) => a.y - b.y);
+
+      // A short pane (or one already taken by the last-price tag) can only hold
+      // a few badges. Anything beyond that would be clamped onto its neighbour,
+      // so collapse the overflow into one compact "+N" tag instead.
+      const slotHeight = 2 * halfHeight + TAG_STACK_GAP;
+      const usableRange = Math.max(0, paneHeight - 2 * halfHeight);
+      const reserved = occupied.reduce((sum, rect) => sum + (rect.bottom - rect.top) + TAG_STACK_GAP, 0);
+      const capacity = Math.max(1, Math.floor(Math.max(0, usableRange - reserved) / slotHeight) + 1);
+      let shown = badges;
+      if (badges.length > capacity) {
+        const keep = Math.max(0, capacity - 1);
+        const hidden = badges.length - keep;
+        shown = badges.slice(0, keep);
+        shown.push({
+          y: badges[keep]?.y ?? (shown[shown.length - 1]?.y ?? halfHeight) + slotHeight,
+          text: `+${hidden}`,
+          bgColor: "#64748b",
+        });
+      }
+
+      const collides = (candidate) => occupied.some(
+        (rect) => candidate + halfHeight > rect.top && candidate - halfHeight < rect.bottom
+      );
+      const scanStep = Math.max(1, halfHeight);
+      for (const badge of shown) {
+        const desired = Math.min(maxY, Math.max(halfHeight, badge.y));
+        let y = null;
+        if (!collides(desired)) {
+          y = desired;
+        } else {
+          // Walk outwards in half-tag steps: any free gap wide enough for one
+          // tag contains a grid point, so this finds it without a pixel scan.
+          for (let distance = scanStep; distance <= paneHeight + scanStep; distance += scanStep) {
+            const below = desired + distance;
+            const above = desired - distance;
+            if (below <= maxY && !collides(below)) {
+              y = below;
+              break;
+            }
+            if (above >= halfHeight && !collides(above)) {
+              y = above;
+              break;
+            }
+            if (below > maxY && above < halfHeight) break;
+          }
+        }
+        // A pane shorter than one tag + the last-price tag has no free slot:
+        // still paint the single tag (over the last-price pill) rather than
+        // dropping the only remaining read-out.
+        if (y == null) y = desired;
+        occupied.push({ top: y - halfHeight, bottom: y + halfHeight });
+
+        const figure = this.createFigure({
+          name: "text",
+          attrs: { x, y, text: badge.text, align, baseline: "middle" },
+          styles: Object.assign({}, textStyle, { backgroundColor: badge.bgColor }),
+        });
+        if (figure) figure.draw(ctx);
+      }
     };
   } catch (err) {
     console.warn("patchIndicatorLastValueView error:", err);
@@ -2926,6 +3559,12 @@ export class CandleChart {
     this.colors = chartColors(container);
     this.loaderCallback = null;
     this.subscriberCallback = null;
+    this.compactPane = null;
+    this.pixelRatioQuery = null;
+    // Natural (unstressed) height of every indicator pane, plus the height the
+    // pane sizing pass last applied, so sizes can be restored when room returns.
+    this.paneSizing = new Map();
+    this.canvasRatio = canvasPixelRatio();
 
     const kc = window.klinecharts;
     if (!kc) {
@@ -2943,6 +3582,11 @@ export class CandleChart {
     if (!this.chart) return;
 
     patchIndicatorLastValueView(this.chart);
+    patchCanvasPixelRatio(this.chart);
+    patchYAxisRightGutter(this.chart);
+    patchXAxisTickLabels(this.chart);
+    this.syncChartDensity();
+    this.watchPixelRatio();
 
     const origRemoveOverlay = this.chart.removeOverlay.bind(this.chart);
     this.chart.removeOverlay = (filter) => {
@@ -2958,18 +3602,26 @@ export class CandleChart {
       if ((indicator.name === "MA" || indicator.name === "EMA" || indicator.name === "RSI14") && paneOptions && paneOptions.id && !indicator.paneId) {
         indicator.paneId = paneOptions.id;
       }
-      return origCreateIndicator(indicator, isStack, paneOptions, callback);
+      const result = origCreateIndicator(indicator, isStack, paneOptions, callback);
+      // A new indicator pane consumes container height; re-budget the stack so
+      // the candle pane keeps its minimum.
+      this.syncPaneHeights();
+      return result;
     };
 
     const origRemoveIndicator = this.chart.removeIndicator.bind(this.chart);
     this.chart.removeIndicator = (filter, name) => {
+      let result;
       if (typeof filter === "string" && typeof name === "string") {
-        return origRemoveIndicator({ paneId: filter, name: name });
+        result = origRemoveIndicator({ paneId: filter, name: name });
+      } else if (typeof filter === "string") {
+        result = origRemoveIndicator({ name: filter });
+      } else {
+        result = origRemoveIndicator(filter);
       }
-      if (typeof filter === "string") {
-        return origRemoveIndicator({ name: filter });
-      }
-      return origRemoveIndicator(filter);
+      // Freed height goes back to the remaining panes.
+      this.syncPaneHeights();
+      return result;
     };
 
     this.chart.setTimezone("Asia/Kolkata");
@@ -3031,6 +3683,10 @@ export class CandleChart {
     } catch (_) {}
 
     this.initLevelDragging();
+    // Budget the initial pane stack too: on a short container the default
+    // 100px indicator panes would otherwise hide the candles until the first
+    // resize event.
+    this.syncPaneHeights();
   }
 
   formatCandle(c) {
@@ -3347,6 +4003,7 @@ export class CandleChart {
         extendData: {
           price: this.maxPainValue,
           color: this.colors.accent,
+          depthVisible: Boolean(this.showDepth),
         },
       });
     } catch (e) {
@@ -3523,6 +4180,8 @@ export class CandleChart {
     } else {
       this.refreshDepth();
     }
+    // The max-pain tag sits beside the ladder; keep it in step with the toggle.
+    this.refreshMaxPain();
     return this.showDepth;
   }
 
@@ -3630,6 +4289,7 @@ export class CandleChart {
             sellOrders: b.sellOrders,
             maxVol,
             step,
+            rowColors: domRowColors(this.colors?.bg),
           },
         });
         if (id) this.depthOverlayIds.push(id);
@@ -5295,6 +5955,8 @@ export class CandleChart {
     if (this.chart) {
       this.chart.setStyles(buildStyles(this.colors));
     }
+    // setStyles resets the tooltip rule, so re-apply the pane density.
+    this.syncChartDensity(true);
     this.refreshSRLines();
     this.refreshFib();
     this.refreshMaxPain();
@@ -5303,15 +5965,245 @@ export class CandleChart {
     this.refreshDepth();
   }
 
+  /**
+   * Keep indicator read-outs off the candles: the always-on VWAP/VOL legend is
+   * painted in the plot's top-left corner, where it collides with the
+   * session-high marker on phone-sized panes. The axis last-value marks still
+   * carry the numbers there, so the legend is dropped below the same 440px
+   * narrow-pane threshold used by the DOM ladder.
+   */
+  syncChartDensity(force = false) {
+    if (!this.chart || !this.container) return;
+    const width = paneWidth(this.container);
+    if (!width) return;
+    const narrow = width < NARROW_PANE_WIDTH;
+    if (!force && this.compactPane === narrow) return;
+    this.compactPane = narrow;
+    try {
+      this.chart.setStyles({ indicator: { tooltip: { showRule: narrow ? "none" : "always" } } });
+    } catch (error) {
+      console.warn("chart density sync failed", error);
+    }
+  }
+
+  /**
+   * klinecharts gives every indicator pane its requested height (100px by
+   * default) and hands whatever is left to the candle pane. On a short
+   * phone/landscape container that leaves the price pane at 0-22px, so budget
+   * the stack here: the candle pane keeps at least CANDLE_MIN_HEIGHT, indicator
+   * panes shrink up to INDICATOR_MAX_HEIGHT_RATIO of the container and are
+   * hidden when they would be unreadably small. Natural heights are restored
+   * as soon as the container is tall enough again.
+   */
+  syncPaneHeights() {
+    if (!this.chart || !this.container) return;
+    const containerHeight = Number(this.container.clientHeight) || 0;
+    // Hidden pane (mobile view switched away, display:none): leave the sizes
+    // to the next visible resize instead of writing a zero-height stack.
+    if (!(containerHeight > 0)) return;
+
+    let panes = [];
+    try {
+      panes = this.chart.getDrawPanes?.() || [];
+    } catch (_) {
+      return;
+    }
+    if (!panes.length) return;
+    const xAxisPane = this.chart.getXAxisPane?.() || null;
+    const xAxisId = xAxisPane?.getId?.() || "x_axis_pane";
+    const candlePane = panes.find((pane) => pane?.getId?.() === "candle_pane");
+    if (!candlePane) return;
+    const indicatorPanes = panes.filter((pane) => {
+      const id = pane?.getId?.();
+      return Boolean(id) && pane !== xAxisPane && id !== "candle_pane" && id !== xAxisId;
+    });
+    if (!indicatorPanes.length) return;
+    const states = [candlePane, ...indicatorPanes].map((pane) => pane.getOptions?.().state || "normal");
+    // A maximised pane already owns the whole container; do not fight it.
+    if (states.some((state) => state !== "normal")) return;
+
+    const xAxisHeight = Number(xAxisPane?.getBounding?.().height) || DEFAULT_X_AXIS_HEIGHT;
+    let separatorSize = 1;
+    try {
+      const size = Number(this.chart.getStyles?.().separator?.size);
+      if (Number.isFinite(size) && size >= 0) separatorSize = size;
+    } catch (_) {}
+    const separators = indicatorPanes.length * separatorSize;
+    const usable = Math.max(0, containerHeight - xAxisHeight - separators);
+
+    const active = new Set();
+    const entries = indicatorPanes.map((pane) => {
+      const id = pane.getId();
+      active.add(id);
+      const options = pane.getOptions?.() || {};
+      const optionHeight = Number(options.height);
+      const boundingHeight = Number(pane.getBounding?.().height);
+      let record = this.paneSizing.get(id);
+      // Indicator panes are recreated when an indicator is toggled off/on
+      // (`pane_rsi` keeps its id), so identity matters more than the id.
+      if (!record || record.pane !== pane) {
+        record = {
+          pane,
+          base: Number.isFinite(optionHeight) && optionHeight > 0 ? optionHeight : DEFAULT_INDICATOR_PANE_HEIGHT,
+          applied: Number.isFinite(boundingHeight) && boundingHeight > 0 ? boundingHeight : null,
+          minHeight: Number.isFinite(Number(options.minHeight)) ? Number(options.minHeight) : LIBRARY_PANE_MIN_HEIGHT,
+        };
+      } else if (Number.isFinite(optionHeight) && optionHeight > 0 && optionHeight !== record.applied) {
+        // The user dragged this separator (or the library changed the pane):
+        // adopt the new size as its natural height so a later restore keeps it.
+        record.base = optionHeight;
+      }
+      this.paneSizing.set(id, record);
+      return { pane, id, record, base: Math.max(1, record.base) };
+    });
+    for (const id of [...this.paneSizing.keys()]) {
+      if (!active.has(id)) this.paneSizing.delete(id);
+    }
+
+    const naturalTotal = entries.reduce((sum, entry) => sum + entry.base, 0);
+    // While the stack fits and the candle pane keeps its minimum, leave the
+    // natural heights untouched so wide/desktop geometry does not change.
+    const shrink = usable - naturalTotal < CANDLE_MIN_HEIGHT;
+    let budget = naturalTotal;
+    if (shrink) {
+      // The stack does not fit: cap the indicator share and leave the candle
+      // pane its minimum. A pane that cannot reach a usable height is hidden,
+      // not squeezed, so leftover budget flows to the panes that can.
+      budget = Math.min(
+        naturalTotal,
+        Math.floor(containerHeight * INDICATOR_MAX_HEIGHT_RATIO),
+        Math.max(0, usable - CANDLE_MIN_HEIGHT)
+      );
+    }
+
+    let remaining = Math.max(0, budget);
+    let changed = false;
+    for (const entry of entries) {
+      let target = Math.min(entry.base, remaining);
+      if (shrink && target < INDICATOR_PANE_MIN_HEIGHT) target = 0;
+      remaining = Math.max(0, remaining - target);
+      const minHeight = target > 0 ? LIBRARY_PANE_MIN_HEIGHT : 0;
+      const currentHeight = Number(entry.pane.getBounding?.().height);
+      // The pane may have been re-created (record reset) or relaid out by the
+      // library while its container was hidden, so trust the real bounding box
+      // over the last value we wrote.
+      const settled = Number.isFinite(currentHeight) && Math.abs(currentHeight - target) <= 0.5;
+      if (entry.record.applied === target && entry.record.minHeight === minHeight && settled) continue;
+      try {
+        this.chart.setPaneOptions({ id: entry.id, height: target, minHeight });
+      } catch (error) {
+        console.warn("chart pane sizing failed", error);
+        return;
+      }
+      entry.record.applied = target;
+      entry.record.minHeight = minHeight;
+      changed = true;
+    }
+    if (!changed) return;
+    // `setPaneOptions` only triggers a layout for height > 0, and a hidden
+    // pane's height is 0, so ask for one explicit layout for the whole stack.
+    try {
+      this.chart.layout?.({
+        measureHeight: true,
+        measureWidth: true,
+        update: true,
+        buildYAxisTick: true,
+        forceBuildYAxisTick: true,
+      });
+    } catch (error) {
+      console.warn("chart pane layout failed", error);
+    }
+  }
+
+  /** Re-allocate the canvas backing stores when the device pixel ratio changes. */
+  watchPixelRatio() {
+    this.disposePixelRatioWatch();
+    if (typeof window === "undefined") return;
+    const onChange = () => {
+      // Re-arm for the new ratio, then resize on the next frame so the layout
+      // has already settled at the new device pixel size.
+      this.watchPixelRatio();
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => this.resize());
+      } else {
+        this.resize();
+      }
+    };
+    let query = null;
+    if (typeof window.matchMedia === "function") {
+      // The query must use the raw ratio: a 3.75dppx phone never matches a
+      // `(resolution: 3dppx)` query built from the capped bitmap ratio.
+      query = window.matchMedia(`(resolution: ${rawDevicePixelRatio()}dppx)`);
+      try {
+        if (typeof query.addEventListener === "function") query.addEventListener("change", onChange);
+        else if (typeof query.addListener === "function") query.addListener(onChange);
+      } catch (_) {
+        query = null;
+      }
+    }
+    // Media queries miss a DPR change that lands while the page is idle (and
+    // every emulated viewport), so poll the cheap comparison as a safety net.
+    const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (this.pixelRatioTimerRatio !== canvasPixelRatio()) {
+        this.pixelRatioTimerRatio = canvasPixelRatio();
+        this.resize();
+      }
+    }, 1000);
+    this.pixelRatioTimerRatio = canvasPixelRatio();
+    this.pixelRatioQuery = { query, onChange, timer };
+  }
+
+  disposePixelRatioWatch() {
+    const current = this.pixelRatioQuery;
+    if (!current) return;
+    this.pixelRatioQuery = null;
+    try {
+      if (current.timer) window.clearInterval(current.timer);
+      if (current.query?.removeEventListener) current.query.removeEventListener("change", current.onChange);
+      else if (current.query?.removeListener) current.query.removeListener(current.onChange);
+    } catch (_) {}
+  }
+
+  /**
+   * Re-read CSS box × pixel ratio for every canvas, but only when the effective
+   * ratio actually changed: `chart.resize()` already re-allocates the bitmaps
+   * of panes whose box changed, so forcing every frame would reallocate all
+   * canvases on each resize for nothing.
+   */
+  resizeCanvases() {
+    const ratio = canvasPixelRatio();
+    const ratioChanged = this.canvasRatio !== ratio;
+    this.canvasRatio = ratio;
+    if (!ratioChanged) return;
+    for (const canvas of chartCanvasWidgets(this.chart)) {
+      try {
+        canvas._scheduleDraw?.(true);
+      } catch (_) {}
+    }
+  }
+
   schedule() {
-    if (this.chart) this.chart.resize();
+    this.syncChartDensity();
+    if (this.chart) {
+      this.chart.resize();
+      this.syncPaneHeights();
+      this.resizeCanvases();
+    }
   }
 
   resize() {
-    if (this.chart) this.chart.resize();
+    this.syncChartDensity();
+    if (this.chart) {
+      this.chart.resize();
+      this.syncPaneHeights();
+      this.resizeCanvases();
+    }
   }
 
   destroy() {
+    this.disposePixelRatioWatch();
+    this.paneSizing?.clear();
     if (this._depthTimer) {
       clearTimeout(this._depthTimer);
       this._depthTimer = null;

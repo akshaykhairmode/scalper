@@ -9,6 +9,20 @@ import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff
 const $: any = (id: string) => document.getElementById(id);
 const $$: any = (selector: string, root: any = document) => [...root.querySelectorAll(selector)];
 
+// Some read-outs are deliberately clipped by CSS (nowrap + ellipsis) on phones.
+// Mirror the string we are about to render into `title` (and optionally a
+// separate accessible name) so the full value stays reachable. The text is
+// already in hand at every call site, so this adds no layout read, observer or
+// timer. Always re-applied on render so it cannot go stale.
+function setClippedText(el: any, text: string, ariaLabel?: string) {
+  if (!el) return;
+  if (el.textContent !== text) el.textContent = text;
+  if (el.title !== text) el.title = text;
+  if (ariaLabel !== undefined && el.getAttribute("aria-label") !== ariaLabel) {
+    el.setAttribute("aria-label", ariaLabel);
+  }
+}
+
 // Native <dialog> helpers. Fall back to the hidden attribute for environments
 // where showModal() is unavailable.
 function openDialog(id: string) {
@@ -2612,7 +2626,7 @@ function renderPanePCR(pane, option, chainPCR, expiryLabel) {
     valEl.textContent = "—";
     valEl.className = "";
     chip.title = "Select a strike to view PCR";
-    if (subEl) subEl.textContent = "select a strike";
+    setClippedText(subEl, "select a strike");
     return;
   }
 
@@ -2652,13 +2666,13 @@ function renderPanePCR(pane, option, chainPCR, expiryLabel) {
     if (subEl) {
       const strikePart = isStrike ? ` · Strike PCR ${displayVal.toFixed(2)}` : "";
       const totalPart = totalPCRVal != null ? ` · Total PCR ${totalPCRVal.toFixed(2)}` : "";
-      subEl.textContent = `${expiryLabel} · ${S.timeframe}${strikePart}${totalPart}`;
+      setClippedText(subEl, `${expiryLabel} · ${S.timeframe}${strikePart}${totalPart}`);
     }
   } else {
     valEl.textContent = "—";
     valEl.className = "";
     chip.title = "PCR quote data loading…";
-    if (subEl) subEl.textContent = `${expiryLabel} · ${S.timeframe}`;
+    setClippedText(subEl, `${expiryLabel} · ${S.timeframe}`);
   }
 }
 
@@ -3713,7 +3727,7 @@ function updateSpotMeta() {
     if (Number.isFinite(S.thetaMeta.peTheta)) items.push(`PE ${fmtTheta(S.thetaMeta.peTheta)}`);
     if (items.length) text += ` · θ/day ${items.join(" / ")}`;
   }
-  sub.textContent = text;
+  setClippedText(sub, text);
 }
 
 function refreshThetaSeries(full = true) {
@@ -4069,7 +4083,7 @@ function renderPaneHeaders() {
   const spot = S.spots.get(S.activeIndex);
   const chainPCR = computePCR();
 
-  $("ce-title").textContent = ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL";
+  setClippedText($("ce-title"), ce ? `${S.activeIndex} ${fmtStrike(ce.strike)} CE` : "CALL");
   $("ce-ltp").textContent = ce ? fmt(ce.ltp) : "—";
   $("ce-change").textContent = ce ? `${fmtSigned(ce.change)} (${fmtSigned(ce.changePct)}%)` : "—";
   $("ce-change").className = "pane-change " + directionClass(ce?.changePct);
@@ -4077,7 +4091,7 @@ function renderPaneHeaders() {
   renderPanePCR("ce", ce, chainPCR, expiryLabel);
 
   const spotTitle = $("spot-title");
-  if (spotTitle) spotTitle.textContent = spot?.displayName || S.activeIndex || "UNDERLYING";
+  if (spotTitle) setClippedText(spotTitle, spot?.displayName || S.activeIndex || "UNDERLYING");
   updateSpotMeta();
   const spotLtp = $("spot-ltp");
   if (spotLtp) spotLtp.textContent = spot?.ltp ? fmt(spot.ltp) : "—";
@@ -4087,7 +4101,7 @@ function renderPaneHeaders() {
     spotChange.className = "pane-change " + directionClass(spot?.changePct);
   }
 
-  $("pe-title").textContent = pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT";
+  setClippedText($("pe-title"), pe ? `${S.activeIndex} ${fmtStrike(pe.strike)} PE` : "PUT");
   $("pe-ltp").textContent = pe ? fmt(pe.ltp) : "—";
   $("pe-change").textContent = pe ? `${fmtSigned(pe.change)} (${fmtSigned(pe.changePct)}%)` : "—";
   $("pe-change").className = "pane-change " + directionClass(pe?.changePct);
@@ -4213,7 +4227,7 @@ function renderSpotPicker(force = false) {
   const dot = $("spot-current-dot");
   if (dot) dot.className = `spot-live-dot ${spotStatus(S.activeIndex, active).toLowerCase()}`;
   const nameEl = $("spot-current-name");
-  if (nameEl) nameEl.textContent = active?.displayName || S.activeIndex || "—";
+  if (nameEl) setClippedText(nameEl, active?.displayName || S.activeIndex || "—");
   const currentEl = $("spot-current");
   if (currentEl) {
     // The index name ellipsizes on narrow phones; keep the full label reachable.
@@ -4224,7 +4238,7 @@ function renderSpotPicker(force = false) {
   if (priceEl) priceEl.textContent = active ? fmt(active.ltp) : "—";
   const changeEl = $("spot-current-change");
   if (changeEl) {
-    changeEl.textContent = active ? `${fmtSigned(active.change)} · ${fmtSigned(active.changePct)}%` : "—";
+    setClippedText(changeEl, active ? `${fmtSigned(active.change)} · ${fmtSigned(active.changePct)}%` : "—");
     changeEl.className = `spot-current-change ${active ? directionClass(active.changePct ?? active.change) : ""}`;
   }
 
@@ -4245,7 +4259,7 @@ function renderSpotPicker(force = false) {
     const activeBadge = row.querySelector("[data-spot-active]");
     if (activeBadge) activeBadge.hidden = !selected;
     const rowName = row.querySelector(".spot-row-name");
-    if (rowName) rowName.textContent = spot?.displayName || key;
+    if (rowName) setClippedText(rowName, spot?.displayName || key);
     const rowPrice = row.querySelector("[data-spot-price]");
     if (rowPrice) rowPrice.textContent = spot ? fmt(spot.ltp) : "—";
     const rowChange = row.querySelector("[data-spot-change]");
@@ -4659,13 +4673,18 @@ function renderOrderPad() {
       const risk = assumedSlPts * shares;
       if (pct > 0 && margin !== null && risk > (margin * pct) / 100) {
         const riskPct = (risk / margin) * 100;
+        const riskText = `⚠ SL ${riskPct.toFixed(2)}% > ${pct.toFixed(2)}%`;
+        // The chip is capped at 100px and clipped on phones, so carry the clipped
+        // figures in the tooltip and a fuller sentence in the accessible name.
         riskEl.hidden = false;
-        riskEl.textContent = `⚠ SL ${riskPct.toFixed(2)}% > ${pct.toFixed(2)}%`;
-        riskEl.title = `Est. SL risk ₹${fmt(risk, 0)} (${assumedSlPts.toFixed(2)} pts × ${shares} shares) exceeds ${pct.toFixed(2)}% of available margin (₹${fmt(margin, 0)}). Informational only; orders are not blocked.`;
+        riskEl.textContent = riskText;
+        riskEl.title = `${riskText}\nEst. SL risk ₹${fmt(risk, 0)} (${assumedSlPts.toFixed(2)} pts × ${shares} shares) exceeds ${pct.toFixed(2)}% of available margin (₹${fmt(margin, 0)}). Informational only; orders are not blocked.`;
+        riskEl.setAttribute("aria-label", `Stop-loss risk ${riskPct.toFixed(2)}% of available margin, above the ${pct.toFixed(2)}% warning threshold. Estimated ₹${fmt(risk, 0)}. Informational only; orders are not blocked.`);
       } else {
         riskEl.hidden = true;
         riskEl.textContent = "";
         riskEl.title = "";
+        riskEl.removeAttribute("aria-label");
       }
     }
 
@@ -6839,7 +6858,7 @@ function openChartQuickOrder(pane, price, x, y) {
   const widget = $("chart-quick-order");
   if (!widget) return;
 
-  $("cqo-title").textContent = `${S.activeIndex} ${fmtStrike(option.strike)} ${type}`;
+  setClippedText($("cqo-title"), `${S.activeIndex} ${fmtStrike(option.strike)} ${type}`);
   $("cqo-price").value = price.toFixed(2);
   $("cqo-buy-price").textContent = `@ ₹${price.toFixed(2)}`;
   $("cqo-sell-price").textContent = `@ ₹${price.toFixed(2)}`;
