@@ -90,29 +90,32 @@ export function emaSeries(values: number[], period: number): number[] {
  * Session-anchored Volume Weighted Average Price.
  *
  * Uses typical price ((high + low + close) / 3) and resets the cumulative
- * totals whenever `sessionKey` changes. Bars without traded volume are skipped;
- * a session with no volume at all produces NaN values.
+ * totals whenever `sessionKey` changes. Bars without traded volume are not
+ * accumulated; the previous VWAP is carried forward. The first bar of a new
+ * session returns NaN so chart lines break instead of connecting across the
+ * overnight gap.
  */
 export function vwapSeries(
   candles: IndicatorCandle[],
-  sessionKey: (time: number) => string = (time) => {
-    const ms = time > 1e11 ? time : time * 1000;
-    return new Date(ms).toISOString().slice(0, 10);
-  },
+  sessionKey: (time: number) => string | number,
 ): number[] {
   const n = Array.isArray(candles) ? candles.length : 0;
   const out = new Array(n).fill(NaN);
-  let currentSession = "";
+  let currentSession: string | number = "";
   let cumulativePV = 0;
   let cumulativeVolume = 0;
+  let sessionStarted = false;
 
   for (let i = 0; i < n; i++) {
     const candle = candles[i];
     if (!candle || !Number.isFinite(candle.time)) continue;
 
     const key = sessionKey(candle.time);
+    let breakBefore = false;
     if (key !== currentSession) {
+      breakBefore = sessionStarted;
       currentSession = key;
+      sessionStarted = true;
       cumulativePV = 0;
       cumulativeVolume = 0;
     }
@@ -130,7 +133,7 @@ export function vwapSeries(
       cumulativePV += typical * volume;
       cumulativeVolume += volume;
     }
-    if (cumulativeVolume > 0) {
+    if (cumulativeVolume > 0 && !breakBefore) {
       out[i] = cumulativePV / cumulativeVolume;
     }
   }

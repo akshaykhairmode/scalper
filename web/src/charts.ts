@@ -2,6 +2,7 @@ import * as Patterns from "./chart/patterns";
 import * as Indicators from "./chart/indicators";
 import { calculateFibLevels } from "./chart/fibonacci";
 import { buildVolumeProfile, suggestVolumeRanges } from "./chart/volumeProfile";
+import { istSessionKey } from "./chart/session";
 
 // Minimum gap between volume-profile rebuilds while ticks stream in.
 const VOLUME_PROFILE_REFRESH_MS = 5000;
@@ -25,6 +26,8 @@ const chartColors = (element) => {
 
 const toChartTimestamp = (time) => (time > 1e11 ? time : time * 1000);
 
+const VWAP_COLOR = "#8b5cf6";
+
 const istDayFormatter = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -33,10 +36,6 @@ const istDayKey = (time) => {
   const pick = (type) => parts.find((part) => part.type === type)?.value || "";
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 };
-
-// IST has a fixed +05:30 offset (no DST). This avoids Intl formatting on every
-// indicator recalculation, which runs for each live tick.
-const istSessionKey = (time) => new Date(toChartTimestamp(time) + 19_800_000).toISOString().slice(0, 10);
 
 const formatVolume = (val) => {
   if (!Number.isFinite(val) || val <= 0) return "0";
@@ -2627,9 +2626,9 @@ function registerCustomIndicators() {
     precision: 0,
     shouldFormatBigNumber: true,
     figures: [
-      { key: "ce", title: "CE decay: ", type: "line", styles: { color: "#4c8dff", size: 1.5 } },
-      { key: "pe", title: "PE decay: ", type: "line", styles: { color: "#ff9f43", size: 1.5 } },
-      { key: "zero", title: null, type: "line", styles: { color: "rgba(130,146,162,0.35)", size: 1 } },
+      { key: "ce", title: "CE decay: ", type: "line", styles: () => ({ color: "#4c8dff", size: 1.5 }) },
+      { key: "pe", title: "PE decay: ", type: "line", styles: () => ({ color: "#ff9f43", size: 1.5 }) },
+      { key: "zero", title: null, type: "line", styles: () => ({ color: "rgba(130,146,162,0.35)", size: 1 }) },
     ],
     calc: function(dataList) {
       return (dataList || []).map((candle) => ({
@@ -2649,9 +2648,9 @@ function registerCustomIndicators() {
     maxValue: 100,
     figures: [
       { key: "rsi", title: "RSI: ", type: "line" },
-      { key: "overbought", title: null, type: "line", styles: { color: "rgba(240,90,90,0.45)", size: 1 } },
-      { key: "mid", title: null, type: "line", styles: { color: "rgba(208,215,222,0.5)", size: 1 } },
-      { key: "oversold", title: null, type: "line", styles: { color: "rgba(41,179,96,0.45)", size: 1 } },
+      { key: "overbought", title: null, type: "line", styles: () => ({ color: "rgba(240,90,90,0.45)", size: 1 }) },
+      { key: "mid", title: null, type: "line", styles: () => ({ color: "rgba(208,215,222,0.5)", size: 1 }) },
+      { key: "oversold", title: null, type: "line", styles: () => ({ color: "rgba(41,179,96,0.45)", size: 1 }) },
     ],
     calc: function(dataList, indicator) {
       const period = Number(indicator?.calcParams?.[0]) || 14;
@@ -2677,19 +2676,19 @@ function registerCustomIndicators() {
     shortName: "",
     calcParams: [],
     precision: 2,
+    styles: { lines: [{ color: VWAP_COLOR, size: 1.5 }] },
     figures: [
-      { key: "vwap", title: "VWAP: ", type: "line", styles: () => ({ color: "#c084fc", size: 1.5 }) },
+      { key: "vwap", title: "VWAP: ", type: "line", styles: () => ({ color: VWAP_COLOR, size: 1.5 }) },
     ],
     calc: function(dataList) {
       const candles = (dataList || []).map((candle) => ({
         time: candle?.timestamp,
-        open: candle?.open,
         high: candle?.high,
         low: candle?.low,
         close: candle?.close,
         volume: candle?.volume,
       }));
-      const series = Indicators.vwapSeries(candles, (time) => istSessionKey(time));
+      const series = Indicators.vwapSeries(candles, istSessionKey);
       return series.map((value) => ({
         vwap: Number.isFinite(value) ? value : null,
       }));
@@ -2766,7 +2765,7 @@ function patchIndicatorLastValueView(chart) {
           const isUp = lastBar && lastBar.close >= lastBar.open;
           let bgColor = fig.key === "volume"
             ? (isUp ? (styles.bars?.[0]?.upColor || "#35c46a") : (styles.bars?.[0]?.downColor || "#ff5d5d"))
-            : (styles.lines?.[figIdx]?.color || ind.styles?.lines?.[figIdx]?.color || "#2196f3");
+            : (ind.styles?.lines?.[figIdx]?.color || styles.lines?.[figIdx]?.color || "#2196f3");
 
           // Solid color on the axis badge
           if (typeof bgColor === "string" && bgColor.startsWith("#") && bgColor.length === 9) {
@@ -3048,7 +3047,7 @@ export class CandleChart {
     if (!this.chart) return;
     try {
       this.chart.createIndicator(
-        { name: "VWAP", calcParams: [], paneId: "candle_pane" },
+        { id: "vwap", name: "VWAP", calcParams: [], paneId: "candle_pane" },
         true,
         { id: "candle_pane" }
       );

@@ -1,6 +1,7 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
 import { formatPrice, formatRange } from "./chart/volumeProfile";
+import { DAY_MS, IST_OFFSET_MS } from "./chart/session";
 import { generateQRCodeSVG } from "./utils/qrcode";
 import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
@@ -1289,13 +1290,25 @@ function chartLabelForPane(pane) {
   return pane === "ce" ? "CALL" : pane === "pe" ? "PUT" : "UNDERLYING";
 }
 
+function vwapPreferenceExplicitlySet(pane) {
+  const key = pane === "underlying" || pane === "spot" ? "underlying" : pane;
+  if (key !== "ce" && key !== "pe" && key !== "underlying") return false;
+  try {
+    return localStorage.getItem(`scalper-show-vwap-${key}`) !== null;
+  } catch (_) {
+    return false;
+  }
+}
+
 function updateChartSettingsButtonState() {
   for (const button of $$('button[data-chart-action="settings"]')) {
     const pane = button.dataset.chart;
     const chart = chartForPane(pane);
     if (!chart) continue;
     const active = Boolean(
-      chart.showEMA || chart.showVWAP || chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
+      chart.showEMA ||
+      (chart.showVWAP && vwapPreferenceExplicitlySet(pane)) ||
+      chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
       chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
       chart.showMomentum || chart.showTheta || chart.showVolumeProfile ||
       (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
@@ -1322,18 +1335,22 @@ function syncChartSettingsMenu(pane) {
   set("cs-vwap", chart.showVWAP);
   const vwapBox = $("cs-vwap");
   const vwapLabel = $("cs-vwap-label");
+  const vwapNote = $("cs-vwap-note");
   const spotPane = pane === "underlying" || pane === "spot";
+  const vwapAvailable = !spotPane || Boolean(activeCommodity());
+  const vwapTitle = vwapAvailable
+    ? "Session VWAP from chart candles (typical price × volume)."
+    : "VWAP requires traded volume; the cash index has no volume data.";
   if (vwapBox) {
-    vwapBox.disabled = spotPane;
-    vwapBox.title = spotPane
-      ? "VWAP requires traded volume; the spot index has no volume data."
-      : "Session volume weighted average price for this option leg.";
+    vwapBox.disabled = !vwapAvailable;
+    vwapBox.title = vwapTitle;
   }
   if (vwapLabel) {
-    vwapLabel.style.opacity = spotPane ? "0.5" : "";
-    vwapLabel.title = spotPane
-      ? "VWAP requires traded volume; the spot index has no volume data."
-      : "Session volume weighted average price for this option leg.";
+    vwapLabel.style.opacity = vwapAvailable ? "" : "0.5";
+    vwapLabel.title = vwapTitle;
+  }
+  if (vwapNote) {
+    vwapNote.hidden = vwapAvailable;
   }
   set("cs-rsi", chart.showRSI);
   set("cs-divergence", chart.showDivergence);
@@ -1395,15 +1412,15 @@ function buildCharts() {
   const savedMACE = localStorage.getItem("scalper-ma-ce") === "true";
   const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
   const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
-  // VWAP needs traded volume. It is on by default for the option legs and
-  // unavailable for the spot index, whose candles carry no volume.
-  const savedVWAPFor = (pane) => {
+  // VWAP needs traded volume. It is on by default for the option legs and for
+  // MCX commodities; the cash-index spot pane has no volume.
+  const savedVWAPFor = (pane, fallback) => {
     const value = localStorage.getItem(`scalper-show-vwap-${pane}`);
-    return value === null ? pane !== "underlying" : value === "true";
+    return value === null ? fallback : value === "true";
   };
-  const savedVWAPCE = savedVWAPFor("ce");
-  const savedVWAPUnderlying = false;
-  const savedVWAPPE = savedVWAPFor("pe");
+  const savedVWAPCE = savedVWAPFor("ce", true);
+  const savedVWAPUnderlying = savedVWAPFor("underlying", Boolean(activeCommodity()));
+  const savedVWAPPE = savedVWAPFor("pe", true);
   const savedDOM = localStorage.getItem("scalper-show-dom") !== "false";
   const savedRSI = localStorage.getItem("scalper-show-rsi") === "true";
   const savedDivergence = localStorage.getItem("scalper-show-divergence") === "true";
@@ -2873,8 +2890,9 @@ function toggleChartEMA(pane, forceState?) {
 }
 
 function toggleChartVWAP(pane, forceState?) {
-  if (pane === "underlying" || pane === "spot") {
-    toast("VWAP requires traded volume; the spot index has no volume data.", "warn", 4000);
+  const spotPane = pane === "underlying" || pane === "spot";
+  if (spotPane && !activeCommodity()) {
+    toast("VWAP requires traded volume; the cash index has no volume data.", "warn", 4000);
     return false;
   }
   const chart = chartForPane(pane);
@@ -2882,7 +2900,7 @@ function toggleChartVWAP(pane, forceState?) {
   const nextState = chart.toggleVWAP(forceState);
   const label = chartLabelForPane(pane);
   try {
-    localStorage.setItem(`scalper-show-vwap-${pane}`, String(nextState));
+    localStorage.setItem(`scalper-show-vwap-${spotPane ? "underlying" : pane}`, String(nextState));
   } catch (_) {}
   updateChartSettingsButtonState();
   toast(nextState ? `VWAP enabled (${label})` : `VWAP hidden (${label})`, "ok", 1500);
@@ -3627,7 +3645,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
   const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
   const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
   const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
-  const localDayStart = Math.floor((time + 19800) / 86400) * 86400 - 19800;
+  const localDayStart = Math.floor((time + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
   const sessionStart = localDayStart + openSeconds;
   let bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
   const value = Number(price);
@@ -9015,6 +9033,16 @@ async function switchIndex(key) {
   if (!S.session?.authenticated) return;
   const requestID = ++S.chainRequestID;
   S.activeIndex = key;
+  const spotChart = S.charts.spot;
+  if (spotChart) {
+    if (activeCommodity()) {
+      let savedVWAP: string | null = null;
+      try { savedVWAP = localStorage.getItem("scalper-show-vwap-underlying"); } catch (_) {}
+      spotChart.toggleVWAP(savedVWAP === null ? true : savedVWAP === "true");
+    } else {
+      spotChart.toggleVWAP(false);
+    }
+  }
   S.expiry = "";
   S.expiries = [];
   S.chain = [];
