@@ -26,6 +26,7 @@
     <div class="header-right">
       <a href="/logs" target="_blank" rel="noopener noreferrer" class="btn ghost" id="settings-logs-btn" title="Open live server logs in a new tab">📜 Live Logs</a>
       <button type="button" class="btn ghost" id="settings-install-btn" title="Install Scalper as an app">⬇ Install App</button>
+      <button type="button" class="btn ghost" id="revert-btn" title="Discard unsaved changes and reload the last saved configuration">Revert</button>
       <button type="button" class="btn ghost" id="validate-btn" title="Validate configuration without saving">Validate</button>
       <button type="button" class="btn primary" id="save-btn" title="Save configuration to disk">
         <span class="btn-spinner" id="save-spinner" hidden></span>
@@ -64,9 +65,9 @@
         <span class="tab-icon">📱</span>
         <span class="tab-title">Passkeys &amp; Devices</span>
       </button>
-      <button type="button" class="tab-btn" role="tab" id="tab-yaml" aria-selected="false" aria-controls="panel-yaml">
-        <span class="tab-icon">⚙️</span>
-        <span class="tab-title">Raw YAML / Advanced</span>
+      <button type="button" class="tab-btn" role="tab" id="tab-app" aria-selected="false" aria-controls="panel-app">
+        <span class="tab-icon">🖥️</span>
+        <span class="tab-title">Application &amp; Access</span>
       </button>
     </nav>
 
@@ -148,6 +149,13 @@
                   <span class="form-help">Shows a confirmation before moving or removing entry, TP or SL lines directly on the chart. Disable for faster one-drag changes.</span>
                 </span>
               </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.market_protection">
+              <label for="f-market-protection">Market Order Protection (points)</label>
+              <input type="number" id="f-market-protection" min="0" step="1">
+              <span class="form-help">Price-protection band applied to market orders. 0 disables it. Reserved for broker-side protection.</span>
               <span class="field-error"></span>
             </div>
           </div>
@@ -304,6 +312,30 @@
               </label>
               <span class="field-error"></span>
             </div>
+
+            <div class="form-group checkbox-group" data-field="trading.bracket.exchange_stop.place_on_partial_fill">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-exchange-stop-partial-fill">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Place Backstop on Partial Fill</strong>
+                  <span class="form-help">Places the exchange stop as soon as any quantity fills instead of waiting for the complete entry.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="trading.bracket.exchange_stop.allow_chart_edit">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-exchange-stop-allow-chart-edit">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Allow Chart-Level Edits</strong>
+                  <span class="form-help">Permits dragging entry, TP or SL lines on the chart while an exchange backstop is active. Off is safest.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
           </div>
         </div>
 
@@ -391,15 +423,15 @@
           <div class="form-grid">
             <div class="form-group" data-field="trading.session.open">
               <label for="f-session-open">Market Open Time (IST)</label>
-              <input type="text" id="f-session-open" placeholder="09:15" pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$">
-              <span class="form-help">24-hour format HH:MM (e.g. 09:15).</span>
+              <input type="time" id="f-session-open" required>
+              <span class="form-help">24-hour IST time (e.g. 09:15).</span>
               <span class="field-error"></span>
             </div>
 
             <div class="form-group" data-field="trading.session.close">
               <label for="f-session-close">Market Close Time (IST)</label>
-              <input type="text" id="f-session-close" placeholder="15:30" pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$">
-              <span class="form-help">24-hour format HH:MM (e.g. 15:30).</span>
+              <input type="time" id="f-session-close" required>
+              <span class="form-help">24-hour IST time (e.g. 15:40).</span>
               <span class="field-error"></span>
             </div>
 
@@ -438,6 +470,75 @@
               </label>
               <span class="field-error"></span>
             </div>
+
+            <div class="form-group" data-field="trading.margin.refresh_ms">
+              <label for="f-margin-refresh">Margin Refresh Interval</label>
+              <div class="input-unit">
+                <input type="number" id="f-margin-refresh" min="1000" step="500">
+                <span class="unit-suffix">ms</span>
+              </div>
+              <span class="form-help">How often the available-margin figure is refreshed from the broker (&ge; 1000ms).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.margin.preview_debounce_ms">
+              <label for="f-margin-debounce">Preview Debounce</label>
+              <div class="input-unit">
+                <input type="number" id="f-margin-debounce" min="100" step="50">
+                <span class="unit-suffix">ms</span>
+              </div>
+              <span class="form-help">Delay before firing a margin preview while the user types quantity or price (&ge; 100ms).</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Payoff &amp; Risk View</h2>
+            <p class="card-desc">Controls the option payoff chart and the pre-trade risk preview.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group checkbox-group" data-field="trading.risk_view.enabled">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-risk-view-enabled">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Enable Payoff Chart</strong>
+                  <span class="form-help">Shows the payoff curve for the selected option legs.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="trading.risk_view.include_preview">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-risk-view-preview">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Include Preview Legs</strong>
+                  <span class="form-help">Adds the order-pad preview as a leg on the payoff chart before it is submitted.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.risk_view.payoff_range_pct">
+              <label for="f-payoff-range">Payoff Range</label>
+              <div class="input-unit">
+                <input type="number" id="f-payoff-range" min="1" max="100" step="1">
+                <span class="unit-suffix">%</span>
+              </div>
+              <span class="form-help">Underlying move covered on each side of the payoff chart (1–100%).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="trading.risk_view.payoff_points">
+              <label for="f-payoff-points">Payoff Sample Points</label>
+              <input type="number" id="f-payoff-points" min="20" max="1000" step="10">
+              <span class="form-help">Number of points used to draw the payoff curve (20–1000).</span>
+              <span class="field-error"></span>
+            </div>
           </div>
         </div>
       </section>
@@ -457,6 +558,13 @@
                 <option value="poll">poll (REST polling only)</option>
               </select>
               <span class="form-help">Websocket provides sub-second live ticks; poll uses periodic REST snapshots.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="market.hsm_url" style="grid-column: 1 / -1;">
+              <label for="f-hsm-url">HSM Feed URL Override</label>
+              <input type="url" id="f-hsm-url" placeholder="wss://...kotaksecurities.com/...">
+              <span class="form-help">Optional SFeed WebSocket endpoint. Leave empty to use Kotak's resolved default. Must be wss on a kotaksecurities.com host (local ws is allowed for testing).</span>
               <span class="field-error"></span>
             </div>
 
@@ -506,6 +614,18 @@
               <label for="f-chain-batch-size">Chain Quotes Batch Size</label>
               <input type="number" id="f-chain-batch-size" min="1" max="500" step="10">
               <span class="form-help">Number of strikes per REST batch call (1 to 500).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="market.chain.visible_priority">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-visible-priority">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Prioritise Visible Strikes</strong>
+                  <span class="form-help">Refreshes strikes currently on screen before the background full-chain poll.</span>
+                </span>
+              </label>
               <span class="field-error"></span>
             </div>
 
@@ -560,6 +680,21 @@
               <label for="f-vix-scrip">Scrip Master Name</label>
               <input type="text" id="f-vix-scrip" placeholder="INDIA VIX">
               <span class="form-help">pSymbolName in Scrip Master (defaults to Symbol).</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Trading Holidays</h2>
+            <p class="card-desc">Exchange holidays in IST. Used to skip holiday sessions in scheduling, background collection and day boundaries.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="market.holidays">
+              <label for="f-holidays">Holiday Dates</label>
+              <textarea id="f-holidays" rows="4" placeholder="2026-10-02&#10;2026-10-21"></textarea>
+              <span class="form-help">One YYYY-MM-DD date per line. Leave empty when there are no holidays.</span>
               <span class="field-error"></span>
             </div>
           </div>
@@ -659,9 +794,11 @@
             </div>
 
             <div class="form-group" style="grid-column: 1 / -1;" data-field="market.background_collection.underlyings">
-              <label for="f-bg-underlyings">Underlyings</label>
-              <input type="text" id="f-bg-underlyings" placeholder="NIFTY, SENSEX, CRUDEOIL">
-              <span class="form-help">Comma-separated keys from the configured indices/commodities.</span>
+              <label>Underlyings</label>
+              <span class="form-help">Select the indices and commodities that the TOTP-free poller keeps warm.</span>
+              <div id="bg-underlyings-list" class="scanned-underlyings-grid">
+                <!-- Dynamically populated from the configured indices and commodities -->
+              </div>
               <span class="field-error"></span>
             </div>
 
@@ -686,6 +823,145 @@
                   <span class="form-help">Persist the browser's last spot/CE/PE selection so polling resumes after a restart.</span>
                 </span>
               </label>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Chart History &amp; Timeframes</h2>
+            <p class="card-desc">Candle aggregation, available chart periods and local history retention.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="charts.base_timeframe">
+              <label for="f-base-timeframe">Base Candle Interval</label>
+              <select id="f-base-timeframe">
+                <option value="1m">1 minute</option>
+              </select>
+              <span class="form-help">The aggregator always stores 1-minute base candles; higher timeframes are derived.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="charts.persist">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-charts-persist">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Persist Candle History</strong>
+                  <span class="form-help">Stores candles in SQLite so history survives restarts.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="charts.default_timeframe">
+              <label for="f-default-timeframe">Default Timeframe</label>
+              <select id="f-default-timeframe">
+                <option value="1m">1 minute</option>
+                <option value="3m">3 minutes</option>
+                <option value="5m">5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="1h">1 hour</option>
+                <option value="4h">4 hours</option>
+              </select>
+              <span class="form-help">Chart period opened by default in the terminal.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="charts.retention_days">
+              <label for="f-chart-retention">History Retention</label>
+              <div class="input-unit">
+                <input type="number" id="f-chart-retention" min="1" max="3650" step="1">
+                <span class="unit-suffix">days</span>
+              </div>
+              <span class="form-help">Candles older than this are pruned from local storage (1–3650 days).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="charts.timeframes">
+              <label>Available Timeframes</label>
+              <span class="form-help">Periods offered in the chart toolbar. The default timeframe must be included.</span>
+              <div class="scanned-underlyings-grid" id="chart-timeframes-list">
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="1m">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>1 minute</strong><span class="form-help">Scalping</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="3m">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>3 minutes</strong><span class="form-help">Fast intraday</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="5m">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>5 minutes</strong><span class="form-help">Default intraday</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="15m">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>15 minutes</strong><span class="form-help">Swing intraday</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="1h">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>1 hour</strong><span class="form-help">Multi-day</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="4h">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>4 hours</strong><span class="form-help">Positional</span></span>
+                </label>
+              </div>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Scrip Master</h2>
+            <p class="card-desc">Instrument master refresh time and the exchange segments downloaded at refresh.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="scrip.refresh_at">
+              <label for="f-scrip-refresh">Daily Refresh Time (IST)</label>
+              <input type="time" id="f-scrip-refresh" required>
+              <span class="form-help">Time each trading day when the Scrip Master is refreshed.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="scrip.segments">
+              <label>Downloaded Segments</label>
+              <span class="form-help">All segments used by your indices, commodities and India VIX must stay selected.</span>
+              <div class="scanned-underlyings-grid" id="scrip-segments-list">
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="nse_fo">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>nse_fo</strong><span class="form-help">NSE derivatives</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="bse_fo">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>bse_fo</strong><span class="form-help">BSE derivatives</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="nse_cm">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>nse_cm</strong><span class="form-help">NSE cash / spot indices</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="bse_cm">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>bse_cm</strong><span class="form-help">BSE cash / spot indices</span></span>
+                </label>
+                <label class="checkbox-label scanned-underlying-item">
+                  <input type="checkbox" value="mcx_fo">
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-text"><strong>mcx_fo</strong><span class="form-help">MCX commodities</span></span>
+                </label>
+              </div>
               <span class="field-error"></span>
             </div>
           </div>
@@ -1067,26 +1343,124 @@
         </div>
       </section>
 
-      <!-- TAB 5: Raw YAML Editor / Advanced -->
-      <section class="tab-panel" id="panel-yaml" role="tabpanel" aria-labelledby="tab-yaml">
-        <div class="card editor-card">
-          <div class="editor-toolbar">
-            <div class="editor-toolbar-left">
-              <span class="editor-label">Raw Configuration (config.yaml)</span>
-              <span id="yaml-status-badge" class="badge-status ok">Valid YAML</span>
+      <!-- TAB 6: Application & Access -->
+      <section class="tab-panel" id="panel-app" role="tabpanel" aria-labelledby="tab-app">
+        <div class="card">
+          <div class="card-header">
+            <h2>Application Runtime</h2>
+            <p class="card-desc">Process binding, local data location and timezone. Changing the listen address or database path requires a restart.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="app.listen">
+              <label for="f-app-listen">Listen Address</label>
+              <input type="text" id="f-app-listen" placeholder="127.0.0.1:8080" spellcheck="false" autocomplete="off">
+              <span class="form-help">Host:port. Bind to 127.0.0.1 for local-only access, or 0.0.0.0 to expose the terminal (requires access credentials below).</span>
+              <span class="field-error"></span>
             </div>
-            <div class="editor-toolbar-right">
-              <span id="yaml-cursor-pos" class="editor-pos">Ln 1, Col 1</span>
-              <button type="button" class="btn small ghost" id="yaml-copy-btn" title="Copy raw YAML to clipboard">Copy</button>
-              <button type="button" class="btn small ghost" id="yaml-revert-btn" title="Revert to last saved configuration">Revert</button>
+
+            <div class="form-group" data-field="app.db_path">
+              <label for="f-app-db-path">Database Path</label>
+              <input type="text" id="f-app-db-path" placeholder="./data/scalper.db" spellcheck="false" autocomplete="off">
+              <span class="form-help">SQLite file for candles, paper positions and AI history. Relative paths resolve from the working directory.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="app.timezone">
+              <label for="f-app-timezone">Timezone</label>
+              <input type="text" id="f-app-timezone" list="timezone-options" placeholder="Asia/Kolkata" spellcheck="false" autocomplete="off">
+              <datalist id="timezone-options">
+                <option value="Asia/Kolkata"></option>
+                <option value="UTC"></option>
+                <option value="Asia/Dubai"></option>
+                <option value="Asia/Singapore"></option>
+                <option value="Europe/London"></option>
+                <option value="America/New_York"></option>
+              </datalist>
+              <span class="form-help">IANA zone used for session times and day boundaries. Asia/Kolkata is the exchange timezone.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="web.open_browser">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-open-browser">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Open Browser on Start</strong>
+                  <span class="form-help">Launches the terminal automatically when the process starts. Serve mode always disables this.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
             </div>
           </div>
-          <div class="editor-container">
-            <div class="line-numbers" id="editor-line-numbers">1</div>
-            <textarea id="yaml-editor" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="# Loading config.yaml..."></textarea>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Kotak Broker Identity</h2>
+            <p class="card-desc">Account identifiers used for the Kotak Neo session. The consumer key is read from <code>KOTAK_CONSUMER_KEY</code> in the environment; TOTP and MPIN are entered at login and never stored.</p>
           </div>
-          <div class="editor-footer">
-            <span class="editor-tip">💡 Tip: Edits in the form categories automatically update this YAML. Secrets are shown as <code>********</code>; leave the mask unchanged to keep the current value or replace it to update.</span>
+          <div class="form-grid">
+            <div class="form-group" data-field="kotak.mobile_number">
+              <label for="f-kotak-mobile">Registered Mobile Number</label>
+              <input type="tel" id="f-kotak-mobile" placeholder="+919876543210" autocomplete="off">
+              <span class="form-help">Mobile number registered with Kotak Securities. Leave the mask unchanged to keep the stored value.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="kotak.ucc">
+              <label for="f-kotak-ucc">Unique Client Code (UCC)</label>
+              <input type="text" id="f-kotak-ucc" placeholder="ABC123" autocomplete="off" spellcheck="false">
+              <span class="form-help">Kotak UCC for the trading account. Leave the mask unchanged to keep the stored value.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="kotak.neo_fin_key">
+              <label for="f-kotak-fin-key">Neo Fin Key</label>
+              <input type="text" id="f-kotak-fin-key" placeholder="neotradeapi" autocomplete="off" spellcheck="false">
+              <span class="form-help">Broker API key identifier. The default <code>neotradeapi</code> is correct for Kotak Neo.</span>
+              <span class="field-error"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Web Access &amp; Security</h2>
+            <p class="card-desc">HTTP Basic Auth protects every terminal, settings and API route. Changing the credentials signs out all current sessions.</p>
+          </div>
+          <div class="form-grid">
+            <div class="form-group" data-field="web.basic_auth.username">
+              <label for="f-basic-auth-user">Basic Auth Username</label>
+              <input type="text" id="f-basic-auth-user" autocomplete="username" spellcheck="false">
+              <span class="form-help">Leave both username and password empty to disable Basic Auth (only safe on localhost).</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" data-field="web.basic_auth.password">
+              <label for="f-basic-auth-pass">Basic Auth Password</label>
+              <input type="password" id="f-basic-auth-pass" autocomplete="new-password" placeholder="Leave masked to keep current password">
+              <span class="form-help">Leave the mask unchanged to keep the stored password, or type a new password to rotate it.</span>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group checkbox-group" data-field="web.insecure_no_auth">
+              <label class="checkbox-label">
+                <input type="checkbox" id="f-insecure-no-auth">
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-text">
+                  <strong>Allow Public Binding Without Credentials</strong>
+                  <span class="form-help">Permits binding to a non-loopback address with no Basic Auth or passkey. Only enable behind a trusted reverse proxy. Dangerous.</span>
+                </span>
+              </label>
+              <span class="field-error"></span>
+            </div>
+
+            <div class="form-group" style="grid-column: 1 / -1;" data-field="web.allowed_origins">
+              <label for="f-allowed-origins">Allowed Origins</label>
+              <textarea id="f-allowed-origins" rows="3" placeholder="https://terminal.example.com"></textarea>
+              <span class="form-help">One origin per line (for example <code>https://terminal.example.com</code>). Leave empty to allow same-origin access only.</span>
+              <span class="field-error"></span>
+            </div>
           </div>
         </div>
       </section>

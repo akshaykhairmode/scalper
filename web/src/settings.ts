@@ -6,14 +6,16 @@
 
   // State
   let currentConfig = null;
+  let savedConfig = null;
   let currentYAML = '';
   let savedYAML = '';
   let isDirty = false;
-  let activeTabId = 'tab-trading';
+  let activePanelId = 'panel-trading';
 
   // DOM Elements
   const el = (id: string): any => document.getElementById(id);
   const validateBtn = el('validate-btn');
+  const revertBtn = el('revert-btn');
   const saveBtn = el('save-btn');
   const saveSpinner = el('save-spinner');
   const saveLabel = el('save-label');
@@ -23,12 +25,6 @@
   const alertMessage = el('alert-message');
   const alertCloseBtn = el('alert-close-btn');
   const toastContainer = el('toast-container');
-  const yamlEditor = el('yaml-editor');
-  const lineNumbers = el('editor-line-numbers');
-  const yamlStatusBadge = el('yaml-status-badge');
-  const yamlCursorPos = el('yaml-cursor-pos');
-  const yamlCopyBtn = el('yaml-copy-btn');
-  const yamlRevertBtn = el('yaml-revert-btn');
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabPanels = document.querySelectorAll('.tab-panel');
 
@@ -50,7 +46,6 @@
   // Initialize
   function init() {
     setupTabs();
-    setupEditor();
     setupFormInputs();
     setupModals();
     setupActions();
@@ -66,13 +61,12 @@
     if (initialYamlEl && initialYamlEl.textContent.trim()) {
       currentYAML = initialYamlEl.textContent;
       savedYAML = currentYAML;
-      yamlEditor.value = currentYAML;
-      updateLineNumbers();
     }
 
     if (initialConfigEl && initialConfigEl.textContent.trim()) {
       try {
         currentConfig = JSON.parse(initialConfigEl.textContent);
+        savedConfig = cloneConfig(currentConfig);
         populateForm(currentConfig);
       } catch (err) {
         console.warn('Failed to parse initial config JSON:', err);
@@ -81,6 +75,10 @@
 
     // Also fetch fresh from API
     fetchConfig();
+  }
+
+  function cloneConfig(cfg) {
+    return cfg ? JSON.parse(JSON.stringify(cfg)) : null;
   }
 
   // Fetch live config from server
@@ -95,12 +93,11 @@
       if (data.yaml) {
         currentYAML = data.yaml;
         savedYAML = currentYAML;
-        yamlEditor.value = currentYAML;
-        updateLineNumbers();
         markDirty(false);
       }
       if (data.config) {
         currentConfig = data.config;
+        savedConfig = cloneConfig(currentConfig);
         populateForm(currentConfig);
       }
     } catch (err) {
@@ -111,27 +108,15 @@
   // Tab Navigation
   function setupTabs() {
     tabBtns.forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
         const targetPanelId = btn.getAttribute('aria-controls');
-        const prevTab = activeTabId;
-
-        // If leaving YAML tab, validate syntax and sync to form
-        if (prevTab === 'tab-yaml' && btn.id !== 'tab-yaml') {
-          currentYAML = yamlEditor.value;
-          const valid = await validateAndSyncFromYAML();
-          if (!valid) {
-            // Stay on YAML tab to let user fix syntax
-            return;
-          }
-        }
-
         switchTab(btn.id, targetPanelId);
       });
     });
   }
 
   function switchTab(btnId, panelId) {
-    activeTabId = btnId;
+    activePanelId = panelId;
     tabBtns.forEach(b => {
       const isActive = b.id === btnId;
       b.classList.toggle('active', isActive);
@@ -142,12 +127,6 @@
       const isTarget = p.id === panelId;
       p.classList.toggle('active', isTarget);
     });
-
-    if (panelId === 'panel-yaml') {
-      yamlEditor.value = currentYAML;
-      updateLineNumbers();
-      yamlEditor.focus();
-    }
 
     if (panelId === 'panel-devices') {
       loadSettingsDevices();
@@ -351,6 +330,7 @@
     setChecked('f-allow-shares', !!q.allow_shares);
     setChecked('f-confirm-live-orders', !!t.confirm_live_orders);
     setChecked('f-confirm-chart-levels', t.confirm_chart_level_changes !== false);
+    setVal('f-market-protection', t.market_protection !== undefined ? t.market_protection : 0);
 
     const es = (t.bracket && t.bracket.exchange_stop) || {};
     setVal('f-exchange-stop-mode', es.mode || 'off');
@@ -361,6 +341,8 @@
     setVal('f-exchange-stop-cancel-delay', es.cancel_retry_delay_ms ?? 100);
     setVal('f-exchange-stop-on-cancel-failure', es.on_cancel_failure || 'alert');
     setChecked('f-exchange-stop-reconcile', es.reconcile_on_startup !== false);
+    setChecked('f-exchange-stop-partial-fill', es.place_on_partial_fill !== false);
+    setChecked('f-exchange-stop-allow-chart-edit', es.allow_chart_edit === true);
 
     setVal('f-max-daily-loss', r.max_daily_loss_inr !== undefined ? r.max_daily_loss_inr : 5000);
     setVal('f-max-orders-min', r.max_orders_per_minute !== undefined ? r.max_orders_per_minute : 6);
@@ -372,10 +354,18 @@
     setVal('f-max-order-val', r.max_order_value_inr !== undefined ? r.max_order_value_inr : 0);
 
     setVal('f-session-open', s.open || '09:15');
-    setVal('f-session-close', s.close || '15:30');
+    setVal('f-session-close', s.close || '15:40');
     setChecked('f-allow-outside-hours', !!s.allow_outside_hours);
     setChecked('f-margin-check', !!m.check_before_order);
     setChecked('f-margin-fail-closed', !!m.fail_closed);
+    setVal('f-margin-refresh', m.refresh_ms !== undefined ? m.refresh_ms : 5000);
+    setVal('f-margin-debounce', m.preview_debounce_ms !== undefined ? m.preview_debounce_ms : 300);
+
+    const rv = t.risk_view || {};
+    setChecked('f-risk-view-enabled', rv.enabled !== false);
+    setChecked('f-risk-view-preview', rv.include_preview !== false);
+    setVal('f-payoff-range', rv.payoff_range_pct !== undefined ? rv.payoff_range_pct : 10);
+    setVal('f-payoff-points', rv.payoff_points !== undefined ? rv.payoff_points : 121);
 
     // Market
     const mkt = cfg.market || {};
@@ -384,18 +374,20 @@
     const vix = mkt.india_vix || {};
 
     setVal('f-data-mode', mkt.data_mode || 'websocket');
+    setVal('f-hsm-url', mkt.hsm_url || '');
     setVal('f-depth-mode', d.mode || 'poll');
     setChecked('f-depth-enabled', !!d.enabled);
     setVal('f-visible-poll', c.visible_poll_ms || 1000);
     setVal('f-full-poll', c.full_poll_ms || 5000);
     setVal('f-chain-batch-size', c.batch_size || 40);
+    setChecked('f-visible-priority', c.visible_priority !== false);
     setVal('f-chain-premium-cutoff', c.premium_cutoff !== undefined ? c.premium_cutoff : 30);
+    setVal('f-holidays', (mkt.holidays || []).join('\n'));
 
     const bg = mkt.background_collection || {};
     setChecked('f-bg-enabled', !!bg.enabled);
     setVal('f-bg-interval', bg.interval_seconds !== undefined ? bg.interval_seconds : 1);
     setVal('f-bg-strike-window', bg.strike_window !== undefined ? bg.strike_window : 1);
-    setVal('f-bg-underlyings', (bg.underlyings || []).join(', '));
     setChecked('f-bg-include-positions', bg.include_open_positions !== undefined ? !!bg.include_open_positions : true);
     setChecked('f-bg-persist', bg.persist_last_selection !== undefined ? !!bg.persist_last_selection : true);
 
@@ -406,6 +398,41 @@
 
     renderIndicesTable(mkt.indices || []);
     renderCommoditiesTable(mkt.commodities || []);
+    renderBgUnderlyings(cfg, bg.underlyings || []);
+
+    // Charts
+    const ch = cfg.charts || {};
+    setVal('f-base-timeframe', ch.base_timeframe || '1m');
+    setVal('f-default-timeframe', ch.default_timeframe || '5m');
+    setVal('f-chart-retention', ch.retention_days !== undefined ? ch.retention_days : 30);
+    setChecked('f-charts-persist', ch.persist !== false);
+    renderTimeframes(ch.timeframes || ['1m', '3m', '5m', '15m', '1h', '4h']);
+
+    // Scrip master
+    const scrip = cfg.scrip || {};
+    setVal('f-scrip-refresh', scrip.refresh_at || '08:45');
+    renderScripSegments(scrip.segments || []);
+
+    // Application
+    const app = cfg.app || {};
+    setVal('f-app-listen', app.listen || '127.0.0.1:8080');
+    setVal('f-app-db-path', app.db_path || './data/scalper.db');
+    setVal('f-app-timezone', app.timezone || 'Asia/Kolkata');
+
+    // Broker identity
+    const kotak = cfg.kotak || {};
+    setVal('f-kotak-mobile', kotak.mobile_number || '');
+    setVal('f-kotak-ucc', kotak.ucc || '');
+    setVal('f-kotak-fin-key', kotak.neo_fin_key || 'neotradeapi');
+
+    // Web access
+    const web = cfg.web || {};
+    const ba = web.basic_auth || {};
+    setChecked('f-open-browser', !!web.open_browser);
+    setVal('f-basic-auth-user', ba.username || '');
+    setVal('f-basic-auth-pass', ba.password || '');
+    setChecked('f-insecure-no-auth', !!web.insecure_no_auth);
+    setVal('f-allowed-origins', (web.allowed_origins || []).join('\n'));
 
     // Logging
     const lg = cfg.logging || {};
@@ -471,6 +498,7 @@
       { id: 'f-allow-shares', path: ['trading', 'quantity', 'allow_shares'], type: 'bool' },
       { id: 'f-confirm-live-orders', path: ['trading', 'confirm_live_orders'], type: 'bool' },
       { id: 'f-confirm-chart-levels', path: ['trading', 'confirm_chart_level_changes'], type: 'bool' },
+      { id: 'f-market-protection', path: ['trading', 'market_protection'], type: 'int' },
       { id: 'f-exchange-stop-mode', path: ['trading', 'bracket', 'exchange_stop', 'mode'], type: 'string' },
       { id: 'f-exchange-stop-distance-mode', path: ['trading', 'bracket', 'exchange_stop', 'distance_mode'], type: 'string' },
       { id: 'f-exchange-stop-distance-value', path: ['trading', 'bracket', 'exchange_stop', 'distance_value'], type: 'float' },
@@ -479,6 +507,8 @@
       { id: 'f-exchange-stop-cancel-delay', path: ['trading', 'bracket', 'exchange_stop', 'cancel_retry_delay_ms'], type: 'int' },
       { id: 'f-exchange-stop-on-cancel-failure', path: ['trading', 'bracket', 'exchange_stop', 'on_cancel_failure'], type: 'string' },
       { id: 'f-exchange-stop-reconcile', path: ['trading', 'bracket', 'exchange_stop', 'reconcile_on_startup'], type: 'bool' },
+      { id: 'f-exchange-stop-partial-fill', path: ['trading', 'bracket', 'exchange_stop', 'place_on_partial_fill'], type: 'bool' },
+      { id: 'f-exchange-stop-allow-chart-edit', path: ['trading', 'bracket', 'exchange_stop', 'allow_chart_edit'], type: 'bool' },
       { id: 'f-max-daily-loss', path: ['trading', 'risk', 'max_daily_loss_inr'], type: 'int' },
       { id: 'f-max-orders-min', path: ['trading', 'risk', 'max_orders_per_minute'], type: 'int' },
       { id: 'f-max-exit-sec', path: ['trading', 'risk', 'max_exit_orders_per_second'], type: 'int' },
@@ -492,6 +522,12 @@
       { id: 'f-allow-outside-hours', path: ['trading', 'session', 'allow_outside_hours'], type: 'bool' },
       { id: 'f-margin-check', path: ['trading', 'margin', 'check_before_order'], type: 'bool' },
       { id: 'f-margin-fail-closed', path: ['trading', 'margin', 'fail_closed'], type: 'bool' },
+      { id: 'f-margin-refresh', path: ['trading', 'margin', 'refresh_ms'], type: 'int' },
+      { id: 'f-margin-debounce', path: ['trading', 'margin', 'preview_debounce_ms'], type: 'int' },
+      { id: 'f-risk-view-enabled', path: ['trading', 'risk_view', 'enabled'], type: 'bool' },
+      { id: 'f-risk-view-preview', path: ['trading', 'risk_view', 'include_preview'], type: 'bool' },
+      { id: 'f-payoff-range', path: ['trading', 'risk_view', 'payoff_range_pct'], type: 'int' },
+      { id: 'f-payoff-points', path: ['trading', 'risk_view', 'payoff_points'], type: 'int' },
       { id: 'f-trading-mode', path: ['trading', 'mode'], type: 'string' },
       { id: 'f-paper-enabled', path: ['trading', 'paper', 'enabled'], type: 'bool' },
       { id: 'f-paper-balance', path: ['trading', 'paper', 'starting_balance'], type: 'float' },
@@ -502,11 +538,13 @@
 
       // Market
       { id: 'f-data-mode', path: ['market', 'data_mode'], type: 'string' },
+      { id: 'f-hsm-url', path: ['market', 'hsm_url'], type: 'string' },
       { id: 'f-depth-mode', path: ['market', 'depth', 'mode'], type: 'string' },
       { id: 'f-depth-enabled', path: ['market', 'depth', 'enabled'], type: 'bool' },
       { id: 'f-visible-poll', path: ['market', 'chain', 'visible_poll_ms'], type: 'int' },
       { id: 'f-full-poll', path: ['market', 'chain', 'full_poll_ms'], type: 'int' },
       { id: 'f-chain-batch-size', path: ['market', 'chain', 'batch_size'], type: 'int' },
+      { id: 'f-visible-priority', path: ['market', 'chain', 'visible_priority'], type: 'bool' },
       { id: 'f-chain-premium-cutoff', path: ['market', 'chain', 'premium_cutoff'], type: 'float' },
       { id: 'f-bg-enabled', path: ['market', 'background_collection', 'enabled'], type: 'bool' },
       { id: 'f-bg-interval', path: ['market', 'background_collection', 'interval_seconds'], type: 'int' },
@@ -517,6 +555,25 @@
       { id: 'f-vix-segment', path: ['market', 'india_vix', 'exchange_segment'], type: 'string' },
       { id: 'f-vix-symbol', path: ['market', 'india_vix', 'symbol'], type: 'string' },
       { id: 'f-vix-scrip', path: ['market', 'india_vix', 'scrip_name'], type: 'string' },
+
+      // Charts & scrip master
+      { id: 'f-base-timeframe', path: ['charts', 'base_timeframe'], type: 'string' },
+      { id: 'f-default-timeframe', path: ['charts', 'default_timeframe'], type: 'string' },
+      { id: 'f-chart-retention', path: ['charts', 'retention_days'], type: 'int' },
+      { id: 'f-charts-persist', path: ['charts', 'persist'], type: 'bool' },
+      { id: 'f-scrip-refresh', path: ['scrip', 'refresh_at'], type: 'string' },
+
+      // Application & access
+      { id: 'f-app-listen', path: ['app', 'listen'], type: 'string' },
+      { id: 'f-app-db-path', path: ['app', 'db_path'], type: 'string' },
+      { id: 'f-app-timezone', path: ['app', 'timezone'], type: 'string' },
+      { id: 'f-open-browser', path: ['web', 'open_browser'], type: 'bool' },
+      { id: 'f-kotak-mobile', path: ['kotak', 'mobile_number'], type: 'string' },
+      { id: 'f-kotak-ucc', path: ['kotak', 'ucc'], type: 'string' },
+      { id: 'f-kotak-fin-key', path: ['kotak', 'neo_fin_key'], type: 'string' },
+      { id: 'f-basic-auth-user', path: ['web', 'basic_auth', 'username'], type: 'string' },
+      { id: 'f-basic-auth-pass', path: ['web', 'basic_auth', 'password'], type: 'string' },
+      { id: 'f-insecure-no-auth', path: ['web', 'insecure_no_auth'], type: 'bool' },
 
       // Logging
       { id: 'f-log-level', path: ['logging', 'level'], type: 'string' },
@@ -575,20 +632,48 @@
 
         // Update YAML string
         currentYAML = setYamlScalar(currentYAML, item.path, val, item.type);
-        yamlEditor.value = currentYAML;
         markDirty(true);
       });
     });
 
-    const bgUnderlyings = document.getElementById('f-bg-underlyings') as HTMLInputElement | null;
-    if (bgUnderlyings) {
-      bgUnderlyings.addEventListener('input', () => {
-        const values = bgUnderlyings.value.split(',').map((value) => value.trim()).filter(Boolean);
-        currentYAML = setYamlBackgroundUnderlyings(currentYAML, values);
-        yamlEditor.value = currentYAML;
+    const holidaysInput = document.getElementById('f-holidays') as HTMLTextAreaElement | null;
+    if (holidaysInput) {
+      holidaysInput.addEventListener('input', () => {
+        const values = holidaysInput.value.split('\n').map((value) => value.trim()).filter(Boolean);
+        currentYAML = setYamlList(currentYAML, ['market', 'holidays'], values);
+        clearFieldError('market.holidays');
         markDirty(true);
       });
     }
+
+    const originsInput = document.getElementById('f-allowed-origins') as HTMLTextAreaElement | null;
+    if (originsInput) {
+      originsInput.addEventListener('input', () => {
+        const values = originsInput.value.split('\n').map((value) => value.trim()).filter(Boolean);
+        currentYAML = setYamlList(currentYAML, ['web', 'allowed_origins'], values);
+        clearFieldError('web.allowed_origins');
+        markDirty(true);
+      });
+    }
+
+    bindCheckboxGroup('chart-timeframes-list', ['charts', 'timeframes']);
+    bindCheckboxGroup('scrip-segments-list', ['scrip', 'segments']);
+    bindCheckboxGroup('bg-underlyings-list', ['market', 'background_collection', 'underlyings']);
+  }
+
+  function bindCheckboxGroup(containerId, path) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.addEventListener('change', (event) => {
+      const target = event.target as HTMLInputElement;
+      if (!target || target.type !== 'checkbox') return;
+      const values = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+        .filter((cb) => cb.checked && cb.value)
+        .map((cb) => cb.value);
+      currentYAML = setYamlList(currentYAML, path, values);
+      clearFieldError(path.join('.'));
+      markDirty(true);
+    });
   }
 
   // Indices Table Rendering
@@ -771,8 +856,8 @@
 
     renderIndicesTable(indices);
     renderScannedUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig);
     currentYAML = setYamlIndices(currentYAML, indices);
-    yamlEditor.value = currentYAML;
     markDirty(true);
     closeIndexModal();
   }
@@ -788,8 +873,8 @@
     currentConfig.market.indices = currentConfig.market.indices.filter(i => i.key !== key);
     renderIndicesTable(currentConfig.market.indices);
     renderScannedUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig);
     currentYAML = setYamlIndices(currentYAML, currentConfig.market.indices);
-    yamlEditor.value = currentYAML;
     markDirty(true);
   }
 
@@ -856,8 +941,8 @@
 
     renderCommoditiesTable(commodities);
     renderScannedUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig);
     currentYAML = setYamlCommodities(currentYAML, commodities);
-    yamlEditor.value = currentYAML;
     markDirty(true);
     closeCommodityModal();
   }
@@ -869,8 +954,8 @@
     currentConfig.market.commodities = currentConfig.market.commodities.filter(c => c.key !== key);
     renderCommoditiesTable(currentConfig.market.commodities);
     renderScannedUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig);
     currentYAML = setYamlCommodities(currentYAML, currentConfig.market.commodities);
-    yamlEditor.value = currentYAML;
     markDirty(true);
   }
 
@@ -940,7 +1025,6 @@
           currentConfig.ai.scanned_underlyings = selected;
         }
         currentYAML = setYamlScannedUnderlyings(currentYAML, selected);
-        yamlEditor.value = currentYAML;
         markDirty(true);
       });
 
@@ -948,115 +1032,92 @@
     });
   }
 
-  // Setup YAML Editor
-  function setupEditor() {
-    yamlEditor.addEventListener('input', () => {
-      currentYAML = yamlEditor.value;
-      updateLineNumbers();
-      updateCursorPos();
-      markDirty(true);
-      checkBasicYamlSyntax();
-    });
+  // Background collection underlyings (built from the configured indices and commodities)
+  function renderBgUnderlyings(cfg, selected?: string[]) {
+    const container = document.getElementById('bg-underlyings-list');
+    if (!container) return;
 
-    yamlEditor.addEventListener('scroll', () => {
-      lineNumbers.scrollTop = yamlEditor.scrollTop;
-    });
-
-    yamlEditor.addEventListener('keydown', (e) => {
-      // Support Tab and Shift+Tab indentation (2 spaces)
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const start = yamlEditor.selectionStart;
-        const end = yamlEditor.selectionEnd;
-
-        if (e.shiftKey) {
-          // Dedent
-          const val = yamlEditor.value;
-          const lineStart = val.lastIndexOf('\n', start - 1) + 1;
-          if (val.slice(lineStart, lineStart + 2) === '  ') {
-            yamlEditor.value = val.slice(0, lineStart) + val.slice(lineStart + 2);
-            yamlEditor.selectionStart = Math.max(lineStart, start - 2);
-            yamlEditor.selectionEnd = Math.max(lineStart, end - 2);
-          }
-        } else {
-          // Indent 2 spaces
-          yamlEditor.setRangeText('  ', start, end, 'end');
-        }
-        currentYAML = yamlEditor.value;
-        updateLineNumbers();
-        markDirty(true);
-      }
-    });
-
-    yamlEditor.addEventListener('click', updateCursorPos);
-    yamlEditor.addEventListener('keyup', updateCursorPos);
-
-    // Copy YAML
-    yamlCopyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(yamlEditor.value);
-        showToast('success', 'YAML configuration copied to clipboard');
-      } catch (err) {
-        showToast('error', 'Failed to copy to clipboard');
-      }
-    });
-
-    // Revert YAML
-    yamlRevertBtn.addEventListener('click', () => {
-      if (!confirm('Revert all unsaved changes to the last saved configuration?')) return;
-      currentYAML = savedYAML;
-      yamlEditor.value = currentYAML;
-      updateLineNumbers();
-      markDirty(false);
-      clearErrors();
-      if (currentConfig) {
-        populateForm(currentConfig);
-      }
-      showToast('info', 'Reverted to last saved configuration');
-    });
-  }
-
-  function updateLineNumbers() {
-    const lines = yamlEditor.value.split('\n').length;
-    let numbers = '';
-    for (let i = 1; i <= lines; i++) {
-      numbers += i + '\n';
+    let chosen = selected;
+    if (chosen === undefined) {
+      chosen = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+        .filter((cb) => cb.checked && cb.value)
+        .map((cb) => cb.value);
     }
-    lineNumbers.textContent = numbers;
-  }
+    const chosenSet = new Set(chosen || []);
 
-  function updateCursorPos() {
-    const pos = yamlEditor.selectionStart;
-    const text = yamlEditor.value.slice(0, pos);
-    const lines = text.split('\n');
-    const line = lines.length;
-    const col = lines[lines.length - 1].length + 1;
-    yamlCursorPos.textContent = `Ln ${line}, Col ${col}`;
-  }
+    const indices = (cfg && cfg.market && cfg.market.indices) || [];
+    const commodities = (cfg && cfg.market && cfg.market.commodities) || [];
 
-  function checkBasicYamlSyntax() {
-    // Quick heuristic client-side syntax check
-    const text = yamlEditor.value;
-    const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.includes('\t')) {
-        setYamlStatus(false, `Tabs not allowed in YAML (line ${i + 1})`);
-        return;
+    const items: Array<{ key: string; name: string; isMCX: boolean }> = [];
+    indices.forEach((idx: any) => {
+      items.push({ key: idx.key, name: idx.display_name || idx.key, isMCX: false });
+    });
+    commodities.forEach((cmd: any) => {
+      items.push({ key: cmd.key, name: cmd.display_name || cmd.key, isMCX: true });
+    });
+    // Keep explicitly configured underlyings that are not in the current index/commodity list.
+    chosenSet.forEach((key) => {
+      if (!items.some((item) => item.key === key)) {
+        items.push({ key, name: key, isMCX: false });
       }
+    });
+
+    container.innerHTML = '';
+    if (items.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-dim);font-size:12px;">No indices or commodities configured.</span>';
+      return;
     }
-    setYamlStatus(true, 'Valid YAML syntax');
+
+    items.forEach((item) => {
+      const label = document.createElement('label');
+      label.className = 'checkbox-label scanned-underlying-item';
+      label.innerHTML = `
+        <input type="checkbox" value="${escapeHtml(item.key)}" ${chosenSet.has(item.key) ? 'checked' : ''}>
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-text">
+          <strong>${escapeHtml(item.key)}</strong>
+          <span class="form-help">${escapeHtml(item.name)} <code style="font-size:10px;margin-left:4px;opacity:0.8;">${item.isMCX ? 'MCX' : 'NSE/BSE'}</code></span>
+        </span>
+      `;
+      container.appendChild(label);
+    });
   }
 
-  function setYamlStatus(isValid, msg) {
-    yamlStatusBadge.className = `badge-status ${isValid ? 'ok' : 'error'}`;
-    yamlStatusBadge.textContent = msg;
+  function renderTimeframes(values) {
+    const container = document.getElementById('chart-timeframes-list');
+    if (!container) return;
+    const selected = new Set(values || []);
+    container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+      cb.checked = selected.has(cb.value);
+    });
+  }
+
+  function renderScripSegments(values) {
+    const container = document.getElementById('scrip-segments-list');
+    if (!container) return;
+    const selected = new Set(values || []);
+    container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+      cb.checked = selected.has(cb.value);
+    });
+  }
+
+  function revertChanges() {
+    if (!confirm('Discard all unsaved changes and reload the last saved configuration?')) return;
+    clearErrors();
+    currentYAML = savedYAML;
+    currentConfig = cloneConfig(savedConfig);
+    if (currentConfig) {
+      populateForm(currentConfig);
+    }
+    markDirty(false);
+    showToast('info', 'Reverted to the last saved configuration');
   }
 
   // Header Actions (Validate & Save)
   function setupActions() {
     validateBtn.addEventListener('click', () => validateConfig(false));
     saveBtn.addEventListener('click', () => saveConfig());
+    revertBtn?.addEventListener('click', revertChanges);
     alertCloseBtn.addEventListener('click', () => hideAlert());
 
     // Warn before unload if dirty
@@ -1071,7 +1132,7 @@
   // Validate configuration against backend
   async function validateConfig(silentSuccess = false) {
     clearErrors();
-    const yamlToSend = (activeTabId === 'tab-yaml') ? yamlEditor.value : currentYAML;
+    const yamlToSend = currentYAML;
 
     try {
       const res = await fetch('/api/config', {
@@ -1086,7 +1147,6 @@
         return false;
       }
 
-      setYamlStatus(true, 'Valid YAML');
       if (data.config) {
         currentConfig = data.config;
       }
@@ -1101,38 +1161,10 @@
     }
   }
 
-  // Validate and parse when switching out of YAML tab
-  async function validateAndSyncFromYAML() {
-    clearErrors();
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ yaml: currentYAML, validate_only: true })
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        handleValidationError(data);
-        showToast('error', 'Cannot switch tabs: Please fix YAML syntax errors first');
-        return false;
-      }
-
-      if (data.config) {
-        currentConfig = data.config;
-        populateForm(currentConfig);
-      }
-      return true;
-    } catch (err) {
-      showToast('error', `Failed to sync YAML: ${err.message}`);
-      return false;
-    }
-  }
-
   // Save configuration to disk
   async function saveConfig() {
     clearErrors();
-    const yamlToSend = (activeTabId === 'tab-yaml') ? yamlEditor.value : currentYAML;
+    const yamlToSend = currentYAML;
 
     saveBtn.disabled = true;
     saveSpinner.hidden = false;
@@ -1157,14 +1189,14 @@
       }
 
       // Success. Prefer the server's redacted YAML so newly entered secrets are
-      // replaced by the mask instead of remaining visible in the editor.
+      // replaced by the mask instead of remaining visible in the form.
       savedYAML = data.yaml || yamlToSend;
       currentYAML = savedYAML;
-      yamlEditor.value = currentYAML;
       markDirty(false);
 
       if (data.config) {
         currentConfig = data.config;
+        savedConfig = cloneConfig(currentConfig);
         populateForm(currentConfig);
       }
 
@@ -1192,7 +1224,6 @@
     const field = data.field || '';
 
     showAlert(field ? `Error in ${field}` : 'Validation Error', errorMsg);
-    setYamlStatus(false, errorMsg);
 
     if (field) {
       highlightField(field, errorMsg);
@@ -1201,7 +1232,23 @@
   }
 
   function highlightField(fieldPath, msg) {
-    const group = document.querySelector(`[data-field="${fieldPath}"]`);
+    const normalized = String(fieldPath || '').replace(/\[\d+\]/g, '');
+    const candidates: string[] = [];
+    let current = normalized;
+    while (current) {
+      candidates.push(current);
+      const dot = current.lastIndexOf('.');
+      if (dot < 0) break;
+      current = current.slice(0, dot);
+    }
+
+    let group: Element | null = null;
+    for (const candidate of candidates) {
+      group = document.querySelector(`[data-field="${candidate}"]`)
+        || document.querySelector(`[data-field^="${candidate}."]`);
+      if (group) break;
+    }
+
     if (group) {
       group.classList.add('has-error');
       const errEl = group.querySelector('.field-error');
@@ -1209,7 +1256,7 @@
 
       // Find which tab this field is in and switch to it if needed
       const panel = group.closest('.tab-panel');
-      if (panel && panel.id !== activeTabId) {
+      if (panel && panel.id !== activePanelId) {
         const tabBtn = document.querySelector(`[aria-controls="${panel.id}"]`);
         if (tabBtn) {
           switchTab(tabBtn.id, panel.id);
@@ -1578,77 +1625,52 @@
     return yaml + '\nai:\n' + newLines.join('\n') + '\n';
   }
 
-  function setYamlBackgroundUnderlyings(yaml: string, underlyings: string[]): string {
+  /**
+   * Replaces a YAML list value with an inline flow-style list, preserving any
+   * trailing comment. Handles both inline (`key: ["a"]`) and block (`key:` +
+   * `  - a`) source styles.
+   */
+  function setYamlList(yaml, path, values) {
+    const formatted = '[' + values
+      .map((value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
+      .join(', ') + ']';
     const lines = yaml.split('\n');
-    let mktIdx = -1;
-    let bgIdx = -1;
-    let uStart = -1;
-    let uEnd = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('market:')) {
-        mktIdx = i;
-        break;
-      }
+    const idx = findFieldLine(lines, path);
+    if (idx === -1) {
+      return insertYamlField(yaml, path, formatted);
     }
 
-    if (mktIdx !== -1) {
-      for (let i = mktIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) break;
-        if (line.trim() === 'background_collection:') {
-          bgIdx = i;
-          break;
+    const line = lines[idx];
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) return yaml;
+
+    const indent = line.search(/\S/);
+    const keyPart = line.slice(0, colonIdx + 1);
+    const afterColon = line.slice(colonIdx + 1);
+    const commentIdx = afterColon.indexOf('#');
+    const comment = commentIdx !== -1 ? ' ' + afterColon.slice(commentIdx).trim() : '';
+    const inlineValue = (commentIdx !== -1 ? afterColon.slice(0, commentIdx) : afterColon).trim();
+
+    if (inlineValue === '') {
+      // Block-style list: consume the child "- item" lines beneath this key.
+      let end = idx + 1;
+      while (end < lines.length) {
+        const next = lines[end];
+        const trimmed = next.trim();
+        if (trimmed === '') {
+          end++;
+          continue;
         }
+        if (next.search(/\S/) <= indent) break;
+        if (!trimmed.startsWith('-')) break;
+        end++;
       }
-    }
-
-    if (bgIdx !== -1) {
-      for (let i = bgIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const indent = line.search(/\S/);
-          if (indent <= 2) {
-            uEnd = i;
-            break;
-          }
-        }
-        if (trimmed.startsWith('underlyings:')) {
-          uStart = i;
-          for (let j = i + 1; j < lines.length; j++) {
-            const child = lines[j];
-            const childTrimmed = child.trim();
-            if (childTrimmed && !childTrimmed.startsWith('#')) {
-              const indent = child.search(/\S/);
-              if (indent <= 4) {
-                uEnd = j;
-                break;
-              }
-            }
-          }
-          if (uEnd === -1) uEnd = lines.length;
-          break;
-        }
-      }
-    }
-
-    const newLines = ['    underlyings:'];
-    underlyings.forEach((u) => newLines.push(`      - "${u}"`));
-
-    if (uStart !== -1) {
-      lines.splice(uStart, uEnd - uStart, ...newLines);
+      lines.splice(idx, end - idx, `${keyPart} ${formatted}${comment}`);
       return lines.join('\n');
     }
-    if (bgIdx !== -1) {
-      lines.splice(bgIdx + 1, 0, ...newLines);
-      return lines.join('\n');
-    }
-    if (mktIdx !== -1) {
-      lines.splice(mktIdx + 1, 0, '  background_collection:', ...newLines);
-      return lines.join('\n');
-    }
-    return yaml + '\nmarket:\n  background_collection:\n' + newLines.join('\n') + '\n';
+
+    lines[idx] = `${keyPart} ${formatted}${comment}`;
+    return lines.join('\n');
   }
 
   async function loadStorageInfo() {

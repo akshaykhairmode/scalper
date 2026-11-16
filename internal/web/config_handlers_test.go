@@ -73,8 +73,11 @@ func TestSettingsView(t *testing.T) {
 	if !strings.Contains(body, "Market &amp; Indices") {
 		t.Errorf("expected Market & Indices tab in body")
 	}
-	if !strings.Contains(body, "Raw YAML / Advanced") {
-		t.Errorf("expected Raw YAML tab in body")
+	if !strings.Contains(body, "Application &amp; Access") {
+		t.Errorf("expected Application & Access tab in body")
+	}
+	if strings.Contains(body, "Raw YAML / Advanced") || strings.Contains(body, `id="yaml-editor"`) {
+		t.Errorf("raw YAML editor must not be exposed in the settings page")
 	}
 	if !strings.Contains(body, tmpPath) {
 		t.Errorf("expected config path %s in body", tmpPath)

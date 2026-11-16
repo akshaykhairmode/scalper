@@ -352,6 +352,7 @@ body {
 }
 
 .form-group.has-error input,
+.form-group.has-error textarea,
 .form-group.has-error select {
   border-color: var(--err) !important;
   box-shadow: 0 0 0 1px var(--err) !important;
@@ -364,6 +365,11 @@ body {
 /* Form Inputs */
 input[type="text"],
 input[type="number"],
+input[type="time"],
+input[type="tel"],
+input[type="url"],
+input[type="password"],
+textarea,
 select {
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -376,8 +382,19 @@ select {
   width: 100%;
 }
 
+textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.5;
+}
+
 input[type="text"]:focus,
 input[type="number"]:focus,
+input[type="time"]:focus,
+input[type="tel"]:focus,
+input[type="url"]:focus,
+input[type="password"]:focus,
+textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--border-focus);
