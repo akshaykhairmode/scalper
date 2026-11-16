@@ -116,9 +116,6 @@ func (c Config) validateLogging() error {
 	if c.Logging.TickSampleSeconds < 0 {
 		return fieldErr("logging.tick_sample_seconds", "must be >= 0 (0 disables sampled tick lines)")
 	}
-	if !c.Logging.Redact {
-		return fieldErr("logging.redact", "must be true; the application refuses to log unredacted secrets")
-	}
 	return nil
 }
 
@@ -241,16 +238,6 @@ func (c Config) validateMarket() error {
 			return fieldErr("market.india_vix.scrip_name", "duplicate scrip name %q", vixScrip)
 		}
 	}
-	if c.Market.Chain.VisiblePollMS < 250 {
-		return fieldErr("market.chain.visible_poll_ms", "must be >= 250")
-	}
-	if c.Market.Chain.FullPollMS < 250 {
-		return fieldErr("market.chain.full_poll_ms", "must be >= 250")
-	}
-	if c.Market.Chain.VisiblePollMS >= c.Market.Chain.FullPollMS {
-		return fieldErr("market.chain.visible_poll_ms", "must be less than full_poll_ms (%d >= %d)",
-			c.Market.Chain.VisiblePollMS, c.Market.Chain.FullPollMS)
-	}
 	if c.Market.Chain.BatchSize < 1 || c.Market.Chain.BatchSize > 500 {
 		return fieldErr("market.chain.batch_size", "must be between 1 and 500")
 	}
@@ -300,9 +287,6 @@ func validateHSMURL(raw string) error {
 }
 
 func (c Config) validateCharts() error {
-	if c.Charts.BaseTimeframe != "1m" {
-		return fieldErr("charts.base_timeframe", "must be 1m, got %q", c.Charts.BaseTimeframe)
-	}
 	if len(c.Charts.Timeframes) == 0 {
 		return fieldErr("charts.timeframes", "at least one timeframe is required")
 	}
@@ -354,12 +338,6 @@ func (c Config) validateTrading() error {
 	default:
 		return fieldErr("trading.default_product", "must be MIS|NRML, got %q", c.Trading.DefaultProduct)
 	}
-	if c.Trading.DefaultOrderType != "MARKET" {
-		return fieldErr("trading.default_order_type", "must be MARKET (v1 supports market orders only), got %q", c.Trading.DefaultOrderType)
-	}
-	if c.Trading.MarketProtection < 0 {
-		return fieldErr("trading.market_protection", "must be >= 0")
-	}
 	if c.Trading.Quantity.DefaultLots < 1 {
 		return fieldErr("trading.quantity.default_lots", "must be >= 1")
 	}
@@ -370,12 +348,6 @@ func (c Config) validateTrading() error {
 	}
 	if !c.Trading.Quantity.AllowShares && c.Trading.Quantity.DefaultUnit == "shares" {
 		return fieldErr("trading.quantity.default_unit", "cannot be shares when allow_shares is false")
-	}
-	if c.Trading.Margin.RefreshMS < 1000 {
-		return fieldErr("trading.margin.refresh_ms", "must be >= 1000")
-	}
-	if c.Trading.Margin.PreviewDebounceMS < 100 {
-		return fieldErr("trading.margin.preview_debounce_ms", "must be >= 100")
 	}
 	open, err := parseHHMM("trading.session.open", c.Trading.Session.Open)
 	if err != nil {
@@ -459,9 +431,6 @@ func validateRisk(r Risk) error {
 }
 
 func (c Config) validateScrip() error {
-	if _, err := parseHHMM("scrip.refresh_at", c.Scrip.RefreshAt); err != nil {
-		return err
-	}
 	if len(c.Scrip.Segments) == 0 {
 		return fieldErr("scrip.segments", "at least one segment is required")
 	}

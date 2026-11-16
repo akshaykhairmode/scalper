@@ -48,7 +48,6 @@ type Logging struct {
 	MaxBackups        int    `yaml:"max_backups" json:"max_backups"`
 	RetentionDays     int    `yaml:"retention_days" json:"retention_days"`
 	TickSampleSeconds int    `yaml:"tick_sample_seconds" json:"tick_sample_seconds"`
-	Redact            bool   `yaml:"redact" json:"redact"`
 }
 
 // Kotak holds the non-secret parts of the broker identity. The consumer key is
@@ -117,11 +116,8 @@ type IndiaVIX struct {
 
 // Chain holds option-chain polling cadence.
 type Chain struct {
-	VisiblePollMS   int     `yaml:"visible_poll_ms" json:"visible_poll_ms"`
-	FullPollMS      int     `yaml:"full_poll_ms" json:"full_poll_ms"`
-	BatchSize       int     `yaml:"batch_size" json:"batch_size"`
-	VisiblePriority bool    `yaml:"visible_priority" json:"visible_priority"`
-	PremiumCutoff   float64 `yaml:"premium_cutoff" json:"premium_cutoff"`
+	BatchSize     int     `yaml:"batch_size" json:"batch_size"`
+	PremiumCutoff float64 `yaml:"premium_cutoff" json:"premium_cutoff"`
 }
 
 // Depth holds market-depth settings.
@@ -132,11 +128,9 @@ type Depth struct {
 
 // Charts holds candle settings.
 type Charts struct {
-	BaseTimeframe    string   `yaml:"base_timeframe" json:"base_timeframe"`
 	Timeframes       []string `yaml:"timeframes" json:"timeframes"`
 	DefaultTimeframe string   `yaml:"default_timeframe" json:"default_timeframe"`
 	RetentionDays    int      `yaml:"retention_days" json:"retention_days"`
-	Persist          bool     `yaml:"persist" json:"persist"`
 }
 
 // Trading holds quantity, margin, session and risk settings.
@@ -144,10 +138,8 @@ type Trading struct {
 	// Mode is the default account for new orders: live or paper.
 	Mode                     string   `yaml:"mode" json:"mode"`
 	DefaultProduct           string   `yaml:"default_product" json:"default_product"`
-	DefaultOrderType         string   `yaml:"default_order_type" json:"default_order_type"`
 	ConfirmLiveOrders        bool     `yaml:"confirm_live_orders" json:"confirm_live_orders"`
 	ConfirmChartLevelChanges bool     `yaml:"confirm_chart_level_changes" json:"confirm_chart_level_changes"`
-	MarketProtection         int      `yaml:"market_protection" json:"market_protection"`
 	Quantity                 Quantity `yaml:"quantity" json:"quantity"`
 	Margin                   Margin   `yaml:"margin" json:"margin"`
 	Session                  Session  `yaml:"session" json:"session"`
@@ -186,7 +178,6 @@ type ExchangeStop struct {
 	CancelRetryDelayMS int     `yaml:"cancel_retry_delay_ms" json:"cancel_retry_delay_ms"`
 	OnCancelFailure    string  `yaml:"on_cancel_failure" json:"on_cancel_failure"`
 	ReconcileOnStartup bool    `yaml:"reconcile_on_startup" json:"reconcile_on_startup"`
-	AllowChartEdit     bool    `yaml:"allow_chart_edit" json:"allow_chart_edit"`
 }
 
 // Quantity controls the default order quantity and unit.
@@ -198,10 +189,8 @@ type Quantity struct {
 
 // Margin holds pre-trade margin settings.
 type Margin struct {
-	CheckBeforeOrder  bool `yaml:"check_before_order" json:"check_before_order"`
-	FailClosed        bool `yaml:"fail_closed" json:"fail_closed"`
-	RefreshMS         int  `yaml:"refresh_ms" json:"refresh_ms"`
-	PreviewDebounceMS int  `yaml:"preview_debounce_ms" json:"preview_debounce_ms"`
+	CheckBeforeOrder bool `yaml:"check_before_order" json:"check_before_order"`
+	FailClosed       bool `yaml:"fail_closed" json:"fail_closed"`
 }
 
 // Session holds the trading window in IST.
@@ -227,21 +216,17 @@ type Risk struct {
 
 // RiskView holds payoff chart settings.
 type RiskView struct {
-	Enabled        bool `yaml:"enabled" json:"enabled"`
-	PayoffRangePct int  `yaml:"payoff_range_pct" json:"payoff_range_pct"`
-	PayoffPoints   int  `yaml:"payoff_points" json:"payoff_points"`
-	IncludePreview bool `yaml:"include_preview" json:"include_preview"`
+	PayoffRangePct int `yaml:"payoff_range_pct" json:"payoff_range_pct"`
+	PayoffPoints   int `yaml:"payoff_points" json:"payoff_points"`
 }
 
 // Scrip holds Scrip Master refresh settings.
 type Scrip struct {
-	RefreshAt string   `yaml:"refresh_at" json:"refresh_at"`
-	Segments  []string `yaml:"segments" json:"segments"`
+	Segments []string `yaml:"segments" json:"segments"`
 }
 
 // Web holds browser settings.
 type Web struct {
-	OpenBrowser    bool      `yaml:"open_browser" json:"open_browser"`
 	BasicAuth      BasicAuth `yaml:"basic_auth" json:"basic_auth"`
 	AllowedOrigins []string  `yaml:"allowed_origins" json:"allowed_origins"`
 	InsecureNoAuth bool      `yaml:"insecure_no_auth" json:"insecure_no_auth"`
@@ -313,7 +298,6 @@ func Default() Config {
 			MaxBackups:        10,
 			RetentionDays:     14,
 			TickSampleSeconds: 1,
-			Redact:            true,
 		},
 		Kotak: Kotak{NeoFinKey: "neotradeapi"},
 		Market: Market{
@@ -357,11 +341,8 @@ func Default() Config {
 				ScripName:       "INDIA VIX",
 			},
 			Chain: Chain{
-				VisiblePollMS:   1000,
-				FullPollMS:      5000,
-				BatchSize:       40,
-				VisiblePriority: true,
-				PremiumCutoff:   30,
+				BatchSize:     40,
+				PremiumCutoff: 30,
 			},
 			Depth: Depth{Enabled: true, Mode: "poll"},
 			Background: BackgroundCollection{
@@ -374,16 +355,13 @@ func Default() Config {
 			},
 		},
 		Charts: Charts{
-			BaseTimeframe:    "1m",
 			Timeframes:       []string{"1m", "3m", "5m", "15m", "1h", "4h"},
 			DefaultTimeframe: "5m",
 			RetentionDays:    30,
-			Persist:          true,
 		},
 		Trading: Trading{
 			Mode:                     "live",
 			DefaultProduct:           "MIS",
-			DefaultOrderType:         "MARKET",
 			ConfirmLiveOrders:        true,
 			ConfirmChartLevelChanges: true,
 			Quantity: Quantity{
@@ -392,10 +370,8 @@ func Default() Config {
 				AllowShares: true,
 			},
 			Margin: Margin{
-				CheckBeforeOrder:  true,
-				FailClosed:        true,
-				RefreshMS:         5000,
-				PreviewDebounceMS: 300,
+				CheckBeforeOrder: true,
+				FailClosed:       true,
 			},
 			Session: Session{
 				Open:  "09:15",
@@ -409,10 +385,8 @@ func Default() Config {
 				StopLossMarginPct:      1.0,
 			},
 			RiskView: RiskView{
-				Enabled:        true,
 				PayoffRangePct: 10,
 				PayoffPoints:   121,
-				IncludePreview: true,
 			},
 			Bracket: Bracket{
 				ExchangeStop: ExchangeStop{
@@ -425,7 +399,6 @@ func Default() Config {
 					CancelRetryDelayMS: 100,
 					OnCancelFailure:    "alert",
 					ReconcileOnStartup: true,
-					AllowChartEdit:     false,
 				},
 			},
 			Paper: Paper{
@@ -438,10 +411,9 @@ func Default() Config {
 			},
 		},
 		Scrip: Scrip{
-			RefreshAt: "08:45",
-			Segments:  []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"},
+			Segments: []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"},
 		},
-		Web: Web{OpenBrowser: true},
+		Web: Web{},
 		AI: AI{
 			Enabled:             false,
 			ShadowMode:          true,
@@ -487,7 +459,6 @@ func WithServeMode(_ bool) Option {
 			c.App.Listen = "0.0.0.0:8080"
 		}
 		c.App.ServeMode = true
-		c.Web.OpenBrowser = false
 	}
 }
 
@@ -514,7 +485,6 @@ func Load(path string, opts ...Option) (Config, error) {
 	}
 	cfg.applyEnv()
 	cfg.App.ServeMode = true
-	cfg.Web.OpenBrowser = false
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)

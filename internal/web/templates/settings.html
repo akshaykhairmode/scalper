@@ -90,15 +90,6 @@
               <span class="field-error"></span>
             </div>
 
-            <div class="form-group" data-field="trading.default_order_type">
-              <label for="f-default-order-type">Default Order Type</label>
-              <select id="f-default-order-type">
-                <option value="MARKET" selected>MARKET (Immediate Fill)</option>
-              </select>
-              <span class="form-help">v1 supports Market orders for low-latency execution.</span>
-              <span class="field-error"></span>
-            </div>
-
             <div class="form-group" data-field="trading.quantity.default_lots">
               <label for="f-default-lots">Default Lots</label>
               <input type="number" id="f-default-lots" min="1" step="1" value="1">
@@ -149,13 +140,6 @@
                   <span class="form-help">Shows a confirmation before moving or removing entry, TP or SL lines directly on the chart. Disable for faster one-drag changes.</span>
                 </span>
               </label>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group" data-field="trading.market_protection">
-              <label for="f-market-protection">Market Order Protection (points)</label>
-              <input type="number" id="f-market-protection" min="0" step="1">
-              <span class="form-help">Price-protection band applied to market orders. 0 disables it. Reserved for broker-side protection.</span>
               <span class="field-error"></span>
             </div>
           </div>
@@ -324,18 +308,6 @@
               </label>
               <span class="field-error"></span>
             </div>
-
-            <div class="form-group checkbox-group" data-field="trading.bracket.exchange_stop.allow_chart_edit">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-exchange-stop-allow-chart-edit">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Allow Chart-Level Edits</strong>
-                  <span class="form-help">Permits dragging entry, TP or SL lines on the chart while an exchange backstop is active. Off is safest.</span>
-                </span>
-              </label>
-              <span class="field-error"></span>
-            </div>
           </div>
         </div>
 
@@ -470,59 +442,15 @@
               </label>
               <span class="field-error"></span>
             </div>
-
-            <div class="form-group" data-field="trading.margin.refresh_ms">
-              <label for="f-margin-refresh">Margin Refresh Interval</label>
-              <div class="input-unit">
-                <input type="number" id="f-margin-refresh" min="1000" step="500">
-                <span class="unit-suffix">ms</span>
-              </div>
-              <span class="form-help">How often the available-margin figure is refreshed from the broker (&ge; 1000ms).</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group" data-field="trading.margin.preview_debounce_ms">
-              <label for="f-margin-debounce">Preview Debounce</label>
-              <div class="input-unit">
-                <input type="number" id="f-margin-debounce" min="100" step="50">
-                <span class="unit-suffix">ms</span>
-              </div>
-              <span class="form-help">Delay before firing a margin preview while the user types quantity or price (&ge; 100ms).</span>
-              <span class="field-error"></span>
-            </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-header">
             <h2>Payoff &amp; Risk View</h2>
-            <p class="card-desc">Controls the option payoff chart and the pre-trade risk preview.</p>
+            <p class="card-desc">Controls the option payoff chart range and curve resolution.</p>
           </div>
           <div class="form-grid">
-            <div class="form-group checkbox-group" data-field="trading.risk_view.enabled">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-risk-view-enabled">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Enable Payoff Chart</strong>
-                  <span class="form-help">Shows the payoff curve for the selected option legs.</span>
-                </span>
-              </label>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group checkbox-group" data-field="trading.risk_view.include_preview">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-risk-view-preview">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Include Preview Legs</strong>
-                  <span class="form-help">Adds the order-pad preview as a leg on the payoff chart before it is submitted.</span>
-                </span>
-              </label>
-              <span class="field-error"></span>
-            </div>
-
             <div class="form-group" data-field="trading.risk_view.payoff_range_pct">
               <label for="f-payoff-range">Payoff Range</label>
               <div class="input-unit">
@@ -590,42 +518,10 @@
               <span class="field-error"></span>
             </div>
 
-            <div class="form-group" data-field="market.chain.visible_poll_ms">
-              <label for="f-visible-poll">Visible Chain Poll Interval (ms)</label>
-              <div class="input-unit">
-                <input type="number" id="f-visible-poll" min="250" step="100">
-                <span class="unit-suffix">ms</span>
-              </div>
-              <span class="form-help">Cadence for strikes currently visible in the chain table (&ge; 250ms).</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group" data-field="market.chain.full_poll_ms">
-              <label for="f-full-poll">Full Chain Background Poll (ms)</label>
-              <div class="input-unit">
-                <input type="number" id="f-full-poll" min="250" step="500">
-                <span class="unit-suffix">ms</span>
-              </div>
-              <span class="form-help">Background refresh cadence for out-of-view strikes (must be &gt; visible poll).</span>
-              <span class="field-error"></span>
-            </div>
-
             <div class="form-group" data-field="market.chain.batch_size">
               <label for="f-chain-batch-size">Chain Quotes Batch Size</label>
               <input type="number" id="f-chain-batch-size" min="1" max="500" step="10">
               <span class="form-help">Number of strikes per REST batch call (1 to 500).</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group checkbox-group" data-field="market.chain.visible_priority">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-visible-priority">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Prioritise Visible Strikes</strong>
-                  <span class="form-help">Refreshes strikes currently on screen before the background full-chain poll.</span>
-                </span>
-              </label>
               <span class="field-error"></span>
             </div>
 
@@ -834,27 +730,6 @@
             <p class="card-desc">Candle aggregation, available chart periods and local history retention.</p>
           </div>
           <div class="form-grid">
-            <div class="form-group" data-field="charts.base_timeframe">
-              <label for="f-base-timeframe">Base Candle Interval</label>
-              <select id="f-base-timeframe">
-                <option value="1m">1 minute</option>
-              </select>
-              <span class="form-help">The aggregator always stores 1-minute base candles; higher timeframes are derived.</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group checkbox-group" data-field="charts.persist">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-charts-persist">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Persist Candle History</strong>
-                  <span class="form-help">Stores candles in SQLite so history survives restarts.</span>
-                </span>
-              </label>
-              <span class="field-error"></span>
-            </div>
-
             <div class="form-group" data-field="charts.default_timeframe">
               <label for="f-default-timeframe">Default Timeframe</label>
               <select id="f-default-timeframe">
@@ -922,16 +797,9 @@
         <div class="card">
           <div class="card-header">
             <h2>Scrip Master</h2>
-            <p class="card-desc">Instrument master refresh time and the exchange segments downloaded at refresh.</p>
+            <p class="card-desc">Exchange segments downloaded when the Scrip Master is refreshed.</p>
           </div>
           <div class="form-grid">
-            <div class="form-group" data-field="scrip.refresh_at">
-              <label for="f-scrip-refresh">Daily Refresh Time (IST)</label>
-              <input type="time" id="f-scrip-refresh" required>
-              <span class="form-help">Time each trading day when the Scrip Master is refreshed.</span>
-              <span class="field-error"></span>
-            </div>
-
             <div class="form-group" style="grid-column: 1 / -1;" data-field="scrip.segments">
               <label>Downloaded Segments</label>
               <span class="form-help">All segments used by your indices, commodities and India VIX must stay selected.</span>
@@ -1054,18 +922,6 @@
                 <span class="unit-suffix">sec</span>
               </div>
               <span class="form-help">Sample rate for periodic tick line logs (0 disables sampled tick lines).</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group checkbox-group" data-field="logging.redact">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-log-redact" checked disabled>
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Automatic Secret Redaction</strong>
-                  <span class="form-help">Always active: TOTP, MPIN, and session tokens are strictly masked.</span>
-                </span>
-              </label>
               <span class="field-error"></span>
             </div>
           </div>
@@ -1377,18 +1233,6 @@
                 <option value="America/New_York"></option>
               </datalist>
               <span class="form-help">IANA zone used for session times and day boundaries. Asia/Kolkata is the exchange timezone.</span>
-              <span class="field-error"></span>
-            </div>
-
-            <div class="form-group checkbox-group" data-field="web.open_browser">
-              <label class="checkbox-label">
-                <input type="checkbox" id="f-open-browser">
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-text">
-                  <strong>Open Browser on Start</strong>
-                  <span class="form-help">Launches the terminal automatically when the process starts. Serve mode always disables this.</span>
-                </span>
-              </label>
               <span class="field-error"></span>
             </div>
           </div>

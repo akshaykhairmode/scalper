@@ -426,9 +426,6 @@ func restartRequiredFields(oldCfg, newCfg config.Config) []string {
 	if !reflect.DeepEqual(oldCfg.Scrip, newCfg.Scrip) {
 		fields = append(fields, "scrip")
 	}
-	if oldCfg.Web.OpenBrowser != newCfg.Web.OpenBrowser {
-		fields = append(fields, "web.open_browser")
-	}
 	if oldCfg.Trading.Paper.Enabled != newCfg.Trading.Paper.Enabled {
 		fields = append(fields, "trading.paper.enabled")
 	}

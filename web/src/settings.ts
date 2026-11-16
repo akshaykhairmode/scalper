@@ -324,13 +324,11 @@
     const m = t.margin || {};
 
     setVal('f-default-product', t.default_product || 'MIS');
-    setVal('f-default-order-type', t.default_order_type || 'MARKET');
     setVal('f-default-lots', q.default_lots || 1);
     setVal('f-default-unit', q.default_unit || 'lots');
     setChecked('f-allow-shares', !!q.allow_shares);
     setChecked('f-confirm-live-orders', !!t.confirm_live_orders);
     setChecked('f-confirm-chart-levels', t.confirm_chart_level_changes !== false);
-    setVal('f-market-protection', t.market_protection !== undefined ? t.market_protection : 0);
 
     const es = (t.bracket && t.bracket.exchange_stop) || {};
     setVal('f-exchange-stop-mode', es.mode || 'off');
@@ -342,7 +340,6 @@
     setVal('f-exchange-stop-on-cancel-failure', es.on_cancel_failure || 'alert');
     setChecked('f-exchange-stop-reconcile', es.reconcile_on_startup !== false);
     setChecked('f-exchange-stop-partial-fill', es.place_on_partial_fill !== false);
-    setChecked('f-exchange-stop-allow-chart-edit', es.allow_chart_edit === true);
 
     setVal('f-max-daily-loss', r.max_daily_loss_inr !== undefined ? r.max_daily_loss_inr : 5000);
     setVal('f-max-orders-min', r.max_orders_per_minute !== undefined ? r.max_orders_per_minute : 6);
@@ -358,12 +355,8 @@
     setChecked('f-allow-outside-hours', !!s.allow_outside_hours);
     setChecked('f-margin-check', !!m.check_before_order);
     setChecked('f-margin-fail-closed', !!m.fail_closed);
-    setVal('f-margin-refresh', m.refresh_ms !== undefined ? m.refresh_ms : 5000);
-    setVal('f-margin-debounce', m.preview_debounce_ms !== undefined ? m.preview_debounce_ms : 300);
 
     const rv = t.risk_view || {};
-    setChecked('f-risk-view-enabled', rv.enabled !== false);
-    setChecked('f-risk-view-preview', rv.include_preview !== false);
     setVal('f-payoff-range', rv.payoff_range_pct !== undefined ? rv.payoff_range_pct : 10);
     setVal('f-payoff-points', rv.payoff_points !== undefined ? rv.payoff_points : 121);
 
@@ -377,10 +370,7 @@
     setVal('f-hsm-url', mkt.hsm_url || '');
     setVal('f-depth-mode', d.mode || 'poll');
     setChecked('f-depth-enabled', !!d.enabled);
-    setVal('f-visible-poll', c.visible_poll_ms || 1000);
-    setVal('f-full-poll', c.full_poll_ms || 5000);
     setVal('f-chain-batch-size', c.batch_size || 40);
-    setChecked('f-visible-priority', c.visible_priority !== false);
     setVal('f-chain-premium-cutoff', c.premium_cutoff !== undefined ? c.premium_cutoff : 30);
     setVal('f-holidays', (mkt.holidays || []).join('\n'));
 
@@ -402,15 +392,12 @@
 
     // Charts
     const ch = cfg.charts || {};
-    setVal('f-base-timeframe', ch.base_timeframe || '1m');
     setVal('f-default-timeframe', ch.default_timeframe || '5m');
     setVal('f-chart-retention', ch.retention_days !== undefined ? ch.retention_days : 30);
-    setChecked('f-charts-persist', ch.persist !== false);
     renderTimeframes(ch.timeframes || ['1m', '3m', '5m', '15m', '1h', '4h']);
 
     // Scrip master
     const scrip = cfg.scrip || {};
-    setVal('f-scrip-refresh', scrip.refresh_at || '08:45');
     renderScripSegments(scrip.segments || []);
 
     // Application
@@ -428,7 +415,6 @@
     // Web access
     const web = cfg.web || {};
     const ba = web.basic_auth || {};
-    setChecked('f-open-browser', !!web.open_browser);
     setVal('f-basic-auth-user', ba.username || '');
     setVal('f-basic-auth-pass', ba.password || '');
     setChecked('f-insecure-no-auth', !!web.insecure_no_auth);
@@ -443,7 +429,6 @@
     setVal('f-max-backups', lg.max_backups || 10);
     setVal('f-retention-days', lg.retention_days || 14);
     setVal('f-tick-sample', lg.tick_sample_seconds !== undefined ? lg.tick_sample_seconds : 1);
-    setChecked('f-log-redact', true);
 
     // AI
     const ai = cfg.ai || {};
@@ -492,13 +477,11 @@
     const map = [
       // Trading
       { id: 'f-default-product', path: ['trading', 'default_product'], type: 'string' },
-      { id: 'f-default-order-type', path: ['trading', 'default_order_type'], type: 'string' },
       { id: 'f-default-lots', path: ['trading', 'quantity', 'default_lots'], type: 'int' },
       { id: 'f-default-unit', path: ['trading', 'quantity', 'default_unit'], type: 'string' },
       { id: 'f-allow-shares', path: ['trading', 'quantity', 'allow_shares'], type: 'bool' },
       { id: 'f-confirm-live-orders', path: ['trading', 'confirm_live_orders'], type: 'bool' },
       { id: 'f-confirm-chart-levels', path: ['trading', 'confirm_chart_level_changes'], type: 'bool' },
-      { id: 'f-market-protection', path: ['trading', 'market_protection'], type: 'int' },
       { id: 'f-exchange-stop-mode', path: ['trading', 'bracket', 'exchange_stop', 'mode'], type: 'string' },
       { id: 'f-exchange-stop-distance-mode', path: ['trading', 'bracket', 'exchange_stop', 'distance_mode'], type: 'string' },
       { id: 'f-exchange-stop-distance-value', path: ['trading', 'bracket', 'exchange_stop', 'distance_value'], type: 'float' },
@@ -508,7 +491,6 @@
       { id: 'f-exchange-stop-on-cancel-failure', path: ['trading', 'bracket', 'exchange_stop', 'on_cancel_failure'], type: 'string' },
       { id: 'f-exchange-stop-reconcile', path: ['trading', 'bracket', 'exchange_stop', 'reconcile_on_startup'], type: 'bool' },
       { id: 'f-exchange-stop-partial-fill', path: ['trading', 'bracket', 'exchange_stop', 'place_on_partial_fill'], type: 'bool' },
-      { id: 'f-exchange-stop-allow-chart-edit', path: ['trading', 'bracket', 'exchange_stop', 'allow_chart_edit'], type: 'bool' },
       { id: 'f-max-daily-loss', path: ['trading', 'risk', 'max_daily_loss_inr'], type: 'int' },
       { id: 'f-max-orders-min', path: ['trading', 'risk', 'max_orders_per_minute'], type: 'int' },
       { id: 'f-max-exit-sec', path: ['trading', 'risk', 'max_exit_orders_per_second'], type: 'int' },
@@ -522,10 +504,6 @@
       { id: 'f-allow-outside-hours', path: ['trading', 'session', 'allow_outside_hours'], type: 'bool' },
       { id: 'f-margin-check', path: ['trading', 'margin', 'check_before_order'], type: 'bool' },
       { id: 'f-margin-fail-closed', path: ['trading', 'margin', 'fail_closed'], type: 'bool' },
-      { id: 'f-margin-refresh', path: ['trading', 'margin', 'refresh_ms'], type: 'int' },
-      { id: 'f-margin-debounce', path: ['trading', 'margin', 'preview_debounce_ms'], type: 'int' },
-      { id: 'f-risk-view-enabled', path: ['trading', 'risk_view', 'enabled'], type: 'bool' },
-      { id: 'f-risk-view-preview', path: ['trading', 'risk_view', 'include_preview'], type: 'bool' },
       { id: 'f-payoff-range', path: ['trading', 'risk_view', 'payoff_range_pct'], type: 'int' },
       { id: 'f-payoff-points', path: ['trading', 'risk_view', 'payoff_points'], type: 'int' },
       { id: 'f-trading-mode', path: ['trading', 'mode'], type: 'string' },
@@ -541,10 +519,7 @@
       { id: 'f-hsm-url', path: ['market', 'hsm_url'], type: 'string' },
       { id: 'f-depth-mode', path: ['market', 'depth', 'mode'], type: 'string' },
       { id: 'f-depth-enabled', path: ['market', 'depth', 'enabled'], type: 'bool' },
-      { id: 'f-visible-poll', path: ['market', 'chain', 'visible_poll_ms'], type: 'int' },
-      { id: 'f-full-poll', path: ['market', 'chain', 'full_poll_ms'], type: 'int' },
       { id: 'f-chain-batch-size', path: ['market', 'chain', 'batch_size'], type: 'int' },
-      { id: 'f-visible-priority', path: ['market', 'chain', 'visible_priority'], type: 'bool' },
       { id: 'f-chain-premium-cutoff', path: ['market', 'chain', 'premium_cutoff'], type: 'float' },
       { id: 'f-bg-enabled', path: ['market', 'background_collection', 'enabled'], type: 'bool' },
       { id: 'f-bg-interval', path: ['market', 'background_collection', 'interval_seconds'], type: 'int' },
@@ -557,17 +532,13 @@
       { id: 'f-vix-scrip', path: ['market', 'india_vix', 'scrip_name'], type: 'string' },
 
       // Charts & scrip master
-      { id: 'f-base-timeframe', path: ['charts', 'base_timeframe'], type: 'string' },
       { id: 'f-default-timeframe', path: ['charts', 'default_timeframe'], type: 'string' },
       { id: 'f-chart-retention', path: ['charts', 'retention_days'], type: 'int' },
-      { id: 'f-charts-persist', path: ['charts', 'persist'], type: 'bool' },
-      { id: 'f-scrip-refresh', path: ['scrip', 'refresh_at'], type: 'string' },
 
       // Application & access
       { id: 'f-app-listen', path: ['app', 'listen'], type: 'string' },
       { id: 'f-app-db-path', path: ['app', 'db_path'], type: 'string' },
       { id: 'f-app-timezone', path: ['app', 'timezone'], type: 'string' },
-      { id: 'f-open-browser', path: ['web', 'open_browser'], type: 'bool' },
       { id: 'f-kotak-mobile', path: ['kotak', 'mobile_number'], type: 'string' },
       { id: 'f-kotak-ucc', path: ['kotak', 'ucc'], type: 'string' },
       { id: 'f-kotak-fin-key', path: ['kotak', 'neo_fin_key'], type: 'string' },

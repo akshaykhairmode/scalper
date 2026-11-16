@@ -64,9 +64,6 @@ func TestLoadExample(t *testing.T) {
 	if len(cfg.Market.Commodities) != 3 || cfg.Market.Commodities[0].ExchangeSegment != "mcx_fo" {
 		t.Fatalf("commodities = %+v", cfg.Market.Commodities)
 	}
-	if !cfg.Logging.Redact {
-		t.Fatal("redact must be true")
-	}
 	if cfg.Logging.Format != "text" {
 		t.Fatalf("logging format = %q, want text", cfg.Logging.Format)
 	}
@@ -229,7 +226,6 @@ func TestValidate(t *testing.T) {
 		{name: "bad log backups", mutate: func(c *Config) { c.Logging.MaxBackups = 0 }, wantField: "logging.max_backups"},
 		{name: "bad log retention", mutate: func(c *Config) { c.Logging.RetentionDays = 0 }, wantField: "logging.retention_days"},
 		{name: "bad tick sample", mutate: func(c *Config) { c.Logging.TickSampleSeconds = -1 }, wantField: "logging.tick_sample_seconds"},
-		{name: "redact disabled", mutate: func(c *Config) { c.Logging.Redact = false }, wantField: "logging.redact"},
 		{name: "missing mobile", mutate: func(c *Config) { c.Kotak.MobileNumber = "" }, wantField: "kotak.mobile_number"},
 		{name: "missing ucc", mutate: func(c *Config) { c.Kotak.UCC = "" }, wantField: "kotak.ucc"},
 		{name: "missing fin key", mutate: func(c *Config) { c.Kotak.NeoFinKey = "" }, wantField: "kotak.neo_fin_key"},
@@ -247,30 +243,22 @@ func TestValidate(t *testing.T) {
 		{name: "bad default expiry", mutate: func(c *Config) { c.Market.Indices[0].DefaultExpiry = "nearest" }, wantField: "market.indices[0].default_expiry"},
 		{name: "bad vix segment", mutate: func(c *Config) { c.Market.IndiaVIX.ExchangeSegment = "nse_fo" }, wantField: "market.india_vix.exchange_segment"},
 		{name: "empty vix symbol", mutate: func(c *Config) { c.Market.IndiaVIX.Symbol = "" }, wantField: "market.india_vix.symbol"},
-		{name: "visible poll too small", mutate: func(c *Config) { c.Market.Chain.VisiblePollMS = 100 }, wantField: "market.chain.visible_poll_ms"},
-		{name: "full poll too small", mutate: func(c *Config) { c.Market.Chain.FullPollMS = 100 }, wantField: "market.chain.full_poll_ms"},
-		{name: "visible not before full", mutate: func(c *Config) { c.Market.Chain.VisiblePollMS = 5000 }, wantField: "market.chain.visible_poll_ms"},
 		{name: "bad batch", mutate: func(c *Config) { c.Market.Chain.BatchSize = 0 }, wantField: "market.chain.batch_size"},
 		{name: "bad depth mode", mutate: func(c *Config) { c.Market.Depth.Mode = "magic" }, wantField: "market.depth.mode"},
 		{name: "bad holiday", mutate: func(c *Config) { c.Market.Holidays = []string{"2026/10/02"} }, wantField: "market.holidays[0]"},
 		{name: "invalid holiday date", mutate: func(c *Config) { c.Market.Holidays = []string{"2026-13-02"} }, wantField: "market.holidays[0]"},
-		{name: "bad base timeframe", mutate: func(c *Config) { c.Charts.BaseTimeframe = "5m" }, wantField: "charts.base_timeframe"},
 		{name: "no timeframes", mutate: func(c *Config) { c.Charts.Timeframes = nil }, wantField: "charts.timeframes"},
 		{name: "unsupported timeframe", mutate: func(c *Config) { c.Charts.Timeframes = []string{"1m", "2h"} }, wantField: "charts.timeframes[1]"},
 		{name: "duplicate timeframe", mutate: func(c *Config) { c.Charts.Timeframes = []string{"1m", "1m"} }, wantField: "charts.timeframes[1]"},
 		{name: "default timeframe missing", mutate: func(c *Config) { c.Charts.DefaultTimeframe = "2h" }, wantField: "charts.default_timeframe"},
 		{name: "bad retention", mutate: func(c *Config) { c.Charts.RetentionDays = 0 }, wantField: "charts.retention_days"},
 		{name: "bad product", mutate: func(c *Config) { c.Trading.DefaultProduct = "CNC" }, wantField: "trading.default_product"},
-		{name: "bad order type", mutate: func(c *Config) { c.Trading.DefaultOrderType = "LIMIT" }, wantField: "trading.default_order_type"},
-		{name: "bad market protection", mutate: func(c *Config) { c.Trading.MarketProtection = -1 }, wantField: "trading.market_protection"},
 		{name: "zero lots", mutate: func(c *Config) { c.Trading.Quantity.DefaultLots = 0 }, wantField: "trading.quantity.default_lots"},
 		{name: "bad unit", mutate: func(c *Config) { c.Trading.Quantity.DefaultUnit = "kg" }, wantField: "trading.quantity.default_unit"},
 		{name: "shares disallowed", mutate: func(c *Config) {
 			c.Trading.Quantity.AllowShares = false
 			c.Trading.Quantity.DefaultUnit = "shares"
 		}, wantField: "trading.quantity.default_unit"},
-		{name: "bad margin refresh", mutate: func(c *Config) { c.Trading.Margin.RefreshMS = 999 }, wantField: "trading.margin.refresh_ms"},
-		{name: "bad preview debounce", mutate: func(c *Config) { c.Trading.Margin.PreviewDebounceMS = 99 }, wantField: "trading.margin.preview_debounce_ms"},
 		{name: "bad session open", mutate: func(c *Config) { c.Trading.Session.Open = "9:15" }, wantField: "trading.session.open"},
 		{name: "bad session close", mutate: func(c *Config) { c.Trading.Session.Close = "25:99" }, wantField: "trading.session.close"},
 		{name: "session order", mutate: func(c *Config) { c.Trading.Session.Open = "15:45" }, wantField: "trading.session.open"},
@@ -279,7 +267,6 @@ func TestValidate(t *testing.T) {
 		{name: "bad payoff range", mutate: func(c *Config) { c.Trading.RiskView.PayoffRangePct = 0 }, wantField: "trading.risk_view.payoff_range_pct"},
 		{name: "bad payoff points", mutate: func(c *Config) { c.Trading.RiskView.PayoffPoints = 10 }, wantField: "trading.risk_view.payoff_points"},
 		{name: "bad chain premium cutoff", mutate: func(c *Config) { c.Market.Chain.PremiumCutoff = -1 }, wantField: "market.chain.premium_cutoff"},
-		{name: "bad refresh at", mutate: func(c *Config) { c.Scrip.RefreshAt = "8:45" }, wantField: "scrip.refresh_at"},
 		{name: "no segments", mutate: func(c *Config) { c.Scrip.Segments = nil }, wantField: "scrip.segments"},
 		{name: "bad segment", mutate: func(c *Config) { c.Scrip.Segments[0] = "nse_eq" }, wantField: "scrip.segments[0]"},
 		{name: "duplicate segment", mutate: func(c *Config) { c.Scrip.Segments = []string{"nse_fo", "nse_fo", "bse_fo", "nse_cm", "bse_cm"} }, wantField: "scrip.segments[1]"},
@@ -405,9 +392,6 @@ func TestWithServeMode(t *testing.T) {
 	}
 	if cfg.App.Listen != "127.0.0.1:8080" {
 		t.Fatalf("listen = %q, want 127.0.0.1:8080", cfg.App.Listen)
-	}
-	if cfg.Web.OpenBrowser {
-		t.Fatal("OpenBrowser should be false in serve mode")
 	}
 }
 

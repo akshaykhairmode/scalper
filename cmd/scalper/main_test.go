@@ -28,13 +28,11 @@ logging:
   max_backups: 1
   retention_days: 1
   tick_sample_seconds: 0
-  redact: true
 kotak:
   mobile_number: "+919999999999"
   ucc: "TESTUCC"
   neo_fin_key: "neotradeapi"
 web:
-  open_browser: false
   insecure_no_auth: true
 `, listen, dbPath)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
