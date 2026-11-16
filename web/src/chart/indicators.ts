@@ -86,6 +86,57 @@ export function emaSeries(values: number[], period: number): number[] {
   return out;
 }
 
+/**
+ * Session-anchored Volume Weighted Average Price.
+ *
+ * Uses typical price ((high + low + close) / 3) and resets the cumulative
+ * totals whenever `sessionKey` changes. Bars without traded volume are skipped;
+ * a session with no volume at all produces NaN values.
+ */
+export function vwapSeries(
+  candles: IndicatorCandle[],
+  sessionKey: (time: number) => string = (time) => {
+    const ms = time > 1e11 ? time : time * 1000;
+    return new Date(ms).toISOString().slice(0, 10);
+  },
+): number[] {
+  const n = Array.isArray(candles) ? candles.length : 0;
+  const out = new Array(n).fill(NaN);
+  let currentSession = "";
+  let cumulativePV = 0;
+  let cumulativeVolume = 0;
+
+  for (let i = 0; i < n; i++) {
+    const candle = candles[i];
+    if (!candle || !Number.isFinite(candle.time)) continue;
+
+    const key = sessionKey(candle.time);
+    if (key !== currentSession) {
+      currentSession = key;
+      cumulativePV = 0;
+      cumulativeVolume = 0;
+    }
+
+    const high = Number(candle.high);
+    const low = Number(candle.low);
+    const close = Number(candle.close);
+    const volume = Number(candle.volume);
+    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
+
+    const typical = (high + low + close) / 3;
+    if (!Number.isFinite(typical) || typical <= 0) continue;
+
+    if (Number.isFinite(volume) && volume > 0) {
+      cumulativePV += typical * volume;
+      cumulativeVolume += volume;
+    }
+    if (cumulativeVolume > 0) {
+      out[i] = cumulativePV / cumulativeVolume;
+    }
+  }
+  return out;
+}
+
 export interface EmaCross {
   time: number;
   price: number;

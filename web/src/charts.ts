@@ -34,6 +34,10 @@ const istDayKey = (time) => {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 };
 
+// IST has a fixed +05:30 offset (no DST). This avoids Intl formatting on every
+// indicator recalculation, which runs for each live tick.
+const istSessionKey = (time) => new Date(toChartTimestamp(time) + 19_800_000).toISOString().slice(0, 10);
+
 const formatVolume = (val) => {
   if (!Number.isFinite(val) || val <= 0) return "0";
   if (val >= 1e7) return `${(val / 1e7).toFixed(2)}Cr`;
@@ -2667,6 +2671,30 @@ function registerCustomIndicators() {
       }));
     },
   });
+
+  kc.registerIndicator({
+    name: "VWAP",
+    shortName: "",
+    calcParams: [],
+    precision: 2,
+    figures: [
+      { key: "vwap", title: "VWAP: ", type: "line", styles: () => ({ color: "#c084fc", size: 1.5 }) },
+    ],
+    calc: function(dataList) {
+      const candles = (dataList || []).map((candle) => ({
+        time: candle?.timestamp,
+        open: candle?.open,
+        high: candle?.high,
+        low: candle?.low,
+        close: candle?.close,
+        volume: candle?.volume,
+      }));
+      const series = Indicators.vwapSeries(candles, (time) => istSessionKey(time));
+      return series.map((value) => ({
+        vwap: Number.isFinite(value) ? value : null,
+      }));
+    },
+  });
 }
 
 function patchIndicatorLastValueView(chart) {
@@ -2761,7 +2789,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showVolumeProfile = false, showDepth = true, onLevelDrop = null, onLevelRemove = null, onVolumeProfile = null } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showVWAP = false, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showVolumeProfile = false, showDepth = true, onLevelDrop = null, onLevelRemove = null, onVolumeProfile = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -2771,6 +2799,7 @@ export class CandleChart {
     this.showPatterns = showPatterns;
     this.showFib = Boolean(showFib);
     this.showEMA = Boolean(showEMA ?? showMA);
+    this.showVWAP = Boolean(showVWAP);
     this.showRSI = Boolean(showRSI);
     this.showDivergence = Boolean(showDivergence);
     this.showMomentum = Boolean(showMomentum);
@@ -2914,6 +2943,10 @@ export class CandleChart {
       }
     }
 
+    if (this.showVWAP) {
+      this.ensureVWAPIndicator();
+    }
+
     if (this.showRSI) {
       this.ensureRSIIndicator();
     }
@@ -3009,6 +3042,34 @@ export class CandleChart {
   /** @deprecated use toggleEMA */
   toggleMA(forceState) {
     return this.toggleEMA(forceState);
+  }
+
+  ensureVWAPIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "VWAP", calcParams: [], paneId: "candle_pane" },
+        true,
+        { id: "candle_pane" }
+      );
+    } catch (e) {
+      console.warn("createIndicator VWAP:", e);
+    }
+  }
+
+  toggleVWAP(forceState) {
+    this.showVWAP = typeof forceState === "boolean" ? forceState : !this.showVWAP;
+    if (!this.chart) return this.showVWAP;
+    if (this.showVWAP) {
+      this.ensureVWAPIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "candle_pane", name: "VWAP" });
+      } catch (e) {
+        console.warn("removeIndicator VWAP:", e);
+      }
+    }
+    return this.showVWAP;
   }
 
   ensureRSIIndicator() {

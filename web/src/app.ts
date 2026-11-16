@@ -1295,7 +1295,7 @@ function updateChartSettingsButtonState() {
     const chart = chartForPane(pane);
     if (!chart) continue;
     const active = Boolean(
-      chart.showEMA || chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
+      chart.showEMA || chart.showVWAP || chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
       chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
       chart.showMomentum || chart.showTheta || chart.showVolumeProfile ||
       (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
@@ -1319,6 +1319,22 @@ function syncChartSettingsMenu(pane) {
   set("cs-patterns", chart.showPatterns);
   set("cs-fib", chart.showFib);
   set("cs-ema", chart.showEMA);
+  set("cs-vwap", chart.showVWAP);
+  const vwapBox = $("cs-vwap");
+  const vwapLabel = $("cs-vwap-label");
+  const spotPane = pane === "underlying" || pane === "spot";
+  if (vwapBox) {
+    vwapBox.disabled = spotPane;
+    vwapBox.title = spotPane
+      ? "VWAP requires traded volume; the spot index has no volume data."
+      : "Session volume weighted average price for this option leg.";
+  }
+  if (vwapLabel) {
+    vwapLabel.style.opacity = spotPane ? "0.5" : "";
+    vwapLabel.title = spotPane
+      ? "VWAP requires traded volume; the spot index has no volume data."
+      : "Session volume weighted average price for this option leg.";
+  }
   set("cs-rsi", chart.showRSI);
   set("cs-divergence", chart.showDivergence);
   set("cs-momentum", chart.showMomentum);
@@ -1379,6 +1395,15 @@ function buildCharts() {
   const savedMACE = localStorage.getItem("scalper-ma-ce") === "true";
   const savedMAUnderlying = (localStorage.getItem("scalper-ma-underlying") ?? localStorage.getItem("scalper-ma-spot")) === "true";
   const savedMAPE = localStorage.getItem("scalper-ma-pe") === "true";
+  // VWAP needs traded volume. It is on by default for the option legs and
+  // unavailable for the spot index, whose candles carry no volume.
+  const savedVWAPFor = (pane) => {
+    const value = localStorage.getItem(`scalper-show-vwap-${pane}`);
+    return value === null ? pane !== "underlying" : value === "true";
+  };
+  const savedVWAPCE = savedVWAPFor("ce");
+  const savedVWAPUnderlying = false;
+  const savedVWAPPE = savedVWAPFor("pe");
   const savedDOM = localStorage.getItem("scalper-show-dom") !== "false";
   const savedRSI = localStorage.getItem("scalper-show-rsi") === "true";
   const savedDivergence = localStorage.getItem("scalper-show-divergence") === "true";
@@ -1388,9 +1413,9 @@ function buildCharts() {
   const savedVolumeProfile = localStorage.getItem("scalper-show-volume-profile") === "true";
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showVWAP: savedVWAPCE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showVWAP: savedVWAPUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showVWAP: savedVWAPPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -2844,6 +2869,23 @@ function toggleChartEMA(pane, forceState?) {
   } catch (_) {}
   updateChartSettingsButtonState();
   toast(nextState ? `EMA 10/20/200 enabled (${label})` : `EMA 10/20/200 hidden (${label})`, "ok", 1500);
+  return nextState;
+}
+
+function toggleChartVWAP(pane, forceState?) {
+  if (pane === "underlying" || pane === "spot") {
+    toast("VWAP requires traded volume; the spot index has no volume data.", "warn", 4000);
+    return false;
+  }
+  const chart = chartForPane(pane);
+  if (!chart) return false;
+  const nextState = chart.toggleVWAP(forceState);
+  const label = chartLabelForPane(pane);
+  try {
+    localStorage.setItem(`scalper-show-vwap-${pane}`, String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? `VWAP enabled (${label})` : `VWAP hidden (${label})`, "ok", 1500);
   return nextState;
 }
 
@@ -8813,6 +8855,7 @@ function bindEvents() {
     "cs-patterns": (checked) => toggleChartPatterns(checked),
     "cs-fib": (checked) => toggleChartFib(checked),
     "cs-ema": (checked) => toggleChartEMA(S.chartSettingsPane, checked),
+    "cs-vwap": (checked) => toggleChartVWAP(S.chartSettingsPane, checked),
     "cs-rsi": (checked) => toggleChartRSI(checked),
     "cs-divergence": (checked) => toggleChartDivergence(checked),
     "cs-momentum": (checked) => toggleChartMomentum(checked),
