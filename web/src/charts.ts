@@ -37,6 +37,53 @@ const istDayKey = (time) => {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 };
 
+const istDateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kolkata",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const formatIstDateTime = (time) => {
+  const parts = istDateTimeFormatter.formatToParts(new Date(toChartTimestamp(time)));
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}`;
+};
+
+const pad2 = (value) => String(value).padStart(2, "0");
+const formatIstNow = () => {
+  // IST has no DST, so a fixed +05:30 offset is exact.
+  const shifted = new Date(Date.now() + 5.5 * 3600 * 1000);
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`
+    + `T${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}:${pad2(shifted.getUTCSeconds())}+05:30`;
+};
+const fmtPrice = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "-";
+};
+const fmtCompact = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+};
+const encodeCanvas = (canvas, mime, quality) =>
+  new Promise((resolve, reject) => {
+    if (typeof canvas.toBlob === "function") {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Canvas encoding returned an empty blob"));
+      }, mime, quality);
+      return;
+    }
+    try {
+      const dataUrl = canvas.toDataURL(mime, quality);
+      const binary = atob(dataUrl.split(",")[1] || "");
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      resolve(new Blob([bytes], { type: mime }));
+    } catch (error) {
+      reject(error);
+    }
+  });
+
 const formatVolume = (val) => {
   if (!Number.isFinite(val) || val <= 0) return "0";
   if (val >= 1e7) return `${(val / 1e7).toFixed(2)}Cr`;
@@ -4824,6 +4871,400 @@ export class CandleChart {
       this.chart.scrollToRealTime();
       if (this.showDepth) this.debounceDepthRefresh();
     }
+  }
+
+  /** Inclusive data-index window currently rendered by klinecharts. */
+  visibleExportRange() {
+    const data = this.data || [];
+    if (!data.length) return { from: 0, to: -1 };
+    let from = 0;
+    let to = data.length - 1;
+    try {
+      const range = this.chart?.getVisibleRange?.();
+      if (range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
+        from = Math.max(0, Math.floor(range.from));
+        to = Math.min(data.length - 1, Math.ceil(range.to));
+      }
+    } catch (_) {}
+    if (to < from) {
+      from = Math.max(0, data.length - 120);
+      to = data.length - 1;
+    }
+    return { from, to };
+  }
+
+  chartBackgroundColor() {
+    try {
+      const background = getComputedStyle(this.container).backgroundColor;
+      if (background && background !== "transparent" && !/^rgba?\(0,\s*0,\s*0,\s*0\)$/.test(background)) {
+        return background;
+      }
+    } catch (_) {}
+    try {
+      const themed = getComputedStyle(document.documentElement).getPropertyValue("--chart-bg").trim();
+      if (themed) return themed;
+    } catch (_) {}
+    return this.colors?.bg || "#07090c";
+  }
+
+  /**
+   * Rasterise every klinecharts canvas in this pane onto one offscreen canvas.
+   * The library stacks separate main/overlay canvases per pane (plus the axis
+   * panes), so compositing by DOM order reproduces exactly what is on screen.
+   */
+  async captureChartBlob({ type = "image/png", quality = 0.92 } = {}) {
+    if (!this.chart || !this.container) throw new Error("Chart is not ready");
+    const box = this.container.getBoundingClientRect();
+    if (!(box.width >= 2) || !(box.height >= 2)) throw new Error("Chart is not visible");
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+
+    // Suppress transient hover artefacts for the capture: crosshair lines/labels
+    // and both tooltips (the indicator tooltip has an "always" show rule).
+    let previousCrosshair = null;
+    let indicatorTooltipRule = "always";
+    try {
+      previousCrosshair = this.chart.getCrosshair?.() || null;
+      indicatorTooltipRule = this.chart.getStyles?.()?.indicator?.tooltip?.showRule || "always";
+      this.chart.setStyles({ indicator: { tooltip: { showRule: "none" } } });
+      this.chart.setCrosshair({ x: undefined, y: undefined, paneId: undefined, forceInvalidate: true });
+    } catch (_) {}
+
+    try {
+      // klinecharts redraws on the next animation frame; wait for two so the
+      // crosshair removal is painted before sampling the canvases.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      const width = Math.max(1, Math.round(box.width * dpr));
+      const height = Math.max(1, Math.round(box.height * dpr));
+      const output = document.createElement("canvas");
+      output.width = width;
+      output.height = height;
+      const ctx = output.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+      // JPEG has no alpha: flatten on the themed chart background. Doing the
+      // same for PNG keeps exports consistent with the visible pane.
+      ctx.fillStyle = this.chartBackgroundColor();
+      ctx.fillRect(0, 0, width, height);
+
+      const canvases = Array.from(this.container.querySelectorAll("canvas")) as HTMLCanvasElement[];
+      for (const canvas of canvases) {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) continue;
+        try {
+          const style = getComputedStyle(canvas);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
+        } catch (_) {}
+        try {
+          ctx.drawImage(
+            canvas,
+            (rect.left - box.left) * dpr,
+            (rect.top - box.top) * dpr,
+            rect.width * dpr,
+            rect.height * dpr,
+          );
+        } catch (error) {
+          console.warn("chart canvas composite skipped", error);
+        }
+      }
+
+      const mime = type === "image/jpeg" ? "image/jpeg" : "image/png";
+      return await encodeCanvas(output, mime, mime === "image/jpeg" ? quality : undefined);
+    } finally {
+      try {
+        this.chart?.setStyles?.({ indicator: { tooltip: { showRule: indicatorTooltipRule } } });
+        if (previousCrosshair && typeof previousCrosshair.paneId === "string") {
+          this.chart?.setCrosshair?.({
+            x: previousCrosshair.x,
+            y: previousCrosshair.y,
+            paneId: previousCrosshair.paneId,
+            forceInvalidate: true,
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  enabledIndicatorNames() {
+    const names = [];
+    if (this.showVolume) names.push("VOL");
+    if (this.showEMA) names.push("EMA(10/20/200)");
+    if (this.showVWAP) names.push("VWAP");
+    if (this.showRSI) names.push("RSI(14)");
+    if (this.showDivergence) names.push("RSI divergence");
+    if (this.showMomentum) names.push("Momentum candles");
+    if (this.showTheta) names.push("Time decay (theta)");
+    if (this.showSR) names.push("S/R levels");
+    if (this.showAutoTrendlines) names.push("Auto trendlines");
+    if (this.showPatterns) names.push("Patterns");
+    if (this.showFib) names.push("Fibonacci");
+    if (this.showTrades) names.push("Trades/positions");
+    if (this.showDepth) names.push("Order-flow DOM");
+    if (this.showVolumeProfile) names.push("Volume profile");
+    if (this.showMaxPain) names.push("Max pain");
+    return names;
+  }
+
+  buildIndicatorExportSeries(fromIndex, toIndex) {
+    const data = this.data || [];
+    const out = [];
+    if (!data.length || toIndex < fromIndex) return out;
+    const closes = data.map((candle) => Number(candle.close));
+    const append = (label, values, digits = 2) => {
+      const points = [];
+      for (let i = fromIndex; i <= toIndex; i++) {
+        const value = values?.[i];
+        points.push(Number.isFinite(value) ? Number(value).toFixed(digits) : "-");
+      }
+      out.push(`${label}: ${points.join(",")}`);
+    };
+
+    if (this.showVolume) out.push("vol: in candle CSV volume column");
+    if (this.showEMA) {
+      for (const period of [10, 20, 200]) {
+        append(`ema(${period})`, Indicators.emaSeries(closes, period));
+      }
+    }
+    if (this.showVWAP) append("vwap(session)", Indicators.vwapSeries(data, istSessionKey));
+    if (this.showRSI) append("rsi(14)", Indicators.rsiSeries(data, 14), 1);
+    if (this.showDivergence) {
+      const rsi = Indicators.rsiSeries(data, 14);
+      const divergences = Indicators.detectDivergences(data, rsi, { lookback: 150, span: 3, minRsiDelta: 1, max: 4 });
+      const recent = divergences.slice(-5).map((divergence) =>
+        `${divergence.kind}@${formatIstDateTime(divergence.to.time)}(${fmtPrice(divergence.from.price)}→${fmtPrice(divergence.to.price)})`
+      );
+      out.push(`rsi_divergences: ${recent.length ? recent.join("; ") : "none"}`);
+    }
+    if (this.showMomentum) {
+      const atr = Indicators.atrSeries(data, 14);
+      const candles = Indicators.detectMomentumCandles(data, atr, { lookback: 150, multiplier: 1.5, maxBodyRatio: 0.6, max: 40 });
+      out.push(`momentum_candles: ${candles.length}`);
+    }
+    return out;
+  }
+
+  buildChartDerivedLines() {
+    const out = [];
+    const data = this.data || [];
+
+    if (this.showVWAP && data.length) {
+      const vwap = Indicators.vwapSeries(data, istSessionKey);
+      let lastVwap = NaN;
+      for (let i = vwap.length - 1; i >= 0; i--) {
+        if (Number.isFinite(vwap[i])) {
+          lastVwap = vwap[i];
+          break;
+        }
+      }
+      if (Number.isFinite(lastVwap)) out.push(`vwap_last: ${fmtPrice(lastVwap)}`);
+    }
+
+    if (this.showMaxPain && this.maxPainValue) {
+      const meta = this.maxPainMeta || {};
+      const bits = [`max_pain: ${fmtPrice(this.maxPainValue)}`];
+      if (Number.isFinite(meta.callOIWall)) bits.push(`call_oi_wall=${fmtCompact(meta.callOIWall)}`);
+      if (Number.isFinite(meta.putOIWall)) bits.push(`put_oi_wall=${fmtCompact(meta.putOIWall)}`);
+      if (Number.isFinite(meta.pcr)) bits.push(`pcr=${fmtCompact(meta.pcr)}`);
+      out.push(bits.join(" | "));
+    }
+
+    if (this.showSR && data.length >= 5) {
+      const { supports, resistances } = calculateSRLevels(data);
+      if (supports.length) out.push(`support_levels: ${supports.map(fmtPrice).join(",")}`);
+      if (resistances.length) out.push(`resistance_levels: ${resistances.map(fmtPrice).join(",")}`);
+    }
+
+    if (this.showVolumeProfile) {
+      const profile = this.vpSuggestion?.profile || buildVolumeProfile(data);
+      if (profile) {
+        const nodes = Array.isArray(profile.nodes) ? profile.nodes : [];
+        const pocNode = nodes.find((node) => Math.abs(node.price - profile.poc) < 1e-6);
+        const buyVsSell = pocNode ? `poc_buy_sell=${fmtCompact(pocNode.buy)}/${fmtCompact(pocNode.sell)}` : "";
+        out.push(`volume_profile: poc=${fmtPrice(profile.poc)} vah=${fmtPrice(profile.vah)} val=${fmtPrice(profile.val)} ${buyVsSell}`.trim());
+      }
+      if (this.vpSuggestion?.buy && this.vpSuggestion?.sell) {
+        out.push(
+          `volume_suggestion: bias=${this.vpSuggestion.bias || "none"} buy_zone=${fmtPrice(this.vpSuggestion.buy.low)}-${fmtPrice(this.vpSuggestion.buy.high)}`
+          + ` sell_zone=${fmtPrice(this.vpSuggestion.sell.low)}-${fmtPrice(this.vpSuggestion.sell.high)}`
+          + ` stop=${fmtPrice(this.vpSuggestion.stop)} target=${fmtPrice(this.vpSuggestion.target)}`
+        );
+      }
+    }
+
+    if (this.showAutoTrendlines && data.length) {
+      const trendlines = calculateAutoTrendlines(data);
+      const support = trendlines?.support?.projectedPrice;
+      const resistance = trendlines?.resistance?.projectedPrice;
+      if (Number.isFinite(support) || Number.isFinite(resistance)) {
+        out.push(`auto_trendline_projection: support=${fmtPrice(support)} resistance=${fmtPrice(resistance)}`);
+      }
+    }
+
+    if (this.showFib && data.length >= 10) {
+      const fib = calculateFibLevels(data);
+      if (fib?.levels?.length) {
+        out.push(`fibonacci(${fib.direction}): ${fib.levels.map((level) => `${level.ratio}=${fmtPrice(level.price)}`).join(",")}`);
+      }
+    }
+
+    if (this.showDepth && this.depthData) {
+      const range = this.getVisiblePriceRange();
+      if (range && range.max > range.min) {
+        const step = computeDOMInterval(range.min, range.max, range.height);
+        const { buckets } = calculateOrderFlowBuckets(data, this.depthData, this.chainData, range.min, range.max, step);
+        const visibleBuckets = (buckets || []).filter((bucket) => bucket.buyVol > 0 || bucket.sellVol > 0);
+        if (visibleBuckets.length) {
+          let buyVol = 0;
+          let sellVol = 0;
+          for (const bucket of visibleBuckets) {
+            buyVol += bucket.buyVol;
+            sellVol += bucket.sellVol;
+          }
+          const top = [...visibleBuckets]
+            .sort((a, b) => (b.buyVol + b.sellVol) - (a.buyVol + a.sellVol))
+            .slice(0, 3)
+            .map((bucket) => `${fmtPrice(bucket.price)}:${fmtCompact(bucket.buyVol)}/${fmtCompact(bucket.sellVol)}`);
+          out.push(`depth_visible(step=${fmtCompact(step)}): buy_vol=${fmtCompact(buyVol)} sell_vol=${fmtCompact(sellVol)} top_price:buy/sell=${top.join(";")}`);
+        }
+      }
+    }
+
+    if (this.showTrades && this.tradesData?.length) {
+      out.push(`trade_markers: ${this.tradesData.length}`);
+    }
+
+    if (this.showTheta && data.length) {
+      const last = data[data.length - 1];
+      const bits = [];
+      if (Number.isFinite(last.tdCE)) bits.push(`call=${fmtPrice(last.tdCE)}`);
+      if (Number.isFinite(last.tdPE)) bits.push(`put=${fmtPrice(last.tdPE)}`);
+      if (bits.length) out.push(`theta_last: ${bits.join(" ")}`);
+    }
+
+    return out;
+  }
+
+  buildChartSummary(visible, first, last) {
+    if (!visible.length || !first || !last) return "no visible candles";
+    const parts = [];
+    const changePct = first.close > 0 ? ((last.close - first.close) / first.close) * 100 : 0;
+    const direction = changePct > 0.15 ? "uptrend" : changePct < -0.15 ? "downtrend" : "sideways";
+    parts.push(`${direction} (${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}% over ${visible.length} bars)`);
+
+    const closes = (this.data || []).map((candle) => Number(candle.close));
+    if (closes.length) {
+      const ema20 = Indicators.emaSeries(closes, 20);
+      const ema200 = Indicators.emaSeries(closes, 200);
+      const last20 = ema20[ema20.length - 1];
+      const last200 = ema200[ema200.length - 1];
+      if (Number.isFinite(last20) && Number.isFinite(last200)) {
+        parts.push(last20 >= last200 ? "EMA20 above EMA200" : "EMA20 below EMA200");
+      }
+    }
+
+    if (this.showVWAP) {
+      const vwap = Indicators.vwapSeries(this.data, istSessionKey);
+      let lastVwap = NaN;
+      for (let i = vwap.length - 1; i >= 0; i--) {
+        if (Number.isFinite(vwap[i])) {
+          lastVwap = vwap[i];
+          break;
+        }
+      }
+      if (Number.isFinite(lastVwap)) {
+        parts.push(last.close >= lastVwap ? "price above VWAP" : "price below VWAP");
+      }
+    }
+
+    const tail = visible.slice(-10);
+    if (tail.length >= 4) {
+      const half = Math.floor(tail.length / 2);
+      const avg = (rows) => rows.reduce((sum, row) => sum + Number(row.volume || 0), 0) / Math.max(1, rows.length);
+      const recentVolume = avg(tail.slice(-half));
+      const priorVolume = avg(tail.slice(0, half));
+      if (recentVolume > 0 && priorVolume > 0) {
+        const ratio = recentVolume / priorVolume;
+        parts.push(ratio > 1.15 ? "volume expanding" : ratio < 0.85 ? "volume declining" : "volume steady");
+      }
+    }
+
+    if (this.showRSI) {
+      const rsi = Indicators.rsiSeries(this.data, 14);
+      const lastRsi = rsi[rsi.length - 1];
+      if (Number.isFinite(lastRsi)) {
+        const zone = lastRsi >= 70 ? "overbought" : lastRsi <= 30 ? "oversold" : "neutral";
+        parts.push(`RSI(14) ${lastRsi.toFixed(1)} ${zone}`);
+      }
+    }
+
+    return parts.join(", ");
+  }
+
+  /**
+   * Token-efficient Markdown report meant to be pasted into an LLM chat.
+   * One CSV row per candle, no nested/pretty-printed JSON.
+   */
+  buildLLMExport(meta: any = {}) {
+    const data = this.data || [];
+    const { from, to } = this.visibleExportRange();
+    const visible = to >= from ? data.slice(from, to + 1) : [];
+    const first = visible[0] || data[0] || null;
+    const last = visible[visible.length - 1] || data[data.length - 1] || null;
+    const paneLabel = meta.paneLabel || meta.pane || "Chart";
+    const symbol = meta.symbol || this.currentSymbol || "Chart";
+    const timeframe = meta.timeframe || "—";
+    const lines = [];
+
+    lines.push(`# Chart export · ${symbol} · ${timeframe} · ${paneLabel}`);
+    lines.push("");
+    lines.push(`symbol: ${symbol}`);
+    lines.push(`index: ${meta.index || "—"}`);
+    lines.push(`expiry: ${meta.expiry || "—"}`);
+    lines.push(`timeframe: ${timeframe}`);
+    lines.push(`pane: ${paneLabel}`);
+    lines.push(`pane_key: ${meta.pane || "—"}`);
+    lines.push(`theme: ${meta.theme || "dark"}`);
+    lines.push(`generated_at: ${formatIstNow()}`);
+    if (first && last) {
+      lines.push(`visible_range_ist: ${formatIstDateTime(first.time)} → ${formatIstDateTime(last.time)} (${visible.length} bars)`);
+      lines.push(`current_price: ${fmtPrice(last.close)}`);
+    } else {
+      lines.push("visible_range_ist: —");
+      lines.push("current_price: —");
+    }
+    lines.push(`overlays: ${this.enabledIndicatorNames().join(", ") || "none"}`);
+    lines.push(`summary: ${this.buildChartSummary(visible, first, last)}`);
+    lines.push("");
+
+    lines.push("## Candles (visible, time IST)");
+    lines.push("```csv");
+    lines.push("time_ist,open,high,low,close,volume");
+    for (const candle of visible) {
+      lines.push(
+        `${formatIstDateTime(candle.time)},${fmtPrice(candle.open)},${fmtPrice(candle.high)},`
+        + `${fmtPrice(candle.low)},${fmtPrice(candle.close)},${fmtCompact(candle.volume)}`
+      );
+    }
+    lines.push("```");
+    lines.push("");
+
+    lines.push("## Indicators");
+    const tail = Math.min(20, visible.length);
+    if (tail > 0) {
+      lines.push(`indicator_tail_bars: ${tail} (oldest→newest, aligned to the last ${tail} CSV rows)`);
+      const series = this.buildIndicatorExportSeries(to - tail + 1, to);
+      lines.push(...(series.length ? series : ["none enabled"]));
+    } else {
+      lines.push("none enabled");
+    }
+    lines.push("");
+
+    lines.push("## Derived / overlays");
+    const derived = this.buildChartDerivedLines();
+    lines.push(...(derived.length ? derived : ["none enabled"]));
+    lines.push("");
+
+    return lines.join("\n");
   }
 
   applyTheme() {

@@ -312,6 +312,7 @@ const S: any = {
   chainStats: null,
   thetaMeta: null,
   chartSettingsPane: "underlying",
+  chartExportPane: "underlying",
   chainStatsRequestID: 0,
   historicalCache: new Map(),
   chartLoadID: 0,
@@ -1371,6 +1372,7 @@ function closeChartSettings() {
 function openChartSettings(anchor, pane) {
   const popover = $("chart-settings-popover");
   if (!popover) return;
+  closeChartExport();
   if (popover.style.display !== "none" && S.chartSettingsPane === pane) {
     closeChartSettings();
     return;
@@ -1387,6 +1389,129 @@ function openChartSettings(anchor, pane) {
   const width = popover.offsetWidth || 300;
   popover.style.top = `${Math.max(10, Math.min(window.innerHeight - height - 10, rect.bottom + 4))}px`;
   popover.style.left = `${Math.max(10, Math.min(window.innerWidth - width - 10, rect.right - width))}px`;
+}
+
+function chartExportMeta(pane) {
+  const spotPane = pane === "underlying" || pane === "spot";
+  const option = pane === "ce" ? selectedOption("CE") : pane === "pe" ? selectedOption("PE") : null;
+  const strike = option?.strike != null ? fmtStrike(option.strike) : "";
+  const symbol = spotPane
+    ? `${S.activeIndex || "Index"} spot`
+    : (option?.symbol || `${S.activeIndex || "Index"} ${strike} ${String(pane).toUpperCase()}`.trim());
+  return {
+    pane,
+    paneLabel: chartLabelForPane(pane),
+    symbol,
+    index: S.activeIndex || "",
+    expiry: spotPane ? "" : expiryText(S.expiry),
+    strike,
+    timeframe: S.timeframe || "",
+    theme: currentTheme(),
+  };
+}
+
+function chartExportFileName(pane, extension) {
+  const base = `${S.activeIndex || "chart"}-${chartLabelForPane(pane)}-${S.timeframe || "tf"}`
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `${base}-${stamp}.${extension}`;
+}
+
+function downloadBlobFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function closeChartExport() {
+  const popover = $("chart-export-popover");
+  if (popover) popover.style.display = "none";
+  for (const button of $$('button[data-chart-action="export"]')) {
+    button.setAttribute("aria-expanded", "false");
+  }
+  S.chartExportPane = null;
+}
+
+function openChartExport(anchor, pane) {
+  const popover = $("chart-export-popover");
+  if (!popover) return;
+  if (popover.style.display !== "none" && S.chartExportPane === pane) {
+    closeChartExport();
+    return;
+  }
+  closeChartSettings();
+  S.chartExportPane = pane;
+  for (const button of $$('button[data-chart-action="export"]')) {
+    button.setAttribute("aria-expanded", button === anchor ? "true" : "false");
+  }
+  const title = $("chart-export-title");
+  if (title) title.textContent = `Export ${chartLabelForPane(pane)} chart`;
+  popover.style.display = "block";
+  popover.style.position = "fixed";
+  const rect = anchor.getBoundingClientRect();
+  const height = popover.offsetHeight || 270;
+  const width = popover.offsetWidth || 272;
+  popover.style.top = `${Math.max(10, Math.min(window.innerHeight - height - 10, rect.bottom + 4))}px`;
+  popover.style.left = `${Math.max(10, Math.min(window.innerWidth - width - 10, rect.right - width))}px`;
+}
+
+async function copyChartPaneImage(pane) {
+  const chart = chartForPane(pane);
+  if (!chart) {
+    toast("Chart is not ready yet.", "warn");
+    return;
+  }
+  const clipboard = navigator.clipboard;
+  const ClipboardItemCtor = (window as any).ClipboardItem;
+  if (!clipboard?.write || typeof ClipboardItemCtor !== "function") {
+    toast("Image copy is not supported in this browser or WebView. Use “Download PNG” instead.", "warn", 6000);
+    return;
+  }
+  try {
+    // Pass the promise straight to ClipboardItem so Safari keeps the user
+    // gesture while the chart is rasterised.
+    const blobPromise = chart.captureChartBlob({ type: "image/png" });
+    await clipboard.write([new ClipboardItemCtor({ "image/png": blobPromise })]);
+    toast("Chart image copied to clipboard", "ok");
+  } catch (error) {
+    console.warn("chart clipboard copy failed", error);
+    toast("Couldn't copy the image (clipboard blocked or unsupported). Use “Download PNG” instead.", "warn", 6000);
+  }
+}
+
+async function exportChartPane(pane, format) {
+  const chart = chartForPane(pane);
+  if (!chart) {
+    toast("Chart is not ready yet.", "warn");
+    return;
+  }
+  try {
+    if (format === "llm") {
+      const text = chart.buildLLMExport(chartExportMeta(pane));
+      downloadBlobFile(new Blob([text], { type: "text/markdown;charset=utf-8" }), chartExportFileName(pane, "md"));
+      toast("LLM-readable chart summary downloaded", "ok");
+      return;
+    }
+    if (format === "clipboard") {
+      await copyChartPaneImage(pane);
+      return;
+    }
+    const jpeg = format === "jpeg";
+    const blob = await chart.captureChartBlob({ type: jpeg ? "image/jpeg" : "image/png", quality: 0.92 });
+    downloadBlobFile(blob, chartExportFileName(pane, jpeg ? "jpg" : "png"));
+    toast(`Chart exported as ${jpeg ? "JPEG" : "PNG"}`, "ok");
+  } catch (error) {
+    console.warn("chart export failed", error);
+    toast("Chart export failed. Please try again.", "error");
+  }
 }
 
 function updateIndicatorButtonState() {
@@ -6203,6 +6328,10 @@ function initChartTooltips() {
       title: "Maximize / Restore (⛶)",
       desc: "Maximize this chart pane to full screen, or click again / press Esc to restore 3-chart layout.",
     },
+    export: {
+      title: "Export Chart",
+      desc: "Download PNG or JPEG, copy the chart image to the clipboard, or export an LLM-readable text summary.",
+    },
     "tools-toggle": {
       title: "Technical Tools (📐)",
       desc: "Toggle advanced chart indicators, overlays, and drawing tools panel.",
@@ -8427,6 +8556,10 @@ function bindEvents() {
         openChartSettings(button, chartKey);
         return;
       }
+      if (action === "export") {
+        openChartExport(button, chartKey);
+        return;
+      }
       if (action === "expand") {
         setFocusedChart(chartKey);
         return;
@@ -8862,6 +8995,16 @@ function bindEvents() {
 
   const settingsPopover = $("chart-settings-popover");
   $("chart-settings-close")?.addEventListener("click", closeChartSettings);
+  const exportPopover = $("chart-export-popover");
+  $("chart-export-close")?.addEventListener("click", closeChartExport);
+  for (const button of $$("#chart-export-popover [data-export-format]")) {
+    button.addEventListener("click", () => {
+      const format = button.dataset.exportFormat;
+      const pane = S.chartExportPane;
+      closeChartExport();
+      if (pane && format) exportChartPane(pane, format);
+    });
+  }
   const chartSettingHandlers = {
     "cs-trades": (checked) => {
       const chart = chartForPane(S.chartSettingsPane);
@@ -8903,6 +9046,12 @@ function bindEvents() {
     patternPopover.style.left = `${Math.max(10, Math.min(window.innerWidth - 260, rect.right - 260))}px`;
   });
   document.addEventListener("click", (e) => {
+    if (exportPopover && exportPopover.style.display !== "none") {
+      if (!exportPopover.contains(e.target as any) &&
+          !(e.target as any)?.closest?.('[data-chart-action="export"]')) {
+        closeChartExport();
+      }
+    }
     if (settingsPopover && settingsPopover.style.display !== "none") {
       if (!settingsPopover.contains(e.target as any) &&
           !(e.target as any)?.closest?.('[data-chart-action="settings"]')) {
@@ -8920,6 +9069,11 @@ function bindEvents() {
       return;
     }
     if (event.key !== "Escape") return;
+    const exportPopoverEl = $("chart-export-popover");
+    if (exportPopoverEl && exportPopoverEl.style.display !== "none") {
+      closeChartExport();
+      return;
+    }
     const settingsPopoverEl = $("chart-settings-popover");
     if (settingsPopoverEl && settingsPopoverEl.style.display !== "none") {
       closeChartSettings();

@@ -184,6 +184,7 @@
           <div id="chart-ce" class="chart-canvas" role="img" aria-label="Call option candlestick chart" aria-details="chart-data-table"></div>
           <div class="chart-tools" aria-label="CALL chart tools">
             <button type="button" class="chart-settings-btn" data-chart="ce" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
+            <button type="button" class="chart-settings-btn chart-export-btn" data-chart="ce" data-chart-action="export" title="Export chart · PNG, JPEG, clipboard or LLM-readable text" aria-label="Export CALL chart" aria-haspopup="menu" aria-expanded="false">Export <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="ce" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="ce" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="ce" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -237,6 +238,7 @@
           <div id="chart-spot" class="chart-canvas" role="img" aria-label="Underlying spot candlestick chart"></div>
           <div class="chart-tools" aria-label="Underlying chart tools">
             <button type="button" class="chart-settings-btn" data-chart="underlying" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
+            <button type="button" class="chart-settings-btn chart-export-btn" data-chart="underlying" data-chart-action="export" title="Export chart · PNG, JPEG, clipboard or LLM-readable text" aria-label="Export underlying chart" aria-haspopup="menu" aria-expanded="false">Export <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="underlying" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="underlying" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="underlying" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -265,6 +267,7 @@
           <div id="chart-pe" class="chart-canvas" role="img" aria-label="Put option candlestick chart" aria-details="chart-data-table"></div>
           <div class="chart-tools" aria-label="PUT chart tools">
             <button type="button" class="chart-settings-btn" data-chart="pe" data-chart-action="settings" title="Indicators &amp; chart settings" aria-label="Chart indicators and settings" aria-haspopup="dialog" aria-expanded="false">Indicators <span aria-hidden="true">▾</span></button>
+            <button type="button" class="chart-settings-btn chart-export-btn" data-chart="pe" data-chart-action="export" title="Export chart · PNG, JPEG, clipboard or LLM-readable text" aria-label="Export PUT chart" aria-haspopup="menu" aria-expanded="false">Export <span aria-hidden="true">▾</span></button>
             <button type="button" data-chart="pe" data-chart-action="in" title="Zoom In (+) · Increase candlestick width to inspect recent candles" aria-label="Zoom in time">+</button>
             <button type="button" data-chart="pe" data-chart-action="out" title="Zoom Out (−) · Decrease candlestick width to view wider history" aria-label="Zoom out time">−</button>
             <button type="button" data-chart="pe" data-chart-action="reset" title="Reset View (↺) · Reset zoom and scroll to latest live candle" aria-label="Reset time and price zoom">↺</button>
@@ -1030,6 +1033,31 @@
           <span>⚙</span> Pattern Filters…
         </button>
       </div>
+    </div>
+  </div>
+
+  <div class="pattern-popover chart-export-popover" id="chart-export-popover" style="display: none;" role="menu" aria-labelledby="chart-export-title">
+    <div class="pattern-popover-header">
+      <span id="chart-export-title">Export chart</span>
+      <button type="button" class="pattern-popover-close" id="chart-export-close" aria-label="Close export menu">✕</button>
+    </div>
+    <div class="pattern-popover-body chart-export-menu">
+      <button type="button" class="chart-export-item" data-export-format="png" role="menuitem">
+        <span class="chart-export-icon" aria-hidden="true">PNG</span>
+        <span><b>Download PNG</b><em>Chart snapshot, theme background</em></span>
+      </button>
+      <button type="button" class="chart-export-item" data-export-format="jpeg" role="menuitem">
+        <span class="chart-export-icon" aria-hidden="true">JPG</span>
+        <span><b>Download JPEG</b><em>Flattened on theme background · 92%</em></span>
+      </button>
+      <button type="button" class="chart-export-item" data-export-format="clipboard" role="menuitem">
+        <span class="chart-export-icon" aria-hidden="true">⧉</span>
+        <span><b>Copy image</b><em>PNG to clipboard</em></span>
+      </button>
+      <button type="button" class="chart-export-item" data-export-format="llm" role="menuitem">
+        <span class="chart-export-icon" aria-hidden="true">MD</span>
+        <span><b>LLM-readable text</b><em>Visible candles, indicators, levels</em></span>
+      </button>
     </div>
   </div>
 
