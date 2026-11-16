@@ -5822,6 +5822,12 @@ function initChartQuickOrder() {
   $("cqo-price")?.addEventListener("focus", (e: any) => {
     e.target?.select?.();
   });
+  // Update the price preview while typing, but do not re-anchor the target or
+  // stop-loss here. Number inputs emit `input` for every keystroke (e.g. 1,
+  // 14, 140); re-anchoring from those partial values silently clamps a
+  // user-entered SL distance and replaces the SL price (a typed SL of 65 can
+  // become 139.05 when the price is typed as 140). The `change` handler
+  // reconciles the levels once the value is committed.
   $("cqo-price")?.addEventListener("input", (e) => {
     const val = num(e.target.value);
     if (Number.isFinite(val) && val > 0 && S.quickOrder) {
@@ -5829,18 +5835,6 @@ function initChartQuickOrder() {
       $("cqo-buy-price").textContent = `@ ₹${val.toFixed(2)}`;
       $("cqo-sell-price").textContent = `@ ₹${val.toFixed(2)}`;
       S.charts[S.quickOrder.pane]?.showOrderPreview(val);
-      if (S.quickOrder.targetEnabled) {
-        S.quickOrder.targetPrice = Math.round((val + S.quickOrder.targetPts) * 20) / 20;
-        renderQuickOrderTarget();
-        S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
-      }
-      if (S.quickOrder.slEnabled) {
-        const pts = Math.min(S.quickOrder.slPts, Math.max(0.05, val - 0.05));
-        S.quickOrder.slPts = pts;
-        S.quickOrder.slPrice = Math.max(0.05, Math.round((val - pts) * 20) / 20);
-        renderQuickOrderSL();
-        S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
-      }
       renderQuickOrderExchangeStop();
     }
   });
@@ -5893,6 +5887,7 @@ function initChartQuickOrder() {
     const val = parseFloat(rawVal);
     if (!isNaN(val) && val > 0) {
       S.quickOrder.targetPrice = val;
+      S.quickOrder.targetManual = true;
       const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
       S.quickOrder.targetPts = Math.max(0.05, pts);
       if (val > S.quickOrder.price) {
@@ -5965,6 +5960,7 @@ function initChartQuickOrder() {
     const val = parseFloat(e.target.value);
     if (!isNaN(val) && val > 0 && val < S.quickOrder.price) {
       S.quickOrder.slPrice = val;
+      S.quickOrder.slManual = true;
       S.quickOrder.slPts = Math.max(0.05, Math.round((S.quickOrder.price - val) * 100) / 100);
       const ptsEl = $("cqo-sl-pts");
       if (ptsEl) ptsEl.textContent = `−${S.quickOrder.slPts.toFixed(2)} pts`;
@@ -6396,9 +6392,11 @@ function openChartQuickOrder(pane, price, x, y) {
     targetPts: defaultPts,
     targetPrice,
     targetEnabled,
+    targetManual: false,
     slPts,
     slPrice,
     slEnabled,
+    slManual: false,
     exchangeStopEnabled,
     exchangeStopMode,
     exchangeStopPrice: 0,
@@ -6625,6 +6623,7 @@ function updateQuickOrderSLPrice(newSlPrice) {
   const price = S.quickOrder.price;
   const sl = Math.min(Math.max(0.05, price - 0.05), Math.max(0.05, Math.round(num(newSlPrice) * 20) / 20));
   S.quickOrder.slPrice = sl;
+  S.quickOrder.slManual = true;
   const pts = Math.max(0.05, Math.round((price - sl) * 20) / 20);
   S.quickOrder.slPts = pts;
   try {
@@ -6687,15 +6686,29 @@ function updateQuickOrderPrice(newPrice) {
   S.charts[S.quickOrder.pane]?.showOrderPreview(price);
 
   if (S.quickOrder.targetEnabled) {
-    S.quickOrder.targetPrice = Math.round((price + S.quickOrder.targetPts) * 20) / 20;
+    const manualTarget = num(S.quickOrder.targetPrice);
+    if (S.quickOrder.targetManual && manualTarget > price) {
+      // A target the user typed is an absolute price; keep it where it is.
+      S.quickOrder.targetPrice = manualTarget;
+      S.quickOrder.targetPts = Math.max(0.05, Math.round((manualTarget - price) * 100) / 100);
+    } else {
+      S.quickOrder.targetPrice = Math.round((price + S.quickOrder.targetPts) * 20) / 20;
+    }
     renderQuickOrderTarget();
     S.charts[S.quickOrder.pane]?.showTargetPreview(S.quickOrder.targetPrice, "TARGET");
   }
 
   if (S.quickOrder.slEnabled) {
-    const pts = Math.min(S.quickOrder.slPts, Math.max(0.05, price - 0.05));
-    S.quickOrder.slPts = pts;
-    S.quickOrder.slPrice = Math.max(0.05, Math.round((price - pts) * 20) / 20);
+    const manualStop = num(S.quickOrder.slPrice);
+    if (S.quickOrder.slManual && manualStop > 0 && manualStop < price) {
+      // A stop the user typed is an absolute price; keep it where it is.
+      S.quickOrder.slPrice = manualStop;
+      S.quickOrder.slPts = Math.max(0.05, Math.round((price - manualStop) * 100) / 100);
+    } else {
+      const pts = Math.min(S.quickOrder.slPts, Math.max(0.05, price - 0.05));
+      S.quickOrder.slPts = pts;
+      S.quickOrder.slPrice = Math.max(0.05, Math.round((price - pts) * 20) / 20);
+    }
     renderQuickOrderSL();
     S.charts[S.quickOrder.pane]?.showStopPreview(S.quickOrder.slPrice, `SL ₹${S.quickOrder.slPrice.toFixed(2)}`);
   }
@@ -6744,6 +6757,10 @@ async function submitQuickOrder(action) {
   const autoTarget = (targetEnabled && action === "buy" && tp > price) ? tp : 0;
   const inputSl = num($("cqo-sl-price")?.value);
   const slp = Number.isFinite(inputSl) && inputSl > 0 ? inputSl : slPrice;
+  if (slEnabled && action === "buy" && slp > 0 && slp >= price) {
+    toast("Stop-loss must be below the entry price for a BUY order.", "error", 5000);
+    return;
+  }
   const autoStop = (slEnabled && action === "buy" && slp > 0 && slp < price) ? Math.round(slp * 20) / 20 : 0;
   const exchangeStopEnabled = Boolean(S.quickOrder.exchangeStopEnabled) && action === "buy";
   // An explicit per-order "off" must override a global default that is on.
