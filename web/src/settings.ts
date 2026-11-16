@@ -1,6 +1,18 @@
 /**
  * Scalper Settings Management UI
  */
+import {
+  blockListIndent,
+  findFieldLine,
+  replaceYamlBlock,
+  setYamlList,
+  setYamlScalar,
+  yamlQuote,
+  yamlScalarValue,
+  yamlTrailingComment,
+  type YamlScalarType,
+} from "./settings/yaml";
+
 (function () {
   'use strict';
 
@@ -59,8 +71,12 @@
     const initialYamlEl = document.getElementById('initial-yaml-data');
 
     if (initialYamlEl && initialYamlEl.textContent.trim()) {
-      currentYAML = initialYamlEl.textContent;
-      savedYAML = currentYAML;
+      try {
+        currentYAML = JSON.parse(initialYamlEl.textContent);
+        savedYAML = currentYAML;
+      } catch (err) {
+        console.warn('Failed to parse initial YAML payload:', err);
+      }
     }
 
     if (initialConfigEl && initialConfigEl.textContent.trim()) {
@@ -82,7 +98,7 @@
   }
 
   // Fetch live config from server
-  async function fetchConfig() {
+  async function fetchConfig(force = false): Promise<boolean> {
     try {
       const res = await fetch('/api/config');
       if (!res.ok) {
@@ -90,18 +106,22 @@
         throw new Error(errData.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
+      // Never clobber edits made while the initial fetch was in flight.
+      if (!force && isDirty) return true;
       if (data.yaml) {
         currentYAML = data.yaml;
         savedYAML = currentYAML;
-        markDirty(false);
       }
       if (data.config) {
         currentConfig = data.config;
         savedConfig = cloneConfig(currentConfig);
         populateForm(currentConfig);
       }
+      markDirty(false);
+      return true;
     } catch (err) {
       showToast('error', `Failed to load settings: ${err.message}`);
+      return false;
     }
   }
 
@@ -330,6 +350,15 @@
     setChecked('f-confirm-live-orders', !!t.confirm_live_orders);
     setChecked('f-confirm-chart-levels', t.confirm_chart_level_changes !== false);
 
+    setVal('f-trading-mode', t.mode || 'live');
+    const paper = t.paper || {};
+    setChecked('f-paper-enabled', !!paper.enabled);
+    setVal('f-paper-balance', paper.starting_balance ?? 500000);
+    setVal('f-paper-slippage', paper.slippage_ticks ?? 0);
+    setVal('f-paper-short-margin', paper.short_margin_pct ?? 20);
+    setChecked('f-paper-confirm', !!paper.confirm_orders);
+    setVal('f-paper-exchange-stop', normalizeExchangeStop(paper.exchange_stop));
+
     const es = (t.bracket && t.bracket.exchange_stop) || {};
     setVal('f-exchange-stop-mode', es.mode || 'off');
     setVal('f-exchange-stop-distance-mode', es.distance_mode || 'multiplier');
@@ -453,7 +482,7 @@
     setVal('f-jev-api-key', jev.api_key || '');
     setVal('f-jev-timeout-ms', jev.timeout_ms || 8000);
 
-    setVal('f-agent-provider', ag.provider || 'openrouter');
+    setSelectValue('f-agent-provider', ag.provider || 'openrouter');
     setVal('f-agent-base-url', ag.base_url || 'https://openrouter.ai/api/v1');
     setVal('f-agent-model', ag.model || 'nvidia/nemotron-3.5-lightning:free');
     setVal('f-agent-api-key', ag.api_key || '');
@@ -467,6 +496,33 @@
     if (el) el.value = val;
   }
 
+  function setSelectValue(id, value) {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    if (!el) return;
+    const text = value == null ? '' : String(value);
+    if (text && ![...el.options].some((option) => option.value === text)) {
+      const option = document.createElement('option');
+      option.value = text;
+      option.textContent = text;
+      el.appendChild(option);
+    }
+    el.value = text;
+  }
+
+  function normalizeExchangeStop(value) {
+    switch (String(value || '').toLowerCase()) {
+      case 'sl':
+      case 'sl-m':
+      case 'sl_m':
+        return 'sl_m';
+      case 'sl-l':
+      case 'sl_l':
+        return 'sl_l';
+      default:
+        return 'off';
+    }
+  }
+
   function setChecked(id, checked) {
     const el = document.getElementById(id);
     if (el) el.checked = checked;
@@ -474,7 +530,7 @@
 
   // Setup form inputs to sync changes into currentYAML and state
   function setupFormInputs() {
-    const map = [
+    const map: Array<{ id: string; path: string[]; type: YamlScalarType }> = [
       // Trading
       { id: 'f-default-product', path: ['trading', 'default_product'], type: 'string' },
       { id: 'f-default-lots', path: ['trading', 'quantity', 'default_lots'], type: 'int' },
@@ -600,6 +656,14 @@
 
         // Clear field error
         clearFieldError(item.path.join('.'));
+
+        if (item.id === 'f-insecure-no-auth' && val === true) {
+          const ok = confirm('Allow binding to a public interface without credentials? Only enable this behind a trusted reverse proxy.');
+          if (!ok) {
+            el.checked = false;
+            return;
+          }
+        }
 
         // Update YAML string
         currentYAML = setYamlScalar(currentYAML, item.path, val, item.type);
@@ -826,8 +890,12 @@
     }
 
     renderIndicesTable(indices);
+    clearFieldError('market.indices');
+    if (origKey && origKey !== newIdx.key) {
+      renameUnderlyingInDependentLists(origKey, newIdx.key);
+    }
     renderScannedUnderlyings(currentConfig);
-    renderBgUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig, currentConfig.market?.background_collection?.underlyings);
     currentYAML = setYamlIndices(currentYAML, indices);
     markDirty(true);
     closeIndexModal();
@@ -842,9 +910,11 @@
     if (!confirm(`Are you sure you want to remove index "${key}"?`)) return;
 
     currentConfig.market.indices = currentConfig.market.indices.filter(i => i.key !== key);
+    removeUnderlyingFromDependentLists(key);
     renderIndicesTable(currentConfig.market.indices);
+    clearFieldError('market.indices');
     renderScannedUnderlyings(currentConfig);
-    renderBgUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig, currentConfig.market?.background_collection?.underlyings);
     currentYAML = setYamlIndices(currentYAML, currentConfig.market.indices);
     markDirty(true);
   }
@@ -911,8 +981,12 @@
     }
 
     renderCommoditiesTable(commodities);
+    clearFieldError('market.commodities');
+    if (origKey && origKey !== newCmd.key) {
+      renameUnderlyingInDependentLists(origKey, newCmd.key);
+    }
     renderScannedUnderlyings(currentConfig);
-    renderBgUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig, currentConfig.market?.background_collection?.underlyings);
     currentYAML = setYamlCommodities(currentYAML, commodities);
     markDirty(true);
     closeCommodityModal();
@@ -923,9 +997,11 @@
     if (!confirm(`Are you sure you want to remove commodity "${key}"?`)) return;
 
     currentConfig.market.commodities = currentConfig.market.commodities.filter(c => c.key !== key);
+    removeUnderlyingFromDependentLists(key);
     renderCommoditiesTable(currentConfig.market.commodities);
+    clearFieldError('market.commodities');
     renderScannedUnderlyings(currentConfig);
-    renderBgUnderlyings(currentConfig);
+    renderBgUnderlyings(currentConfig, currentConfig.market?.background_collection?.underlyings);
     currentYAML = setYamlCommodities(currentYAML, currentConfig.market.commodities);
     markDirty(true);
   }
@@ -938,9 +1014,8 @@
 
     const indices = (cfg.market && cfg.market.indices) || [];
     const commodities = (cfg.market && cfg.market.commodities) || [];
-    const scanned: string[] = (cfg.ai && cfg.ai.scanned_underlyings && cfg.ai.scanned_underlyings.length > 0)
-      ? cfg.ai.scanned_underlyings
-      : ['NIFTY', 'SENSEX'];
+    const configured = cfg.ai && cfg.ai.scanned_underlyings;
+    const scanned: string[] = Array.isArray(configured) ? configured : ['NIFTY', 'SENSEX'];
 
     interface UnderlyingOption {
       key: string;
@@ -1001,6 +1076,35 @@
 
       container.appendChild(label);
     });
+  }
+
+  function removeUnderlyingFromDependentLists(key) {
+    if (!currentConfig || !key) return;
+    const ai = currentConfig.ai;
+    if (ai && Array.isArray(ai.scanned_underlyings) && ai.scanned_underlyings.includes(key)) {
+      ai.scanned_underlyings = ai.scanned_underlyings.filter((item) => item !== key);
+      currentYAML = setYamlScannedUnderlyings(currentYAML, ai.scanned_underlyings);
+    }
+    const bg = currentConfig.market && currentConfig.market.background_collection;
+    if (bg && Array.isArray(bg.underlyings) && bg.underlyings.includes(key)) {
+      bg.underlyings = bg.underlyings.filter((item) => item !== key);
+      currentYAML = setYamlList(currentYAML, ['market', 'background_collection', 'underlyings'], bg.underlyings);
+    }
+  }
+
+  function renameUnderlyingInDependentLists(oldKey, newKey) {
+    if (!currentConfig || !oldKey || !newKey || oldKey === newKey) return;
+    const rename = (list) => [...new Set(list.map((item) => (item === oldKey ? newKey : item)))];
+    const ai = currentConfig.ai;
+    if (ai && Array.isArray(ai.scanned_underlyings) && ai.scanned_underlyings.includes(oldKey)) {
+      ai.scanned_underlyings = rename(ai.scanned_underlyings);
+      currentYAML = setYamlScannedUnderlyings(currentYAML, ai.scanned_underlyings);
+    }
+    const bg = currentConfig.market && currentConfig.market.background_collection;
+    if (bg && Array.isArray(bg.underlyings) && bg.underlyings.includes(oldKey)) {
+      bg.underlyings = rename(bg.underlyings);
+      currentYAML = setYamlList(currentYAML, ['market', 'background_collection', 'underlyings'], bg.underlyings);
+    }
   }
 
   // Background collection underlyings (built from the configured indices and commodities)
@@ -1072,16 +1176,18 @@
     });
   }
 
-  function revertChanges() {
+  async function revertChanges() {
     if (!confirm('Discard all unsaved changes and reload the last saved configuration?')) return;
     clearErrors();
-    currentYAML = savedYAML;
-    currentConfig = cloneConfig(savedConfig);
-    if (currentConfig) {
-      populateForm(currentConfig);
+    const loaded = await fetchConfig(true);
+    if (!loaded) {
+      // Fall back to the snapshot from the last successful load/save.
+      currentYAML = savedYAML;
+      currentConfig = cloneConfig(savedConfig);
+      if (currentConfig) populateForm(currentConfig);
+      markDirty(false);
     }
-    markDirty(false);
-    showToast('info', 'Reverted to the last saved configuration');
+    showToast('success', 'Reverted to the last saved configuration');
   }
 
   // Header Actions (Validate & Save)
@@ -1118,10 +1224,6 @@
         return false;
       }
 
-      if (data.config) {
-        currentConfig = data.config;
-      }
-
       if (!silentSuccess) {
         showToast('success', 'Configuration syntax and rules are completely valid!');
       }
@@ -1138,6 +1240,8 @@
     const yamlToSend = currentYAML;
 
     saveBtn.disabled = true;
+    validateBtn.disabled = true;
+    if (revertBtn) revertBtn.disabled = true;
     saveSpinner.hidden = false;
     saveLabel.textContent = 'Saving...';
 
@@ -1162,13 +1266,22 @@
       // Success. Prefer the server's redacted YAML so newly entered secrets are
       // replaced by the mask instead of remaining visible in the form.
       savedYAML = data.yaml || yamlToSend;
-      currentYAML = savedYAML;
-      markDirty(false);
-
+      const unchanged = currentYAML === yamlToSend;
       if (data.config) {
-        currentConfig = data.config;
-        savedConfig = cloneConfig(currentConfig);
-        populateForm(currentConfig);
+        savedConfig = cloneConfig(data.config);
+      }
+
+      if (unchanged) {
+        currentYAML = savedYAML;
+        markDirty(false);
+        if (data.config) {
+          currentConfig = data.config;
+          populateForm(currentConfig);
+        }
+      } else {
+        // The user kept editing while the save was in flight; keep their input
+        // and leave the form marked dirty against the newly saved baseline.
+        markDirty(true);
       }
 
       const backupMsg = data.backup ? ` (Backup created at ${data.backup})` : '';
@@ -1184,6 +1297,8 @@
     } finally {
       window.clearTimeout(timeoutId);
       saveBtn.disabled = false;
+      validateBtn.disabled = false;
+      if (revertBtn) revertBtn.disabled = false;
       saveSpinner.hidden = true;
       saveLabel.textContent = 'Save Configuration';
     }
@@ -1202,7 +1317,7 @@
     showToast('error', `Validation Error: ${errorMsg}`);
   }
 
-  function highlightField(fieldPath, msg) {
+  function resolveFieldGroup(fieldPath) {
     const normalized = String(fieldPath || '').replace(/\[\d+\]/g, '');
     const candidates: string[] = [];
     let current = normalized;
@@ -1213,43 +1328,45 @@
       current = current.slice(0, dot);
     }
 
-    let group: Element | null = null;
     for (const candidate of candidates) {
-      group = document.querySelector(`[data-field="${candidate}"]`)
+      const group = document.querySelector(`[data-field="${candidate}"]`)
         || document.querySelector(`[data-field^="${candidate}."]`);
-      if (group) break;
+      if (group) return group;
     }
+    return null;
+  }
 
-    if (group) {
-      group.classList.add('has-error');
-      const errEl = group.querySelector('.field-error');
-      if (errEl) errEl.textContent = msg;
+  function highlightField(fieldPath, msg) {
+    const group = resolveFieldGroup(fieldPath);
+    if (!group) return;
 
-      // Find which tab this field is in and switch to it if needed
-      const panel = group.closest('.tab-panel');
-      if (panel && panel.id !== activePanelId) {
-        const tabBtn = document.querySelector(`[aria-controls="${panel.id}"]`);
-        if (tabBtn) {
-          switchTab(tabBtn.id, panel.id);
-        }
+    group.classList.add('has-error');
+    const errEl = group.querySelector('.field-error');
+    if (errEl) errEl.textContent = msg;
+
+    // Find which tab this field is in and switch to it if needed
+    const panel = group.closest('.tab-panel');
+    if (panel && panel.id !== activePanelId) {
+      const tabBtn = document.querySelector(`[aria-controls="${panel.id}"]`);
+      if (tabBtn) {
+        switchTab(tabBtn.id, panel.id);
       }
-
-      group.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+
+    group.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   function clearFieldError(fieldPath) {
-    const group = document.querySelector(`[data-field="${fieldPath}"]`);
-    if (group) {
-      group.classList.remove('has-error');
-      const errEl = group.querySelector('.field-error');
-      if (errEl) errEl.textContent = '';
-    }
+    const group = resolveFieldGroup(fieldPath);
+    if (!group) return;
+    group.classList.remove('has-error');
+    const errEl = group.querySelector('.field-error');
+    if (errEl) errEl.textContent = '';
   }
 
   function clearErrors() {
     hideAlert();
-    document.querySelectorAll('.form-group.has-error').forEach(g => {
+    document.querySelectorAll('.form-group.has-error, .card.has-error').forEach(g => {
       g.classList.remove('has-error');
       const errEl = g.querySelector('.field-error');
       if (errEl) errEl.textContent = '';
@@ -1286,7 +1403,7 @@
       toast.style.transition = 'opacity 0.4s ease';
       toast.style.opacity = '0';
       setTimeout(() => toast.remove(), 400);
-    }, 4500);
+    }, duration);
   }
 
   function markDirty(dirty) {
@@ -1296,352 +1413,98 @@
 
   // --- YAML Manipulation Helpers ---
 
-  /**
-   * Updates a scalar value in YAML while preserving indentation and comments.
-   */
-  function setYamlScalar(yaml, path, newValue, type) {
-    const lines = yaml.split('\n');
-    let lineIdx = findFieldLine(lines, path);
-
-    let formattedVal;
-    if (type === 'string') {
-      formattedVal = `"${newValue}"`;
-    } else if (type === 'bool') {
-      formattedVal = newValue ? 'true' : 'false';
-    } else {
-      formattedVal = String(newValue);
-    }
-
-    if (lineIdx !== -1) {
-      // Replace existing line
-      const line = lines[lineIdx];
-      const colonIdx = line.indexOf(':');
-      const indentAndKey = line.slice(0, colonIdx + 1);
-      const afterColon = line.slice(colonIdx + 1);
-
-      // Check for inline comment
-      const commentIdx = afterColon.indexOf('#');
-      let comment = '';
-      if (commentIdx !== -1) {
-        comment = ' ' + afterColon.slice(commentIdx).trim();
-      }
-
-      lines[lineIdx] = `${indentAndKey} ${formattedVal}${comment}`;
-      return lines.join('\n');
-    }
-
-    // Key not found, insert under parent section
-    return insertYamlField(yaml, path, formattedVal);
-  }
-
-  function findFieldLine(lines, path) {
-    let currentDepth = 0;
-    let sectionIndent = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-
-      const indent = line.search(/\S/);
-      const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) continue;
-
-      const key = line.slice(indent, colonIdx).trim();
-
-      if (key === path[currentDepth]) {
-        if (currentDepth === path.length - 1) {
-          return i;
-        }
-        currentDepth++;
-        sectionIndent = indent;
-      } else if (indent <= sectionIndent && currentDepth > 0) {
-        // Exited parent section
-        currentDepth = 0;
-        sectionIndent = -1;
-      }
-    }
-    return -1;
-  }
-
-  function insertYamlField(yaml, path, formattedVal) {
-    const lines = yaml.split('\n');
-
-    // Find deepest existing ancestor in path
-    let deepestDepth = 0;
-    let insertLineIdx = -1;
-    let currentIndent = 0;
-
-    for (let depth = path.length - 1; depth >= 1; depth--) {
-      const subPath = path.slice(0, depth);
-      const idx = findFieldLine(lines, subPath);
-      if (idx !== -1) {
-        deepestDepth = depth;
-        insertLineIdx = idx;
-        const line = lines[idx];
-        currentIndent = line.search(/\S/);
-        break;
-      }
-    }
-
-    if (insertLineIdx !== -1) {
-      let targetIdx = insertLineIdx + 1;
-      while (targetIdx < lines.length) {
-        const line = lines[targetIdx];
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const indent = line.search(/\S/);
-          if (indent <= currentIndent) {
-            break;
-          }
-        }
-        targetIdx++;
-      }
-
-      const newLines: string[] = [];
-      let indentLevel = currentIndent + 2;
-      for (let d = deepestDepth; d < path.length - 1; d++) {
-        newLines.push(`${' '.repeat(indentLevel)}${path[d]}:`);
-        indentLevel += 2;
-      }
-      newLines.push(`${' '.repeat(indentLevel)}${path[path.length - 1]}: ${formattedVal}`);
-
-      lines.splice(targetIdx, 0, ...newLines);
-      return lines.join('\n');
-    }
-
-    // Root insert
-    const newLines: string[] = [];
-    let indentLevel = 0;
-    for (let d = 0; d < path.length - 1; d++) {
-      newLines.push(`${' '.repeat(indentLevel)}${path[d]}:`);
-      indentLevel += 2;
-    }
-    newLines.push(`${' '.repeat(indentLevel)}${path[path.length - 1]}: ${formattedVal}`);
-
-    lines.push(...newLines);
-    return lines.join('\n');
-  }
-
-  function setYamlIndices(yaml, indices) {
-    const lines = yaml.split('\n');
-    let mktIdx = -1;
-    let idxStart = -1;
-    let idxEnd = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('market:')) {
-        mktIdx = i;
-        break;
-      }
-    }
-
-    if (mktIdx !== -1) {
-      for (let i = mktIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('  indices:')) {
-          idxStart = i;
-          // Find end of indices section
-          for (let j = i + 1; j < lines.length; j++) {
-            const l = lines[j];
-            const trimmed = l.trim();
-            if (trimmed && !trimmed.startsWith('#')) {
-              const indent = l.search(/\S/);
-              if (indent <= 2) {
-                idxEnd = j;
-                break;
-              }
-            }
-          }
-          if (idxEnd === -1) idxEnd = lines.length;
-          break;
-        } else if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) {
-          break;
-        }
-      }
-    }
-
-    // Format new indices
-    const newLines = ['  indices:'];
-    indices.forEach(idx => {
-      newLines.push(`    - key: "${idx.key}"`);
-      newLines.push(`      display_name: "${idx.display_name || idx.key}"`);
-      newLines.push(`      exchange_segment: "${idx.exchange_segment || 'nse_fo'}"`);
-      newLines.push(`      index_segment: "${idx.index_segment || 'nse_cm'}"`);
-      newLines.push(`      index_symbol: "${idx.index_symbol || idx.key}"`);
-      if (idx.scrip_name) {
-        newLines.push(`      scrip_name: "${idx.scrip_name}"`);
-      }
-      newLines.push(`      expiry_mode: "${idx.expiry_mode || 'both'}"`);
-      newLines.push(`      default_expiry: "${idx.default_expiry || 'nearest_weekly'}"`);
-    });
-
-    if (idxStart !== -1 && idxEnd !== -1) {
-      lines.splice(idxStart, idxEnd - idxStart, ...newLines);
-      return lines.join('\n');
-    } else if (mktIdx !== -1) {
-      lines.splice(mktIdx + 1, 0, ...newLines);
-      return lines.join('\n');
-    }
-
-    return yaml + '\nmarket:\n' + newLines.join('\n') + '\n';
-  }
-
-  function setYamlCommodities(yaml, commodities) {
-    const lines = yaml.split('\n');
-    let mktIdx = -1;
-    let cmdStart = -1;
-    let cmdEnd = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('market:')) {
-        mktIdx = i;
-        break;
-      }
-    }
-
-    if (mktIdx !== -1) {
-      for (let i = mktIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('  commodities:')) {
-          cmdStart = i;
-          for (let j = i + 1; j < lines.length; j++) {
-            const l = lines[j];
-            const trimmed = l.trim();
-            if (trimmed && !trimmed.startsWith('#')) {
-              const indent = l.search(/\S/);
-              if (indent <= 2) {
-                cmdEnd = j;
-                break;
-              }
-            }
-          }
-          if (cmdEnd === -1) cmdEnd = lines.length;
-          break;
-        } else if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) {
-          break;
-        }
-      }
-    }
-
-    const newLines = ['  commodities:'];
-    commodities.forEach(cmd => {
-      newLines.push(`    - key: "${cmd.key}"`);
-      newLines.push(`      display_name: "${cmd.display_name || cmd.key}"`);
-      newLines.push(`      exchange_segment: "${cmd.exchange_segment || 'mcx_fo'}"`);
-      newLines.push(`      scrip_name: "${cmd.scrip_name || cmd.key}"`);
-    });
-
-    if (cmdStart !== -1 && cmdEnd !== -1) {
-      lines.splice(cmdStart, cmdEnd - cmdStart, ...newLines);
-      return lines.join('\n');
-    } else if (mktIdx !== -1) {
-      lines.splice(mktIdx + 1, 0, ...newLines);
-      return lines.join('\n');
-    }
-
-    return yaml + '\nmarket:\n' + newLines.join('\n') + '\n';
-  }
-
-  function setYamlScannedUnderlyings(yaml: string, underlyings: string[]): string {
-    const lines = yaml.split('\n');
-    let aiIdx = -1;
-    let suStart = -1;
-    let suEnd = -1;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('ai:')) {
-        aiIdx = i;
-        break;
-      }
-    }
-
-    if (aiIdx !== -1) {
-      for (let i = aiIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('  scanned_underlyings:')) {
-          suStart = i;
-          for (let j = i + 1; j < lines.length; j++) {
-            const l = lines[j];
-            const trimmed = l.trim();
-            if (trimmed && !trimmed.startsWith('#')) {
-              const indent = l.search(/\S/);
-              if (indent <= 2) {
-                suEnd = j;
-                break;
-              }
-            }
-          }
-          if (suEnd === -1) suEnd = lines.length;
-          break;
-        } else if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) {
-          break;
-        }
-      }
-    }
-
-    const newLines = ['  scanned_underlyings:'];
-    underlyings.forEach(u => {
-      newLines.push(`    - "${u}"`);
-    });
-
-    if (suStart !== -1 && suEnd !== -1) {
-      lines.splice(suStart, suEnd - suStart, ...newLines);
-      return lines.join('\n');
-    } else if (aiIdx !== -1) {
-      lines.splice(aiIdx + 1, 0, ...newLines);
-      return lines.join('\n');
-    }
-
-    return yaml + '\nai:\n' + newLines.join('\n') + '\n';
-  }
-
-  /**
-   * Replaces a YAML list value with an inline flow-style list, preserving any
-   * trailing comment. Handles both inline (`key: ["a"]`) and block (`key:` +
-   * `  - a`) source styles.
-   */
-  function setYamlList(yaml, path, values) {
-    const formatted = '[' + values
-      .map((value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
-      .join(', ') + ']';
+  function mappingListIndents(yaml, path) {
     const lines = yaml.split('\n');
     const idx = findFieldLine(lines, path);
     if (idx === -1) {
-      return insertYamlField(yaml, path, formatted);
+      const keyIndent = 2 * (path.length - 1);
+      return { item: keyIndent + 2, child: keyIndent + 4 };
     }
+    const keyIndent = lines[idx].match(/^ */)[0].length;
+    const item = blockListIndent(lines, idx);
+    let child = item + 2;
+    for (let i = idx + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const indent = line.match(/^ */)[0].length;
+      if (indent <= keyIndent) break;
+      if (line.trim().startsWith('- ')) continue;
+      child = indent;
+      break;
+    }
+    return { item, child };
+  }
 
-    const line = lines[idx];
-    const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) return yaml;
+  function collectBlockComments(yaml, path) {
+    const lines = yaml.split('\n');
+    const keyIdx = findFieldLine(lines, path);
+    const comments: Record<string, Record<string, string>> = {};
+    if (keyIdx === -1) return comments;
 
-    const indent = line.search(/\S/);
-    const keyPart = line.slice(0, colonIdx + 1);
-    const afterColon = line.slice(colonIdx + 1);
-    const commentIdx = afterColon.indexOf('#');
-    const comment = commentIdx !== -1 ? ' ' + afterColon.slice(commentIdx).trim() : '';
-    const inlineValue = (commentIdx !== -1 ? afterColon.slice(0, commentIdx) : afterColon).trim();
+    const keyIndent = lines[keyIdx].match(/^ */)[0].length;
+    let current = '';
+    for (let i = keyIdx + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      if (line.match(/^ */)[0].length <= keyIndent) break;
 
-    if (inlineValue === '') {
-      // Block-style list: consume the child "- item" lines beneath this key.
-      let end = idx + 1;
-      while (end < lines.length) {
-        const next = lines[end];
-        const trimmed = next.trim();
-        if (trimmed === '') {
-          end++;
-          continue;
+      const item = line.match(/^\s*-\s+([A-Za-z0-9_]+):\s*(.*)$/);
+      if (item) {
+        const field = item[1];
+        if (field === 'key') {
+          current = yamlScalarValue(item[2]);
+          comments[current] = comments[current] || {};
         }
-        if (next.search(/\S/) <= indent) break;
-        if (!trimmed.startsWith('-')) break;
-        end++;
+        const comment = yamlTrailingComment(item[2]);
+        if (current && comment) comments[current][field] = comment;
+        continue;
       }
-      lines.splice(idx, end - idx, `${keyPart} ${formatted}${comment}`);
-      return lines.join('\n');
-    }
 
-    lines[idx] = `${keyPart} ${formatted}${comment}`;
-    return lines.join('\n');
+      const child = line.match(/^\s*([A-Za-z0-9_]+):\s*(.*)$/);
+      if (child && current) {
+        const comment = yamlTrailingComment(child[2]);
+        if (comment) comments[current][child[1]] = comment;
+      }
+    }
+    return comments;
+  }
+
+  function setYamlIndices(yaml, indices) {
+    const { item, child } = mappingListIndents(yaml, ['market', 'indices']);
+    const comments = collectBlockComments(yaml, ['market', 'indices']);
+    const note = (key, field) => comments[key] && comments[key][field] ? ` ${comments[key][field]}` : '';
+    const block: string[] = [];
+    for (const idx of indices) {
+      const pad = ' '.repeat(child);
+      block.push(`${' '.repeat(item)}- key: ${yamlQuote(idx.key)}${note(idx.key, 'key')}`);
+      block.push(`${pad}display_name: ${yamlQuote(idx.display_name || idx.key)}${note(idx.key, 'display_name')}`);
+      block.push(`${pad}exchange_segment: ${yamlQuote(idx.exchange_segment || 'nse_fo')}${note(idx.key, 'exchange_segment')}`);
+      block.push(`${pad}index_segment: ${yamlQuote(idx.index_segment || 'nse_cm')}${note(idx.key, 'index_segment')}`);
+      block.push(`${pad}index_symbol: ${yamlQuote(idx.index_symbol || idx.key)}${note(idx.key, 'index_symbol')}`);
+      if (idx.scrip_name) block.push(`${pad}scrip_name: ${yamlQuote(idx.scrip_name)}${note(idx.key, 'scrip_name')}`);
+      block.push(`${pad}expiry_mode: ${yamlQuote(idx.expiry_mode || 'both')}${note(idx.key, 'expiry_mode')}`);
+      block.push(`${pad}default_expiry: ${yamlQuote(idx.default_expiry || 'nearest_weekly')}${note(idx.key, 'default_expiry')}`);
+    }
+    return replaceYamlBlock(yaml, ['market', 'indices'], block);
+  }
+
+  function setYamlCommodities(yaml, commodities) {
+    const { item, child } = mappingListIndents(yaml, ['market', 'commodities']);
+    const comments = collectBlockComments(yaml, ['market', 'commodities']);
+    const note = (key, field) => comments[key] && comments[key][field] ? ` ${comments[key][field]}` : '';
+    const block: string[] = [];
+    for (const cmd of commodities) {
+      const pad = ' '.repeat(child);
+      block.push(`${' '.repeat(item)}- key: ${yamlQuote(cmd.key)}${note(cmd.key, 'key')}`);
+      block.push(`${pad}display_name: ${yamlQuote(cmd.display_name || cmd.key)}${note(cmd.key, 'display_name')}`);
+      block.push(`${pad}exchange_segment: ${yamlQuote(cmd.exchange_segment || 'mcx_fo')}${note(cmd.key, 'exchange_segment')}`);
+      block.push(`${pad}scrip_name: ${yamlQuote(cmd.scrip_name || cmd.key)}${note(cmd.key, 'scrip_name')}`);
+    }
+    return replaceYamlBlock(yaml, ['market', 'commodities'], block);
+  }
+
+  function setYamlScannedUnderlyings(yaml: string, underlyings: string[]): string {
+    return setYamlList(yaml, ['ai', 'scanned_underlyings'], underlyings);
   }
 
   async function loadStorageInfo() {

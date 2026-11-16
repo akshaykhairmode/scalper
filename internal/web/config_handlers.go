@@ -57,7 +57,7 @@ type settingsPageData struct {
 	ConfigPath  string
 	ServeMode   bool
 	Now         string
-	InitialYAML string
+	InitialYAML template.JS
 	InitialJSON template.JS
 }
 
@@ -113,6 +113,13 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 		_ = writeJSONError(w, http.StatusInternalServerError, "render failed", logging.RequestID(r.Context()))
 		return
 	}
+	yamlJSON, err := json.Marshal(string(redactedYAML))
+	if err != nil {
+		s.log.Error("encode settings yaml", "event", "config_encode_failed", "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		_ = writeJSONError(w, http.StatusInternalServerError, "render failed", logging.RequestID(r.Context()))
+		return
+	}
 
 	page := settingsPageData{
 		Title:       "Scalper — Settings & Configuration",
@@ -121,7 +128,7 @@ func (s *Server) handleSettingsView(w http.ResponseWriter, r *http.Request) {
 		ConfigPath:  cfgPath,
 		ServeMode:   s.serveMode,
 		Now:         s.now().In(currentCfg.Location()).Format("15:04:05 IST"),
-		InitialYAML: string(redactedYAML),
+		InitialYAML: template.JS(yamlJSON),  // #nosec G203
 		InitialJSON: template.JS(jsonBytes), // #nosec G203
 	}
 
@@ -192,15 +199,13 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	parsedCfg, err := config.LoadBytes(data, cfgPath)
 	if err != nil {
-		resp := map[string]any{
-			"ok":    true,
+		s.log.Error("parse config for api", "event", "config_read_failed", "path", cfgPath, "error", err,
+			"request_id", logging.RequestID(r.Context()))
+		_ = writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
 			"path":  cfgPath,
 			"error": err.Error(),
-		}
-		if redactErr == nil {
-			resp["yaml"] = string(redactedYAML)
-		}
-		_ = writeJSON(w, http.StatusOK, resp)
+		})
 		return
 	}
 
@@ -425,6 +430,9 @@ func restartRequiredFields(oldCfg, newCfg config.Config) []string {
 	}
 	if !reflect.DeepEqual(oldCfg.Scrip, newCfg.Scrip) {
 		fields = append(fields, "scrip")
+	}
+	if oldCfg.Charts.RetentionDays != newCfg.Charts.RetentionDays {
+		fields = append(fields, "charts.retention_days")
 	}
 	if oldCfg.Trading.Paper.Enabled != newCfg.Trading.Paper.Enabled {
 		fields = append(fields, "trading.paper.enabled")

@@ -596,7 +596,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-field="market.indices">
           <div class="card-header card-header-flex">
             <div>
               <h2>Active Underlying Indices</h2>
@@ -623,9 +623,10 @@
               </tbody>
             </table>
           </div>
+          <div class="field-error table-field-error"></div>
         </div>
 
-        <div class="card">
+        <div class="card" data-field="market.commodities">
           <div class="card-header card-header-flex">
             <div>
               <h2>Active Commodities</h2>
@@ -649,6 +650,7 @@
               </tbody>
             </table>
           </div>
+          <div class="field-error table-field-error"></div>
         </div>
 
         <div class="card">
@@ -690,9 +692,9 @@
             </div>
 
             <div class="form-group" style="grid-column: 1 / -1;" data-field="market.background_collection.underlyings">
-              <label>Underlyings</label>
+              <label id="bg-underlyings-label">Underlyings</label>
               <span class="form-help">Select the indices and commodities that the TOTP-free poller keeps warm.</span>
-              <div id="bg-underlyings-list" class="scanned-underlyings-grid">
+              <div id="bg-underlyings-list" class="scanned-underlyings-grid" role="group" aria-labelledby="bg-underlyings-label">
                 <!-- Dynamically populated from the configured indices and commodities -->
               </div>
               <span class="field-error"></span>
@@ -755,9 +757,9 @@
             </div>
 
             <div class="form-group" style="grid-column: 1 / -1;" data-field="charts.timeframes">
-              <label>Available Timeframes</label>
+              <label id="chart-timeframes-label">Available Timeframes</label>
               <span class="form-help">Periods offered in the chart toolbar. The default timeframe must be included.</span>
-              <div class="scanned-underlyings-grid" id="chart-timeframes-list">
+              <div class="scanned-underlyings-grid" id="chart-timeframes-list" role="group" aria-labelledby="chart-timeframes-label">
                 <label class="checkbox-label scanned-underlying-item">
                   <input type="checkbox" value="1m">
                   <span class="checkbox-custom"></span>
@@ -801,9 +803,9 @@
           </div>
           <div class="form-grid">
             <div class="form-group" style="grid-column: 1 / -1;" data-field="scrip.segments">
-              <label>Downloaded Segments</label>
+              <label id="scrip-segments-label">Downloaded Segments</label>
               <span class="form-help">All segments used by your indices, commodities and India VIX must stay selected.</span>
-              <div class="scanned-underlyings-grid" id="scrip-segments-list">
+              <div class="scanned-underlyings-grid" id="scrip-segments-list" role="group" aria-labelledby="scrip-segments-label">
                 <label class="checkbox-label scanned-underlying-item">
                   <input type="checkbox" value="nse_fo">
                   <span class="checkbox-custom"></span>
@@ -972,20 +974,18 @@
 
             <div class="form-group" data-field="ai.scan_interval_minutes">
               <label for="f-ai-scan-interval">Scan Interval</label>
-              <select id="f-ai-scan-interval">
-                <option value="5">Every 5 minutes</option>
-                <option value="15">Every 15 minutes (Default)</option>
-                <option value="30">Every 30 minutes</option>
-                <option value="60">Every 60 minutes</option>
-              </select>
+              <div class="input-unit">
+                <input type="number" id="f-ai-scan-interval" min="1" step="1" placeholder="15">
+                <span class="unit-suffix">min</span>
+              </div>
               <span class="form-help">Cadence for periodic Jev background evaluations.</span>
               <span class="field-error"></span>
             </div>
 
             <div class="form-group" style="grid-column: 1 / -1;" data-field="ai.scanned_underlyings">
-              <label>Scanned Underlyings</label>
+              <label id="ai-underlyings-label">Scanned Underlyings</label>
               <span class="form-help">Select which indices and commodities the AI scanner evaluates. Equity markets (NSE/BSE) scan 09:15–15:30 IST; MCX commodities scan 09:00–23:55 IST. Default: NIFTY, SENSEX.</span>
-              <div id="ai-underlyings-list" class="scanned-underlyings-grid">
+              <div id="ai-underlyings-list" class="scanned-underlyings-grid" role="group" aria-labelledby="ai-underlyings-label">
                 <!-- Dynamically populated with checkboxes for configured indices and commodities -->
               </div>
               <span class="field-error"></span>
@@ -1420,7 +1420,7 @@
 
   <!-- Embedded initial data for instant render -->
   <script id="initial-config-data" type="application/json">{{.InitialJSON}}</script>
-  <script id="initial-yaml-data" type="text/plain">{{.InitialYAML}}</script>
+  <script id="initial-yaml-data" type="application/json">{{.InitialYAML}}</script>
   <script type="module" src="/static/settings.js?v={{.Version}}"></script>
 </body>
 </html>

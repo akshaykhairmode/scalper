@@ -82,6 +82,28 @@ func TestSettingsView(t *testing.T) {
 	if !strings.Contains(body, tmpPath) {
 		t.Errorf("expected config path %s in body", tmpPath)
 	}
+
+	const yamlTag = `id="initial-yaml-data" type="application/json">`
+	yamlStart := strings.Index(body, yamlTag)
+	if yamlStart == -1 {
+		t.Fatalf("missing JSON initial YAML payload")
+	}
+	yamlStart += len(yamlTag)
+	yamlEnd := strings.Index(body[yamlStart:], "</script>")
+	if yamlEnd == -1 {
+		t.Fatalf("unterminated initial YAML payload")
+	}
+	payload := body[yamlStart : yamlStart+yamlEnd]
+	if strings.Contains(payload, "&#34;") || strings.Contains(payload, "&amp;") {
+		t.Fatalf("initial YAML payload was HTML-escaped: %s", payload)
+	}
+	var embeddedYAML string
+	if err := json.Unmarshal([]byte(payload), &embeddedYAML); err != nil {
+		t.Fatalf("decode initial YAML payload: %v", err)
+	}
+	if !strings.Contains(embeddedYAML, "default_product") {
+		t.Fatalf("initial YAML payload missing config content")
+	}
 }
 
 func TestGetConfigSuccess(t *testing.T) {

@@ -19,7 +19,6 @@
   --info-bg: rgba(88, 166, 255, 0.12);
   --success: #3fb950;
   --success-bg: rgba(63, 185, 80, 0.12);
-  --editor-bg: #0d1117;
   --input-bg: #0d1117;
 }
 
@@ -442,10 +441,47 @@ select:focus {
   gap: 10px;
   cursor: pointer;
   user-select: none;
+  position: relative;
 }
 
+/* Visually hidden but still focusable and announced by screen readers. */
 .checkbox-label input[type="checkbox"] {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.checkbox-label input:focus-visible + .checkbox-custom {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.checkbox-label input:disabled + .checkbox-custom {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.checkbox-label input:disabled ~ .checkbox-text {
+  opacity: 0.6;
+}
+
+.form-group.has-error .checkbox-custom {
+  border-color: var(--err);
+  box-shadow: 0 0 0 1px var(--err);
+}
+
+.card.has-error .table-field-error {
+  display: block;
+}
+
+.table-field-error {
+  margin-top: 10px;
 }
 
 .checkbox-custom {
@@ -588,105 +624,6 @@ select:focus {
   background: var(--err-bg);
   color: var(--err);
   border-color: rgba(248, 81, 73, 0.3);
-}
-
-/* YAML Editor Card */
-.editor-card {
-  padding: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 120px);
-}
-
-.editor-toolbar {
-  background: var(--card-header);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.editor-toolbar-left,
-.editor-toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.editor-label {
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.badge-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 600;
-}
-
-.badge-status.ok {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.badge-status.error {
-  background: var(--err-bg);
-  color: var(--err);
-}
-
-.editor-pos {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.editor-container {
-  flex: 1;
-  display: flex;
-  background: var(--editor-bg);
-  overflow: hidden;
-  position: relative;
-}
-
-.line-numbers {
-  width: 48px;
-  padding: 12px 8px 12px 0;
-  text-align: right;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-muted);
-  user-select: none;
-  background: var(--card);
-  border-right: 1px solid var(--border);
-  overflow: hidden;
-}
-
-#yaml-editor {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 12px 16px;
-  resize: none;
-  outline: none;
-  white-space: pre;
-  overflow: auto;
-  tab-size: 2;
-}
-
-.editor-footer {
-  background: var(--card-header);
-  border-top: 1px solid var(--border);
-  padding: 8px 16px;
-  font-size: 11px;
-  color: var(--text-dim);
 }
 
 /* Modal Dialogs */
