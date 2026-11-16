@@ -86,14 +86,31 @@ export function emaSeries(values: number[], period: number): number[] {
   return out;
 }
 
+/** Typical price used for VWAP weighting. */
+export function typicalPrice(candle: IndicatorCandle): number {
+  const high = Number(candle?.high);
+  const low = Number(candle?.low);
+  const close = Number(candle?.close);
+  if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return NaN;
+  const value = (high + low + close) / 3;
+  return Number.isFinite(value) && value > 0 ? value : NaN;
+}
+
 /**
- * Session-anchored Volume Weighted Average Price.
+ * Session-anchored Volume Weighted Average Price of the *given* series.
  *
  * Uses typical price ((high + low + close) / 3) and resets the cumulative
  * totals whenever `sessionKey` changes. Bars without traded volume are not
- * accumulated; the previous VWAP is carried forward. The first bar of a new
- * session returns NaN so chart lines break instead of connecting across the
- * overnight gap.
+ * accumulated; the previous VWAP is carried forward.
+ *
+ * This is only exact when `candles` is a 1-minute (or tick) series: a 5m/15m/1h
+ * bar contributes a single typical price instead of the volume-weighted average
+ * of the trades inside it. Charts should therefore prefer {@link vwapFromBase}
+ * with a 1-minute base series, and use this function as the fallback when no
+ * base series is available.
+ *
+ * The line is broken on the *last* bar of a session rather than the first bar
+ * of the next one, so the new session's opening VWAP is still drawn.
  */
 export function vwapSeries(
   candles: IndicatorCandle[],
@@ -111,33 +128,183 @@ export function vwapSeries(
     if (!candle || !Number.isFinite(candle.time)) continue;
 
     const key = sessionKey(candle.time);
-    let breakBefore = false;
     if (key !== currentSession) {
-      breakBefore = sessionStarted;
+      if (sessionStarted && i > 0) out[i - 1] = NaN;
       currentSession = key;
       sessionStarted = true;
       cumulativePV = 0;
       cumulativeVolume = 0;
     }
 
-    const high = Number(candle.high);
-    const low = Number(candle.low);
-    const close = Number(candle.close);
+    const typical = typicalPrice(candle);
+    if (!Number.isFinite(typical)) continue;
+
     const volume = Number(candle.volume);
-    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
-
-    const typical = (high + low + close) / 3;
-    if (!Number.isFinite(typical) || typical <= 0) continue;
-
     if (Number.isFinite(volume) && volume > 0) {
       cumulativePV += typical * volume;
       cumulativeVolume += volume;
     }
-    if (cumulativeVolume > 0 && !breakBefore) {
+    if (cumulativeVolume > 0) {
       out[i] = cumulativePV / cumulativeVolume;
     }
   }
   return out;
+}
+
+export interface AlignedVwap {
+  /** VWAP per display bar; NaN where nothing can be computed. */
+  values: number[];
+  /** Cumulative Σ(typical × volume) through each display bar (session scoped). */
+  cumulativePv: number[];
+  /** Cumulative Σ(volume) through each display bar (session scoped). */
+  cumulativeVolume: number[];
+  /** First timestamp present in the base series (0 when empty). */
+  baseFirstTime: number;
+  /** Last timestamp present in the base series (0 when empty). */
+  baseLastTime: number;
+  /**
+   * First base timestamp of the session that contains the last display bar
+   * (0 when that session has no base coverage). Compared with the exchange
+   * open this tells the caller whether the VWAP is session-complete.
+   */
+  lastSessionFirstTime: number;
+}
+
+function lastIndexAtOrBefore(times: number[], value: number): number {
+  let low = 0;
+  let high = times.length - 1;
+  let answer = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (times[mid] <= value) {
+      answer = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return answer;
+}
+
+/**
+ * Project a session VWAP computed from a fine-grained base series (1-minute
+ * bars, ideally) onto a coarser display series.
+ *
+ * For a display bar fully covered by the base, the value is the base's
+ * cumulative VWAP at that bar's close — i.e. true session VWAP, independent of
+ * the chart timeframe. For a bar the base has only partly seen (typically the
+ * forming bar) only the minutes it has not accounted for are priced with the
+ * bar's own typical price, so the bar's volume is never counted twice.
+ *
+ * The cumulative outputs always advance monotonically along the display series,
+ * even when the base stops before the last bar, so a caller can keep extending
+ * the line from the previous bar between reloads.
+ *
+ * Both series must be sorted ascending by time and expressed in the same unit
+ * (seconds, matching the chart candles).
+ */
+export function vwapFromBase(
+  display: IndicatorCandle[],
+  base: IndicatorCandle[],
+  sessionKey: (time: number) => string | number,
+  barSeconds: number,
+): AlignedVwap {
+  const bars = Array.isArray(display) ? display : [];
+  const n = bars.length;
+  const result: AlignedVwap = {
+    values: new Array(n).fill(NaN),
+    cumulativePv: new Array(n).fill(0),
+    cumulativeVolume: new Array(n).fill(0),
+    baseFirstTime: 0,
+    baseLastTime: 0,
+    lastSessionFirstTime: 0,
+  };
+  const source = (Array.isArray(base) ? base : []).filter(
+    (candle) => candle && Number.isFinite(candle.time) && Number.isFinite(typicalPrice(candle)),
+  );
+  if (!n || !source.length || !(barSeconds > 0)) return result;
+
+  const times: number[] = [];
+  const keys: (string | number)[] = [];
+  const cumulativePv: number[] = [];
+  const cumulativeVolume: number[] = [];
+  let currentSession: string | number | null = null;
+  let runningPv = 0;
+  let runningVolume = 0;
+
+  for (const candle of source) {
+    const key = sessionKey(candle.time);
+    if (key !== currentSession) {
+      currentSession = key;
+      runningPv = 0;
+      runningVolume = 0;
+    }
+    const typical = typicalPrice(candle);
+    const volume = Number(candle.volume);
+    if (Number.isFinite(volume) && volume > 0) {
+      runningPv += typical * volume;
+      runningVolume += volume;
+    }
+    times.push(candle.time);
+    keys.push(key);
+    cumulativePv.push(runningPv);
+    cumulativeVolume.push(runningVolume);
+  }
+  result.baseFirstTime = times[0] || 0;
+  result.baseLastTime = times[times.length - 1] || 0;
+
+  const indexFor = (limit: number, key: string | number): number => {
+    let index = lastIndexAtOrBefore(times, limit);
+    while (index >= 0 && keys[index] !== key) index--;
+    return index;
+  };
+
+  for (let i = 0; i < n; i++) {
+    const bar = bars[i];
+    if (!bar || !Number.isFinite(bar.time)) continue;
+    const key = sessionKey(bar.time);
+    const barEnd = bar.time + barSeconds;
+    const covered = indexFor(barEnd - 1, key);
+
+    // Volume already priced for this bar: either the base's cumulative totals
+    // (which may cover a prefix of the bar) or the previous display bar's
+    // totals when the base lags behind the chart.
+    const before = indexFor(bar.time - 1, key);
+    const basePv = covered >= 0 ? cumulativePv[covered] : 0;
+    const baseVolume = covered >= 0 ? cumulativeVolume[covered] : 0;
+    const baseVolumeInBar = covered >= 0
+      ? baseVolume - (before >= 0 ? cumulativeVolume[before] : 0)
+      : 0;
+    const sameSession = i > 0
+      && Number.isFinite(bars[i - 1]?.time)
+      && sessionKey(bars[i - 1].time) === key;
+    const prevPv = sameSession ? result.cumulativePv[i - 1] : 0;
+    const prevVolume = sameSession ? result.cumulativeVolume[i - 1] : 0;
+
+    if (covered < 0 && !sameSession) continue;
+
+    const useBase = baseVolume >= prevVolume;
+    const anchorPv = useBase ? basePv : prevPv;
+    const anchorVolume = useBase ? baseVolume : prevVolume;
+    const alreadyPriced = useBase ? baseVolumeInBar : 0;
+
+    const typical = typicalPrice(bar);
+    const volume = Number(bar.volume);
+    const barVolume = Number.isFinite(volume) && volume > 0 ? volume : 0;
+    const remaining = Math.max(0, barVolume - alreadyPriced);
+    const totalPv = anchorPv + (Number.isFinite(typical) ? typical * remaining : 0);
+    const totalVolume = anchorVolume + (Number.isFinite(typical) ? remaining : 0);
+    if (totalVolume > 0) result.values[i] = totalPv / totalVolume;
+    result.cumulativePv[i] = totalPv;
+    result.cumulativeVolume[i] = totalVolume;
+  }
+
+  if (n > 0 && Number.isFinite(bars[n - 1]?.time)) {
+    const lastKey = sessionKey(bars[n - 1].time);
+    const first = keys.indexOf(lastKey);
+    result.lastSessionFirstTime = first >= 0 ? times[first] : 0;
+  }
+  return result;
 }
 
 export interface EmaCross {

@@ -9,6 +9,7 @@ GO_STANDARDS.md
 *.png
 !internal/web/static/*.png
 !mobile/**/*.png
+!docs/mobile-audit/*.png
 data
 logs
 config.yaml

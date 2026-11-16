@@ -2728,18 +2728,39 @@ function registerCustomIndicators() {
       { key: "vwap", title: "VWAP: ", type: "line", styles: () => ({ color: VWAP_COLOR, size: 1.5 }) },
     ],
     calc: function(dataList) {
-      const candles = (dataList || []).map((candle) => ({
+      const list = dataList || [];
+      const candles = list.map((candle) => ({
         time: candle?.timestamp,
         high: candle?.high,
         low: candle?.low,
         close: candle?.close,
         volume: candle?.volume,
       }));
-      const series = Indicators.vwapSeries(candles, istSessionKey);
-      return series.map((value) => ({
-        vwap: Number.isFinite(value) ? value : null,
-      }));
+      // Fallback: VWAP of the displayed series. Only exact for 1m charts; the
+      // terminal attaches `vwap` (projected from the 1m base) whenever it has
+      // one, which is timeframe-independent and always preferred.
+      const fallback = Indicators.vwapSeries(candles, istSessionKey);
+      return list.map((candle, index) => {
+        const projected = Number(candle?.vwap);
+        const value = Number.isFinite(projected) && projected > 0 ? projected : fallback[index];
+        return { vwap: Number.isFinite(value) ? value : null };
+      });
     },
+  });
+}
+
+/**
+ * VWAP series for exports. Prefers the session VWAP the terminal projected
+ * from the 1-minute base (attached as `vwap`) so an exported report never
+ * disagrees with the line on screen; falls back to the series-local formula
+ * when the projection is unavailable.
+ */
+function exportVwapSeries(data) {
+  const bars = Array.isArray(data) ? data : [];
+  const fallback = Indicators.vwapSeries(bars, istSessionKey);
+  return bars.map((candle, index) => {
+    const projected = Number(candle?.vwap);
+    return Number.isFinite(projected) && projected > 0 ? projected : fallback[index];
   });
 }
 
@@ -3045,6 +3066,8 @@ export class CandleChart {
     };
     if (Number.isFinite(c.tdCE)) formatted.tdCE = Number(c.tdCE);
     if (Number.isFinite(c.tdPE)) formatted.tdPE = Number(c.tdPE);
+    // Session VWAP projected from the 1-minute base series (see vwapFromBase).
+    if (Number.isFinite(c.vwap)) formatted.vwap = Number(c.vwap);
     return formatted;
   }
 
@@ -5025,7 +5048,7 @@ export class CandleChart {
         append(`ema(${period})`, Indicators.emaSeries(closes, period));
       }
     }
-    if (this.showVWAP) append("vwap(session)", Indicators.vwapSeries(data, istSessionKey));
+    if (this.showVWAP) append("vwap(session)", exportVwapSeries(data));
     if (this.showRSI) append("rsi(14)", Indicators.rsiSeries(data, 14), 1);
     if (this.showDivergence) {
       const rsi = Indicators.rsiSeries(data, 14);
@@ -5048,7 +5071,7 @@ export class CandleChart {
     const data = this.data || [];
 
     if (this.showVWAP && data.length) {
-      const vwap = Indicators.vwapSeries(data, istSessionKey);
+      const vwap = exportVwapSeries(data);
       let lastVwap = NaN;
       for (let i = vwap.length - 1; i >= 0; i--) {
         if (Number.isFinite(vwap[i])) {
@@ -5163,7 +5186,7 @@ export class CandleChart {
     }
 
     if (this.showVWAP) {
-      const vwap = Indicators.vwapSeries(this.data, istSessionKey);
+      const vwap = exportVwapSeries(this.data);
       let lastVwap = NaN;
       for (let i = vwap.length - 1; i >= 0; i--) {
         if (Number.isFinite(vwap[i])) {

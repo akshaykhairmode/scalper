@@ -482,13 +482,18 @@ func (e *Evaluator) UpdateConfig(ctx context.Context, newCfg config.AI) {
 
 // OnTick is invoked for every tick received from Kotak WebSocket/HSM feed.
 // It features a sub-microsecond atomic early return when there are no active calls.
+//
+// The broker feed exposes only cumulative day volume (HSM SFeed market-picture
+// and Kotak REST quotes have no per-trade size), so ticks are stored without a
+// volume weight. getTechnicalMetrics therefore declines to label the resulting
+// unweighted average as VWAP on its own and prefers Kotak's avg_cost.
 func (e *Evaluator) OnTick(ctx context.Context, instrumentKey string, ltp float64) {
 	if e == nil || ltp <= 0 {
 		return
 	}
 
 	now := time.Now()
-	e.pushTick(instrumentKey, ltp, now)
+	e.pushTick(instrumentKey, ltp, 0, now)
 
 	if atomic.LoadInt64(&e.activeCount) == 0 {
 		return
@@ -540,7 +545,12 @@ func ringShardIndex(key string) int {
 	return int(h % ringShardCount)
 }
 
-func (e *Evaluator) pushTick(instrumentKey string, ltp float64, now time.Time) {
+// pushTick records one normalised tick. volume is the size traded at that
+// tick; pass 0 when the source only reports cumulative day volume.
+func (e *Evaluator) pushTick(instrumentKey string, ltp float64, volume int64, now time.Time) {
+	if volume < 0 {
+		volume = 0
+	}
 	shard := &e.ringShards[ringShardIndex(instrumentKey)]
 	shard.mu.Lock()
 	ring, ok := shard.rings[instrumentKey]
@@ -556,7 +566,7 @@ func (e *Evaluator) pushTick(instrumentKey string, ltp float64, now time.Time) {
 		ring = features.NewTickRing(240)
 		shard.rings[instrumentKey] = ring
 	}
-	ring.Push(features.Tick{Price: ltp, Timestamp: now.UnixMilli()})
+	ring.Push(features.Tick{Price: ltp, Volume: volume, Timestamp: now.UnixMilli()})
 	shard.mu.Unlock()
 }
 
@@ -1258,20 +1268,26 @@ func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap
 		vols := make([]int64, len(ticks))
 		highs := make([]float64, len(ticks))
 		lows := make([]float64, len(ticks))
+		weighted := false
 		for i, t := range ticks {
 			prices[i] = t.Price
-			vols[i] = 1
+			if t.Volume > 0 {
+				vols[i] = t.Volume
+				weighted = true
+			}
 			highs[i] = t.Price
 			lows[i] = t.Price
 		}
-		vwap = features.CalculateVWAP(prices, vols)
+		// An unweighted mean of tick prices is not a VWAP. Leave vwap at 0 so
+		// the caller can prefer the broker's day avg_cost, and only compute a
+		// real volume-weighted price when the ring carries usable sizes.
+		if weighted {
+			vwap = features.CalculateVWAP(prices, vols)
+		}
 		ema9 = features.CalculateEMA(prices, 9)
 		ema21 = features.CalculateEMA(prices, 21)
 		rsi14 = features.CalculateRSI(prices, 14)
 		atr14 = features.CalculateATR(highs, lows, prices, 14)
-		if vwap <= 0 {
-			vwap = ltp
-		}
 		if ema9 <= 0 {
 			ema9 = ltp
 		}
@@ -1290,12 +1306,13 @@ func (e *Evaluator) getTechnicalMetrics(instrumentKey string, ltp float64) (vwap
 	highs := []float64{ltp * 1.01, ltp * 1.01}
 	lows := []float64{ltp * 0.99, ltp * 0.99}
 	closes := []float64{ltp, ltp}
-	vwap = features.CalculateVWAP([]float64{ltp}, []int64{1})
+	// No ticks means no volume-weightable prices: report VWAP as unavailable
+	// rather than passing a single price off as a volume-weighted average.
 	ema9 = features.CalculateEMA([]float64{ltp}, 9)
 	ema21 = features.CalculateEMA([]float64{ltp}, 21)
 	rsi14 = features.CalculateRSI(closes, 14)
 	atr14 = features.CalculateATR(highs, lows, closes, 14)
-	return vwap, ema9, ema21, rsi14, atr14, false
+	return 0, ema9, ema21, rsi14, atr14, false
 }
 
 // ActiveCallsCount returns the number of calls currently monitored for market outcomes.
@@ -1474,6 +1491,11 @@ func (e *Evaluator) EvaluateContract(ctx context.Context, setup ContractSetup) (
 	}
 
 	vwap, ema9, ema21, rsi14, atr14, _ := e.getTechnicalMetrics(setup.InstrumentKey, setup.OptionLTP)
+	// Mirror the scan path: Kotak's avg_cost is a true day VWAP, and the tick
+	// ring has no per-trade sizes to compute one from.
+	if info.AvgPrice > 0 {
+		vwap = info.AvgPrice
+	}
 	distVWAP := 0.0
 	if vwap > 0 {
 		distVWAP = ((setup.OptionLTP - vwap) / vwap) * 100.0

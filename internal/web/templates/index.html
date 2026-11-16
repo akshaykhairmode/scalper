@@ -63,7 +63,7 @@
       <button type="button" class="feed-badge connecting feed-badge-interactive" id="order-feed-badge" title="Kotak order and position updates (click for system status)"><i></i><span id="order-feed-label">order feed</span></button>
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
-      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate"><span aria-hidden="true">🤖</span> AI Signals <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
+      <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate"><span aria-hidden="true">🤖</span> <span class="ai-label">AI Signals</span> <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">{{.Mode}}</span>
       <span class="clock" id="clock">{{.Now}}</span>
@@ -211,8 +211,8 @@
               <button type="button" data-qty-step="CE" data-step="1" aria-label="Increase call quantity">+</button>
             </div>
             <div class="trade-buttons-row">
-              <button type="button" class="trade buy" data-action="buy" data-type="CE" title="Buy Call" aria-label="Buy Call">B</button>
-              <button type="button" class="trade sell" data-action="sell" data-type="CE" title="Sell Call" aria-label="Sell Call">S</button>
+              <button type="button" class="trade buy" data-action="buy" data-type="CE" title="Buy Call" aria-label="Buy Call">BUY</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="CE" title="Sell Call" aria-label="Sell Call">SELL</button>
               <button type="button" class="trade ask" data-action="ask" data-type="CE" id="btn-ask-ce" title="Ask AI for real-time recommendation on this Call strike" aria-label="Ask AI">Ask</button>
             </div>
           </div>
@@ -294,8 +294,8 @@
               <button type="button" data-qty-step="PE" data-step="1" aria-label="Increase put quantity">+</button>
             </div>
             <div class="trade-buttons-row">
-              <button type="button" class="trade buy" data-action="buy" data-type="PE" title="Buy Put" aria-label="Buy Put">B</button>
-              <button type="button" class="trade sell" data-action="sell" data-type="PE" title="Sell Put" aria-label="Sell Put">S</button>
+              <button type="button" class="trade buy" data-action="buy" data-type="PE" title="Buy Put" aria-label="Buy Put">BUY</button>
+              <button type="button" class="trade sell" data-action="sell" data-type="PE" title="Sell Put" aria-label="Sell Put">SELL</button>
               <button type="button" class="trade ask" data-action="ask" data-type="PE" id="btn-ask-pe" title="Ask AI for real-time recommendation on this Put strike" aria-label="Ask AI">Ask</button>
             </div>
           </div>
@@ -816,7 +816,7 @@
           </select>
         </label>
         <div class="strike-search-wrap">
-          <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike (e.g. 24500)..." aria-label="Search strike" aria-describedby="strike-search-hint">
+          <input id="strike-search-input" type="search" inputmode="decimal" autocomplete="off" placeholder="Search strike" aria-label="Search strike" aria-describedby="strike-search-hint">
         </div>
         <button type="button" class="strike-atm-btn" id="strike-jump-atm-btn" title="Jump to At-The-Money strike (Current Spot Price)"><span aria-hidden="true">⚡</span> ATM</button>
       </div>

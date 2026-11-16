@@ -4,9 +4,12 @@ import "sync"
 
 // Tick represents a normalized trade tick.
 type Tick struct {
-	Price     float64 `json:"price"`
-	Volume    int64   `json:"volume"`
-	Timestamp int64   `json:"timestamp"`
+	Price float64 `json:"price"`
+	// Volume is the size traded at this tick. It stays 0 when the feed only
+	// reports cumulative day volume, which lets VWAP consumers detect that no
+	// per-tick weight is available.
+	Volume    int64 `json:"volume"`
+	Timestamp int64 `json:"timestamp"`
 }
 
 // TickRing is a thread-safe, fixed-size ring buffer for high-frequency ticks.

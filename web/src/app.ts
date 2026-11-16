@@ -1,7 +1,8 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
 import { formatPrice, formatRange } from "./chart/volumeProfile";
-import { DAY_MS, IST_OFFSET_MS } from "./chart/session";
+import { DAY_MS, IST_OFFSET_MS, istSessionKey } from "./chart/session";
+import { vwapFromBase } from "./chart/indicators";
 import { generateQRCodeSVG } from "./utils/qrcode";
 import { computePayoff, isOptionLeg, legRisk, payoffCurve } from "./utils/payoff";
 
@@ -315,6 +316,9 @@ const S: any = {
   chartExportPane: "underlying",
   chainStatsRequestID: 0,
   historicalCache: new Map(),
+  // 1-minute base series keyed by instrument, used to project a
+  // timeframe-independent session VWAP onto every chart pane.
+  vwapBase: new Map(),
   chartLoadID: 0,
   quickOrder: null,
   autoTargets: [],
@@ -1544,7 +1548,10 @@ function buildCharts() {
     return value === null ? fallback : value === "true";
   };
   const savedVWAPCE = savedVWAPFor("ce", true);
-  const savedVWAPUnderlying = savedVWAPFor("underlying", Boolean(activeCommodity()));
+  // A cash index carries no traded volume, so its VWAP can never be valid: the
+  // stored preference must not resurrect it when the last instrument was a
+  // commodity future.
+  const savedVWAPUnderlying = Boolean(activeCommodity()) && savedVWAPFor("underlying", true);
   const savedVWAPPE = savedVWAPFor("pe", true);
   const savedDOM = localStorage.getItem("scalper-show-dom") !== "false";
   const savedRSI = localStorage.getItem("scalper-show-rsi") === "true";
@@ -2248,6 +2255,9 @@ function hideServerDownModal() {
 
 function handleTickData(data, { batch = false } = {}) {
   if (!data || !data.key) return null;
+  // `data.volume` is the broker's cumulative day volume, not a per-trade size:
+  // the HSM SFeed packet and the Kotak REST quote both report a running total.
+  // updateLiveCandle converts it to a per-bar delta.
   updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
   if (data.bids || data.asks) {
     if (!S.depths) S.depths = {};
@@ -3028,6 +3038,12 @@ function toggleChartVWAP(pane, forceState?) {
     localStorage.setItem(`scalper-show-vwap-${spotPane ? "underlying" : pane}`, String(nextState));
   } catch (_) {}
   updateChartSettingsButtonState();
+  // The line is projected from a 1-minute base series that is only fetched for
+  // panes with VWAP enabled, so enabling it has to load that base before the
+  // chart can draw a truthful value.
+  if (nextState) {
+    refreshPaneVwap(pane).catch((error) => console.warn("vwap refresh failed", error));
+  }
   toast(nextState ? `VWAP enabled (${label})` : `VWAP hidden (${label})`, "ok", 1500);
   return nextState;
 }
@@ -3360,11 +3376,152 @@ function activeSpotInstrument() {
   return `nse_cm|${S.activeIndex}`;
 }
 
+// The chart's VWAP is projected from this base series so the line does not
+// depend on (or degrade with) the display timeframe.
+const VWAP_BASE_TIMEFRAME = "1m";
+const CHART_TIMEFRAME_SECONDS = { "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 };
+
+function chartTimeframeSeconds() {
+  return CHART_TIMEFRAME_SECONDS[S.timeframe] || 300;
+}
+
+function sessionOpenSeconds() {
+  const fallback = activeCommodity() ? 9 * 3600 : 9 * 3600 + 15 * 60;
+  const raw = activeCommodity() ? "09:00" : (S.boot?.marketSession?.open || "09:15");
+  const match = /^(\d{2}):(\d{2})$/.exec(String(raw));
+  if (!match) return fallback;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60;
+}
+
+/** Epoch-ms of the session open on the IST day that contains `timeSeconds`. */
+function sessionOpenMsFor(timeSeconds) {
+  const dayStartMs = istSessionKey(timeSeconds) * DAY_MS - IST_OFFSET_MS;
+  return dayStartMs + sessionOpenSeconds() * 1000;
+}
+
+function normalizeHistoricalCandles(rawList) {
+  const raw = (Array.isArray(rawList) ? rawList : []).map((c: any) => ({
+    time: num(c.time ?? c.ts),
+    open: num(c.open),
+    high: num(c.high),
+    low: num(c.low),
+    close: num(c.close),
+    volume: num(c.volume),
+  }));
+  const valid = raw.map((c: any) => {
+    if (c.low <= 0 && (c.open > 0 || c.close > 0 || c.high > 0)) {
+      const pos = [c.open, c.close, c.high].filter((v: number) => v > 0);
+      c.low = pos.length ? Math.min(...pos) : 0;
+    }
+    if (c.open <= 0) c.open = c.low > 0 ? c.low : c.close;
+    if (c.close <= 0) c.close = c.open > 0 ? c.open : c.low;
+    if (c.high <= 0 || c.high < Math.max(c.open, c.close, c.low)) {
+      c.high = Math.max(c.open, c.close, c.low);
+    }
+    return c;
+  });
+  return valid.filter((c: any) => c.time > 0 && c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.high >= c.low);
+}
+
+/**
+ * Fetch (or refresh) the 1-minute base series used for VWAP. The server serves
+ * these from SQLite with a five-minute Kotak sync window, so this stays cheap
+ * even when called on every chart load.
+ */
+async function fetchVwapBase(keys) {
+  const unique = [...new Set((keys || []).filter(Boolean))] as string[];
+  if (!unique.length) return;
+  const query = new URLSearchParams({ tf: VWAP_BASE_TIMEFRAME, instruments: unique.join(",") });
+  const response = await getJSON(`/api/candles/batch?${query.toString()}`);
+  const results = response?.results || {};
+  for (const key of unique) {
+    const entry = results[key];
+    if (!entry || entry.error) continue;
+    const base = normalizeHistoricalCandles(entry.candles);
+    if (!base.length) continue;
+    const liveKey = `${key}|${VWAP_BASE_TIMEFRAME}`;
+    const merged = mergeChartCandles(base, S.candles[liveKey] || [], key);
+    if (!merged.length) continue;
+    S.vwapBase.set(key, merged);
+    S.candles[liveKey] = merged.slice(-600).map((candle) => ({ ...candle }));
+  }
+}
+
+/**
+ * Base series for VWAP projection: the fetched 1m history plus any 1m bars
+ * built from live ticks since, so bars that completed after the last fetch are
+ * still projected at 1-minute granularity.
+ */
+function vwapBaseSeries(key) {
+  const base = S.vwapBase.get(key) || [];
+  const live = S.candles[`${key}|${VWAP_BASE_TIMEFRAME}`] || [];
+  if (!base.length) return live;
+  if (!live.length) return base;
+  const byTime = new Map();
+  for (const candle of base) byTime.set(candle.time, candle);
+  for (const candle of live) byTime.set(candle.time, candle);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Write the projected session VWAP onto the display candles in place. Returns
+ * the first base timestamp of the *current* session (not of the whole base), so
+ * the caller can flag a partial-session VWAP even when the store already holds
+ * several days of 1-minute bars.
+ */
+function attachVwapValues(key, candles, barSeconds = chartTimeframeSeconds()) {
+  const bars = Array.isArray(candles) ? candles : [];
+  if (!bars.length) return 0;
+  const base = vwapBaseSeries(key);
+  const aligned = vwapFromBase(bars, base, istSessionKey, barSeconds);
+  for (let i = 0; i < bars.length; i++) {
+    const value = aligned.values[i];
+    bars[i].vwap = Number.isFinite(value) ? value : undefined;
+    bars[i].vwapPv = aligned.cumulativePv[i];
+    bars[i].vwapVol = aligned.cumulativeVolume[i];
+  }
+  return aligned.lastSessionFirstTime;
+}
+
+/** Human-readable warning when the current session's base starts late. */
+function vwapCoverageWarning(sessionFirstTime) {
+  if (!sessionFirstTime) return "";
+  const expected = sessionOpenMsFor(sessionFirstTime);
+  if (!expected || sessionFirstTime * 1000 <= expected + 120_000) return "";
+  const start = new Date(sessionFirstTime * 1000);
+  const label = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(start);
+  return `VWAP starts at ${label} · earlier session volume missing.`;
+}
+
+/** Re-project VWAP onto a pane without resetting its zoom/scroll. */
+async function refreshPaneVwap(pane) {
+  const chart = chartForPane(pane);
+  if (!chart?.showVWAP) return;
+  const key = pane === "spot" || pane === "underlying"
+    ? activeSpotInstrument()
+    : chartInstrument(pane === "ce" ? "CE" : "PE");
+  if (!key) return;
+  // Capture the timeframe before awaiting: a timeframe click while the base
+  // request is in flight must not project 5m bars with 15m lengths.
+  const barSeconds = chartTimeframeSeconds();
+  if (S.timeframe !== VWAP_BASE_TIMEFRAME) await fetchVwapBase([key]);
+  const data = chart.data || [];
+  if (!data.length) return;
+  const sessionFirstTime = attachVwapValues(key, data, barSeconds);
+  chart.setData(data, { resetScale: false });
+  const warning = vwapCoverageWarning(sessionFirstTime);
+  if (warning) setChartHint(pane, warning);
+}
+
+
 async function loadCharts(forceRefresh = false) {
   if (!S.session?.authenticated) return;
   const loadID = ++S.chartLoadID;
   if (forceRefresh) {
     S.historicalCache.clear();
+    S.vwapBase.clear();
   }
   const dateParts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
@@ -3381,6 +3538,20 @@ async function loadCharts(forceRefresh = false) {
   if (forceRefresh) batchQuery.set("refresh", "1");
   let needsBatch = false;
 
+  // Kick the 1-minute VWAP base refresh off in parallel with the display
+  // candles so the two round trips overlap. On a 1m chart the display series
+  // is already the base, so there is nothing extra to fetch.
+  const vwapKeys = S.timeframe === VWAP_BASE_TIMEFRAME
+    ? []
+    : paneTargets
+        .filter(([pane, key]) => Boolean(key) && Boolean(S.charts[pane]?.showVWAP))
+        .map(([, key]) => key);
+  const vwapPromise = vwapKeys.length
+    ? fetchVwapBase(vwapKeys).catch((error) => {
+        console.warn("vwap base refresh failed", error);
+      })
+    : null;
+
   for (const [pane, key, defaultHint] of paneTargets) {
     const chart = S.charts[pane];
     if (!chart) continue;
@@ -3394,6 +3565,8 @@ async function loadCharts(forceRefresh = false) {
     // on screen while the new candles are still loading.
     if (chart.currentSymbol && chart.currentSymbol !== key) {
       renderVolumeProfileChip(pane, null);
+      chart.setData([], { symbol: key });
+      setChartHint(pane, "Loading historical candles…");
     }
     const cacheKey = `${key}|${S.timeframe}|${sessionDate}`;
     let cached = S.historicalCache.get(cacheKey);
@@ -3423,26 +3596,7 @@ async function loadCharts(forceRefresh = false) {
             : 5_000;
           S.historicalCache.set(cacheKey, { retryAt: Date.now() + retryDelay, error: new Error(result.error) });
         } else {
-          const rawCandles = (result.candles || []).map((c: any) => ({
-            time: num(c.time ?? c.ts),
-            open: num(c.open),
-            high: num(c.high),
-            low: num(c.low),
-            close: num(c.close),
-            volume: num(c.volume),
-          }));
-          const validCandles = rawCandles.map((c: any) => {
-            if (c.low <= 0 && (c.open > 0 || c.close > 0 || c.high > 0)) {
-              const pos = [c.open, c.close, c.high].filter((v: number) => v > 0);
-              c.low = pos.length ? Math.min(...pos) : 0;
-            }
-            if (c.open <= 0) c.open = c.low > 0 ? c.low : c.close;
-            if (c.close <= 0) c.close = c.open > 0 ? c.open : c.low;
-            if (c.high <= 0 || c.high < Math.max(c.open, c.close, c.low)) {
-              c.high = Math.max(c.open, c.close, c.low);
-            }
-            return c;
-          }).filter((c: any) => c.time > 0 && c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.high >= c.low);
+          const validCandles = normalizeHistoricalCandles(result.candles);
 
           const parsed = {
             candles: validCandles,
@@ -3466,6 +3620,14 @@ async function loadCharts(forceRefresh = false) {
     }
   }
 
+  if (vwapPromise) {
+    // Render with the fallback VWAP rather than blocking every pane on a slow
+    // (or throttled) 1-minute request.
+    await Promise.race([
+      vwapPromise,
+      new Promise((resolve) => window.setTimeout(resolve, 4000)),
+    ]);
+  }
   if (loadID !== S.chartLoadID) return;
 
   for (const [pane, key, defaultHint] of paneTargets) {
@@ -3493,17 +3655,20 @@ async function loadCharts(forceRefresh = false) {
       if (merged.length) {
         S.candles[liveKey] = merged.slice(-500).map((candle) => ({ ...candle }));
       }
+      // Project the timeframe-independent session VWAP onto these bars before
+      // handing them to the chart.
+      let coverage = "";
+      if (chart.showVWAP) {
+        coverage = vwapCoverageWarning(attachVwapValues(key, merged));
+      }
       chart.setData(merged, { symbol: key });
-      setChartHint(pane, entry.warning || (merged.length ? "" : "Waiting for live ticks…"));
+      const message = entry.warning || (merged.length ? "" : "Waiting for live ticks…");
+      setChartHint(pane, message || coverage);
     }
   }
   renderPaneHeaders();
   updateChartTrades();
   refreshThetaSeries();
-}
-
-function thetaBarSeconds() {
-  return ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 } as any)[S.timeframe] || 300;
 }
 
 function thetaSessionClock() {
@@ -3576,7 +3741,7 @@ function refreshThetaSeries(full = true) {
     expiry: S.expiry,
     ceLotSize: num(ce.lotSize, 1) || 1,
     peLotSize: num(pe.lotSize, 1) || 1,
-    barSeconds: thetaBarSeconds(),
+    barSeconds: chartTimeframeSeconds(),
     sessionSeconds: thetaSessionSeconds(),
     sessionCloseSeconds: thetaSessionCloseSeconds(),
     expiryCloseSeconds: thetaSessionCloseSeconds(),
@@ -3732,13 +3897,34 @@ function mergeChartCandles(historical, live, instrumentKey = "") {
       continue;
     }
     // Same bucket: keep the earliest open, union the range, use the latest
-    // close, and keep the larger volume. This preserves a partial bar stored
-    // before a page refresh while live ticks continue to extend it.
+    // close, and carry the historical volume forward instead of replacing the
+    // bar's own. `startVolume` is the cumulative day volume observed when the
+    // live bar started, so `cumulative - startVolume` is the volume traded
+    // after the historical snapshot. Re-anchoring `baseVolume` at
+    // `historical - gained` (never below zero) keeps the bar growing on later
+    // ticks and avoids both the freeze at the historical value and the double
+    // counting of a plain addition.
+    const historicalVolume = Number(existing.volume) || 0;
+    const liveVolume = Number(candle.volume) || 0;
+    const cumulativeVolume = Number(candle.dayVolume) || 0;
+    const liveStart = Number(candle.startVolume);
     existing.open = existing.open > 0 ? existing.open : candle.open;
     existing.high = Math.max(existing.high, candle.high);
     existing.low = Math.min(existing.low, candle.low);
     existing.close = candle.close;
-    existing.volume = Math.max(existing.volume || 0, candle.volume || 0);
+    if (cumulativeVolume > 0 && Number.isFinite(liveStart) && liveStart > 0) {
+      const gained = Math.max(0, cumulativeVolume - liveStart);
+      const carried = Math.max(0, historicalVolume - gained);
+      existing.baseVolume = carried;
+      existing.volume = carried + gained;
+      existing.startVolume = liveStart;
+      existing.dayVolume = cumulativeVolume;
+    } else {
+      existing.volume = Math.max(historicalVolume, liveVolume);
+      existing.baseVolume = Number(candle.baseVolume) || 0;
+      if (Number.isFinite(liveStart)) existing.startVolume = liveStart;
+      if (cumulativeVolume > 0) existing.dayVolume = cumulativeVolume;
+    }
   }
   const merged = [...byTime.values()].sort((a: any, b: any) => a.time - b.time);
   return dropFlatNonTradingDays(merged);
@@ -3760,28 +3946,25 @@ function scheduleThetaRefresh() {
   }, 500);
 }
 
-function updateLiveCandle(key, price, timestamp, volume) {
-  if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
-  const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
-  const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
-  if (!candleSessionAllows(time, key)) return;
-  const interval = ({ "1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 })[S.timeframe];
-  if (!interval) return;
-  const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
-  const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
-  const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
-  const localDayStart = Math.floor((time + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
-  const sessionStart = localDayStart + openSeconds;
-  let bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
-  const value = Number(price);
-  const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
-  const cacheKey = `${key}|${S.timeframe}`;
+/**
+ * Fold one tick into a session-aligned OHLCV bar. Volume is reconstructed from
+ * the cumulative day volume, anchored at the first tick observed for the bar
+ * (`startVolume`) plus any volume already attributed by a historical merge
+ * (`baseVolume`), so the bar keeps growing instead of freezing at the value it
+ * had when the page loaded.
+ */
+function applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, limit) {
   const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
-  let candle = candles[candles.length - 1];
-  let startedNewBar = false;
-  if (candle && bucket < candle.time) {
-    bucket = candle.time;
+  let bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
+  const newest = candles[candles.length - 1];
+  if (newest && bucket < newest.time) {
+    // Out-of-order tick (a REST poll older than the last WebSocket tick, or a
+    // replay after a reconnect). Clamping it into the newest bar would corrupt
+    // high/low/close and could shrink the bar's volume, so drop it.
+    return { candle: newest, startedNewBar: false, stale: true };
   }
+  let candle = newest;
+  let startedNewBar = false;
   if (!candle || candle.time !== bucket) {
     candle = {
       time: bucket,
@@ -3790,23 +3973,79 @@ function updateLiveCandle(key, price, timestamp, volume) {
       low: value,
       close: value,
       volume: 0,
+      baseVolume: 0,
       startVolume: cumVolume || 0,
       dayVolume: cumVolume || 0,
     };
     candles.push(candle);
     startedNewBar = true;
-    if (candles.length > 500) candles.shift();
+    while (candles.length > limit) candles.shift();
   } else {
     candle.high = Math.max(candle.high, value);
     candle.low = Math.min(candle.low, value);
     candle.close = value;
     if (cumVolume > 0) {
-      if (!candle.startVolume || candle.startVolume <= 0) {
-        candle.startVolume = cumVolume;
-      }
-      candle.volume = Math.max(candle.volume || 0, cumVolume - candle.startVolume);
+      if (!candle.startVolume || candle.startVolume <= 0) candle.startVolume = cumVolume;
+      const base = Number(candle.baseVolume) || 0;
+      const gained = base + Math.max(0, cumVolume - candle.startVolume);
+      // A cumulative volume that goes backwards (broker glitch, REST/WS mix)
+      // must not shrink an already reported bar.
+      candle.volume = Math.max(Number(candle.volume) || 0, gained);
       candle.dayVolume = cumVolume;
     }
+  }
+  return { candle, startedNewBar, stale: false };
+}
+
+/**
+ * Extend the forming bar's session VWAP from the previous bar's cumulative
+ * totals. This keeps the projected VWAP live between chart reloads without
+ * recomputing the whole series on every tick.
+ */
+function extendLiveVwap(candle, previous) {
+  if (!candle || !previous) return;
+  if (istSessionKey(previous.time) !== istSessionKey(candle.time)) return;
+  const pv = Number(previous.vwapPv);
+  const vol = Number(previous.vwapVol);
+  if (!Number.isFinite(pv) || !Number.isFinite(vol) || vol < 0) return;
+  const typical = (Number(candle.high) + Number(candle.low) + Number(candle.close)) / 3;
+  const barVolume = Number(candle.volume);
+  if (!Number.isFinite(typical) || typical <= 0) return;
+  const addVolume = Number.isFinite(barVolume) && barVolume > 0 ? barVolume : 0;
+  const totalPv = pv + typical * addVolume;
+  const totalVolume = vol + addVolume;
+  if (totalVolume <= 0) return;
+  candle.vwap = totalPv / totalVolume;
+  candle.vwapPv = totalPv;
+  candle.vwapVol = totalVolume;
+}
+
+function updateLiveCandle(key, price, timestamp, volume) {
+  if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
+  const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
+  const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
+  if (!candleSessionAllows(time, key)) return;
+  const interval = CHART_TIMEFRAME_SECONDS[S.timeframe];
+  if (!interval) return;
+  const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
+  const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
+  const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
+  const localDayStart = Math.floor((time + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
+  const sessionStart = localDayStart + openSeconds;
+  const value = Number(price);
+  const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
+  const cacheKey = `${key}|${S.timeframe}`;
+  const { candle, startedNewBar, stale } = applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, 500);
+  if (stale) return;
+  const series = S.candles[cacheKey] || [];
+  if (series.length >= 2) {
+    extendLiveVwap(candle, series[series.length - 2]);
+  }
+  // Keep a 1-minute series for every instrument: it is the base the session
+  // VWAP is projected from, and it must stay fine-grained while the chart is
+  // showing 5m/15m/1h bars.
+  if (S.timeframe !== VWAP_BASE_TIMEFRAME) {
+    applyLiveTickToSeries(`${key}|${VWAP_BASE_TIMEFRAME}`, 60, value, time, sessionStart, cumVolume, 900);
   }
   for (const type of ["CE", "PE"]) {
     if (chartInstrument(type) !== key) continue;
@@ -3975,6 +4214,12 @@ function renderSpotPicker(force = false) {
   if (dot) dot.className = `spot-live-dot ${spotStatus(S.activeIndex, active).toLowerCase()}`;
   const nameEl = $("spot-current-name");
   if (nameEl) nameEl.textContent = active?.displayName || S.activeIndex || "—";
+  const currentEl = $("spot-current");
+  if (currentEl) {
+    // The index name ellipsizes on narrow phones; keep the full label reachable.
+    const name = active?.displayName || S.activeIndex || "";
+    currentEl.title = active ? `${name} · ₹${fmt(active.ltp)}` : "Switch index";
+  }
   const priceEl = $("spot-current-price");
   if (priceEl) priceEl.textContent = active ? fmt(active.ltp) : "—";
   const changeEl = $("spot-current-change");
@@ -4295,10 +4540,10 @@ function requestBrokerMargin(type: "CE" | "PE", option: any, shares: number) {
       const buyEl = $(`leg-${prefix}-margin-buy`);
       if (buyEl && ordMrgn > 0) {
         if (insuf > 0) {
-          buyEl.textContent = `B ₹${fmt(ordMrgn, 0)} (⚠️ Short ₹${fmt(insuf, 0)})`;
+          buyEl.textContent = `BUY ₹${fmt(ordMrgn, 0)} (⚠️ Short ₹${fmt(insuf, 0)})`;
           buyEl.className = "margin-buy down";
         } else {
-          buyEl.textContent = `B ₹${fmt(ordMrgn, 0)}`;
+          buyEl.textContent = `BUY ₹${fmt(ordMrgn, 0)}`;
           buyEl.className = "margin-buy up";
         }
       }
@@ -4324,10 +4569,10 @@ function requestBrokerMargin(type: "CE" | "PE", option: any, shares: number) {
       const sellEl = $(`leg-${prefix}-margin-sell`);
       if (sellEl && ordMrgn > 0) {
         if (insuf > 0) {
-          sellEl.textContent = `S ₹${fmt(ordMrgn, 0)} (⚠️ Short ₹${fmt(insuf, 0)})`;
+          sellEl.textContent = `SELL ₹${fmt(ordMrgn, 0)} (⚠️ Short ₹${fmt(insuf, 0)})`;
           sellEl.className = "margin-sell down";
         } else {
-          sellEl.textContent = `S ₹${fmt(ordMrgn, 0)}`;
+          sellEl.textContent = `SELL ₹${fmt(ordMrgn, 0)}`;
           sellEl.className = "margin-sell up";
         }
       }
@@ -4435,7 +4680,7 @@ function renderOrderPad() {
       const reqSell = requiredMargin(option, shares, "S");
       const sellFinite = Number.isFinite(reqSell);
       if (buyEl) {
-        buyEl.textContent = `B ₹${fmt(reqBuy, 0)}`;
+        buyEl.textContent = `BUY ₹${fmt(reqBuy, 0)}`;
         if (hasLimits && available !== null) {
           buyEl.className = `margin-buy ${available >= reqBuy ? "up" : "down"}`;
           buyEl.title = `Buy: ₹${fmt(reqBuy, 2)} · Available: ₹${fmt(available, 0)} (${available >= reqBuy ? "Sufficient" : "Insufficient"})`;
@@ -4445,7 +4690,7 @@ function renderOrderPad() {
         }
       }
       if (sellEl) {
-        sellEl.textContent = sellFinite ? `S ₹${fmt(reqSell, 0)}` : "S —";
+        sellEl.textContent = sellFinite ? `SELL ₹${fmt(reqSell, 0)}` : "SELL —";
         if (sellFinite && hasLimits && available !== null) {
           sellEl.className = `margin-sell ${available >= reqSell ? "up" : "down"}`;
           sellEl.title = `Sell: ₹${fmt(reqSell, 2)} · Available: ₹${fmt(available, 0)} (${available >= reqSell ? "Sufficient" : "Insufficient"})`;
@@ -8084,6 +8329,31 @@ function ensureAIScannerTicker() {
   window.setInterval(renderAIScannerTimer, 1000);
 }
 
+/**
+ * Map a raw scanner/agent error into something a trader can act on. Upstream
+ * bodies (OpenRouter rate-limit JSON, stack traces) are unreadable at phone
+ * size, so only a short, specific message goes into the modal; the raw text is
+ * kept on the element's title for debugging.
+ */
+function summarizeScanError(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (lower.includes("rate limit") || lower.includes("http 429") || lower.includes("quota")) {
+    return "Daily AI model quota reached. The scanner will retry on its next cycle — add provider credits or switch model in Settings to resume.";
+  }
+  if (lower.includes("http 401") || lower.includes("http 403") || lower.includes("unauthorized") || lower.includes("api key")) {
+    return "The AI provider rejected the API key. Check the model credentials in Settings.";
+  }
+  if (lower.includes("timeout") || lower.includes("deadline exceeded")) {
+    return "The AI provider timed out. The next scan will retry.";
+  }
+  if (/http 5\d\d/.test(lower) || lower.includes("bad gateway") || lower.includes("unavailable")) {
+    return "The AI provider is unavailable right now. The next scan will retry.";
+  }
+  return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+}
+
 function renderAIScannerTimer() {
   const headerEl = $("ai-header-timer");
   const modalValEl = $("ai-modal-timer-val");
@@ -8093,12 +8363,15 @@ function renderAIScannerTimer() {
   const scanner = S.aiScanner;
   const scanErrEl = $("ai-modal-scan-error");
   if (scanErrEl) {
-    const msg = scanner && scanner.last_error ? String(scanner.last_error) : "";
+    const raw = scanner && scanner.last_error ? String(scanner.last_error) : "";
+    const msg = summarizeScanError(raw);
     if (msg) {
-      scanErrEl.textContent = "⚠ Last scan error: " + msg;
+      scanErrEl.textContent = "⚠ " + msg;
+      scanErrEl.title = raw;
       scanErrEl.style.display = "block";
     } else {
       scanErrEl.textContent = "";
+      scanErrEl.removeAttribute("title");
       scanErrEl.style.display = "none";
     }
   }
@@ -9543,6 +9816,9 @@ async function triggerPWAInstall() {
   hideInstallPromptUI();
 }
 
+let installBannerTimer = null;
+let installBannerTapBound = false;
+
 function showInstallPromptUI() {
   const installBtn = $("install-button");
   if (installBtn) installBtn.hidden = false;
@@ -9555,12 +9831,32 @@ function showInstallPromptUI() {
   const banner = $("install-banner");
   if (banner && !dismissed && window.innerWidth <= 768) {
     banner.hidden = false;
+    // A marketing banner must never own the screen: it sits over the order pad
+    // on phones, so it retires itself and yields to the first trade tap.
+    if (installBannerTimer) window.clearTimeout(installBannerTimer);
+    installBannerTimer = window.setTimeout(() => {
+      installBannerTimer = null;
+      hideInstallBanner();
+    }, 12000);
+    if (!installBannerTapBound) {
+      installBannerTapBound = true;
+      document.addEventListener("pointerdown", (event) => {
+        const target = event.target as Element | null;
+        if (target?.closest?.(".leg-orderpad, .trade-buttons-row, #bottom-panel, #mobile-nav")) {
+          hideInstallBanner();
+        }
+      }, { capture: true, passive: true });
+    }
   }
 }
 
 function hideInstallBanner() {
   const banner = $("install-banner");
   if (banner) banner.hidden = true;
+  if (installBannerTimer) {
+    window.clearTimeout(installBannerTimer);
+    installBannerTimer = null;
+  }
 }
 
 function hideInstallPromptUI() {

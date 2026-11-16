@@ -294,6 +294,158 @@ func TestCandlesWriteReadAndAggregate(t *testing.T) {
 	}
 }
 
+func TestAggregateCandlesFrom1mSessionAligned(t *testing.T) {
+	loc := time.FixedZone("IST", istOffsetSeconds)
+	day1 := time.Date(2026, time.November, 16, 9, 15, 0, 0, loc).Unix()
+	day2 := time.Date(2026, time.November, 17, 9, 15, 0, 0, loc).Unix()
+
+	t.Run("1h bars anchor at the session open", func(t *testing.T) {
+		s := openTest(t)
+		ctx := context.Background()
+		var raw []market.Candle
+		// Two full hours on day 1 (09:15-11:14) plus a short day 2 whose first
+		// bar must start a fresh anchor rather than extend day 1's last bucket.
+		for i := 0; i < 120; i++ {
+			raw = append(raw, synthetic1m(day1+int64(i*60), i))
+		}
+		for i := 0; i < 10; i++ {
+			raw = append(raw, synthetic1m(day2+int64(i*60), i))
+		}
+		if err := s.WriteCandles(ctx, "nse_fo|NIFTY|2026-11-26|24000|CE", "1m", raw); err != nil {
+			t.Fatalf("WriteCandles: %v", err)
+		}
+
+		got, err := s.AggregateCandlesFrom1m(ctx, "nse_fo|NIFTY|2026-11-26|24000|CE", "1h")
+		if err != nil {
+			t.Fatalf("AggregateCandlesFrom1m: %v", err)
+		}
+		// Epoch-aligned buckets would produce 09:30, 10:30 and 11:30 (IST),
+		// dropping the 09:15-09:29 bars entirely.
+		wantTimes := []int64{day1, day1 + 3600, day2}
+		if len(got) != len(wantTimes) {
+			t.Fatalf("got %d 1h bars, want %d: %+v", len(got), len(wantTimes), got)
+		}
+		for i, want := range wantTimes {
+			if got[i].Time != want {
+				t.Errorf("bar %d Time = %d (%s), want %d (%s)", i, got[i].Time,
+					time.Unix(got[i].Time, 0).In(loc).Format("15:04"),
+					want, time.Unix(want, 0).In(loc).Format("15:04"))
+			}
+		}
+
+		// The first bar covers 09:15-10:14 inclusive: open from the first 1m
+		// bar, close from the sixtieth, and all 60 volumes summed.
+		first := got[0]
+		if first.Open != 100 || first.High != 161 || first.Low != 99 || first.Close != 160 {
+			t.Errorf("first 1h OHLC = %+v, want open=100 high=161 low=99 close=160", first)
+		}
+		if first.Volume != 600 {
+			t.Errorf("first 1h volume = %d, want 600 (60 bars x 10)", first.Volume)
+		}
+		second := got[1]
+		if second.Open != 160 || second.High != 221 || second.Low != 159 || second.Close != 220 {
+			t.Errorf("second 1h OHLC = %+v, want open=160 high=221 low=159 close=220", second)
+		}
+		if second.Volume != 600 {
+			t.Errorf("second 1h volume = %d, want 600", second.Volume)
+		}
+		// Day 2 gets its own 09:15 bucket; it must not merge into day 1.
+		last := got[2]
+		if last.Open != 100 || last.High != 111 || last.Low != 99 || last.Close != 110 || last.Volume != 100 {
+			t.Errorf("day 2 1h bar = %+v, want open=100 high=111 low=99 close=110 volume=100", last)
+		}
+	})
+
+	t.Run("5m bars match the client's session buckets", func(t *testing.T) {
+		s := openTest(t)
+		ctx := context.Background()
+		var raw []market.Candle
+		for i := 0; i < 13; i++ {
+			raw = append(raw, synthetic1m(day1+int64(i*60), i))
+		}
+		if err := s.WriteCandles(ctx, "mcx_fo|CRUDEOIL|2026-11-18|8200|CE", "1m", raw); err != nil {
+			t.Fatalf("WriteCandles: %v", err)
+		}
+
+		got, err := s.AggregateCandlesFrom1m(ctx, "mcx_fo|CRUDEOIL|2026-11-18|8200|CE", "5m")
+		if err != nil {
+			t.Fatalf("AggregateCandlesFrom1m: %v", err)
+		}
+		// web/candle_aggregator.sessionBucket and the client both anchor at the
+		// session open, so 5m starts at 09:15 rather than 09:15 rounded down.
+		wantTimes := []int64{day1, day1 + 300, day1 + 600}
+		if len(got) != len(wantTimes) {
+			t.Fatalf("got %d 5m bars, want %d: %+v", len(got), len(wantTimes), got)
+		}
+		wantVolumes := []int64{50, 50, 30}
+		for i, want := range wantTimes {
+			if got[i].Time != want {
+				t.Errorf("bar %d Time = %d, want %d", i, got[i].Time, want)
+			}
+			if got[i].Volume != wantVolumes[i] {
+				t.Errorf("bar %d Volume = %d, want %d", i, got[i].Volume, wantVolumes[i])
+			}
+		}
+		if got[0].Open != 100 || got[0].High != 106 || got[0].Low != 99 || got[0].Close != 105 {
+			t.Errorf("first 5m OHLC = %+v, want open=100 high=106 low=99 close=105", got[0])
+		}
+	})
+
+	t.Run("mid-session collection still anchors at the open", func(t *testing.T) {
+		s := openTest(t)
+		ctx := context.Background()
+		late := time.Date(2026, time.November, 16, 10, 2, 0, 0, loc).Unix()
+		var raw []market.Candle
+		for i := 0; i < 13; i++ {
+			raw = append(raw, synthetic1m(late+int64(i*60), i))
+		}
+		const nse = "nse_fo|NIFTY|2026-11-26|24000|CE"
+		if err := s.WriteCandles(ctx, nse, "1m", raw); err != nil {
+			t.Fatalf("WriteCandles: %v", err)
+		}
+		got, err := s.AggregateCandlesFrom1m(ctx, nse, "5m")
+		if err != nil {
+			t.Fatalf("AggregateCandlesFrom1m: %v", err)
+		}
+		// Anchoring on the first stored bar would produce 10:02/10:07 buckets,
+		// which interleave with the client's 10:00/10:05 grid after a merge.
+		want := []int64{
+			time.Date(2026, time.November, 16, 10, 0, 0, 0, loc).Unix(),
+			time.Date(2026, time.November, 16, 10, 5, 0, 0, loc).Unix(),
+			time.Date(2026, time.November, 16, 10, 10, 0, 0, loc).Unix(),
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d 5m bars, want %d: %+v", len(got), len(want), got)
+		}
+		for i, value := range want {
+			if got[i].Time != value {
+				t.Errorf("bar %d Time = %s, want %s", i,
+					time.Unix(got[i].Time, 0).In(loc).Format("15:04"),
+					time.Unix(value, 0).In(loc).Format("15:04"))
+			}
+		}
+		// The first bucket is partial (10:00-10:04 has only 10:02-10:04) but must
+		// still carry exactly the bars it saw.
+		if got[0].Volume != 30 || got[1].Volume != 50 || got[2].Volume != 50 {
+			t.Errorf("volumes = %d/%d/%d, want 30/50/50", got[0].Volume, got[1].Volume, got[2].Volume)
+		}
+	})
+}
+
+// synthetic1m builds a valid 1m bar whose prices walk upward with the minute
+// offset, making ordering and OHLC mistakes visible in assertions.
+func synthetic1m(ts int64, offset int) market.Candle {
+	open := 100 + float64(offset)
+	return market.Candle{
+		Time:   ts,
+		Open:   open,
+		High:   open + 2,
+		Low:    open - 1,
+		Close:  open + 1,
+		Volume: 10,
+	}
+}
+
 func TestScripSnapshotAndSyncAudit(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

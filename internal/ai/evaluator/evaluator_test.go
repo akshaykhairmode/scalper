@@ -195,6 +195,52 @@ func TestEvaluatorOnTick(t *testing.T) {
 	}
 }
 
+func TestGetTechnicalMetricsWeightsVWAPByTickVolume(t *testing.T) {
+	ev := New(Options{Config: config.AI{Enabled: true}})
+	now := time.Unix(1_700_000_000, 0)
+	ev.pushTick("NIFTY24500CE", 100, 10, now)
+	ev.pushTick("NIFTY24500CE", 200, 30, now.Add(time.Second))
+
+	vwap, _, _, _, _, hasTicks := ev.getTechnicalMetrics("NIFTY24500CE", 200)
+	if !hasTicks {
+		t.Fatal("expected tick-backed indicators")
+	}
+	// (100*10 + 200*30) / 40 = 175, not the unweighted mean of 150.
+	if vwap != 175 {
+		t.Fatalf("vwap = %f, want 175 (volume weighted)", vwap)
+	}
+}
+
+func TestGetTechnicalMetricsDoesNotReportPlainAverageAsVWAP(t *testing.T) {
+	ev := New(Options{Config: config.AI{Enabled: true}})
+	now := time.Unix(1_700_000_000, 0)
+	// The live feed has no per-tick size, so both ticks carry volume 0.
+	ev.pushTick("NIFTY24500CE", 100, 0, now)
+	ev.pushTick("NIFTY24500CE", 200, 0, now.Add(time.Second))
+
+	vwap, ema9, _, _, _, hasTicks := ev.getTechnicalMetrics("NIFTY24500CE", 200)
+	if !hasTicks {
+		t.Fatal("expected tick-backed indicators")
+	}
+	if vwap != 0 {
+		t.Fatalf("vwap = %f, want 0 sentinel when no tick has volume", vwap)
+	}
+	// Other indicators still come from the ring; only VWAP is withheld.
+	if ema9 <= 0 {
+		t.Fatalf("ema9 = %f, want a tick-derived value", ema9)
+	}
+
+	// An empty ring must also report VWAP unavailable without panicking.
+	empty := New(Options{Config: config.AI{Enabled: true}})
+	vwap, _, _, _, _, hasTicks = empty.getTechnicalMetrics("NIFTY24500CE", 200)
+	if hasTicks {
+		t.Fatal("expected no tick-backed indicators for an empty ring")
+	}
+	if vwap != 0 {
+		t.Fatalf("vwap = %f, want 0 sentinel for an empty ring", vwap)
+	}
+}
+
 func TestEvaluatorUntrackEvaluation(t *testing.T) {
 	ev := New(Options{Config: config.AI{Enabled: true}})
 

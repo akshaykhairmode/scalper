@@ -427,8 +427,8 @@ func (s *Server) fetchInstrumentCandles(
 		if len(cached) == 0 && timeframe != "1m" && timeframe != "4h" {
 			// Older or tick-only data may exist as 1-minute bars. Derive the
 			// requested timeframe so MCX charts can still show history. 4h is
-			// aggregated from Kotak's 60-minute bars because its session-aligned
-			// buckets cannot be reconstructed from epoch-aligned 1m buckets.
+			// synthesized from Kotak's 60-minute bars by the market service, so
+			// it never takes this fallback.
 			if synth, synthErr := s.candleStore.AggregateCandlesFrom1m(ctx, instrument, timeframe); synthErr == nil && len(synth) > 0 {
 				cached = s.filterCandles(instrument, synth)
 			}

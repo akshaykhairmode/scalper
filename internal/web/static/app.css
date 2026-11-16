@@ -2576,7 +2576,8 @@ dialog.modal-backdrop::backdrop {
   .metric:nth-child(1) { display: none; }
 }
 
-@media (min-width: 769px) and (max-width: 1100px) {
+/* Tablet / small laptop: single-column stack, above the mobile breakpoint. */
+@media (min-width: 1025px) and (max-width: 1100px) {
   .charts-row { grid-template-columns: 1fr !important; }
   .pane { min-height: 240px; }
 }
@@ -2592,8 +2593,11 @@ dialog.modal-backdrop::backdrop {
   display: none;
 }
 
-/* ── Mobile Responsive Terminal (< 768px) ─────────────────── */
-@media (max-width: 768px) {
+/* ── Mobile Responsive Terminal ───────────────────────────────
+   Phones and tablets/laptops in landscape get the stacked app chrome.
+   The desktop 3-pane grid needs ~1400px, so anything below 1025px (plus
+   short landscape viewports up to 1366px) keeps the single-column stack. */
+@media (max-width: 1024px), (max-width: 1366px) and (max-height: 500px) {
   html, body {
     height: 100%;
     height: 100dvh;
@@ -2611,7 +2615,7 @@ dialog.modal-backdrop::backdrop {
     overflow: hidden;
   }
 
-  /* Compact 44px Header - Zero multi-line wrap */
+  /* Compact 52px Header - Zero multi-line wrap, 44px touch targets */
   .topbar {
     display: flex;
     flex-wrap: nowrap;
@@ -2619,9 +2623,9 @@ dialog.modal-backdrop::backdrop {
     justify-content: space-between;
     gap: 6px;
     padding: 4px 10px;
-    height: 44px;
-    min-height: 44px;
-    max-height: 44px;
+    height: 52px;
+    min-height: 52px;
+    max-height: 52px;
     flex: 0 0 auto;
     background: var(--bg-2);
     border-bottom: 1px solid var(--line);
@@ -2634,11 +2638,18 @@ dialog.modal-backdrop::backdrop {
     flex-shrink: 0;
   }
   .mark {
-    width: 28px;
-    height: 28px;
-    min-width: 28px;
+    position: relative;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
     font-size: 13px;
     border-radius: 6px;
+  }
+  /* Invisible 44x44 hit area around the 30px logo. */
+  .mark::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
   }
   .name {
     font-size: 14px;
@@ -2653,31 +2664,50 @@ dialog.modal-backdrop::backdrop {
     align-items: center;
     gap: 5px;
     flex-wrap: nowrap;
+    flex: 0 0 auto;
+    min-width: 0;
     margin-left: auto;
   }
 
   .topbar-right .metric {
-    padding: 2px 6px;
+    padding: 2px 5px;
     font-size: 10.5px;
     border-radius: 5px;
+    min-height: 44px;
+    justify-content: center;
   }
   .topbar-right .metric-label {
-    font-size: 8.5px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
   }
   .topbar-right .metric-value {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 800;
   }
 
+  /* AI Signals stays at the 44px tap minimum from phone to tablet; between
+     641-1024px it still shows the full label but was only 32px tall. */
+  #ai-signals-button {
+    min-height: 44px;
+    flex-shrink: 0;
+  }
+
   .feed-badge {
-    padding: 2px 6px;
+    padding: 0;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
     font-size: 9.5px;
+    flex-shrink: 0;
+    border-radius: 8px;
   }
   .feed-badge span {
     display: none;
   }
   .feed-badge i {
     margin: 0;
+    width: 8px;
+    height: 8px;
   }
 
   /* Desktop-only header buttons - moved into mobile drawer */
@@ -2698,14 +2728,15 @@ dialog.modal-backdrop::backdrop {
     display: inline-flex !important;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    border-radius: 6px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    flex-shrink: 0;
+    border-radius: 8px;
     background: var(--panel-2);
     border: 1px solid var(--line);
     color: var(--text);
-    font-size: 14px;
+    font-size: 16px;
     cursor: pointer;
     touch-action: manipulation;
     transition: background 0.15s ease;
@@ -2714,28 +2745,29 @@ dialog.modal-backdrop::backdrop {
     background: var(--surface-hover);
   }
 
-  /* Spot picker on mobile */
+  /* Spot picker on mobile: the index + LTP is the most important datum,
+     so it keeps a floor instead of collapsing to zero width. */
   .spot-picker {
     flex: 1 1 auto;
-    min-width: 0;
+    min-width: 132px;
     margin: 0 2px;
   }
   .spot-current {
     width: 100%;
+    min-height: 44px;
     justify-content: flex-start;
     gap: 6px;
-    padding: 3px 7px;
-    min-height: 28px;
+    padding: 3px 8px;
   }
-  .spot-current-name { font-size: 9px; }
+  .spot-current-name { font-size: 11px; letter-spacing: 0.04em; }
   .spot-current-price {
-    font-size: 11px;
+    font-size: 12px;
     margin-left: auto;
   }
   .spot-current-change { display: none; }
   .spot-menu {
     position: fixed;
-    top: 48px;
+    top: 56px;
     left: 8px;
     right: 8px;
     width: auto;
@@ -2744,61 +2776,65 @@ dialog.modal-backdrop::backdrop {
     z-index: 500;
   }
 
-  /* Toolbar on mobile */
+  /* Toolbar on mobile: wraps into stacked rows instead of a 700px scroll strip */
   .toolbar {
     display: flex;
     align-items: center;
-    flex-wrap: nowrap;
-    gap: 5px;
-    padding: 4px 8px;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
     background: var(--bg);
     border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    overflow: visible;
     flex: 0 0 auto;
   }
-  .toolbar::-webkit-scrollbar {
-    height: 4px;
-  }
-  .toolbar::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 2px;
+  .toolbar .toolbar-spacer {
+    display: none;
   }
 
+  .toolbar .select-field {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 4px;
+  }
   .toolbar .select-field select {
-    min-height: 34px;
-    font-size: 12px;
+    min-height: 44px;
+    min-width: 0;
+    font-size: 13px;
     font-weight: 700;
-    padding: 4px 6px;
+    padding: 4px 24px 4px 8px;
   }
   .toolbar .select-field span {
-    font-size: 8px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
   }
 
   .tf-group {
     display: inline-flex;
     gap: 2px;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    min-width: 0;
   }
   .tf-group button {
-    min-width: 34px;
-    min-height: 34px;
-    font-size: 11px;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 12px;
     font-weight: 750;
-    padding: 2px 6px;
+    padding: 2px 4px;
   }
 
   .atm-chip {
     display: inline-flex !important;
     align-items: center;
     gap: 3px;
-    font-size: 11px;
+    min-height: 44px;
+    font-size: 12px;
     font-weight: 700;
-    padding: 3px 6px;
+    padding: 3px 8px;
     background: var(--panel-2);
     border: 1px solid var(--line);
-    border-radius: 4px;
+    border-radius: 6px;
     white-space: nowrap;
     flex-shrink: 0;
   }
@@ -3013,49 +3049,44 @@ dialog.modal-backdrop::backdrop {
     cursor: pointer;
   }
 
-  /* Mobile View Switcher - Anchored at Bottom for One-Handed Reach */
+  /* Mobile View Switcher - Anchored at Bottom for One-Handed Reach.
+     Five equal grid columns so every tab (incl. POSITIONS) fits at 360px. */
   .mobile-nav {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    padding-bottom: max(8px, env(safe-area-inset-bottom, 8px));
+    gap: 4px;
+    padding: 6px 8px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom, 6px));
     background: var(--panel);
     border-top: 1px solid var(--line);
     border-bottom: none;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    overflow: visible;
     flex: 0 0 auto;
     z-index: 25;
     order: 99;
     box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.35);
-  }
-  .mobile-nav::-webkit-scrollbar {
-    height: 4px;
-  }
-  .mobile-nav::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 2px;
   }
 
   .mobile-nav-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    min-height: 48px;
-    padding: 8px 10px;
+    gap: 5px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 6px 4px;
     border-radius: var(--radius-sm);
     background: var(--bg-2);
     border: 1px solid var(--line);
     color: var(--muted);
     font-size: 12px;
     font-weight: 750;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     cursor: pointer;
-    flex: 1 1 0;
+    flex: 1 1 auto;
     text-align: center;
+    white-space: nowrap;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
     transition: all 0.15s ease;
@@ -3104,14 +3135,15 @@ dialog.modal-backdrop::backdrop {
     background: var(--panel-2);
   }
 
-  /* Terminal & Panes */
+  /* Terminal & Panes. #mobile-nav is a flex sibling (order 99) and therefore
+     takes its own space - do NOT reserve the nav height here too (M6 dead band). */
   .terminal {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
     padding: 4px 6px;
-    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: 4px;
     overflow: hidden;
     gap: 0;
   }
@@ -3180,19 +3212,18 @@ dialog.modal-backdrop::backdrop {
   }
   .terminal[data-mobile-view="positions"] .bottom-panel .bottom-title,
   .terminal[data-mobile-view="orders"] .bottom-panel .bottom-title {
-    display: none !important;
+    display: block !important;
   }
   .terminal[data-mobile-view="positions"] .bottom-panel .tabs,
   .terminal[data-mobile-view="positions"] .bottom-panel .tab-content,
-  .terminal[data-mobile-view="positions"] .bottom-panel .bottom-actions,
   .terminal[data-mobile-view="orders"] .bottom-panel .tabs,
-  .terminal[data-mobile-view="orders"] .bottom-panel .tab-content,
-  .terminal[data-mobile-view="orders"] .bottom-panel .bottom-actions {
+  .terminal[data-mobile-view="orders"] .bottom-panel .tab-content {
     display: flex !important;
   }
   .terminal[data-mobile-view="positions"] .bottom-panel .tab-content,
   .terminal[data-mobile-view="orders"] .bottom-panel .tab-content {
     flex: 1 1 auto;
+    flex-direction: column;
     overflow-y: auto;
     min-height: 0;
   }
@@ -3210,13 +3241,13 @@ dialog.modal-backdrop::backdrop {
 
   .pane-head {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
     grid-template-areas:
-      "left-top   right-top"
-      "left-sub   right-tools";
-    gap: 3px 10px;
-    padding: 6px 10px;
+      "left-top right"
+      "left-sub right";
+    gap: 2px 8px;
+    padding: 4px 8px;
     min-height: auto;
     align-items: center;
     flex: 0 0 auto;
@@ -3244,8 +3275,8 @@ dialog.modal-backdrop::backdrop {
   .pane-strike-select {
     min-width: 78px;
     max-width: 95px;
-    min-height: 32px;
-    height: 32px;
+    min-height: 44px;
+    height: 44px;
     padding: 2px 6px;
     font-size: 13.5px;
     font-weight: 800;
@@ -3260,7 +3291,7 @@ dialog.modal-backdrop::backdrop {
 
   .pane-sub {
     grid-area: left-sub;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--muted);
     white-space: nowrap;
     overflow: hidden;
@@ -3268,15 +3299,20 @@ dialog.modal-backdrop::backdrop {
   }
 
   .pane-quote {
-    display: contents;
+    grid-area: right;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
   }
 
   .pane-price-block {
-    grid-area: right-top;
     display: flex;
     align-items: baseline;
     justify-content: flex-end;
     gap: 6px;
+    min-width: 0;
   }
 
   .pane-ltp {
@@ -3292,19 +3328,19 @@ dialog.modal-backdrop::backdrop {
   }
 
   .pro-tools-toggle {
-    grid-area: right-tools;
     justify-self: end;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
-    min-height: 24px;
-    height: 24px;
+    min-width: 44px;
+    min-height: 44px;
     padding: 0 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     background: var(--panel-2);
     border: 1px solid var(--line);
     color: var(--muted);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 750;
     cursor: pointer;
     touch-action: manipulation;
@@ -3324,9 +3360,12 @@ dialog.modal-backdrop::backdrop {
     display: none !important;
   }
 
+  /* The chart is the only flexible child of the pane, so it absorbs leftover
+     height. A 220px floor here used to push the BUY/SELL/Ask row out of the
+     pane (and off-screen) on short phones - the trade path wins. */
   .chart-frame {
     flex: 1 1 auto;
-    min-height: 220px;
+    min-height: 0;
     position: relative;
   }
 
@@ -3410,18 +3449,30 @@ dialog.modal-backdrop::backdrop {
     flex: 0 0 auto;
   }
 
+  /* REQ MARGIN on a single line: the phone order pad is a fixed-height strip
+     under the chart, so a second line costs 16px of chart. */
   .leg-order-info {
     display: flex;
+    flex-direction: row;
     justify-content: space-between;
     align-items: center;
+    gap: 8px;
     width: 100%;
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--muted);
     padding: 0 2px;
   }
+  .leg-margin-label {
+    font-size: 11px;
+  }
   .leg-margin-val {
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 700;
+  }
+  .leg-sl-risk {
+    max-width: 100%;
+    font-size: 11px;
+    padding: 3px 6px;
   }
 
   .leg-order-actions {
@@ -3441,16 +3492,17 @@ dialog.modal-backdrop::backdrop {
     border-radius: 6px;
     padding: 2px 4px;
   }
-  .unit-toggle {
-    min-width: 58px;
-    min-height: 38px;
+  .lot-control .unit-toggle {
+    min-width: 52px;
+    height: 44px;
+    min-height: 44px;
     font-size: 11px;
     font-weight: 800;
     border-radius: 5px;
   }
   button[data-qty-step] {
     min-width: 44px;
-    min-height: 38px;
+    min-height: 44px;
     font-size: 20px;
     font-weight: 700;
     border-radius: 5px;
@@ -3459,7 +3511,7 @@ dialog.modal-backdrop::backdrop {
   }
   input[data-lots] {
     flex: 1 1 auto;
-    min-height: 38px;
+    min-height: 44px;
     font-size: 17px;
     font-weight: 800;
     text-align: center;
@@ -3493,7 +3545,9 @@ dialog.modal-backdrop::backdrop {
     padding: 0 16px;
   }
 
-  /* Bottom Panel / Positions on mobile */
+  /* Bottom Panel / Positions on mobile.
+     Header pairs the summary title with SQUARE OFF ALL; the tab strip wraps
+     onto as many rows as needed so no tab is clipped. */
   .bottom-panel {
     display: flex;
     flex-direction: column;
@@ -3501,24 +3555,43 @@ dialog.modal-backdrop::backdrop {
     min-height: 0;
   }
   .bottom-head {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title squareoff"
+      "tabs  tabs";
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 10px;
+    gap: 6px 8px;
+    padding: 8px 10px 4px;
     border-bottom: 1px solid var(--line-soft);
   }
   .bottom-title {
+    grid-area: title;
+    display: block;
     font-size: 13px;
     font-weight: 800;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The template leaves a whitespace text node inside .bottom-actions, so
+     :empty never matched and the (empty) div still claimed an implicit grid
+     row plus two 6px gaps. Hide it only when it truly has no elements. */
+  .bottom-actions:not(:has(*)) {
+    display: none !important;
+  }
+  /* If actions are ever injected, give them their own full-width row. */
+  .bottom-actions {
+    grid-column: 1 / -1;
   }
   #bottom-toggle {
     display: none;
   }
   .square-off-button {
+    grid-area: squareoff;
     min-height: 44px;
-    padding: 8px 16px;
+    padding: 8px 14px;
     font-size: 11px;
     font-weight: 800;
     border-radius: 6px;
@@ -3526,39 +3599,45 @@ dialog.modal-backdrop::backdrop {
   }
 
   .tabs {
+    grid-area: tabs;
     display: flex;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    flex-wrap: wrap;
+    overflow: visible;
     gap: 4px;
     width: 100%;
-    order: 3;
-    padding-top: 4px;
-    border-top: 1px solid var(--line-soft);
-  }
-  .tabs::-webkit-scrollbar {
-    height: 4px;
-  }
-  .tabs::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 2px;
+    padding-top: 2px;
   }
   .tabs button {
     min-height: 44px;
-    padding: 8px 14px;
-    font-size: 13px;
+    padding: 6px 10px;
+    font-size: 12px;
     font-weight: 700;
     white-space: nowrap;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    border-radius: 6px 6px 0 0;
+  }
+  .tabs .tab-badge {
+    font-size: 10px;
   }
 
   .tab-content {
     flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
     overflow: auto;
     max-height: none;
     padding: 8px;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
+  }
+  /* Compact empty state at the top of the content area (not centred in a void). */
+  .tab-content > .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 0;
+    padding: 10px 4px;
+    font-size: 12px;
   }
 
   .positions-table th,
@@ -3655,8 +3734,8 @@ dialog.modal-backdrop::backdrop {
   .strike-target-wrap select {
     appearance: none !important;
     -webkit-appearance: none !important;
-    min-width: 92px !important;
-    height: 38px !important;
+    min-width: 84px !important;
+    height: 44px !important;
     padding: 0 28px 0 10px !important;
     font-size: 12px !important;
     font-weight: 750 !important;
@@ -3668,20 +3747,23 @@ dialog.modal-backdrop::backdrop {
     cursor: pointer !important;
   }
   .strike-search-wrap {
-    flex: 1 !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
   }
   .strike-search-wrap input {
     width: 100% !important;
-    height: 38px !important;
-    padding: 0 10px !important;
-    font-size: 14px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    padding: 0 12px !important;
+    font-size: 15px !important;
     border-radius: 8px !important;
     background: #141c2b !important;
     border: 1px solid rgba(255, 255, 255, 0.12) !important;
     color: #ffffff !important;
   }
   .strike-atm-btn {
-    height: 38px !important;
+    height: 44px !important;
+    min-width: 44px !important;
     padding: 0 12px !important;
     font-size: 11px !important;
     font-weight: 800 !important;
@@ -3695,6 +3777,7 @@ dialog.modal-backdrop::backdrop {
     align-items: center !important;
     gap: 4px !important;
     white-space: nowrap !important;
+    flex-shrink: 0 !important;
   }
   .strike-atm-btn:active {
     transform: scale(0.96) !important;
@@ -3743,7 +3826,33 @@ dialog.modal-backdrop::backdrop {
     -webkit-overflow-scrolling: touch !important;
     border: none !important;
     border-radius: 0 !important;
-    padding-bottom: max(20px, env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: 8px !important;
+    scroll-padding-bottom: 56px !important;
+  }
+  .strike-modal .chain-grid {
+    min-height: 0 !important;
+  }
+  /* "Load more" is an in-flow sticky footer with its own backdrop so it can
+     never float over (and hide) the last strike row. Its own bottom padding
+     carries the iOS home-indicator inset, so the label never sits under it. */
+  .strike-modal .chain-more {
+    align-self: stretch !important;
+    margin: 0 !important;
+    min-height: 44px !important;
+    padding: 8px 12px !important;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+    font-size: 12px !important;
+    border-radius: 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+    background: #0e131e !important;
+    color: #e2e8f0 !important;
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 4 !important;
+    box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.45) !important;
   }
   .chain-row {
     contain-intrinsic-size: auto 48px;
@@ -3901,23 +4010,24 @@ dialog.modal-backdrop::backdrop {
     display: none !important;
   }
 
-  /* PWA Install Banner */
+  /* PWA Install Banner - a slim in-flow strip (never overlays the order pad) */
   .install-banner {
-    position: fixed;
-    bottom: calc(56px + max(8px, env(safe-area-inset-bottom, 8px)));
-    left: 10px;
-    right: 10px;
-    z-index: 90;
+    position: relative;
+    inset: auto;
+    order: 0;
+    z-index: 20;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    margin: 4px 6px 0;
+    padding: 0 6px 0 10px;
+    min-height: 46px;
     background: var(--panel-2);
     border: 1px solid var(--accent);
-    border-radius: var(--radius);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.7);
-    animation: slideUp 0.25s ease-out;
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   }
   .install-banner[hidden] {
     display: none !important;
@@ -3925,37 +4035,35 @@ dialog.modal-backdrop::backdrop {
   .install-banner-content {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
   }
   .install-banner-icon {
-    border-radius: 8px;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
     flex-shrink: 0;
   }
   .install-banner-text {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    line-height: 1.25;
+    line-height: 1.2;
   }
   .install-banner-text strong {
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .install-banner-text span {
-    font-size: 10.5px;
-    color: var(--muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: none;
   }
   .install-banner-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     flex-shrink: 0;
   }
   .install-banner-btn {
@@ -3979,6 +4087,273 @@ dialog.modal-backdrop::backdrop {
     color: var(--muted);
     font-size: 16px;
     cursor: pointer;
+  }
+}
+
+/* ── Short phones (≤ 720px tall) ──────────────────────────────
+   Every vertical pixel above the fold is contended on a 568-667px phone.
+   The install banner is a nice-to-have, the trade row is not: it only joins
+   the layout when there is genuinely room for it. The order pad also drops
+   its 6px rhythm to 4px so the chart keeps a usable height. */
+@media (max-width: 1024px) and (max-height: 720px) {
+  .install-banner {
+    display: none !important;
+  }
+  .leg-orderpad {
+    gap: 4px;
+    padding: 4px 8px;
+  }
+  .leg-order-actions {
+    gap: 4px;
+  }
+  .pane-head {
+    padding: 3px 8px;
+  }
+}
+
+/* ── AI Signals modal (all breakpoints) ───────────────────────
+   "Next scan: 04:48" must stay on one line; the calls table scrolls
+   horizontally rather than squeezing the timer cell into two lines. */
+#ai-modal-scanner-badge,
+#ai-modal-scanner-badge > span,
+#ai-modal-timer-val {
+  white-space: nowrap;
+}
+.ai-calls-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Compact AI Signals (≤ 640px) ─────────────────────────────
+   The button keeps only 🤖 + win-rate pill; the wordmark and scan timer
+   are dropped so the header stops overflowing from phone to small tablet. */
+@media (max-width: 640px) {
+  #ai-signals-button .ai-label,
+  #ai-signals-button #ai-header-timer {
+    display: none;
+  }
+  #ai-signals-button {
+    min-height: 44px;
+    min-width: 44px;
+    gap: 4px;
+    padding: 0 5px;
+    flex-shrink: 0;
+  }
+  #ai-signals-button .badge-pill {
+    padding: 1px 5px;
+  }
+  /* The wordmark cannot share the bar with the index + LTP below 480px. */
+  .brand .name {
+    display: none;
+  }
+}
+
+/* ── Phone compaction (≤ 430px) ───────────────────────────────
+   The header/toolbar/nav must fit a 360px viewport with no horizontal
+   overflow and every primary control still reachable. */
+@media (max-width: 430px) {
+  .topbar {
+    gap: 4px;
+    padding: 4px 8px;
+  }
+  .topbar-right {
+    gap: 4px;
+  }
+  .spot-picker {
+    margin: 0;
+  }
+  .spot-current {
+    gap: 4px;
+    padding: 3px 6px;
+  }
+  .spot-current-caret {
+    margin-left: 0;
+  }
+
+  /* P&L does not fit next to the index + LTP on a phone; it stays in the
+     desktop/tablet header, the panic pill and the positions pane. */
+  .topbar-right .metric {
+    display: none;
+  }
+
+  /* Two-row toolbar: [UNDERLYING][EXPIRY] / [timeframes][ATM]. */
+  .toolbar .select-field {
+    flex: 1 1 calc(50% - 3px);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .toolbar .select-field select {
+    width: 100%;
+    height: 44px;
+  }
+  .tf-group {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 0;
+  }
+  /* Chips keep the 44px tap minimum (they were 40.4px at 320-340px). */
+  .tf-group button {
+    flex: 1 1 0;
+    min-width: 44px;
+    padding: 2px 0;
+  }
+  .atm-chip {
+    font-size: 11px;
+    padding: 0 6px;
+  }
+
+  /* Bottom nav: hide the colour dots (the active state keeps the colour),
+     and float the count badge as a superscript so five labels always fit. */
+  .m-nav-pill {
+    display: none;
+  }
+  .mobile-nav-btn {
+    position: relative;
+    font-size: 11px;
+    letter-spacing: 0;
+    padding: 6px 2px;
+  }
+  .mobile-nav-btn .tab-badge {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    margin: 0;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 3px;
+    font-size: 10px;
+  }
+
+  /* Option chain: search gets its own full-width row. */
+  .strike-controls-row {
+    flex-wrap: wrap !important;
+  }
+  .strike-search-wrap {
+    order: -1 !important;
+    flex: 1 1 100% !important;
+  }
+  .strike-target-wrap {
+    flex: 1 1 auto !important;
+  }
+  .strike-target-wrap select {
+    width: 100% !important;
+  }
+}
+
+/* Very narrow phones (≤ 350px): the feed status moves to the drawer's
+   "System Status" action so the index + LTP keep their space. */
+@media (max-width: 350px) {
+  .feed-badge {
+    display: none !important;
+  }
+  .mobile-nav-btn {
+    font-size: 10px;
+    padding: 6px 0;
+  }
+}
+
+/* Tiny phones (≤ 340px): six 44px timeframes + the ATM chip cannot share a
+   304px row, so the ATM read-out joins the index/expiry row and the timeframe
+   strip takes the full width below it. No chip is clipped and no extra row of
+   vertical chrome is spent. */
+@media (max-width: 340px) {
+  .toolbar .select-field {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .atm-chip {
+    order: -1;
+    flex-shrink: 0;
+  }
+  .tf-group {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
+/* ── Landscape phones / short tablets ─────────────────────────
+   Keeps the stacked chrome but puts the order pad beside the chart, so a
+   384px-tall viewport still shows the whole chart and both trade buttons. */
+@media (max-width: 1024px) and (max-height: 500px) {
+  /* Extremely short viewports: scroll instead of clipping the trade buttons. */
+  .terminal {
+    overflow-y: auto;
+  }
+  /* The landscape install prompt would eat a third of the chart area; it comes
+     back as soon as the device is rotated to portrait. */
+  .install-banner {
+    display: none !important;
+  }
+  .toolbar {
+    padding: 4px 8px;
+    gap: 4px;
+  }
+  .pane {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "pane-head pane-head"
+      "chart     orderpad";
+  }
+  .pane-head {
+    grid-area: pane-head;
+    padding: 0 8px;
+    gap: 0 8px;
+  }
+  .pane-sub {
+    display: none;
+  }
+  .chart-frame {
+    grid-area: chart;
+    min-height: 60px;
+  }
+  .leg-orderpad {
+    grid-area: orderpad;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    padding: 0 6px;
+    gap: 2px;
+    justify-content: center;
+    min-width: 0;
+    overflow-y: auto;
+  }
+  .lot-control {
+    padding: 0 3px;
+  }
+  /* The margin read-out is redundant at 384px tall; keep the trade path whole. */
+  .leg-order-info {
+    display: none;
+  }
+  .leg-orderpad .leg-sl-risk {
+    max-width: 100%;
+  }
+  .trade-buttons-row {
+    gap: 6px;
+  }
+  .bottom-head {
+    padding: 4px 10px;
+    gap: 4px 8px;
+  }
+  .tabs button {
+    min-height: 36px;
+  }
+}
+
+/* On large phones/tablets the chart CE/SPOT/PE toggles stay reachable. */
+@media (min-width: 481px) and (max-width: 1024px) {
+  .toolbar .select-field {
+    flex: 0 1 auto;
+  }
+  .chart-toggle-group {
+    display: inline-flex !important;
+  }
+  .chart-toggle-group button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 5px 10px;
+    font-size: 11px;
   }
 }
 

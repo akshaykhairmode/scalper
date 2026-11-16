@@ -8,9 +8,14 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/akshaykhairmode/scalper/internal/market"
 )
+
+// istOffsetSeconds is IST's fixed offset from UTC. India has no DST, so a
+// fixed zone is enough to find each trading day's boundary.
+const istOffsetSeconds = 5*60*60 + 30*60
 
 // maxReadCandles bounds how much stored history a single chart request loads.
 // Charts only display a few hundred bars; reading the entire table makes
@@ -159,39 +164,37 @@ func candleSyncKey(instrumentKey, timeframe, sessionDate string) string {
 	return fmt.Sprintf("candle_sync:%x", hash[:])
 }
 
-// AggregateCandlesFrom1m reads stored 1-minute bars for an instrument and aggregates
-// them into target timeframe bars (3m, 5m, 15m, 1h).
+// AggregateCandlesFrom1m reads stored 1-minute bars for an instrument and
+// aggregates them into target timeframe bars (3m, 5m, 15m, 1h).
+//
+// Buckets are session-aligned: each IST day is anchored at the exchange session
+// open (09:15 NSE, 09:00 MCX), and a bar at ts belongs to
+// dayOpen + floor((ts-dayOpen)/interval)*interval. This keeps 1h bars starting
+// at 09:15/10:15 instead of the UTC-epoch offsets (:30 in IST) that would
+// otherwise miss the first 15 minutes and overlap Kotak's own hourly bars. The
+// anchor comes from the instrument's segment rather than the day's first stored
+// bar, so a store that started collecting mid-session still produces bars on the
+// same grid as the live aggregator and the chart client.
 func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targetTf string) ([]market.Candle, error) {
 	intervalSeconds := timeframeSeconds(targetTf)
 	if intervalSeconds <= 60 {
 		return nil, fmt.Errorf("store: cannot aggregate to timeframe %q", targetTf)
 	}
+	openHour, openMinute := 9, 15
+	if strings.HasPrefix(instrumentKey, "mcx") {
+		openHour, openMinute = 9, 0
+	}
+	sessionOpenOffset := int64(openHour*3600 + openMinute*60)
 
+	// Stream the 1m rows oldest-first and fold them into at most one open
+	// bucket, so memory stays proportional to the number of output bars rather
+	// than the raw row count.
 	rows, err := s.db.QueryContext(ctx, `
-		WITH min_c AS (
-			SELECT 
-				ts,
-				(ts / ?) * ? AS b_ts,
-				open, high, low, close, COALESCE(volume, 0) AS volume,
-				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts ASC) AS rn_first,
-				ROW_NUMBER() OVER (PARTITION BY (ts / ?) * ? ORDER BY ts DESC) AS rn_last
-			FROM candles
-			WHERE instrument_key = ? AND timeframe = '1m' AND open > 0 AND high > 0 AND low > 0 AND close > 0
-		)
-		SELECT
-			b_ts,
-			MAX(CASE WHEN rn_first = 1 THEN open END),
-			MAX(high),
-			MIN(low),
-			MAX(CASE WHEN rn_last = 1 THEN close END),
-			SUM(volume)
-		FROM min_c
-		GROUP BY b_ts
-		ORDER BY b_ts ASC`,
-		intervalSeconds, intervalSeconds,
-		intervalSeconds, intervalSeconds,
-		intervalSeconds, intervalSeconds,
-		instrumentKey)
+		SELECT ts, open, high, low, close, COALESCE(volume, 0)
+		FROM candles
+		WHERE instrument_key = ? AND timeframe = '1m'
+			AND open > 0 AND high > 0 AND low > 0 AND close > 0
+		ORDER BY ts ASC`, instrumentKey)
 	if err != nil {
 		return nil, fmt.Errorf("store: aggregate candles: %w", err)
 	}
@@ -201,18 +204,85 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 		}
 	}()
 
-	var candles []market.Candle
+	var (
+		candles     []market.Candle
+		current     market.Candle
+		haveDay     bool
+		dayStart    int64
+		dayOpen     int64
+		haveBucket  bool
+		bucketStart int64
+		scanned     int
+	)
+	flush := func() {
+		if haveBucket {
+			candles = append(candles, current)
+			haveBucket = false
+		}
+	}
+
 	for rows.Next() {
-		var c market.Candle
-		if err := rows.Scan(&c.Time, &c.Open, &c.High, &c.Low, &c.Close, &c.Volume); err != nil {
+		scanned++
+		if scanned%512 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("store: aggregate candles: %w", err)
+			}
+		}
+		var bar market.Candle
+		if err := rows.Scan(&bar.Time, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume); err != nil {
 			return nil, fmt.Errorf("store: scan aggregate candle: %w", err)
 		}
-		candles = append(candles, c)
+
+		start := istDayStart(bar.Time)
+		if !haveDay || start != dayStart {
+			flush()
+			haveDay = true
+			dayStart = start
+			dayOpen = start + sessionOpenOffset
+		}
+		if bar.Time < dayOpen {
+			continue
+		}
+		bucket := dayOpen + ((bar.Time-dayOpen)/intervalSeconds)*intervalSeconds
+		if !haveBucket || bucket != bucketStart {
+			flush()
+			haveBucket = true
+			bucketStart = bucket
+			current = market.Candle{
+				Time:   bucket,
+				Open:   bar.Open,
+				High:   bar.High,
+				Low:    bar.Low,
+				Close:  bar.Close,
+				Volume: bar.Volume,
+			}
+			continue
+		}
+		if bar.High > current.High {
+			current.High = bar.High
+		}
+		if bar.Low < current.Low {
+			current.Low = bar.Low
+		}
+		current.Close = bar.Close
+		current.Volume += bar.Volume
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate aggregate candles: %w", err)
 	}
+	flush()
 	return candles, nil
+}
+
+// istDayStart returns the Unix timestamp of 00:00 IST on the calendar day that
+// contains ts.
+func istDayStart(ts int64) int64 {
+	shifted := ts + istOffsetSeconds
+	remainder := shifted % 86400
+	if remainder < 0 {
+		remainder += 86400
+	}
+	return shifted - remainder - istOffsetSeconds
 }
 
 func timeframeSeconds(tf string) int64 {
