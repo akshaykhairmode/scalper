@@ -850,6 +850,7 @@
       </div>
       <button type="button" class="cqo-close" id="cqo-close" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
+    <div class="cqo-hint">Drag the chart's ENTRY / TARGET / SL lines to set prices, then place the order.</div>
     <div class="cqo-row">
       <span class="cqo-label">Price</span>
       <div class="cqo-stepper">
@@ -955,6 +956,43 @@
       <button type="button" class="pattern-popover-close" id="chart-settings-close" aria-label="Close chart settings">✕</button>
     </div>
     <div class="pattern-popover-body">
+      <div class="chart-settings-group" id="cs-intraday-group">
+        <span class="chart-settings-group-title">Intraday Options</span>
+        <label class="pattern-popover-item" id="cs-vwap-label">
+          <input type="checkbox" id="cs-vwap">
+          <span>VWAP</span>
+          <em id="cs-vwap-note" hidden>no index volume</em>
+        </label>
+        <label class="pattern-popover-item" title="ATR trailing bands (10, 3) — trend regime and dynamic stop">
+          <input type="checkbox" id="cs-supertrend">
+          <span>Supertrend (10, 3)</span>
+        </label>
+        <label class="pattern-popover-item" title="Average True Range pane; also seeds the quick-order SL default">
+          <input type="checkbox" id="cs-atr">
+          <span>ATR (14)</span>
+        </label>
+        <label class="pattern-popover-item" title="Open interest per bar from the stored candle history (CE/PE only)">
+          <input type="checkbox" id="cs-oi-pane">
+          <span>OI pane <em>(CE/PE)</em></span>
+        </label>
+        <label class="pattern-popover-item" title="Bar-over-bar open-interest change as a histogram (CE/PE only)">
+          <input type="checkbox" id="cs-oi-delta">
+          <span>ΔOI histogram <em>(CE/PE)</em></span>
+        </label>
+        <label class="pattern-popover-item" title="Max CE/PE open interest and the biggest intraday OI build-up, as price levels on the spot chart">
+          <input type="checkbox" id="cs-oi-walls">
+          <span>OI Walls (spot)</span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-max-pain">
+          <span>Max Pain line <em>(spot)</em></span>
+        </label>
+        <label class="pattern-popover-item">
+          <input type="checkbox" id="cs-theta">
+          <span>Time Decay / Theta <em>(spot)</em></span>
+        </label>
+      </div>
+
       <div class="chart-settings-group">
         <span class="chart-settings-group-title">Overlays</span>
         <label class="pattern-popover-item">
@@ -985,22 +1023,9 @@
           <input type="checkbox" id="cs-ema">
           <span>EMA 10 / 20 / 200</span>
         </label>
-        <label class="pattern-popover-item" id="cs-vwap-label">
-          <input type="checkbox" id="cs-vwap">
-          <span>VWAP</span>
-          <em id="cs-vwap-note" hidden>no index volume</em>
-        </label>
-        <label class="pattern-popover-item">
-          <input type="checkbox" id="cs-max-pain">
-          <span>Max Pain line <em>(spot)</em></span>
-        </label>
-      </div>
-
-      <div class="chart-settings-group">
-        <span class="chart-settings-group-title">Volume</span>
-        <label class="pattern-popover-item">
+        <label class="pattern-popover-item" title="Volume Profile + Buy/Sell zones (CE/PE only)">
           <input type="checkbox" id="cs-volume-profile">
-          <span>Volume Profile + Buy/Sell zones <em>(CE/PE)</em></span>
+          <span>Volume Profile <em>(CE/PE)</em></span>
         </label>
       </div>
 
@@ -1017,10 +1042,6 @@
         <label class="pattern-popover-item">
           <input type="checkbox" id="cs-momentum">
           <span>Momentum Candles</span>
-        </label>
-        <label class="pattern-popover-item">
-          <input type="checkbox" id="cs-theta">
-          <span>Time Decay / Theta <em>(spot)</em></span>
         </label>
       </div>
 

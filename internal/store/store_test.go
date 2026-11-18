@@ -39,14 +39,14 @@ func TestOpenAndSchema(t *testing.T) {
 		t.Fatalf("Ping: %v", err)
 	}
 	v, err := s.SchemaVersion(ctx)
-	if err != nil || v != 13 {
+	if err != nil || v != 14 {
 		t.Fatalf("SchemaVersion = %d, %v", v, err)
 	}
 	if !filepath.IsAbs(s.Path()) {
 		t.Fatalf("path is not absolute: %s", s.Path())
 	}
 	want := []string{
-		"ai_evaluations", "ai_playbooks", "audit_log", "background_watchlist", "brackets", "candles", "devices", "instruments", "meta", "orders",
+		"ai_evaluations", "ai_playbooks", "audit_log", "background_watchlist", "brackets", "candles", "devices", "instruments", "meta", "oi_baselines", "orders",
 		"paper_account", "paper_orders", "paper_positions", "paper_trades",
 		"schema_migrations", "scrip_sync", "sessions", "spot_instruments", "trades",
 	}
@@ -89,7 +89,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 			t.Fatalf("Open %d: %v", i, err)
 		}
 		v, err := s.SchemaVersion(context.Background())
-		if err != nil || v != 13 {
+		if err != nil || v != 14 {
 			t.Fatalf("version = %d, %v", v, err)
 		}
 		if err := s.Close(); err != nil {
@@ -174,7 +174,7 @@ func TestLoadMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 13 {
+	if len(m) != 14 {
 		t.Fatalf("migrations = %+v", m)
 	}
 	if m[0].version != 1 || m[0].name != "0001_init.sql" || m[0].sql == "" {
@@ -216,6 +216,9 @@ func TestLoadMigrations(t *testing.T) {
 	if len(m) < 13 || m[12].version != 13 || m[12].name != "0013_paper_positions_product.sql" || m[12].sql == "" {
 		t.Fatalf("thirteenth migration = %+v", m[12])
 	}
+	if len(m) < 14 || m[13].version != 14 || m[13].name != "0014_candle_oi.sql" || m[13].sql == "" {
+		t.Fatalf("fourteenth migration = %+v", m[13])
+	}
 }
 
 func TestFailedMigrationRollsBack(t *testing.T) {
@@ -229,8 +232,8 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 13 {
-		t.Fatalf("version = %d, want 13", v)
+	if v != 14 {
+		t.Fatalf("version = %d, want 14", v)
 	}
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 99`).Scan(&count); err != nil {
@@ -248,11 +251,11 @@ func TestCandlesWriteReadAndAggregate(t *testing.T) {
 	// 5 1-minute bars spanning 09:15 to 09:19 (300 seconds)
 	baseTime := int64(1793245500)
 	raw1m := []market.Candle{
-		{Time: baseTime, Open: 100, High: 105, Low: 99, Close: 102, Volume: 10},
-		{Time: baseTime + 60, Open: 102, High: 108, Low: 101, Close: 107, Volume: 20},
-		{Time: baseTime + 120, Open: 107, High: 107, Low: 95, Close: 98, Volume: 30},
-		{Time: baseTime + 180, Open: 98, High: 103, Low: 97, Close: 101, Volume: 40},
-		{Time: baseTime + 240, Open: 101, High: 104, Low: 100, Close: 103, Volume: 50},
+		{Time: baseTime, Open: 100, High: 105, Low: 99, Close: 102, Volume: 10, OpenInterest: 100},
+		{Time: baseTime + 60, Open: 102, High: 108, Low: 101, Close: 107, Volume: 20, OpenInterest: 200},
+		{Time: baseTime + 120, Open: 107, High: 107, Low: 95, Close: 98, Volume: 30, OpenInterest: 300},
+		{Time: baseTime + 180, Open: 98, High: 103, Low: 97, Close: 101, Volume: 40, OpenInterest: 400},
+		{Time: baseTime + 240, Open: 101, High: 104, Low: 100, Close: 103, Volume: 50, OpenInterest: 500},
 	}
 
 	if err := s.WriteCandles(ctx, "test_inst", "1m", raw1m); err != nil {
@@ -262,6 +265,9 @@ func TestCandlesWriteReadAndAggregate(t *testing.T) {
 	got1m, err := s.ReadCandles(ctx, "test_inst", "1m")
 	if err != nil || len(got1m) != 5 {
 		t.Fatalf("ReadCandles: len=%d err=%v", len(got1m), err)
+	}
+	if got1m[0].OpenInterest != 100 || got1m[4].OpenInterest != 500 {
+		t.Fatalf("open interest roundtrip = %d..%d, want 100..500", got1m[0].OpenInterest, got1m[4].OpenInterest)
 	}
 
 	// Aggregate into 5m
@@ -291,6 +297,57 @@ func TestCandlesWriteReadAndAggregate(t *testing.T) {
 	}
 	if c.Volume != 150 {
 		t.Errorf("Volume = %d, want 150", c.Volume)
+	}
+	if c.OpenInterest != 500 {
+		t.Errorf("OpenInterest = %d, want the latest 1m reading (500)", c.OpenInterest)
+	}
+
+	// Rewriting a bar without OI (e.g. a spot/index re-upsert) must not erase a
+	// stored option OI; the upsert keeps the previous value when excluded.oi = 0.
+	if err := s.WriteCandles(ctx, "test_inst", "1m", []market.Candle{
+		{Time: baseTime, Open: 100, High: 105, Low: 99, Close: 102, Volume: 11, OpenInterest: 0},
+	}); err != nil {
+		t.Fatalf("WriteCandles zero-OI rewrite: %v", err)
+	}
+	got1m, err = s.ReadCandles(ctx, "test_inst", "1m")
+	if err != nil {
+		t.Fatalf("ReadCandles after rewrite: %v", err)
+	}
+	if got1m[0].OpenInterest != 100 {
+		t.Fatalf("zero-OI rewrite wiped open interest: %d, want 100", got1m[0].OpenInterest)
+	}
+}
+
+func TestAggregateCandlesKeepsLatestNonZeroOI(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	loc := time.FixedZone("IST", istOffsetSeconds)
+	base := time.Date(2026, time.November, 18, 9, 15, 0, 0, loc).Unix()
+
+	// One 5m bucket whose middle/end bars carry no OI: the bucket must keep 100.
+	// A second bucket starts at 0 and only later gets a real reading.
+	bars := []market.Candle{
+		{Time: base, Open: 100, High: 101, Low: 99, Close: 100, Volume: 1, OpenInterest: 100},
+		{Time: base + 60, Open: 100, High: 102, Low: 100, Close: 101, Volume: 2, OpenInterest: 0},
+		{Time: base + 120, Open: 101, High: 103, Low: 101, Close: 102, Volume: 3, OpenInterest: 0},
+		{Time: base + 300, Open: 102, High: 104, Low: 102, Close: 103, Volume: 4, OpenInterest: 0},
+		{Time: base + 360, Open: 103, High: 105, Low: 103, Close: 104, Volume: 5, OpenInterest: 250},
+	}
+	if err := s.WriteCandles(ctx, "oi_agg", "1m", bars); err != nil {
+		t.Fatalf("WriteCandles: %v", err)
+	}
+	agg, err := s.AggregateCandlesFrom1m(ctx, "oi_agg", "5m")
+	if err != nil {
+		t.Fatalf("AggregateCandlesFrom1m: %v", err)
+	}
+	if len(agg) != 2 {
+		t.Fatalf("buckets = %d, want 2", len(agg))
+	}
+	if agg[0].OpenInterest != 100 {
+		t.Fatalf("first bucket OI = %d, want 100 (latest non-zero)", agg[0].OpenInterest)
+	}
+	if agg[1].OpenInterest != 250 {
+		t.Fatalf("second bucket OI = %d, want 250", agg[1].OpenInterest)
 	}
 }
 
@@ -595,5 +652,55 @@ func TestPruneCandles(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Close != 2 {
 		t.Fatalf("remaining candles = %+v", got)
+	}
+}
+
+func TestOIBaselinesKeepFirstSeenValuePerDay(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	if err := s.SaveOIBaselines(ctx, "2026-11-18", map[string]int64{
+		"nse_fo|25000CE": 1000,
+		"nse_fo|25000PE": 500,
+	}); err != nil {
+		t.Fatalf("SaveOIBaselines: %v", err)
+	}
+
+	loaded, err := s.LoadOIBaselines(ctx, "2026-11-18")
+	if err != nil {
+		t.Fatalf("LoadOIBaselines: %v", err)
+	}
+	if loaded["nse_fo|25000CE"] != 1000 || loaded["nse_fo|25000PE"] != 500 {
+		t.Fatalf("baselines = %v, want seeded values", loaded)
+	}
+
+	// A later batch must not overwrite the earliest reading, but may add keys.
+	if err := s.SaveOIBaselines(ctx, "2026-11-18", map[string]int64{
+		"nse_fo|25000CE": 9999,
+		"nse_fo|25100CE": 42,
+	}); err != nil {
+		t.Fatalf("SaveOIBaselines second batch: %v", err)
+	}
+	loaded, err = s.LoadOIBaselines(ctx, "2026-11-18")
+	if err != nil {
+		t.Fatalf("LoadOIBaselines second: %v", err)
+	}
+	if loaded["nse_fo|25000CE"] != 1000 {
+		t.Fatalf("existing baseline overwritten: %v", loaded)
+	}
+	if loaded["nse_fo|25100CE"] != 42 {
+		t.Fatalf("new baseline missing: %v", loaded)
+	}
+
+	nextDay, err := s.LoadOIBaselines(ctx, "2026-11-19")
+	if err != nil {
+		t.Fatalf("LoadOIBaselines next day: %v", err)
+	}
+	if len(nextDay) != 0 {
+		t.Fatalf("next-day baselines = %v, want none", nextDay)
+	}
+
+	if err := s.SaveOIBaselines(ctx, "", map[string]int64{"x": 1}); err != nil {
+		t.Fatalf("SaveOIBaselines without a day should be a no-op: %v", err)
 	}
 }

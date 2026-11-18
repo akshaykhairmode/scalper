@@ -29,7 +29,7 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 		return nil, errors.New("store: candle instrument and timeframe are required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT ts, open, high, low, close, COALESCE(volume, 0)
+		SELECT ts, open, high, low, close, COALESCE(volume, 0), COALESCE(oi, 0)
 		FROM candles 
 		WHERE instrument_key = ? AND timeframe = ? AND open > 0 AND high > 0 AND low > 0 AND close > 0 AND high >= low 
 		ORDER BY ts DESC
@@ -46,7 +46,7 @@ func (s *Store) ReadCandles(ctx context.Context, instrumentKey, timeframe string
 	var candles []market.Candle
 	for rows.Next() {
 		var candle market.Candle
-		if err := rows.Scan(&candle.Time, &candle.Open, &candle.High, &candle.Low, &candle.Close, &candle.Volume); err != nil {
+		if err := rows.Scan(&candle.Time, &candle.Open, &candle.High, &candle.Low, &candle.Close, &candle.Volume, &candle.OpenInterest); err != nil {
 			return nil, fmt.Errorf("store: scan candle: %w", err)
 		}
 		candles = append(candles, candle)
@@ -73,6 +73,12 @@ func (s *Store) PruneCandles(ctx context.Context, before int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("store: prune candles: %w", err)
 	}
+	// Baselines are tiny but unbounded; keep them on the same retention window
+	// as the candles they summarise. A prune failure must not fail candle
+	// maintenance, so it is only logged.
+	if _, berr := s.db.ExecContext(ctx, `DELETE FROM oi_baselines WHERE created_at < ?`, before); berr != nil && s.log != nil {
+		s.log.Warn("prune oi baselines", "event", "oi_baseline_prune_failed", "error", berr)
+	}
 	return res.RowsAffected()
 }
 
@@ -96,11 +102,12 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO candles (instrument_key, timeframe, ts, open, high, low, close, volume, ticks)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+		INSERT INTO candles (instrument_key, timeframe, ts, open, high, low, close, volume, ticks, oi)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
 		ON CONFLICT(instrument_key, timeframe, ts) DO UPDATE SET
 			open = excluded.open, high = excluded.high, low = excluded.low,
-			close = excluded.close, volume = excluded.volume`)
+			close = excluded.close, volume = excluded.volume,
+			oi = CASE WHEN excluded.oi > 0 THEN excluded.oi ELSE candles.oi END`)
 	if err != nil {
 		return fmt.Errorf("store: prepare candle write: %w", err)
 	}
@@ -119,7 +126,7 @@ func (s *Store) WriteCandles(ctx context.Context, instrumentKey, timeframe strin
 			continue
 		}
 		if _, err := stmt.ExecContext(ctx, instrumentKey, timeframe, candle.Time,
-			candle.Open, candle.High, candle.Low, candle.Close, candle.Volume); err != nil {
+			candle.Open, candle.High, candle.Low, candle.Close, candle.Volume, candle.OpenInterest); err != nil {
 			return fmt.Errorf("store: write candle at %d: %w", candle.Time, err)
 		}
 	}
@@ -190,7 +197,7 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 	// bucket, so memory stays proportional to the number of output bars rather
 	// than the raw row count.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT ts, open, high, low, close, COALESCE(volume, 0)
+		SELECT ts, open, high, low, close, COALESCE(volume, 0), COALESCE(oi, 0)
 		FROM candles
 		WHERE instrument_key = ? AND timeframe = '1m'
 			AND open > 0 AND high > 0 AND low > 0 AND close > 0
@@ -229,7 +236,7 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 			}
 		}
 		var bar market.Candle
-		if err := rows.Scan(&bar.Time, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume); err != nil {
+		if err := rows.Scan(&bar.Time, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.OpenInterest); err != nil {
 			return nil, fmt.Errorf("store: scan aggregate candle: %w", err)
 		}
 
@@ -249,12 +256,13 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 			haveBucket = true
 			bucketStart = bucket
 			current = market.Candle{
-				Time:   bucket,
-				Open:   bar.Open,
-				High:   bar.High,
-				Low:    bar.Low,
-				Close:  bar.Close,
-				Volume: bar.Volume,
+				Time:         bucket,
+				Open:         bar.Open,
+				High:         bar.High,
+				Low:          bar.Low,
+				Close:        bar.Close,
+				Volume:       bar.Volume,
+				OpenInterest: bar.OpenInterest,
 			}
 			continue
 		}
@@ -266,6 +274,11 @@ func (s *Store) AggregateCandlesFrom1m(ctx context.Context, instrumentKey, targe
 		}
 		current.Close = bar.Close
 		current.Volume += bar.Volume
+		// Open interest is a level, not a flow: the bucket keeps the latest
+		// non-zero reading instead of summing the 1m values.
+		if bar.OpenInterest > 0 {
+			current.OpenInterest = bar.OpenInterest
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate aggregate candles: %w", err)

@@ -1,5 +1,6 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
+import { applyOITick, computeOIWalls } from "./chart/intraday";
 import { formatPrice, formatRange } from "./chart/volumeProfile";
 import { DAY_MS, IST_OFFSET_MS, istSessionKey } from "./chart/session";
 import { vwapFromBase } from "./chart/indicators";
@@ -460,6 +461,8 @@ function normalizeOption(raw, type) {
   const ltp = num(raw.ltp ?? raw.last_price ?? raw.lastPrice ?? raw.price);
   const prevClose = num(raw.previous_close ?? raw.prev_close ?? raw.prevClose ?? raw.close ?? ltp);
   const oi = num(raw.oi ?? raw.open_int ?? raw.open_interest ?? raw.openInterest);
+  const oiChange = num(raw.oi_change ?? raw.oiChange);
+  const oiChangePct = num(raw.oi_change_pct ?? raw.oiChangePct);
   const bids = Array.isArray(raw.bids) ? raw.bids : [];
   const asks = Array.isArray(raw.asks) ? raw.asks : [];
   const instrumentKey = raw.instrument_key ?? raw.instrumentKey ?? raw.key ?? "";
@@ -485,6 +488,8 @@ function normalizeOption(raw, type) {
     change: num(raw.change, ltp - prevClose),
     changePct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0,
     oi,
+    oiChange,
+    oiChangePct,
     volume: num(raw.volume),
     bid: num(raw.bid ?? raw.best_bid ?? raw.bestBid),
     ask: num(raw.ask ?? raw.best_ask ?? raw.bestAsk),
@@ -1330,7 +1335,9 @@ function updateChartSettingsButtonState() {
       chart.showSR || chart.showAutoTrendlines || chart.showPatterns || chart.showFib ||
       chart.showDepth || chart.showTrades || chart.showRSI || chart.showDivergence ||
       chart.showMomentum || chart.showTheta || chart.showVolumeProfile ||
-      (pane !== "ce" && pane !== "pe" && chart.showMaxPain)
+      chart.showSupertrend || chart.showATR ||
+      ((pane === "ce" || pane === "pe") && (chart.showOIPane || chart.showOIDeltaPane)) ||
+      (pane !== "ce" && pane !== "pe" && (chart.showMaxPain || chart.showOIWalls))
     );
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
@@ -1374,6 +1381,32 @@ function syncChartSettingsMenu(pane) {
   set("cs-rsi", chart.showRSI);
   set("cs-divergence", chart.showDivergence);
   set("cs-momentum", chart.showMomentum);
+  set("cs-supertrend", chart.showSupertrend);
+  set("cs-atr", chart.showATR);
+  set("cs-oi-pane", S.charts.ce?.showOIPane ?? S.charts.pe?.showOIPane);
+  set("cs-oi-delta", S.charts.ce?.showOIDeltaPane ?? S.charts.pe?.showOIDeltaPane);
+  const oiPaneBox = $("cs-oi-pane");
+  if (oiPaneBox) {
+    oiPaneBox.disabled = spotPane;
+    oiPaneBox.title = spotPane
+      ? "Open interest exists only on option contracts; use a CE/PE pane."
+      : "Open interest per bar, stored with each candle.";
+  }
+  const oiDeltaBox = $("cs-oi-delta");
+  if (oiDeltaBox) {
+    oiDeltaBox.disabled = spotPane;
+    oiDeltaBox.title = spotPane
+      ? "Open interest exists only on option contracts; use a CE/PE pane."
+      : "Bar-over-bar open-interest change as a histogram.";
+  }
+  set("cs-oi-walls", S.charts.spot?.showOIWalls);
+  const oiWallsBox = $("cs-oi-walls");
+  if (oiWallsBox) {
+    oiWallsBox.disabled = !spotPane;
+    oiWallsBox.title = spotPane
+      ? "Max CE/PE open interest and ΔOI build-up drawn on the spot chart."
+      : "OI walls are drawn on the spot chart; open the spot pane to toggle them.";
+  }
   set("cs-theta", S.charts.spot?.showTheta);
   set("cs-max-pain", S.charts.spot?.showMaxPain);
   set("cs-volume-profile", S.charts.ce?.showVolumeProfile ?? S.charts.pe?.showVolumeProfile);
@@ -1574,11 +1607,19 @@ function buildCharts() {
   const savedMaxPain = localStorage.getItem("scalper-show-max-pain") !== "false";
   const savedTheta = localStorage.getItem("scalper-show-theta") === "true";
   const savedVolumeProfile = localStorage.getItem("scalper-show-volume-profile") === "true";
+  const savedSupertrend = localStorage.getItem("scalper-show-supertrend") === "true";
+  const savedATR = localStorage.getItem("scalper-show-atr") === "true";
+  // OI panes only make sense on the option legs; the cash index has no OI.
+  const savedOIPane = localStorage.getItem("scalper-show-oi-pane") === "true";
+  const savedOIDelta = localStorage.getItem("scalper-show-oi-delta") === "true";
+  // OI walls are a chain-derived level, so they are on by default for new users.
+  const savedOIWalls = localStorage.getItem("scalper-show-oi-walls") !== "false";
 
-  const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum };
-  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showVWAP: savedVWAPCE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), ...indicatorOptions });
-  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showVWAP: savedVWAPUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), ...indicatorOptions });
-  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showVWAP: savedVWAPPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), ...indicatorOptions });
+  const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum, showSupertrend: savedSupertrend, showATR: savedATR };
+  const optionPaneOptions = { ...indicatorOptions, showOIPane: savedOIPane, showOIDeltaPane: savedOIDelta };
+  S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showVWAP: savedVWAPCE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...optionPaneOptions });
+  S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showVWAP: savedVWAPUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showOIWalls: savedOIWalls, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...indicatorOptions });
+  S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showVWAP: savedVWAPPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...optionPaneOptions });
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -1641,6 +1682,7 @@ function setFocusedChart(pane) {
     button.title = active ? "Restore chart layout (Esc)" : "Expand chart";
     button.setAttribute("aria-pressed", active ? "true" : "false");
   }
+  applyChartRowColumns();
   requestAnimationFrame(() => {
     for (const chart of (Object.values(S.charts) as any[])) chart?.schedule?.();
   });
@@ -1702,15 +1744,25 @@ function setPaneVisible(paneKey, visible) {
   return true;
 }
 
+/**
+ * Chart columns are written inline, so they beat the `.chart-focused` CSS rule.
+ * Keep the inline value focus-aware, otherwise an expanded pane stays pinned to
+ * 1/N of the row width and leaves the rest of the screen empty.
+ */
+function applyChartRowColumns(visibleCount = getVisiblePanes().length) {
+  const row = $("charts-row");
+  if (!row) return;
+  const count = Math.max(1, Number(visibleCount) || 1);
+  row.dataset.visiblePanes = String(count);
+  row.style.setProperty("--chart-cols", String(count));
+  const columns = S.focusedChart ? 1 : count;
+  row.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+}
+
 function updateChartVisibilityUI() {
   const visible = getVisiblePanes();
   const count = Math.max(1, visible.length);
-  const row = $("charts-row");
-  if (row) {
-    row.dataset.visiblePanes = String(count);
-    row.style.setProperty("--chart-cols", String(count));
-    row.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
-  }
+  applyChartRowColumns(count);
 
   $$("#chart-toggle-group button, .chart-vis-btn").forEach((btn) => {
     const pane = btn.dataset.chartToggle || btn.dataset.chartVis;
@@ -2272,7 +2324,14 @@ function handleTickData(data, { batch = false } = {}) {
   // `data.volume` is the broker's cumulative day volume, not a per-trade size:
   // the HSM SFeed packet and the Kotak REST quote both report a running total.
   // updateLiveCandle converts it to a per-bar delta.
-  updateLiveCandle(data.key, data.ltp, data.timestamp, data.volume);
+  const tickOI = Number(data.oi);
+  updateLiveCandle(
+    data.key,
+    data.ltp,
+    data.timestamp,
+    data.volume,
+    Number.isFinite(tickOI) && tickOI >= 0 && tickOI <= 100000000 ? tickOI : 0,
+  );
   if (data.bids || data.asks) {
     if (!S.depths) S.depths = {};
     S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
@@ -2329,6 +2388,7 @@ function handleTickData(data, { batch = false } = {}) {
   }
   let hadChain = false;
   let hadSelected = false;
+  let oiTickChanged = false;
   const row = S.chain.find((r) => r.call?.instrumentKey === data.key || r.put?.instrumentKey === data.key);
   if (row) {
     const opt = row.call?.instrumentKey === data.key ? row.call : row.put;
@@ -2338,7 +2398,18 @@ function handleTickData(data, { batch = false } = {}) {
     opt.ask = num(data.ask, opt.ask);
     opt.volume = num(data.volume, opt.volume);
     if (data.oi != null && Number(data.oi) >= 0 && Number(data.oi) <= 100000000) {
-      opt.oi = num(data.oi, opt.oi);
+      const previousOI = num(opt.oi);
+      // The server owns the day baseline; shift it by the observed delta. A
+      // zero/missing previous OI keeps the server value instead of inventing a
+      // change (or a fake liquidation) between chain polls.
+      const next = applyOITick(
+        { oi: previousOI, oiChange: num(opt.oiChange), oiChangePct: num(opt.oiChangePct) },
+        num(data.oi),
+      );
+      opt.oi = next.oi;
+      opt.oiChange = next.oiChange;
+      opt.oiChangePct = next.oiChangePct;
+      if (next.oi !== previousOI) oiTickChanged = true;
     }
     if (data.bids || data.asks) {
       const merged = mergeDepthData({ bids: opt.bids, asks: opt.asks }, data.bids, data.asks);
@@ -2351,11 +2422,17 @@ function handleTickData(data, { batch = false } = {}) {
     const type = row.call?.instrumentKey === data.key ? "CE" : "PE";
     const cell = $("chain-body")?.querySelector(`button[data-select="${type}"][data-strike="${row.strike}"]`);
     if (cell) {
-      cell.innerHTML = `<span class="chain-ltp">${fmt(opt.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span><span class="sr-only"> · ${fmtSigned(opt.changePct)}%${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}</span>`;
-      cell.title = `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}${opt.oi ? ` · OI ${fmtCompact(opt.oi)}` : ""}`;
+      cell.innerHTML = chainCellInner(opt, maxChainOIChange());
+      cell.title = chainCellTitle(opt);
       cell.classList.toggle("up", opt.changePct > 0);
       cell.classList.toggle("down", opt.changePct < 0);
       hadChain = true;
+      if (oiTickChanged) {
+        // The shared bar scale moved: repaint every visible ΔOI bar, not just
+        // this row, or the rest stay stretched against the old maximum.
+        refreshChainOIBarWidths();
+        scheduleChartOIWallsRefresh();
+      }
     }
     if (!batch) renderPCR();
     if (selectedOption(type)?.instrumentKey === data.key) {
@@ -3158,6 +3235,89 @@ function toggleChartMomentum(forceState?) {
   return nextState;
 }
 
+function toggleChartSupertrend(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showSupertrend;
+  for (const chart of allCharts()) chart.toggleSupertrend(nextState);
+  try {
+    localStorage.setItem("scalper-show-supertrend", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  toast(nextState ? "Supertrend (10, 3) enabled" : "Supertrend hidden", "ok", 1500);
+  return nextState;
+}
+
+function toggleChartATR(forceState?) {
+  const first = S.charts.ce || S.charts.spot;
+  const nextState = typeof forceState === "boolean" ? forceState : !first?.showATR;
+  for (const chart of allCharts()) chart.toggleATR(nextState);
+  try {
+    localStorage.setItem("scalper-show-atr", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  const collapsed = nextState && first?.paneIsUsable?.("pane_atr") === false;
+  toast(
+    nextState
+      ? (collapsed ? "ATR pane added but collapsed — hide another indicator pane on this screen." : "ATR (14) pane enabled")
+      : "ATR pane hidden",
+    collapsed ? "warn" : "ok",
+    collapsed ? 4200 : 1500,
+  );
+  return nextState;
+}
+
+function toggleChartOIWalls(forceState?) {
+  const chart = S.charts.spot;
+  if (!chart) return false;
+  const nextState = chart.toggleOIWalls(forceState);
+  try {
+    localStorage.setItem("scalper-show-oi-walls", String(nextState));
+  } catch (_) {}
+  refreshChartOIWalls();
+  updateChartSettingsButtonState();
+  return nextState;
+}
+
+function toggleChartOIPane(forceState?) {
+  const first = S.charts.ce || S.charts.pe;
+  if (!first) return false;
+  const nextState = typeof forceState === "boolean" ? forceState : !first.showOIPane;
+  for (const pane of ["ce", "pe"]) S.charts[pane]?.toggleOIPane?.(nextState);
+  try {
+    localStorage.setItem("scalper-show-oi-pane", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  const collapsed = nextState && first?.paneIsUsable?.("pane_oi") === false;
+  toast(
+    nextState
+      ? (collapsed ? "OI pane added but collapsed — hide another indicator pane on this screen." : "Open-interest pane enabled")
+      : "Open-interest pane hidden",
+    collapsed ? "warn" : "ok",
+    collapsed ? 4200 : 1500,
+  );
+  return nextState;
+}
+
+function toggleChartOIDeltaPane(forceState?) {
+  const first = S.charts.ce || S.charts.pe;
+  if (!first) return false;
+  const nextState = typeof forceState === "boolean" ? forceState : !first.showOIDeltaPane;
+  for (const pane of ["ce", "pe"]) S.charts[pane]?.toggleOIDeltaPane?.(nextState);
+  try {
+    localStorage.setItem("scalper-show-oi-delta", String(nextState));
+  } catch (_) {}
+  updateChartSettingsButtonState();
+  const collapsed = nextState && first?.paneIsUsable?.("pane_oi_delta") === false;
+  toast(
+    nextState
+      ? (collapsed ? "ΔOI pane added but collapsed — hide another indicator pane on this screen." : "ΔOI histogram enabled")
+      : "ΔOI histogram hidden",
+    collapsed ? "warn" : "ok",
+    collapsed ? 4200 : 1500,
+  );
+  return nextState;
+}
+
 function startChartTrendline(pane) {
   const chart = chartForPane(pane);
   if (!chart) return;
@@ -3194,18 +3354,63 @@ function validateBracketLevels(bracket, entry, target, stop) {
   return "";
 }
 
+/**
+ * Apply a dragged draft level to the open quick-order card. The card helpers
+ * keep the TP/SL point distances, P&L estimate and exchange backstop in sync.
+ */
+function applyDraftChartLevelDrop(kind, price) {
+  if (!S.quickOrder) return;
+  const qo = S.quickOrder;
+  const entry = num(qo.price);
+  if (kind === "ENTRY") {
+    if (qo.targetEnabled && num(qo.targetPrice) > 0 && price >= num(qo.targetPrice)) {
+      toast("Entry must stay below the target. Drag the target up first.", "warn", 3000);
+      return;
+    }
+    if (qo.slEnabled && num(qo.slPrice) > 0 && price <= num(qo.slPrice)) {
+      toast("Entry must stay above the stop-loss. Drag the stop-loss down first.", "warn", 3000);
+      return;
+    }
+    updateQuickOrderPrice(price);
+    return;
+  }
+  if (kind === "TARGET") {
+    if (price <= entry) {
+      toast("Target must stay above the entry price.", "warn", 3000);
+      return;
+    }
+    updateQuickOrderTargetPrice(price, false);
+    return;
+  }
+  if (kind === "STOP") {
+    if (price >= entry) {
+      toast("Stop-loss must stay below the entry price.", "warn", 3000);
+      return;
+    }
+    updateQuickOrderSLPrice(price, false);
+  }
+}
+
 async function handleChartLevelDrop(pane, info) {
   if (!info) return;
   const price = roundToTick(info.price);
   const previous = roundToTick(info.previousPrice);
   if (!Number.isFinite(price) || price <= 0 || Math.abs(price - previous) < 0.025) return;
+  const kind = String(info.kind || "ENTRY").toUpperCase();
+
+  // Draft levels belong to the not-yet-submitted quick-order card: moving one
+  // only edits local form state, so no login check, confirmation or PATCH.
+  if (info.source === "draft") {
+    applyDraftChartLevelDrop(kind, price);
+    return;
+  }
+
   if (requiresBrokerLogin()) {
     openLogin();
     toast("Sign in with Kotak before modifying orders.", "warn");
     return;
   }
 
-  const kind = String(info.kind || "ENTRY").toUpperCase();
   const levelLabel = kind === "TARGET" ? "TARGET" : kind === "STOP" ? "STOP-LOSS" : "ENTRY";
   const bracket = info.bracketId
     ? (S.autoTargets || []).find((b) => String(b.id) === String(info.bracketId))
@@ -3421,6 +3626,7 @@ function normalizeHistoricalCandles(rawList) {
     low: num(c.low),
     close: num(c.close),
     volume: num(c.volume),
+    oi: num(c.oi ?? c.open_interest ?? c.openInterest),
   }));
   const valid = raw.map((c: any) => {
     if (c.low <= 0 && (c.open > 0 || c.close > 0 || c.high > 0)) {
@@ -3926,6 +4132,8 @@ function mergeChartCandles(historical, live, instrumentKey = "") {
     existing.high = Math.max(existing.high, candle.high);
     existing.low = Math.min(existing.low, candle.low);
     existing.close = candle.close;
+    const liveOI = Number(candle.oi);
+    if (Number.isFinite(liveOI) && liveOI > 0) existing.oi = liveOI;
     if (cumulativeVolume > 0 && Number.isFinite(liveStart) && liveStart > 0) {
       const gained = Math.max(0, cumulativeVolume - liveStart);
       const carried = Math.max(0, historicalVolume - gained);
@@ -3967,7 +4175,7 @@ function scheduleThetaRefresh() {
  * (`baseVolume`), so the bar keeps growing instead of freezing at the value it
  * had when the page loaded.
  */
-function applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, limit) {
+function applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, limit, oi = 0) {
   const candles = S.candles[cacheKey] || (S.candles[cacheKey] = []);
   let bucket = sessionStart + Math.floor((time - sessionStart) / interval) * interval;
   const newest = candles[candles.length - 1];
@@ -3990,6 +4198,7 @@ function applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cu
       baseVolume: 0,
       startVolume: cumVolume || 0,
       dayVolume: cumVolume || 0,
+      oi: oi > 0 ? oi : 0,
     };
     candles.push(candle);
     startedNewBar = true;
@@ -4007,6 +4216,8 @@ function applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cu
       candle.volume = Math.max(Number(candle.volume) || 0, gained);
       candle.dayVolume = cumVolume;
     }
+    // Open interest is a level: the latest positive reading wins.
+    if (oi > 0) candle.oi = oi;
   }
   return { candle, startedNewBar, stale: false };
 }
@@ -4034,7 +4245,7 @@ function extendLiveVwap(candle, previous) {
   candle.vwapVol = totalVolume;
 }
 
-function updateLiveCandle(key, price, timestamp, volume) {
+function updateLiveCandle(key, price, timestamp, volume, oi = 0) {
   if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
   const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
@@ -4049,7 +4260,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
   const value = Number(price);
   const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
   const cacheKey = `${key}|${S.timeframe}`;
-  const { candle, startedNewBar, stale } = applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, 500);
+  const { candle, startedNewBar, stale } = applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, 500, oi);
   if (stale) return;
   const series = S.candles[cacheKey] || [];
   if (series.length >= 2) {
@@ -4059,7 +4270,7 @@ function updateLiveCandle(key, price, timestamp, volume) {
   // VWAP is projected from, and it must stay fine-grained while the chart is
   // showing 5m/15m/1h bars.
   if (S.timeframe !== VWAP_BASE_TIMEFRAME) {
-    applyLiveTickToSeries(`${key}|${VWAP_BASE_TIMEFRAME}`, 60, value, time, sessionStart, cumVolume, 900);
+    applyLiveTickToSeries(`${key}|${VWAP_BASE_TIMEFRAME}`, 60, value, time, sessionStart, cumVolume, 900, oi);
   }
   for (const type of ["CE", "PE"]) {
     if (chartInstrument(type) !== key) continue;
@@ -4394,6 +4605,91 @@ function renderChartDataSummary() {
   </tr>`).join("");
 }
 
+/** Signed compact OI change, e.g. +1.2L / −45K. */
+function fmtSignedCompact(value) {
+  const n = num(value);
+  if (!Number.isFinite(n) || n === 0) return "0";
+  return `${n > 0 ? "+" : "−"}${fmtCompact(Math.abs(n))}`;
+}
+
+/** Largest absolute ΔOI across the loaded chain, for bar scaling. */
+function maxChainOIChange() {
+  let maxAbs = 0;
+  for (const row of S.chain || []) {
+    for (const opt of [row.call, row.put]) {
+      const abs = Math.abs(num(opt?.oiChange));
+      if (abs > maxAbs) maxAbs = abs;
+    }
+  }
+  return maxAbs;
+}
+
+function chainOILine(opt, maxAbs) {
+  if (!opt || !(num(opt.oi) > 0)) return "";
+  // Until any strike has moved off its baseline the whole column would read
+  // "Δ0"; keep the row compact and let the OI line appear once it is real.
+  if (!(maxAbs > 0)) return "";
+  const change = num(opt.oiChange);
+  const pct = num(opt.oiChangePct);
+  const magnitude = Math.abs(change);
+  const width = maxAbs > 0 && magnitude > 0
+    ? Math.max(2, Math.min(100, Math.round((magnitude / maxAbs) * 100)))
+    : 0;
+  const dirClass = change > 0 ? "up" : change < 0 ? "down" : "";
+  const pctText = pct !== 0 ? ` (${fmtSigned(pct)}%)` : "";
+  const title = `OI ${fmtCompact(opt.oi)} · day ΔOI ${fmtSignedCompact(change)}${pctText}`;
+  return `<span class="chain-oi ${dirClass}" title="${title}"><span class="chain-oi-track"><i data-change="${magnitude}" style="width:${width}%"></i></span><b>Δ${fmtSignedCompact(change)}</b></span>`;
+}
+
+/** Re-scale every rendered ΔOI bar after the chain maximum moves on a tick. */
+function refreshChainOIBarWidths() {
+  const maxAbs = maxChainOIChange();
+  for (const bar of $$("#chain-body .chain-oi-track i")) {
+    const magnitude = Math.abs(num(bar.dataset.change));
+    bar.style.width = maxAbs > 0 && magnitude > 0
+      ? `${Math.max(2, Math.min(100, Math.round((magnitude / maxAbs) * 100)))}%`
+      : "0%";
+  }
+}
+
+function chainCellTitle(opt) {
+  if (!opt) return "";
+  const pct = num(opt.oiChangePct);
+  const pctText = pct !== 0 ? ` (${fmtSigned(pct)}%)` : "";
+  return `${fmt(opt.ltp)} · ${fmtSigned(opt.changePct)}% · Vol ${fmtCompact(opt.volume)}` +
+    `${num(opt.oi) > 0 ? ` · OI ${fmtCompact(opt.oi)} · ΔOI ${fmtSignedCompact(opt.oiChange)}${pctText}` : ""}`;
+}
+
+function chainCellInner(opt, maxAbs = 0) {
+  if (!opt) return "—";
+  const pct = num(opt.oiChangePct);
+  const pctText = pct !== 0 ? ` (${fmtSigned(pct)}%)` : "";
+  const sr = ` · ${fmtSigned(opt.changePct)}%${num(opt.oi) > 0 ? ` · OI ${fmtCompact(opt.oi)} · ΔOI ${fmtSignedCompact(opt.oiChange)}${pctText}` : ""}`;
+  return `<span class="chain-ltp">${fmt(opt.ltp)}</span>` +
+    `<span class="chain-volume">VOL ${fmtCompact(opt.volume)}</span>` +
+    chainOILine(opt, maxAbs) +
+    `<span class="sr-only">${sr}</span>`;
+}
+
+/** Repaint the OI walls on the spot chart from the currently loaded chain. */
+function refreshChartOIWalls() {
+  if (!S.charts.spot?.showOIWalls) return;
+  const walls = computeOIWalls(S.chain || []);
+  S.charts.spot?.setOIWalls?.(walls);
+}
+
+let oiWallsRefreshTimer = null;
+
+/** Coalesce tick-driven wall rebuilds; the chain poll repaints authoritatively. */
+function scheduleChartOIWallsRefresh(delay = 1200) {
+  if (!S.charts.spot?.showOIWalls) return;
+  if (oiWallsRefreshTimer !== null) return;
+  oiWallsRefreshTimer = window.setTimeout(() => {
+    oiWallsRefreshTimer = null;
+    refreshChartOIWalls();
+  }, delay);
+}
+
 function renderChain(preserveScroll = false) {
   const body = $("chain-body");
   if (!S.chain.length) {
@@ -4401,12 +4697,14 @@ function renderChain(preserveScroll = false) {
     $("strike-meta").textContent = "—";
     renderChainMoreControls();
     renderPCR();
+    refreshChartOIWalls();
     updateChainActiveDescendant();
     renderChartDataSummary();
     return;
   }
   const scrollTop = preserveScroll ? body.scrollTop : 0;
   const atm = computeATM();
+  const maxDelta = maxChainOIChange();
   body.innerHTML = S.chain.map((row, index) => {
     const call = row.call;
     const put = row.put;
@@ -4417,9 +4715,9 @@ function renderChain(preserveScroll = false) {
     const callITM = atm ? row.strike < atm : false;
     const putITM = atm ? row.strike > atm : false;
     return `<div class="chain-row${isATM ? " atm" : ""}${active ? " active" : ""}" id="chain-row-${row.strike}" data-strike="${row.strike}" role="row" aria-rowindex="${index + 2}">
-      <div class="chain-cell" role="gridcell" aria-colindex="1" aria-selected="${callSelected}"><button type="button" tabindex="-1" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? `${fmt(call.ltp)} · ${fmtSigned(call.changePct)}% · Vol ${fmtCompact(call.volume)}${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}` : "Call quote unavailable"}">${call ? `<span class="chain-ltp">${fmt(call.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(call.volume)}</span><span class="sr-only"> · ${fmtSigned(call.changePct)}%${call.oi ? ` · OI ${fmtCompact(call.oi)}` : ""}</span>` : "—"}</button></div>
+      <div class="chain-cell" role="gridcell" aria-colindex="1" aria-selected="${callSelected}"><button type="button" tabindex="-1" class="cell-ce${callITM ? " itm" : ""}${callSelected ? " selected" : ""}${call ? ` ${directionClass(call.changePct)}` : ""}" data-select="CE" data-strike="${row.strike}" title="${call ? esc(chainCellTitle(call)) : "Call quote unavailable"}">${chainCellInner(call, maxDelta)}</button></div>
       <div class="chain-cell" role="gridcell" aria-colindex="2" aria-selected="${active}"><button type="button" tabindex="-1" class="cell-strike" data-select="${esc(S.selected.type)}" data-strike="${row.strike}">${isATM ? '<span class="atm-badge">ATM</span>' : ""}${fmtStrike(row.strike)}</button></div>
-      <div class="chain-cell" role="gridcell" aria-colindex="3" aria-selected="${putSelected}"><button type="button" tabindex="-1" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? `${fmt(put.ltp)} · ${fmtSigned(put.changePct)}% · Vol ${fmtCompact(put.volume)}${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}` : "Put quote unavailable"}">${put ? `<span class="chain-ltp">${fmt(put.ltp)}</span><span class="chain-volume">VOL ${fmtCompact(put.volume)}</span><span class="sr-only"> · ${fmtSigned(put.changePct)}%${put.oi ? ` · OI ${fmtCompact(put.oi)}` : ""}</span>` : "—"}</button></div>
+      <div class="chain-cell" role="gridcell" aria-colindex="3" aria-selected="${putSelected}"><button type="button" tabindex="-1" class="cell-pe${putITM ? " itm" : ""}${putSelected ? " selected" : ""}${put ? ` ${directionClass(put.changePct)}` : ""}" data-select="PE" data-strike="${row.strike}" title="${put ? esc(chainCellTitle(put)) : "Put quote unavailable"}">${chainCellInner(put, maxDelta)}</button></div>
     </div>`;
   }).join("");
   const pcr = computePCR();
@@ -4429,6 +4727,7 @@ function renderChain(preserveScroll = false) {
   renderPCR();
   if (S.chain && S.chain.length) {
     S.charts.spot?.setChainData?.(S.chain);
+    refreshChartOIWalls();
   }
 
   body.scrollTop = scrollTop;
@@ -6337,6 +6636,7 @@ function initChartQuickOrder() {
     if (!isNaN(val) && val > 0) {
       S.quickOrder.targetPrice = val;
       S.quickOrder.targetManual = true;
+      S.quickOrder.targetSource = "manual";
       const pts = Math.round((val - S.quickOrder.price) * 100) / 100;
       S.quickOrder.targetPts = Math.max(0.05, pts);
       if (val > S.quickOrder.price) {
@@ -6410,6 +6710,7 @@ function initChartQuickOrder() {
     if (!isNaN(val) && val > 0 && val < S.quickOrder.price) {
       S.quickOrder.slPrice = val;
       S.quickOrder.slManual = true;
+      S.quickOrder.slSource = "manual";
       S.quickOrder.slPts = Math.max(0.05, Math.round((S.quickOrder.price - val) * 100) / 100);
       const ptsEl = $("cqo-sl-pts");
       if (ptsEl) ptsEl.textContent = `−${S.quickOrder.slPts.toFixed(2)} pts`;
@@ -6546,7 +6847,7 @@ function initChartTooltips() {
   const TOOLTIP_DATA: Record<string, { title: string; desc: string }> = {
     trades: {
       title: "Trades & Positions (TX)",
-      desc: "Toggle this chart's trades, position and pending order lines. Drag an entry, TP or SL line to modify it; click ✕ on a TP/SL label to remove it.",
+      desc: "Toggle this chart's trades, position and pending order lines. Drag an entry, TP or SL line to modify it; click ✕ on a TP/SL label to remove it. The quick-order card's ENTRY/TP/SL lines are draggable too, before the order is placed.",
     },
     dom: {
       title: "Depth of Market (DOM)",
@@ -6767,6 +7068,16 @@ function bindChartClickEvents() {
   }
 }
 
+/**
+ * The quick-order card covers a large part of the pane, so hide it while a
+ * chart level is being dragged and bring it back once the price is committed.
+ */
+function setQuickOrderPadDragging(dragging) {
+  const widget = $("chart-quick-order");
+  if (!widget) return;
+  widget.classList.toggle("cqo-drag-hidden", Boolean(dragging));
+}
+
 function openChartQuickOrder(pane, price, x, y) {
   const chart = S.charts[pane];
   if (!chart) return;
@@ -6791,12 +7102,32 @@ function openChartQuickOrder(pane, price, x, y) {
     lotsCount = Math.max(1, Math.round(lotsCount / lot));
   }
 
+  // The premium chart's own ATR gives a natural stop distance in premium
+  // points (a spot ATR would need delta to translate). It is only a default:
+  // an explicitly saved point distance, or any manual edit below, wins.
+  const paneATR = Math.max(0, num(chart.getATR?.(14)));
+  const priceCeiling = Math.max(0.01, roundToTick(price - 0.05));
+  const atrFloor = Math.min(0.10, priceCeiling);
+  const atrPts = paneATR > 0
+    ? Math.min(Math.max(roundToTick(paneATR), atrFloor), priceCeiling)
+    : 0;
+
   let defaultPts = 2.0;
+  let targetSource = "default";
   try {
     const saved = localStorage.getItem("scalper-target-pts");
-    if (saved) defaultPts = num(saved, 2.0);
+    const savedPts = num(saved);
+    // A saved 0/negative value is not a usable preference; fall back to ATR.
+    if (saved && savedPts > 0) {
+      defaultPts = savedPts;
+      targetSource = "saved";
+    }
   } catch (_) {}
   if (defaultPts <= 0) defaultPts = 2.0;
+  if (targetSource !== "saved" && atrPts > 0) {
+    defaultPts = atrPts;
+    targetSource = "atr";
+  }
 
   let targetEnabled = true;
   try {
@@ -6807,9 +7138,14 @@ function openChartQuickOrder(pane, price, x, y) {
 
   // Default to a 1:1 risk/reward against the target until the user tunes it.
   let slPts = defaultPts;
+  let slSource = targetSource;
   try {
     const savedSl = localStorage.getItem("scalper-sl-pts");
-    if (savedSl) slPts = num(savedSl, defaultPts);
+    const savedSlPts = num(savedSl);
+    if (savedSl && savedSlPts > 0) {
+      slPts = savedSlPts;
+      slSource = "saved";
+    }
   } catch (_) {}
   if (!Number.isFinite(slPts) || slPts <= 0) slPts = defaultPts;
   slPts = Math.min(slPts, Math.max(0.05, price - 0.05));
@@ -6842,6 +7178,10 @@ function openChartQuickOrder(pane, price, x, y) {
     price,
     lotsCount,
     lot,
+    atrPts,
+    atrTimeframe: S.timeframe,
+    targetSource,
+    slSource,
     targetPts: defaultPts,
     targetPrice,
     targetEnabled,
@@ -6911,7 +7251,7 @@ function renderQuickOrderQty() {
 
 function renderQuickOrderTarget() {
   if (!S.quickOrder) return;
-  const { targetPts, targetPrice, targetEnabled, lotsCount, lot } = S.quickOrder;
+  const { targetPts, targetPrice, targetEnabled, lotsCount, lot, atrPts, atrTimeframe, targetSource } = S.quickOrder;
   const shares = lotsCount * lot;
   const pnl = Math.round(targetPts * shares);
 
@@ -6935,7 +7275,12 @@ function renderQuickOrderTarget() {
   if (summaryEl) summaryEl.style.opacity = targetEnabled ? "1" : "0.35";
 
   const ptsEl = $("cqo-target-pts");
-  if (ptsEl) ptsEl.textContent = `${targetPts >= 0 ? "+" : ""}${targetPts.toFixed(2)} pts`;
+  if (ptsEl) {
+    ptsEl.textContent = `${targetPts >= 0 ? "+" : ""}${targetPts.toFixed(2)} pts`;
+    ptsEl.title = targetSource === "atr"
+      ? `ATR(14) default · ${Number(atrPts).toFixed(2)} pts (${atrTimeframe || S.timeframe})`
+      : "";
+  }
 
   const pnlEl = $("cqo-target-pnl");
   if (pnlEl) pnlEl.textContent = `(Est. ${pnl >= 0 ? "+" : "−"}₹${Math.abs(pnl).toLocaleString("en-IN")})`;
@@ -6943,7 +7288,7 @@ function renderQuickOrderTarget() {
 
 function renderQuickOrderSL() {
   if (!S.quickOrder) return;
-  const { slPts, slPrice, slEnabled, lotsCount, lot } = S.quickOrder;
+  const { slPts, slPrice, slEnabled, lotsCount, lot, atrPts, atrTimeframe, slSource } = S.quickOrder;
   const shares = lotsCount * lot;
   const risk = Math.round(Math.abs(slPts) * shares);
 
@@ -6967,7 +7312,12 @@ function renderQuickOrderSL() {
   if (summaryEl) summaryEl.style.opacity = slEnabled ? "1" : "0.35";
 
   const ptsEl = $("cqo-sl-pts");
-  if (ptsEl) ptsEl.textContent = `−${Math.abs(slPts).toFixed(2)} pts`;
+  if (ptsEl) {
+    ptsEl.textContent = `−${Math.abs(slPts).toFixed(2)} pts`;
+    ptsEl.title = slSource === "atr"
+      ? `ATR(14) default · ${Number(atrPts).toFixed(2)} pts (${atrTimeframe || S.timeframe})`
+      : "";
+  }
 
   const pnlEl = $("cqo-sl-pnl");
   if (pnlEl) pnlEl.textContent = `(Risk −₹${risk.toLocaleString("en-IN")})`;
@@ -7052,15 +7402,18 @@ function renderQuickOrderExchangeStop() {
   renderQuickOrderSLRiskWarning();
 }
 
-function updateQuickOrderSLPts(newPts) {
+function updateQuickOrderSLPts(newPts, persist = true) {
   if (!S.quickOrder) return;
   const maxPts = Math.max(0.05, S.quickOrder.price - 0.05);
   const pts = Math.min(maxPts, Math.max(0.05, Math.round(num(newPts) * 20) / 20));
   S.quickOrder.slPts = pts;
+  S.quickOrder.slSource = "manual";
   S.quickOrder.slPrice = Math.max(0.05, Math.round((S.quickOrder.price - pts) * 20) / 20);
-  try {
-    localStorage.setItem("scalper-sl-pts", String(pts));
-  } catch (_) {}
+  if (persist) {
+    try {
+      localStorage.setItem("scalper-sl-pts", String(pts));
+    } catch (_) {}
+  }
   const slPriceEl = $("cqo-sl-price");
   if (slPriceEl) {
     slPriceEl.value = S.quickOrder.slPrice.toFixed(2);
@@ -7071,17 +7424,20 @@ function updateQuickOrderSLPts(newPts) {
   }
 }
 
-function updateQuickOrderSLPrice(newSlPrice) {
+function updateQuickOrderSLPrice(newSlPrice, persist = true) {
   if (!S.quickOrder) return;
   const price = S.quickOrder.price;
   const sl = Math.min(Math.max(0.05, price - 0.05), Math.max(0.05, Math.round(num(newSlPrice) * 20) / 20));
   S.quickOrder.slPrice = sl;
   S.quickOrder.slManual = true;
+  S.quickOrder.slSource = "manual";
   const pts = Math.max(0.05, Math.round((price - sl) * 20) / 20);
   S.quickOrder.slPts = pts;
-  try {
-    localStorage.setItem("scalper-sl-pts", String(pts));
-  } catch (_) {}
+  if (persist) {
+    try {
+      localStorage.setItem("scalper-sl-pts", String(pts));
+    } catch (_) {}
+  }
   const slPriceEl = $("cqo-sl-price");
   if (slPriceEl) {
     slPriceEl.value = sl.toFixed(2);
@@ -7092,14 +7448,17 @@ function updateQuickOrderSLPrice(newSlPrice) {
   }
 }
 
-function updateQuickOrderTargetPts(newPts) {
+function updateQuickOrderTargetPts(newPts, persist = true) {
   if (!S.quickOrder) return;
   const pts = Math.max(0.05, Math.round(num(newPts) * 20) / 20);
   S.quickOrder.targetPts = pts;
+  S.quickOrder.targetSource = "manual";
   S.quickOrder.targetPrice = Math.round((S.quickOrder.price + pts) * 20) / 20;
-  try {
-    localStorage.setItem("scalper-target-pts", String(pts));
-  } catch (_) {}
+  if (persist) {
+    try {
+      localStorage.setItem("scalper-target-pts", String(pts));
+    } catch (_) {}
+  }
   const targetPriceEl = $("cqo-target-price");
   if (targetPriceEl) {
     targetPriceEl.value = S.quickOrder.targetPrice.toFixed(2);
@@ -7110,15 +7469,18 @@ function updateQuickOrderTargetPts(newPts) {
   }
 }
 
-function updateQuickOrderTargetPrice(newTargetPrice) {
+function updateQuickOrderTargetPrice(newTargetPrice, persist = true) {
   if (!S.quickOrder) return;
   const tp = Math.max(0.05, Math.round(num(newTargetPrice) * 20) / 20);
   S.quickOrder.targetPrice = tp;
+  S.quickOrder.targetSource = "manual";
   const pts = Math.max(0.05, Math.round((tp - S.quickOrder.price) * 20) / 20);
   S.quickOrder.targetPts = pts;
-  try {
-    localStorage.setItem("scalper-target-pts", String(pts));
-  } catch (_) {}
+  if (persist) {
+    try {
+      localStorage.setItem("scalper-target-pts", String(pts));
+    } catch (_) {}
+  }
   const targetPriceEl = $("cqo-target-price");
   if (targetPriceEl) {
     targetPriceEl.value = tp.toFixed(2);
@@ -7190,6 +7552,7 @@ function closeChartQuickOrder() {
   const widget = $("chart-quick-order");
   if (widget) {
     widget.classList.remove("is-dragging");
+    widget.classList.remove("cqo-drag-hidden");
     if (typeof widget.close === "function") {
       if (widget.open) widget.close();
       widget.removeAttribute("hidden");
@@ -9312,6 +9675,11 @@ function bindEvents() {
     "cs-rsi": (checked) => toggleChartRSI(checked),
     "cs-divergence": (checked) => toggleChartDivergence(checked),
     "cs-momentum": (checked) => toggleChartMomentum(checked),
+    "cs-supertrend": (checked) => toggleChartSupertrend(checked),
+    "cs-atr": (checked) => toggleChartATR(checked),
+    "cs-oi-pane": (checked) => toggleChartOIPane(checked),
+    "cs-oi-delta": (checked) => toggleChartOIDeltaPane(checked),
+    "cs-oi-walls": (checked) => toggleChartOIWalls(checked),
     "cs-max-pain": (checked) => toggleMaxPain(checked),
     "cs-theta": (checked) => toggleTheta(checked),
     "cs-volume-profile": (checked) => toggleVolumeProfile(checked),

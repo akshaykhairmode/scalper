@@ -4,31 +4,77 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akshaykhairmode/scalper/internal/config"
 	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
+// OIBaselineStore persists the first open interest recorded for a contract on a
+// trading day, so intraday ΔOI survives a process restart. Kotak publishes only
+// the current OI, never a day-change figure.
+type OIBaselineStore interface {
+	LoadOIBaselines(ctx context.Context, tradingDay string) (map[string]int64, error)
+	SaveOIBaselines(ctx context.Context, tradingDay string, baselines map[string]int64) error
+}
+
+// ServiceOption customises Service construction.
+type ServiceOption func(*Service)
+
+// WithOIBaselineStore backs intraday ΔOI with persisted day baselines.
+func WithOIBaselineStore(store OIBaselineStore) ServiceOption {
+	return func(s *Service) {
+		if store != nil {
+			s.oiStore = store
+		}
+	}
+}
+
 // Service combines Scrip Master data with Kotak market quotes.
 type Service struct {
 	cfg    config.Config
 	scrips *scrip.Manager
 	client *QuotesClient
+	log    *slog.Logger
+
+	// Kotak publishes open interest but no day-change field, so intraday ΔOI is
+	// measured against the first OI observed for each contract after the IST day
+	// rolls over. With an OIBaselineStore the baseline survives restarts.
+	oiMu      sync.Mutex
+	oiStore   OIBaselineStore
+	oiDay     string
+	oiBase    map[string]int64
+	oiLoaded  bool
+	oiLoading bool
+	oiPending map[string]int64
 }
 
 // NewService creates a market data service.
-func NewService(cfg config.Config, scripts *scrip.Manager, client *QuotesClient) (*Service, error) {
+func NewService(cfg config.Config, scripts *scrip.Manager, client *QuotesClient, opts ...ServiceOption) (*Service, error) {
 	if scripts == nil {
 		return nil, errors.New("market: scrip master is required")
 	}
 	if client == nil {
 		return nil, errors.New("market: Kotak quotes client is required")
 	}
-	return &Service{cfg: cfg, scrips: scripts, client: client}, nil
+	service := &Service{
+		cfg:    cfg,
+		scrips: scripts,
+		client: client,
+		log:    slog.Default(),
+		oiBase: make(map[string]int64),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service, nil
 }
 
 // IndexQuote is a normalized quote for a configured market index.
@@ -53,6 +99,10 @@ type IndexQuote struct {
 }
 
 // OptionQuote is a normalized quote for an option contract.
+//
+// OIChange and OIChangePct are measured from the first OI recorded for the
+// contract on the current IST day. Kotak publishes open interest but no
+// day-change field; the baseline is persisted, so a restart keeps the change.
 type OptionQuote struct {
 	InstrumentKey   string       `json:"instrument_key"`
 	ExchangeSegment string       `json:"exchange_segment"`
@@ -74,6 +124,8 @@ type OptionQuote struct {
 	ChangePct       float64      `json:"change_pct"`
 	Volume          int64        `json:"volume"`
 	OI              int64        `json:"oi"`
+	OIChange        int64        `json:"oi_change"`
+	OIChangePct     float64      `json:"oi_change_pct"`
 	Bid             float64      `json:"bid"`
 	Ask             float64      `json:"ask"`
 	Bids            []DepthLevel `json:"bids,omitempty"`
@@ -303,6 +355,145 @@ func (s *Service) ChainWindow(ctx context.Context, baseURL, indexKey, expiry str
 	return s.chainQuotes(ctx, baseURL, options, false, false)
 }
 
+// istZone is the exchange timezone. India has no DST, so a fixed offset is exact.
+var istZone = time.FixedZone("IST", 5*60*60+30*60)
+
+const oiDayLayout = "2006-01-02"
+
+// oiChange reports the open-interest change for one contract relative to the
+// first OI recorded for it on the current IST trading day. The first observation
+// seeds the baseline and reports zero; persisted baselines mean a restart does
+// not reset the intraday profile.
+func (s *Service) oiChange(ctx context.Context, instrumentKey string, oi int64) (int64, float64) {
+	return s.oiChangeForDay(ctx, instrumentKey, oi, time.Now().In(istZone).Format(oiDayLayout))
+}
+
+// resetOIDayLocked drops all state for a new trading day. Callers must hold oiMu.
+func (s *Service) resetOIDayLocked(day string) {
+	s.oiDay = day
+	s.oiBase = make(map[string]int64)
+	s.oiLoaded = false
+	s.oiLoading = false
+	s.oiPending = nil
+}
+
+// prepareOIDay loads the persisted baselines for day. The store read happens
+// outside oiMu so a slow/locked database cannot block every chain request; a
+// duplicate read from a concurrent caller is harmless because the merge is
+// idempotent and persisted values are the earliest reading.
+func (s *Service) prepareOIDay(ctx context.Context, day string) {
+	s.oiMu.Lock()
+	if s.oiStore == nil || s.oiDay != day || s.oiLoaded || s.oiLoading {
+		s.oiMu.Unlock()
+		return
+	}
+	s.oiLoading = true
+	s.oiMu.Unlock()
+
+	stored, err := s.oiStore.LoadOIBaselines(ctx, day)
+
+	s.oiMu.Lock()
+	defer s.oiMu.Unlock()
+	s.oiLoading = false
+	if s.oiDay != day {
+		return // Day rolled over while the read was in flight.
+	}
+	if err != nil {
+		// Leave oiLoaded false so the next chain call retries.
+		s.warn("load oi baselines", "oi_baseline_load_failed", day, err)
+		return
+	}
+	for key, value := range stored {
+		if key != "" && value > 0 {
+			s.oiBase[key] = value
+		}
+	}
+	s.oiLoaded = true
+}
+
+// oiChangeForDay is oiChange with an explicit trading day, kept separate so the
+// day-rollover behaviour is testable without a fake clock.
+func (s *Service) oiChangeForDay(ctx context.Context, instrumentKey string, oi int64, day string) (int64, float64) {
+	if s == nil || instrumentKey == "" || oi <= 0 || day == "" {
+		return 0, 0
+	}
+	s.oiMu.Lock()
+	if s.oiDay != day {
+		s.resetOIDayLocked(day)
+	}
+	s.oiMu.Unlock()
+
+	s.prepareOIDay(ctx, day)
+
+	s.oiMu.Lock()
+	defer s.oiMu.Unlock()
+	if s.oiDay != day {
+		// The day changed between preparation and use: start the new session
+		// clean rather than attributing yesterday's baselines to it.
+		s.resetOIDayLocked(day)
+	}
+	base, seen := s.oiBase[instrumentKey]
+	if !seen {
+		s.oiBase[instrumentKey] = oi
+		if s.oiStore != nil {
+			if s.oiPending == nil {
+				s.oiPending = make(map[string]int64)
+			}
+			s.oiPending[instrumentKey] = oi
+		}
+		return 0, 0
+	}
+	change := oi - base
+	return change, float64(change) / float64(base) * 100
+}
+
+// flushOIBaselines persists baselines seeded since the last flush. Failures keep
+// the entries pending for the next chain call instead of dropping them, but only
+// while the same IST day is still current.
+func (s *Service) flushOIBaselines(ctx context.Context) {
+	if s == nil || s.oiStore == nil {
+		return
+	}
+	s.oiMu.Lock()
+	day := s.oiDay
+	pending := s.oiPending
+	s.oiPending = nil
+	s.oiMu.Unlock()
+	if day == "" || len(pending) == 0 {
+		return
+	}
+	// Persist on a short detached context: the request may be cancelled as soon
+	// as the response is written, and losing the day's first baselines would make
+	// a later restart under-report ΔOI.
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := s.oiStore.SaveOIBaselines(writeCtx, day, pending); err != nil {
+		s.warn("save oi baselines", "oi_baseline_save_failed", day, err)
+		s.oiMu.Lock()
+		defer s.oiMu.Unlock()
+		if s.oiDay != day {
+			// These values belong to the previous session; seeding them as the
+			// new day's first observation would corrupt the whole day's ΔOI.
+			return
+		}
+		if s.oiPending == nil {
+			s.oiPending = make(map[string]int64)
+		}
+		for key, value := range pending {
+			if _, exists := s.oiPending[key]; !exists {
+				s.oiPending[key] = value
+			}
+		}
+	}
+}
+
+func (s *Service) warn(message, event, day string, err error) {
+	if s == nil || s.log == nil {
+		return
+	}
+	s.log.Warn(message, "event", event, "trading_day", day, "error", err)
+}
+
 func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scrip.Option, hasMoreAbove, hasMoreBelow bool) (ChainPage, error) {
 	keyed := make([]keyedInstrument, 0, len(options))
 	for _, option := range options {
@@ -352,6 +543,7 @@ func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scr
 			converted.ChangePct = quote.ChangePct
 			converted.Volume = quote.Volume
 			converted.OI = quote.OI
+			converted.OIChange, converted.OIChangePct = s.oiChange(ctx, option.InstrumentKey, quote.OI)
 			converted.Bid = quote.Bid
 			converted.Ask = quote.Ask
 			converted.Bids = quote.Bids
@@ -369,6 +561,7 @@ func (s *Service) chainQuotes(ctx context.Context, baseURL string, options []scr
 	for _, strike := range strikes {
 		result = append(result, *byStrike[strike])
 	}
+	s.flushOIBaselines(ctx)
 	return ChainPage{Rows: result, HasMoreAbove: hasMoreAbove, HasMoreBelow: hasMoreBelow}, nil
 }
 

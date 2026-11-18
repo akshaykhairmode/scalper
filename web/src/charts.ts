@@ -2,6 +2,7 @@ import * as Patterns from "./chart/patterns";
 import * as Indicators from "./chart/indicators";
 import { calculateFibLevels } from "./chart/fibonacci";
 import { buildVolumeProfile, suggestVolumeRanges } from "./chart/volumeProfile";
+import { atrSeries, atrValue, oiDeltaSeries, supertrendSeries } from "./chart/intraday";
 import { istSessionKey } from "./chart/session";
 
 // Minimum gap between volume-profile rebuilds while ticks stream in.
@@ -1773,69 +1774,6 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
-    name: "orderPreviewLine",
-    totalStep: 1,
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates, bounding }) {
-      if (!coordinates || !coordinates.length) return [];
-      const coord = coordinates[0];
-      if (!coord || !Number.isFinite(coord.y)) return [];
-      const y = coord.y;
-      const data = overlay.extendData || {};
-      const price = Number(data.price || overlay.points?.[0]?.value || 0);
-      const width = bounding?.width || 800;
-      const accent = "#f0b429";
-
-      const figures = [];
-
-      figures.push({
-        type: "line",
-        attrs: {
-          coordinates: [
-            { x: 0, y },
-            { x: width, y },
-          ],
-        },
-        styles: {
-          style: "dashed",
-          dashedValue: [5, 3],
-          size: 1.5,
-          color: accent,
-        },
-        ignoreEvent: true,
-      });
-
-      figures.push({
-        type: "text",
-        attrs: {
-          x: width - 8,
-          y,
-          text: `LIMIT: ₹${price.toFixed(2)}`,
-          align: "right",
-          baseline: "middle",
-        },
-        styles: {
-          color: "#000000",
-          backgroundColor: accent,
-          size: 10,
-          weight: "bold",
-          family: "system-ui, -apple-system, sans-serif",
-          paddingLeft: 6,
-          paddingRight: 6,
-          paddingTop: 2,
-          paddingBottom: 2,
-          borderRadius: 3,
-        },
-        ignoreEvent: true,
-      });
-
-      return figures;
-    },
-  });
-
-  kc.registerOverlay({
     name: "maxPainLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -1881,6 +1819,59 @@ function registerCustomOverlays() {
             paddingRight: 6,
             paddingTop: 2,
             paddingBottom: 2,
+            borderSize: 0,
+            borderRadius: 3,
+          },
+          ignoreEvent: true,
+        },
+      ];
+    },
+  });
+
+  kc.registerOverlay({
+    name: "oiWallLine",
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding, yAxis }) {
+      if (!coordinates || !coordinates.length) return [];
+      const coord = coordinates[0];
+      if (!coord || !Number.isFinite(coord.y)) return [];
+      const y = coord.y;
+      const data = overlay.extendData || {};
+      const width = bounding?.width || 800;
+      const color = data.color || "#f0b429";
+      const label = String(data.label || "");
+      const labelOffset = Number(data.labelOffset) || 0;
+      const x = data.depthVisible
+        ? Math.max(8, depthLadderLayout(width, axisPaneWidth(yAxis, width)).left - 6)
+        : Math.max(8, width - 8);
+      return [
+        {
+          type: "line",
+          attrs: { coordinates: [{ x: 0, y }, { x: width, y }] },
+          styles: {
+            style: data.metric === "doi" ? "dashed" : "solid",
+            dashedValue: [3, 3],
+            size: data.metric === "doi" ? 1 : 1.4,
+            color,
+          },
+          ignoreEvent: true,
+        },
+        {
+          type: "text",
+          attrs: { x, y: y + labelOffset, text: label, align: "right", baseline: "middle" },
+          styles: {
+            color: "#0b0710",
+            backgroundColor: color,
+            size: 9.5,
+            weight: "bold",
+            family: "system-ui, -apple-system, sans-serif",
+            paddingLeft: 5,
+            paddingRight: 5,
+            paddingTop: 1.5,
+            paddingBottom: 1.5,
             borderSize: 0,
             borderRadius: 3,
           },
@@ -2103,70 +2094,6 @@ function registerCustomOverlays() {
   });
 
   kc.registerOverlay({
-    name: "targetPreviewLine",
-    totalStep: 1,
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    createPointFigures: function({ overlay, coordinates, bounding }) {
-      if (!coordinates || !coordinates.length) return [];
-      const coord = coordinates[0];
-      if (!coord || !Number.isFinite(coord.y)) return [];
-      const y = coord.y;
-      const data = overlay.extendData || {};
-      const price = Number(data.price || overlay.points?.[0]?.value || 0);
-      const width = bounding?.width || 800;
-      const green = "#29b360";
-
-      const figures = [];
-
-      figures.push({
-        type: "line",
-        attrs: {
-          coordinates: [
-            { x: 0, y },
-            { x: width, y },
-          ],
-        },
-        styles: {
-          style: "dashed",
-          dashedValue: [4, 3],
-          size: 1.5,
-          color: green,
-        },
-        ignoreEvent: true,
-      });
-
-      const label = data.label || `TARGET: ₹${price.toFixed(2)}`;
-      figures.push({
-        type: "text",
-        attrs: {
-          x: width - 8,
-          y,
-          text: label,
-          align: "right",
-          baseline: "middle",
-        },
-        styles: {
-          color: "#ffffff",
-          backgroundColor: "#1e7e44",
-          size: 10,
-          weight: "bold",
-          family: "system-ui, -apple-system, sans-serif",
-          paddingLeft: 6,
-          paddingRight: 6,
-          paddingTop: 2,
-          paddingBottom: 2,
-          borderRadius: 3,
-        },
-        ignoreEvent: true,
-      });
-
-      return figures;
-    },
-  });
-
-  kc.registerOverlay({
     name: "bracketLevelLine",
     totalStep: 1,
     needDefaultPointFigure: false,
@@ -2187,11 +2114,11 @@ function registerCustomOverlays() {
       const bgColor = isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
       const defaultKindLabel = isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
       const label = data.label || `${defaultKindLabel}: ₹${price.toFixed(2)}`;
-      // Every draggable bracket level exposes a grab handle and a remove badge.
-      // The handle keeps price-badge clicks free for chart interactions while
-      // still giving a clear affordance for moving the level.
-      const showRemove = Boolean(data.draggable);
+      // Every draggable level exposes a grab handle. Persisted levels also get
+      // a remove badge; draft (pre-order) levels do not, because removing them
+      // before the order exists is just toggling the TP/SL checkbox.
       const showGrip = Boolean(data.draggable);
+      const showRemove = showGrip && !data.noRemove;
       const removeX = showRemove ? width - 14 : null;
       const gripX = showGrip ? (showRemove ? width - 34 : width - 14) : null;
       let labelX = width - 8;
@@ -3292,6 +3219,89 @@ function registerCustomIndicators() {
       });
     },
   });
+
+  // Intraday index-option staples that klinecharts v10 does not ship.
+  kc.registerIndicator({
+    name: "ATR",
+    shortName: "",
+    calcParams: [14],
+    precision: 2,
+    figures: [
+      { key: "atr", title: "ATR: ", type: "line", styles: () => ({ color: "#38bdf8", size: 1.4 }) },
+    ],
+    calc: function(dataList, indicator) {
+      const period = Number(indicator?.calcParams?.[0]) || 14;
+      const series = atrSeries(dataList || [], period);
+      return series.map((value) => ({ atr: Number.isFinite(value) ? value : null }));
+    },
+  });
+
+  kc.registerIndicator({
+    name: "SUPERTREND",
+    shortName: "ST",
+    calcParams: [10, 3],
+    precision: 2,
+    figures: [
+      { key: "up", title: "ST▲: ", type: "line", styles: () => ({ color: "#29b360", size: 1.5 }) },
+      { key: "down", title: "ST▼: ", type: "line", styles: () => ({ color: "#f05a5a", size: 1.5 }) },
+    ],
+    calc: function(dataList, indicator) {
+      const period = Number(indicator?.calcParams?.[0]) || 10;
+      const multiplier = Number(indicator?.calcParams?.[1]) || 3;
+      const series = supertrendSeries(dataList || [], period, multiplier);
+      return (dataList || []).map((_, index) => ({
+        up: series.up[index] ?? null,
+        down: series.down[index] ?? null,
+      }));
+    },
+  });
+
+  // Per-bar open interest stored with the candle (CE/PE panes only: the cash
+  // index has no OI). Level and change are separate panes so the histogram is
+  // not flattened by the much larger absolute OI scale.
+  kc.registerIndicator({
+    name: "OI",
+    shortName: "OI",
+    calcParams: [],
+    precision: 0,
+    shouldFormatBigNumber: true,
+    minValue: 0,
+    figures: [
+      { key: "oi", title: "OI: ", type: "line", styles: () => ({ color: "#f0b429", size: 1.5 }) },
+    ],
+    calc: function(dataList) {
+      return (dataList || []).map((candle) => {
+        const oi = Number(candle?.oi);
+        return { oi: Number.isFinite(oi) && oi > 0 ? oi : null };
+      });
+    },
+  });
+
+  kc.registerIndicator({
+    name: "OIDELTA",
+    shortName: "ΔOI",
+    calcParams: [],
+    precision: 0,
+    shouldFormatBigNumber: true,
+    figures: [
+      {
+        key: "doi",
+        title: "ΔOI/bar: ",
+        type: "bar",
+        baseValue: 0,
+        styles: function(data) {
+          const value = Number(data?.data?.current?.doi);
+          return { color: value < 0 ? "#f05a5a99" : "#29b36099" };
+        },
+      },
+    ],
+    calc: function(dataList) {
+      const deltas = oiDeltaSeries(dataList || []);
+      return (dataList || []).map((_, index) => ({
+        doi: Number.isFinite(deltas[index]) ? deltas[index] : null,
+      }));
+    },
+  });
 }
 
 /**
@@ -3489,7 +3499,7 @@ function patchIndicatorLastValueView(chart) {
 
 export class CandleChart {
   [key: string]: any;
-  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showVWAP = false, showRSI = false, showDivergence = false, showMomentum = false, showTheta = false, showMaxPain = false, showVolumeProfile = false, showDepth = true, onLevelDrop = null, onLevelRemove = null, onVolumeProfile = null } = {}) {
+  constructor(container, { showVolume = true, showSR = false, showTrades = true, showAutoTrendlines = false, showPatterns = false, showFib = false, showMA = false, showEMA = undefined, showVWAP = false, showRSI = false, showDivergence = false, showMomentum = false, showSupertrend = false, showATR = false, showOIPane = false, showOIDeltaPane = false, showOIWalls = false, showTheta = false, showMaxPain = false, showVolumeProfile = false, showDepth = true, onLevelDrop = null, onLevelRemove = null, onLevelDragStart = null, onLevelDragEnd = null, onVolumeProfile = null } = {}) {
     this.container = container;
     this.data = [];
     this.showVolume = showVolume;
@@ -3503,6 +3513,13 @@ export class CandleChart {
     this.showRSI = Boolean(showRSI);
     this.showDivergence = Boolean(showDivergence);
     this.showMomentum = Boolean(showMomentum);
+    this.showSupertrend = Boolean(showSupertrend);
+    this.showATR = Boolean(showATR);
+    this.showOIPane = Boolean(showOIPane);
+    this.showOIDeltaPane = Boolean(showOIDeltaPane);
+    this.showOIWalls = Boolean(showOIWalls);
+    this.oiWalls = [];
+    this.oiWallOverlayIds = [];
     this.showTheta = Boolean(showTheta);
     this.showMaxPain = Boolean(showMaxPain);
     this.maxPainValue = null;
@@ -3532,14 +3549,11 @@ export class CandleChart {
     this.fibOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
-    this.orderPreviewOverlayId = null;
-    this.targetPreviewOverlayId = null;
     this.bracketLevelOverlayIds = [];
     this.bracketLevelsKey = "";
     this.bracketData = null;
     this.dayDividerOverlayIds = [];
     this.dayDividerKey = "";
-    this.stopPreviewOverlayId = null;
     this.openOrderOverlayIds = [];
     this.openOrdersData = [];
     this.tradesData = [];
@@ -3550,8 +3564,16 @@ export class CandleChart {
     this.drawingEscHandler = null;
     this.onLevelDrop = typeof onLevelDrop === "function" ? onLevelDrop : null;
     this.onLevelRemove = typeof onLevelRemove === "function" ? onLevelRemove : null;
+    this.onLevelDragStart = typeof onLevelDragStart === "function" ? onLevelDragStart : null;
+    this.onLevelDragEnd = typeof onLevelDragEnd === "function" ? onLevelDragEnd : null;
     this.draggableOrderLevels = [];
     this.draggableBracketLevels = [];
+    // Draft levels belong to the unsubmitted quick-order card: they are only
+    // local prices until the user presses BUY/SELL, but they drag exactly like
+    // a placed bracket level so TP/SL can be chosen directly on the chart.
+    this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+    this.draftLevelsKey = "";
+    this.draftLevelOverlayIds = [];
     this.levelDrag = null;
     this.levelDragPreviewId = null;
     this.suppressChartClickUntil = 0;
@@ -3670,6 +3692,22 @@ export class CandleChart {
       this.ensureRSIIndicator();
     }
 
+    if (this.showSupertrend) {
+      this.ensureSupertrendIndicator();
+    }
+
+    if (this.showATR) {
+      this.ensureATRIndicator();
+    }
+
+    if (this.showOIPane) {
+      this.ensureOIIndicator();
+    }
+
+    if (this.showOIDeltaPane) {
+      this.ensureOIDeltaIndicator();
+    }
+
     if (this.container) {
       this.container.addEventListener("wheel", () => {
         if (this.showDepth) this.debounceDepthRefresh();
@@ -3722,6 +3760,7 @@ export class CandleChart {
     };
     if (Number.isFinite(c.tdCE)) formatted.tdCE = Number(c.tdCE);
     if (Number.isFinite(c.tdPE)) formatted.tdPE = Number(c.tdPE);
+    if (Number.isFinite(Number(c.oi)) && Number(c.oi) > 0) formatted.oi = Number(c.oi);
     // Session VWAP projected from the 1-minute base series (see vwapFromBase).
     if (Number.isFinite(c.vwap)) formatted.vwap = Number(c.vwap);
     return formatted;
@@ -3767,6 +3806,138 @@ export class CandleChart {
   /** @deprecated use toggleEMA */
   toggleMA(forceState) {
     return this.toggleEMA(forceState);
+  }
+
+  ensureSupertrendIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "SUPERTREND", calcParams: [10, 3], paneId: "candle_pane" },
+        true,
+        { id: "candle_pane" },
+      );
+    } catch (e) {
+      console.warn("createIndicator SUPERTREND:", e);
+    }
+  }
+
+  toggleSupertrend(forceState) {
+    this.showSupertrend = typeof forceState === "boolean" ? forceState : !this.showSupertrend;
+    if (!this.chart) return this.showSupertrend;
+    if (this.showSupertrend) {
+      this.ensureSupertrendIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "candle_pane", name: "SUPERTREND" });
+      } catch (e) {
+        console.warn("removeIndicator SUPERTREND:", e);
+      }
+    }
+    return this.showSupertrend;
+  }
+
+  ensureATRIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "ATR", calcParams: [14], paneId: "pane_atr" },
+        false,
+        { id: "pane_atr", height: 90 },
+      );
+    } catch (e) {
+      console.warn("createIndicator ATR:", e);
+    }
+  }
+
+  toggleATR(forceState) {
+    this.showATR = typeof forceState === "boolean" ? forceState : !this.showATR;
+    if (!this.chart) return this.showATR;
+    if (this.showATR) {
+      this.ensureATRIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "pane_atr", name: "ATR" });
+      } catch (e) {
+        console.warn("removeIndicator ATR:", e);
+      }
+    }
+    // A pane was added/removed: re-budget the stack so the candle pane keeps
+    // its minimum height on short containers.
+    this.schedule();
+    return this.showATR;
+  }
+
+  ensureOIIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "OI", calcParams: [], paneId: "pane_oi" },
+        false,
+        { id: "pane_oi", height: 90 },
+      );
+    } catch (e) {
+      console.warn("createIndicator OI:", e);
+    }
+  }
+
+  toggleOIPane(forceState) {
+    this.showOIPane = typeof forceState === "boolean" ? forceState : !this.showOIPane;
+    if (!this.chart) return this.showOIPane;
+    if (this.showOIPane) {
+      this.ensureOIIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "pane_oi", name: "OI" });
+      } catch (e) {
+        console.warn("removeIndicator OI:", e);
+      }
+    }
+    this.schedule();
+    return this.showOIPane;
+  }
+
+  ensureOIDeltaIndicator() {
+    if (!this.chart) return;
+    try {
+      this.chart.createIndicator(
+        { name: "OIDELTA", calcParams: [], paneId: "pane_oi_delta" },
+        false,
+        { id: "pane_oi_delta", height: 80 },
+      );
+    } catch (e) {
+      console.warn("createIndicator OIDELTA:", e);
+    }
+  }
+
+  toggleOIDeltaPane(forceState) {
+    this.showOIDeltaPane = typeof forceState === "boolean" ? forceState : !this.showOIDeltaPane;
+    if (!this.chart) return this.showOIDeltaPane;
+    if (this.showOIDeltaPane) {
+      this.ensureOIDeltaIndicator();
+    } else {
+      try {
+        this.chart.removeIndicator({ paneId: "pane_oi_delta", name: "OIDELTA" });
+      } catch (e) {
+        console.warn("removeIndicator OIDELTA:", e);
+      }
+    }
+    this.schedule();
+    return this.showOIDeltaPane;
+  }
+
+  /** Latest open interest in the loaded series (0 when the pane has no OI). */
+  latestOI() {
+    const data = this.data || [];
+    for (let i = data.length - 1; i >= 0; i--) {
+      const value = Number(data[i]?.oi);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+    return 0;
+  }
+
+  /** Wilder ATR over the bars currently loaded, in the chart's own price units. */
+  getATR(period = 14) {
+    return atrValue(this.data || [], period);
   }
 
   ensureVWAPIndicator() {
@@ -4011,6 +4182,73 @@ export class CandleChart {
     }
   }
 
+  /**
+   * Draw the option-chain walls (max CE/PE OI and the biggest intraday OI
+   * build-up) as horizontal levels. They only make sense on the spot pane,
+   * where strike prices are the same scale as the plotted index.
+   */
+  setOIWalls(walls) {
+    this.oiWalls = Array.isArray(walls) ? walls : [];
+    this.refreshOIWalls();
+    return this.oiWalls;
+  }
+
+  toggleOIWalls(forceState) {
+    this.showOIWalls = typeof forceState === "boolean" ? forceState : !this.showOIWalls;
+    this.refreshOIWalls();
+    return this.showOIWalls;
+  }
+
+  clearOIWalls() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "oi_walls" });
+    } catch (_) {}
+    for (const id of this.oiWallOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.oiWallOverlayIds = [];
+  }
+
+  refreshOIWalls() {
+    this.clearOIWalls();
+    if (!this.showOIWalls || !this.chart || !this.oiWalls.length) return;
+    for (const wall of this.oiWalls) {
+      const isDelta = wall.metric === "doi";
+      const side = wall.side === "BOTH" ? "CE+PE" : wall.side;
+      const strike = Math.round(Number(wall.strike)).toLocaleString("en-IN");
+      const amount = fmtCompact(Math.abs(Number(wall.value) || 0));
+      const signed = `${Number(wall.value) > 0 ? "+" : Number(wall.value) < 0 ? "−" : ""}${amount}`;
+      const label = isDelta
+        ? `${side} ΔOI ${strike} · ${signed}`
+        : `${side} OI ${strike} · ${amount}`;
+      const color = wall.side === "BOTH" ? "#f0b429" : wall.side === "CE" ? "#f05a5a" : "#29b360";
+      const stack = this.oiWalls.filter((item) => item.strike === wall.strike);
+      const stackIndex = stack.indexOf(wall);
+      try {
+        const id = this.chart.createOverlay({
+          name: "oiWallLine",
+          groupId: "oi_walls",
+          points: [{ value: wall.strike }],
+          lock: true,
+          extendData: {
+            price: wall.strike,
+            label,
+            color,
+            metric: wall.metric,
+            depthVisible: Boolean(this.showDepth),
+            labelOffset: stack.length > 1 ? (stackIndex === 0 ? -8 : 8) : 0,
+          },
+        });
+        if (id) this.oiWallOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay oiWallLine:", e);
+      }
+    }
+  }
+
   refreshIndicatorOverlays() {
     const last = this.data[this.data.length - 1];
     const signature = `${this.data.length}:${last?.time || 0}:${last?.close || 0}`;
@@ -4182,6 +4420,7 @@ export class CandleChart {
     }
     // The max-pain tag sits beside the ladder; keep it in step with the toggle.
     this.refreshMaxPain();
+    this.refreshOIWalls();
     return this.showDepth;
   }
 
@@ -4738,58 +4977,115 @@ export class CandleChart {
     return null;
   }
 
+  /* ── Draft (pre-order) levels ─────────────────────────────
+   * The quick-order card opens on a chart click and parks ENTRY/TP/SL lines on
+   * the price axis. They are draggable before submission so the user can pick
+   * the exact prices, then press BUY/SELL. Everything here is local UI state.
+   */
+
   showOrderPreview(price) {
-    this.clearOrderPreview();
-    if (!this.chart || !Number.isFinite(price) || price <= 0) return;
-    try {
-      this.orderPreviewOverlayId = this.chart.createOverlay({
-        name: "orderPreviewLine",
-        groupId: "order_preview",
-        points: [{ value: price }],
-        lock: true,
-        extendData: { price },
-      });
-    } catch (_) {}
+    const value = Number(price);
+    this.draftLevels.entry = Number.isFinite(value) && value > 0 ? value : 0;
+    this.renderDraftLevels();
   }
 
   clearOrderPreview() {
-    if (!this.chart) return;
-    try {
-      this.chart.removeOverlay({ groupId: "order_preview" });
-    } catch (_) {}
-    if (this.orderPreviewOverlayId) {
-      try {
-        this.chart.removeOverlay({ id: this.orderPreviewOverlayId });
-      } catch (_) {}
-      this.orderPreviewOverlayId = null;
-    }
+    this.draftLevels.entry = 0;
+    this.renderDraftLevels();
   }
 
-  showTargetPreview(price, label = "") {
-    this.clearTargetPreview();
-    if (!this.chart || !Number.isFinite(price) || price <= 0) return;
-    try {
-      this.targetPreviewOverlayId = this.chart.createOverlay({
-        name: "targetPreviewLine",
-        groupId: "target_preview",
-        points: [{ value: price }],
-        lock: true,
-        extendData: { price, label },
-      });
-    } catch (_) {}
+  showTargetPreview(price) {
+    const value = Number(price);
+    this.draftLevels.target = Number.isFinite(value) && value > 0 ? value : 0;
+    this.renderDraftLevels();
   }
 
   clearTargetPreview() {
+    this.draftLevels.target = 0;
+    this.renderDraftLevels();
+  }
+
+  showStopPreview(price) {
+    const value = Number(price);
+    this.draftLevels.stop = Number.isFinite(value) && value > 0 ? value : 0;
+    this.renderDraftLevels();
+  }
+
+  clearStopPreview() {
+    this.draftLevels.stop = 0;
+    this.renderDraftLevels();
+  }
+
+  renderDraftLevels() {
+    if (!this.chart) return;
+    const { entry = 0, target = 0, stop = 0, side = "B" } = this.draftLevels || {};
+    const tick = 0.05;
+    const round = (value) => Math.round(Number(value) * 20) / 20;
+    const sideTag = String(side).toUpperCase() === "S" ? "S" : "B";
+    const levels = [];
+    if (Number.isFinite(entry) && entry > 0) {
+      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} · LIMIT` });
+    }
+    if (Number.isFinite(target) && target > 0) {
+      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)} · DRAFT` });
+    }
+    if (Number.isFinite(stop) && stop > 0) {
+      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)} · DRAFT` });
+    }
+
+    const key = levels.map((level) => level.label).join("|") + `|${sideTag}`;
+    if (key === this.draftLevelsKey && this.draftLevelOverlayIds.length === levels.length) return;
+
+    this.clearDraftOverlays();
+    this.draftLevelsKey = key;
+    for (const level of levels) {
+      // Clamp each drag inside its neighbours so an entry can never cross its
+      // own TP/SL. Zero means "no bound on that side".
+      let minPrice = tick;
+      let maxPrice = 0;
+      if (level.kind === "ENTRY") {
+        if (stop > 0) minPrice = round(stop + tick);
+        if (target > 0) maxPrice = round(target - tick);
+      } else if (level.kind === "TARGET") {
+        if (entry > 0) minPrice = round(entry + tick);
+      } else if (level.kind === "STOP") {
+        if (entry > 0) maxPrice = round(entry - tick);
+      }
+      try {
+        const id = this.chart.createOverlay({
+          name: "bracketLevelLine",
+          groupId: "draft_levels",
+          points: [{ value: level.price }],
+          lock: true,
+          extendData: {
+            source: "draft",
+            kind: level.kind,
+            price: level.price,
+            label: level.label,
+            side: sideTag,
+            draggable: true,
+            noRemove: true,
+            minPrice,
+            maxPrice: Math.max(0, maxPrice),
+          },
+        });
+        if (id) this.draftLevelOverlayIds.push(id);
+      } catch (_) {}
+    }
+  }
+
+  clearDraftOverlays() {
+    this.draftLevelsKey = "";
     if (!this.chart) return;
     try {
-      this.chart.removeOverlay({ groupId: "target_preview" });
+      this.chart.removeOverlay({ groupId: "draft_levels" });
     } catch (_) {}
-    if (this.targetPreviewOverlayId) {
+    for (const id of this.draftLevelOverlayIds) {
       try {
-        this.chart.removeOverlay({ id: this.targetPreviewOverlayId });
+        this.chart.removeOverlay({ id });
       } catch (_) {}
-      this.targetPreviewOverlayId = null;
     }
+    this.draftLevelOverlayIds = [];
   }
 
   /**
@@ -4956,34 +5252,6 @@ export class CandleChart {
     this.dayDividerOverlayIds = [];
   }
 
-  /** Stop-loss preview while composing a bracket in the quick order panel. */
-  showStopPreview(price, label = "") {
-    this.clearStopPreview();
-    if (!this.chart || !Number.isFinite(price) || price <= 0) return;
-    try {
-      this.stopPreviewOverlayId = this.chart.createOverlay({
-        name: "bracketLevelLine",
-        groupId: "stop_preview",
-        points: [{ value: price }],
-        lock: true,
-        extendData: { kind: "STOP", price, label: label || `SL ₹${price.toFixed(2)}`, side: "B" },
-      });
-    } catch (_) {}
-  }
-
-  clearStopPreview() {
-    if (!this.chart) return;
-    try {
-      this.chart.removeOverlay({ groupId: "stop_preview" });
-    } catch (_) {}
-    if (this.stopPreviewOverlayId) {
-      try {
-        this.chart.removeOverlay({ id: this.stopPreviewOverlayId });
-      } catch (_) {}
-      this.stopPreviewOverlayId = null;
-    }
-  }
-
   setData(data, { symbol = "", resetScale = true } = {}) {
     this.thetaDataReady = false;
     if (symbol && symbol !== this.currentSymbol) {
@@ -4993,6 +5261,9 @@ export class CandleChart {
       this.draggableBracketLevels = [];
       this.bracketLevelsKey = "";
       this.bracketData = null;
+      // Draft prices belong to the previous instrument, so drop them with it.
+      this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+      this.clearDraftOverlays();
       this.indicatorSignature = "";
       this.vpLastKey = "";
       try {
@@ -5028,6 +5299,7 @@ export class CandleChart {
     this.refreshSRLines();
     this.refreshFib();
     this.refreshMaxPain();
+    this.refreshOIWalls();
     this.refreshDayDividers();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
@@ -5134,7 +5406,7 @@ export class CandleChart {
 
   overlayHitTargets() {
     if (!this.chart) return [];
-    const groups = ["bracket_levels", "open_orders"];
+    const groups = ["bracket_levels", "open_orders", "draft_levels"];
     const targets = [];
     for (const groupId of groups) {
       let overlays = [];
@@ -5165,18 +5437,31 @@ export class CandleChart {
     });
     if (match) return match;
     return {
-      source: isOrder ? "order" : "bracket",
+      source: data.source || (isOrder ? "order" : "bracket"),
       orderId: isOrder ? data.orderId : undefined,
       bracketId: isOrder ? undefined : data.bracketId,
       kind: data.kind,
       price: Number(data.price),
       side: data.side,
+      minPrice: Number(data.minPrice) || 0,
+      maxPrice: Number(data.maxPrice) || 0,
     };
+  }
+
+  /** Keep a dragged level inside the bounds baked into its overlay data. */
+  clampLevelPrice(level, price) {
+    let next = Number(price);
+    if (!Number.isFinite(next)) return null;
+    const min = Number(level?.minPrice);
+    const max = Number(level?.maxPrice);
+    if (Number.isFinite(min) && min > 0) next = Math.max(min, next);
+    if (Number.isFinite(max) && max > 0) next = Math.min(max, next);
+    return next;
   }
 
   /** Only the drawn grab handle starts a drag; the price badge stays clickable. */
   hitTestLevel(clientX, clientY) {
-    if (!this.showTrades || !this.chart || !this.container) return null;
+    if (!this.chart || !this.container) return null;
     const rect = this.container.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
@@ -5185,14 +5470,18 @@ export class CandleChart {
       const gripX = Number(data.gripX);
       const gripY = Number(data.gripY);
       if (!Number.isFinite(gripX) || !Number.isFinite(gripY)) continue;
-      if (Math.abs(x - gripX) > 10 || Math.abs(y - gripY) > 10) continue;
+      // Draft levels only have the grip (no remove badge), so give them a
+      // slightly larger target — the card is hidden while dragging and the
+      // user is aiming at a single small handle.
+      const radius = data.source === "draft" ? 16 : 10;
+      if (Math.abs(x - gripX) > radius || Math.abs(y - gripY) > radius) continue;
       return this.resolveDraggableLevel(data);
     }
     return null;
   }
 
   hitTestRemoveBadge(clientX, clientY) {
-    if (!this.showTrades || !this.container || !this.chart) return null;
+    if (!this.container || !this.chart) return null;
     const rect = this.container.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
@@ -5282,6 +5571,7 @@ export class CandleChart {
       pointerId: event.pointerId,
       startY: event.clientY,
       moved: false,
+      started: false,
       price: Number(level.price),
     };
     this.suppressChartClickUntil = Date.now() + 600;
@@ -5308,11 +5598,23 @@ export class CandleChart {
     const rect = this.container.getBoundingClientRect();
     const y = Math.max(0, Math.min(rect.height - 1, event.clientY - rect.top));
     const x = Math.max(1, Math.min(rect.width - 1, rect.width / 2));
-    const price = this.getPriceFromPixel(y, x, false);
+    const price = this.clampLevelPrice(this.levelDrag.level, this.getPriceFromPixel(y, x, false));
     if (!Number.isFinite(price) || price <= 0) return;
     if (Math.abs(event.clientY - this.levelDrag.startY) >= 2) {
       this.levelDrag.moved = true;
       this.container.style.cursor = "grabbing";
+      if (!this.levelDrag.started) {
+        this.levelDrag.started = true;
+        // Only a real drag hides the quick-order card: a bare grip click would
+        // otherwise flicker it off and steal focus from the price input.
+        if (this.onLevelDragStart) {
+          try {
+            this.onLevelDragStart({ ...this.levelDrag.level });
+          } catch (error) {
+            console.warn("onLevelDragStart:", error);
+          }
+        }
+      }
     }
     this.levelDrag.price = price;
     this.updateLevelDragPreview(this.levelDrag.level, price);
@@ -5333,11 +5635,18 @@ export class CandleChart {
       } catch (_) {}
     }
     this.clearLevelDragPreview();
+    if (drag.started && this.onLevelDragEnd) {
+      try {
+        this.onLevelDragEnd({ ...drag.level });
+      } catch (error) {
+        console.warn("onLevelDragEnd:", error);
+      }
+    }
     if (event.type === "pointercancel") return;
     event.preventDefault();
     event.stopPropagation();
     if (!drag.moved) return;
-    const price = Math.round(Number(drag.price) * 20) / 20;
+    const price = this.clampLevelPrice(drag.level, Math.round(Number(drag.price) * 20) / 20);
     if (!Number.isFinite(price) || price <= 0) return;
     if (typeof this.onLevelDrop === "function") {
       try {
@@ -5676,6 +5985,11 @@ export class CandleChart {
     if (this.showRSI) names.push("RSI(14)");
     if (this.showDivergence) names.push("RSI divergence");
     if (this.showMomentum) names.push("Momentum candles");
+    if (this.showSupertrend) names.push("Supertrend(10/3)");
+    if (this.showATR) names.push("ATR(14)");
+    if (this.showOIPane) names.push("OI(contracts)");
+    if (this.showOIDeltaPane) names.push("ΔOI(per bar)");
+    if (this.showOIWalls && this.oiWalls?.length) names.push("OI walls");
     if (this.showTheta) names.push("Time decay (theta)");
     if (this.showSR) names.push("S/R levels");
     if (this.showAutoTrendlines) names.push("Auto trendlines");
@@ -5723,6 +6037,19 @@ export class CandleChart {
       const candles = Indicators.detectMomentumCandles(data, atr, { lookback: 150, multiplier: 1.5, maxBodyRatio: 0.6, max: 40 });
       out.push(`momentum_candles: ${candles.length}`);
     }
+    if (this.showSupertrend) {
+      const series = supertrendSeries(data, 10, 3);
+      append("supertrend_up", series.up);
+      append("supertrend_down", series.down);
+      out.push(`supertrend_trend: ${series.trend.map((value) => (value === 1 ? "up" : value === -1 ? "down" : "-")).join(",")}`);
+    }
+    if (this.showATR) append("atr(14)", atrSeries(data, 14));
+    if (this.showOIPane && data.some((candle) => Number(candle?.oi) > 0)) {
+      append("oi(contracts)", data.map((candle) => Number(candle?.oi) || NaN), 0);
+    }
+    if (this.showOIDeltaPane) {
+      append("oi_delta", oiDeltaSeries(data), 0);
+    }
     return out;
   }
 
@@ -5749,6 +6076,14 @@ export class CandleChart {
       if (Number.isFinite(meta.putOIWall)) bits.push(`put_oi_wall=${fmtCompact(meta.putOIWall)}`);
       if (Number.isFinite(meta.pcr)) bits.push(`pcr=${fmtCompact(meta.pcr)}`);
       out.push(bits.join(" | "));
+    }
+
+    if (this.showOIWalls && this.oiWalls?.length) {
+      out.push(
+        `oi_walls: ${this.oiWalls
+          .map((wall) => `${wall.side}${wall.metric === "doi" ? "_doi" : "_oi"}=${fmtPrice(wall.strike)}(${fmtCompact(wall.value)})`)
+          .join(", ")}`
+      );
     }
 
     if (this.showSR && data.length >= 5) {
@@ -5859,6 +6194,24 @@ export class CandleChart {
       }
     }
 
+    if (this.showOIPane || this.showOIDeltaPane) {
+      const latestOI = this.latestOI();
+      const deltas = oiDeltaSeries(this.data);
+      let lastDelta = NaN;
+      for (let i = deltas.length - 1; i >= 0; i--) {
+        if (Number.isFinite(deltas[i])) {
+          lastDelta = deltas[i];
+          break;
+        }
+      }
+      if (latestOI > 0) {
+        const deltaText = Number.isFinite(lastDelta)
+          ? ` (last bar ΔOI ${lastDelta >= 0 ? "+" : ""}${fmtCompact(lastDelta)})`
+          : "";
+        parts.push(`OI ${fmtCompact(latestOI)}${deltaText}`);
+      }
+    }
+
     const tail = visible.slice(-10);
     if (tail.length >= 4) {
       const half = Math.floor(tail.length / 2);
@@ -5921,11 +6274,14 @@ export class CandleChart {
 
     lines.push("## Candles (visible, time IST)");
     lines.push("```csv");
-    lines.push("time_ist,open,high,low,close,volume");
+    const visibleHasOI = visible.some((candle) => Number(candle?.oi) > 0);
+    lines.push(`time_ist,open,high,low,close,volume${visibleHasOI ? ",oi" : ""}`);
     for (const candle of visible) {
+      const oiCell = Number(candle?.oi) > 0 ? String(Math.round(Number(candle.oi))) : "-";
       lines.push(
         `${formatIstDateTime(candle.time)},${fmtPrice(candle.open)},${fmtPrice(candle.high)},`
         + `${fmtPrice(candle.low)},${fmtPrice(candle.close)},${fmtCompact(candle.volume)}`
+        + `${visibleHasOI ? `,${oiCell}` : ""}`
       );
     }
     lines.push("```");
@@ -5960,6 +6316,7 @@ export class CandleChart {
     this.refreshSRLines();
     this.refreshFib();
     this.refreshMaxPain();
+    this.refreshOIWalls();
     this.refreshAutoTrendlines();
     this.refreshPatterns();
     this.refreshDepth();
@@ -6115,6 +6472,13 @@ export class CandleChart {
     }
   }
 
+  /** True when the sizing pass gave this pane a visible height (or has not run yet). */
+  paneIsUsable(paneId) {
+    const record = this.paneSizing?.get(paneId);
+    if (!record) return true;
+    return Number(record.applied) > 0;
+  }
+
   /** Re-allocate the canvas backing stores when the device pixel ratio changes. */
   watchPixelRatio() {
     this.disposePixelRatioWatch();
@@ -6221,8 +6585,9 @@ export class CandleChart {
       this.container.removeEventListener("pointercancel", this.levelPointerHandlers.up, true);
       this.levelPointerHandlers = null;
     }
-    this.clearOrderPreview();
-    this.clearTargetPreview();
+    this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+    this.clearDraftOverlays();
+    this.clearOIWalls();
     this.clearOpenOrders();
     this.clearTradeOverlays();
     this.clearPositionOverlay();

@@ -953,6 +953,19 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
   display: none;
 }
 
+/* Reserved for level dragging: the card is large, and the user needs the two
+   inches of plot it covers while choosing a price. */
+.chart-quick-order.cqo-drag-hidden {
+  display: none;
+}
+
+.cqo-hint {
+  color: var(--muted-2, #8292a2);
+  font-size: 9.5px;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+}
+
 @keyframes cqo-appear {
   from { opacity: 0; transform: scale(0.96) translateY(2px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
@@ -1333,6 +1346,35 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 }
 .chain-ltp { font-weight: 650; }
 .chain-volume { color: var(--muted-2); font-size: 8px; line-height: 1; }
+.chain-oi {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--muted-2);
+  font-weight: 600;
+}
+.chain-oi-track {
+  display: block;
+  width: 30px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.chain-oi-track i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+}
+.chain-oi b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.chain-oi.up { color: var(--green); }
+.chain-oi.down { color: var(--red); }
 .chain-row .cell-ce { color: #c8e6fa; }
 .chain-row .cell-pe { color: #f2d4ad; }
 .chain-row .cell-ce:hover { background: color-mix(in srgb, var(--call) 10%, var(--panel)); }
@@ -3967,6 +4009,14 @@ dialog.modal-backdrop::backdrop {
     font-size: 9px !important;
     color: #8892b0 !important;
     margin-top: 1px !important;
+  }
+  .chain-oi {
+    font-size: 8.5px;
+    gap: 3px;
+  }
+  .chain-oi-track {
+    width: 22px;
+    height: 2.5px;
   }
 
   /* Concept 1 Bottom Navigation Bar (4 Tab Dock) */

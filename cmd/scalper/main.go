@@ -177,7 +177,7 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		}()
 	}
 	quotes := market.NewQuotesClient(consumerKey, log)
-	marketService, err := market.NewService(cfg, scripManager, quotes)
+	marketService, err := market.NewService(cfg, scripManager, quotes, market.WithOIBaselineStore(st))
 	if err != nil {
 		return fmt.Errorf("configure live market data: %w", err)
 	}
