@@ -258,6 +258,38 @@ else
   success "Compiled ${TARGET_BIN} (${BIN_SIZE})"
 fi
 
+# Build a Caddy binary carrying the rate-limit plugin so the edge can police
+# floods before they reach the Go process. Any failure here is non-fatal: the
+# server falls back to the stock Caddy download and the deployed Caddyfile
+# omits the rate_limit blocks (the app's own per-IP limiter still applies).
+# xcaddy must run natively (GOOS/GOARCH would otherwise recompile the tool
+# itself for the target), so it is installed first and only the inner build
+# is cross-compiled.
+CADDY_PLUGINS="${CADDY_PLUGINS:-github.com/mholt/caddy-ratelimit}"
+CADDY_VERSION="${CADDY_VERSION:-v2.11.9}"
+CUSTOM_CADDY_BIN=""
+CUSTOM_CADDY_INSTALLED=0
+if [[ "${SKIP_CADDY_BUILD:-0}" != "1" ]] && command -v go >/dev/null 2>&1 && [[ -n "${CADDY_PLUGINS}" ]]; then
+  info "Building Caddy ${CADDY_VERSION} (linux/${REMOTE_ARCH}) with plugins: ${CADDY_PLUGINS}"
+  XCADDY_BIN="$(go env GOPATH)/bin/xcaddy"
+  if ! command -v xcaddy >/dev/null 2>&1 && [ ! -x "${XCADDY_BIN}" ]; then
+    go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+  fi
+  XCADDY_CMD="$(command -v xcaddy || echo "${XCADDY_BIN}")"
+  CADDY_WITH_ARGS=()
+  for plugin in ${CADDY_PLUGINS}; do CADDY_WITH_ARGS+=(--with "${plugin}"); done
+  if env GOOS=linux GOARCH="${REMOTE_ARCH}" CGO_ENABLED=0 \
+    "${XCADDY_CMD}" build "${CADDY_VERSION}" "${CADDY_WITH_ARGS[@]}" \
+    --output "bin/caddy-linux-${REMOTE_ARCH}"; then
+    CUSTOM_CADDY_BIN="bin/caddy-linux-${REMOTE_ARCH}"
+    success "Built ${CUSTOM_CADDY_BIN} ($(ls -lh "${CUSTOM_CADDY_BIN}" | awk '{print $5}'))"
+  else
+    warn "Custom Caddy build failed; the server will use the stock binary (no edge rate limiting)."
+  fi
+else
+  info "Skipping custom Caddy build (no Go toolchain or SKIP_CADDY_BUILD=1); using stock Caddy."
+fi
+
 # ── Step 2: Ensure Remote Directory Exists ─────────────────────────────────
 info "Step 3/5: Preparing remote directory ${REMOTE_DIR}..."
 ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "mkdir -p ${REMOTE_DIR}"
@@ -268,6 +300,16 @@ info "Step 4/5: Uploading binary and configuration..."
 # Upload binary safely via temp file and atomic move
 scp "${SCP_OPTS[@]}" "${TARGET_BIN}" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/scalper.tmp"
 ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "chmod +x ${REMOTE_DIR}/scalper.tmp && mv -f ${REMOTE_DIR}/scalper.tmp ${REMOTE_DIR}/scalper && (sudo chcon -t bin_t ${REMOTE_DIR}/scalper 2>/dev/null || true)"
+
+# Upload the plugin-enabled Caddy when one was built. The swap is atomic and
+# the service restart in the setup step picks the new binary up.
+if [[ -n "${CUSTOM_CADDY_BIN}" && -f "${CUSTOM_CADDY_BIN}" ]]; then
+  info "Uploading custom Caddy binary (${CUSTOM_CADDY_BIN})..."
+  scp "${SCP_OPTS[@]}" "${CUSTOM_CADDY_BIN}" "${USER_NAME}@${TARGET_IP}:${REMOTE_DIR}/caddy.tmp"
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${TARGET_IP}" "chmod +x ${REMOTE_DIR}/caddy.tmp && sudo mv -f ${REMOTE_DIR}/caddy.tmp /usr/local/bin/caddy && (sudo chcon -t bin_t /usr/local/bin/caddy 2>/dev/null || true)"
+  CUSTOM_CADDY_INSTALLED=1
+  success "Custom Caddy installed at /usr/local/bin/caddy."
+fi
 
 # Upload config if present locally; otherwise ensure remote config.yaml exists
 if [[ -f "${LOCAL_CONFIG}" ]]; then
@@ -419,26 +461,63 @@ elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "St
   sudo ufw allow 443/tcp >/dev/null 2>&1 || true
 fi
 
-# 4. Install Caddy reverse proxy with automatic TLS if not already installed
+# 4. Install Caddy reverse proxy with automatic TLS if not already installed.
+# The version here only matters when no custom Caddy binary was uploaded:
+# it must stay in sync with CADDY_VERSION at the top of the script so both
+# paths ship the same release.
 if ! command -v caddy >/dev/null 2>&1 && [ ! -f /usr/local/bin/caddy ]; then
-  echo ">>> [Caddy Installation] Caddy not found on remote server. Installing Caddy v2.8.4..."
+  echo ">>> [Caddy Installation] Caddy not found on remote server. Installing Caddy v2.11.9..."
   ARCH="\$(uname -m)"
   case "\${ARCH}" in
     x86_64) CADDY_ARCH="amd64" ;;
     aarch64|arm64) CADDY_ARCH="arm64" ;;
     *) CADDY_ARCH="amd64" ;;
   esac
-  curl -sSL "https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_\${CADDY_ARCH}.tar.gz" | sudo tar -xz -C /tmp caddy
+  curl -sSL "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_\${CADDY_ARCH}.tar.gz" | sudo tar -xz -C /tmp caddy
   sudo mv /tmp/caddy /usr/local/bin/caddy
   sudo chmod +x /usr/local/bin/caddy
   echo ">>> [Caddy Installation] Successfully installed /usr/local/bin/caddy."
 fi
 
-# 5. Configure /etc/caddy/Caddyfile with automatic TLS and WebSocket reverse proxy
+# 5. Configure /etc/caddy/Caddyfile with automatic TLS and WebSocket reverse proxy.
+# Two variants: the plugin-enabled binary gets edge rate limiting; the stock
+# fallback gets only the body cap, because its parser rejects rate_limit.
 sudo mkdir -p /etc/caddy
-CADDYFILE_CONTENT="${CADDY_DOMAIN} {
+if [ "${CUSTOM_CADDY_INSTALLED}" = "1" ]; then
+  CADDYFILE_CONTENT="${CADDY_DOMAIN} {
+    # Edge flood protection, one bucket per client IP (IPv6 grouped by /64 so
+    # address cycling inside a prefix cannot bypass the zone). The app keeps
+    # its own finer limiter behind this.
+    rate_limit {
+        zone api {
+            key         {remote_host}
+            events      240
+            window      1m
+            ipv6_prefix 64
+        }
+        zone auth {
+            match {
+                path /api/auth/*
+            }
+            key         {remote_host}
+            events      20
+            window      1m
+            ipv6_prefix 64
+        }
+    }
+    request_body {
+        max_size 2MB
+    }
     reverse_proxy 127.0.0.1:8080
 }"
+else
+  CADDYFILE_CONTENT="${CADDY_DOMAIN} {
+    request_body {
+        max_size 2MB
+    }
+    reverse_proxy 127.0.0.1:8080
+}"
+fi
 CURRENT_CADDYFILE="\$(sudo cat /etc/caddy/Caddyfile 2>/dev/null || true)"
 if [ "\${CURRENT_CADDYFILE}" != "\${CADDYFILE_CONTENT}" ]; then
   echo ">>> [Caddy Config] Configuring /etc/caddy/Caddyfile for ${CADDY_DOMAIN}..."
@@ -469,12 +548,18 @@ WantedBy=multi-user.target
 CADDY_EOF
 fi
 
-# 7. Reload and start/reload Caddy
+# 7. Reload and start/reload Caddy. A swapped binary needs a full restart;
+# reload keeps the old process running.
 sudo systemctl daemon-reload
 sudo systemctl enable caddy >/dev/null 2>&1
 if systemctl is-active --quiet caddy; then
-  echo ">>> [Caddy Service] Reloading Caddy..."
-  sudo systemctl reload caddy 2>/dev/null || sudo systemctl restart caddy
+  if [ "${CUSTOM_CADDY_INSTALLED}" = "1" ]; then
+    echo ">>> [Caddy Service] Restarting Caddy to activate the new binary..."
+    sudo systemctl restart caddy
+  else
+    echo ">>> [Caddy Service] Reloading Caddy..."
+    sudo systemctl reload caddy 2>/dev/null || sudo systemctl restart caddy
+  fi
 else
   echo ">>> [Caddy Service] Starting Caddy..."
   sudo systemctl start caddy
