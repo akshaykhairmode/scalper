@@ -151,7 +151,9 @@ type Trading struct {
 
 // Paper configures the server-side paper trading account.
 type Paper struct {
-	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// StartingBalance is the paper account's capital/margin. It seeds the
+	// ledger at boot and can be updated live from the settings page.
 	StartingBalance float64 `yaml:"starting_balance" json:"starting_balance"`
 	SlippageTicks   float64 `yaml:"slippage_ticks" json:"slippage_ticks"`
 	// ShortMarginPct is the percentage of notional reserved for short paper

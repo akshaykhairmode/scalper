@@ -61,6 +61,36 @@ func newPaperTestServer(t *testing.T) (*Server, *store.Store) {
 	return s, st
 }
 
+func TestPaperMarginRuntimeUpdate(t *testing.T) {
+	s, st := newPaperTestServer(t)
+	defer s.Close()
+
+	oldCfg := s.configSnapshot()
+	newCfg := oldCfg
+	newCfg.Trading.Paper.StartingBalance = 250000
+	s.applyPaperRuntimeConfig(context.Background(), oldCfg, newCfg)
+
+	if got := s.paperExec.Limits().Total; got != 250000 {
+		t.Fatalf("paper total margin = %v, want 250000", got)
+	}
+	acct, err := st.GetPaperAccount(context.Background())
+	if err != nil {
+		t.Fatalf("GetPaperAccount: %v", err)
+	}
+	if acct.StartingBalance != 250000 {
+		t.Fatalf("persisted starting balance = %v, want 250000", acct.StartingBalance)
+	}
+
+	// Saving an unrelated setting must not rewrite the account balance.
+	if err := s.paperExec.SetStartingBalance(context.Background(), 300000); err != nil {
+		t.Fatalf("SetStartingBalance: %v", err)
+	}
+	s.applyPaperRuntimeConfig(context.Background(), newCfg, newCfg)
+	if got := s.paperExec.Limits().Total; got != 300000 {
+		t.Fatalf("paper total margin after unrelated save = %v, want 300000", got)
+	}
+}
+
 func TestPaperOrderAndBooksWithoutBrokerSession(t *testing.T) {
 	s, _ := newPaperTestServer(t)
 	defer s.Close()

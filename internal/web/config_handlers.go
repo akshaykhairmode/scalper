@@ -380,7 +380,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	s.applyBracketExchangeStopConfig(newCfg)
-	s.applyPaperRuntimeConfig(newCfg)
+	s.applyPaperRuntimeConfig(r.Context(), oldCfg, newCfg)
 
 	// These run outside configMu: evaluator.ScannerStatus() calls back into
 	// Server.configSnapshot(), which would self-deadlock if the write lock were held.

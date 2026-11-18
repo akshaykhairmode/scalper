@@ -140,6 +140,28 @@ func (e *Executor) SetShortMarginPct(v float64) {
 	e.mu.Unlock()
 }
 
+// SetStartingBalance updates the paper account's capital at runtime and
+// persists it. Realised P&L and open positions are preserved. Values of zero
+// or less are ignored; the boot-time default applies on the next start.
+func (e *Executor) SetStartingBalance(ctx context.Context, v float64) error {
+	if v <= 0 {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.account.StartingBalance == v {
+		return nil
+	}
+	acct := e.account
+	acct.StartingBalance = v
+	acct.UpdatedAt = e.now()
+	if err := e.store.SavePaperAccount(ctx, acct); err != nil {
+		return fmt.Errorf("paper: update starting balance: %w", err)
+	}
+	e.account = acct
+	return nil
+}
+
 func (e *Executor) restore(ctx context.Context) error {
 	openOrders, err := e.store.ListOpenPaperOrders(ctx)
 	if err != nil {

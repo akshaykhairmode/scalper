@@ -178,12 +178,17 @@ func (s *Server) paperQuoteSource(ctx context.Context, key string) (paper.Quote,
 }
 
 // applyPaperRuntimeConfig applies settings that can change without a restart.
-func (s *Server) applyPaperRuntimeConfig(cfg config.Config) {
+func (s *Server) applyPaperRuntimeConfig(ctx context.Context, oldCfg, newCfg config.Config) {
 	if s.paperExec != nil {
-		s.paperExec.SetSlippage(cfg.Trading.Paper.SlippageTicks)
-		s.paperExec.SetShortMarginPct(cfg.Trading.Paper.ShortMarginPct)
+		s.paperExec.SetSlippage(newCfg.Trading.Paper.SlippageTicks)
+		s.paperExec.SetShortMarginPct(newCfg.Trading.Paper.ShortMarginPct)
+		if newCfg.Trading.Paper.StartingBalance != oldCfg.Trading.Paper.StartingBalance {
+			if err := s.paperExec.SetStartingBalance(ctx, newCfg.Trading.Paper.StartingBalance); err != nil {
+				s.log.Error("failed to update paper account margin", "event", "paper_margin_update_failed", "error", err)
+			}
+		}
 	}
-	s.applyPaperExchangeStopConfig(cfg)
+	s.applyPaperExchangeStopConfig(newCfg)
 }
 
 // reconcilePaperBrackets replays restored paper order state into the bracket

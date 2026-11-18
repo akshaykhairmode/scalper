@@ -475,6 +475,30 @@ func TestLimitsIncludeUnrealizedPnL(t *testing.T) {
 	}
 }
 
+func TestSetStartingBalanceUpdatesLimitsAndStore(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	ex := newTestExecutor(t, store)
+
+	if err := ex.SetStartingBalance(ctx, 250000); err != nil {
+		t.Fatalf("SetStartingBalance: %v", err)
+	}
+	if got := ex.Limits().Total; got != 250000 {
+		t.Fatalf("limits total = %v, want 250000", got)
+	}
+	if got := store.account.StartingBalance; got != 250000 {
+		t.Fatalf("stored starting balance = %v, want 250000", got)
+	}
+
+	// Non-positive values are ignored so the boot-time default still applies.
+	if err := ex.SetStartingBalance(ctx, 0); err != nil {
+		t.Fatalf("SetStartingBalance(0): %v", err)
+	}
+	if got := ex.Limits().Total; got != 250000 {
+		t.Fatalf("limits total after zero = %v, want 250000", got)
+	}
+}
+
 func TestIOCLimitCancelsWhenNotMarketable(t *testing.T) {
 	ctx := context.Background()
 	ex := newTestExecutor(t, newFakeStore())

@@ -160,7 +160,7 @@ trading:
   # ticks; no Kotak order API is called. SL/TP still run in the bracket engine.
   paper:
     enabled: true
-    starting_balance: 500000
+    starting_balance: 500000     # paper account margin; editable live from settings
     slippage_ticks: 0            # rupees added to market buys / subtracted from sells
     short_margin_pct: 20         # percent of notional reserved for short positions
     confirm_orders: false

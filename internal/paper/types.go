@@ -85,6 +85,9 @@ type Quote struct {
 // Store persists the paper account and books.
 type Store interface {
 	EnsurePaperAccount(ctx context.Context, startingBalance float64) (Account, error)
+	// SavePaperAccount persists an updated ledger, including a margin change
+	// made from the settings page.
+	SavePaperAccount(ctx context.Context, a Account) error
 	CreatePaperOrder(ctx context.Context, o Order) error
 	UpdatePaperOrder(ctx context.Context, o Order) error
 	GetPaperOrder(ctx context.Context, id string) (*Order, error)
