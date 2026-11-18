@@ -64,6 +64,7 @@
       <button type="button" class="ghost small button" id="pair-device-button" title="Pair Mobile Device (QR Code)">Pair Device</button>
       <button type="button" class="ghost small button" id="register-device-button" title="Enroll Biometrics / Passkey (Touch ID, Face ID)">Register Device</button>
       <button type="button" class="ghost small button" id="ai-signals-button" title="View AI Scalp Signals &amp; Performance Win Rate"><span aria-hidden="true">🤖</span> <span class="ai-label">AI Signals</span> <span class="badge-pill" id="ai-winrate-chip">--%</span> <span class="badge-pill" id="ai-header-timer" style="font-family:var(--mono, monospace); font-variant-numeric:tabular-nums; margin-left:2px;" title="Next periodic AI scanner execution">⏱ --:--</span></button>
+      <button type="button" class="ghost small button" id="signal-backtest-button" title="Replay recorded sessions through the CE/PE signal engine and measure its hit rate">📊 <span class="ai-label">Signal Backtest</span></button>
       <a href="/settings" target="_blank" rel="noopener noreferrer" class="ghost small button" id="settings-button" title="View &amp; Edit Settings (opens in new tab)" style="text-decoration:none; display:inline-flex; align-items:center; color:inherit;">Settings</a>
       <span class="badge live" id="mode-badge">{{.Mode}}</span>
       <span class="clock" id="clock">{{.Now}}</span>
@@ -222,7 +223,7 @@
       <article class="pane" data-pane="underlying" data-pane-alias="spot">
         <div class="pane-head">
           <div class="pane-id">
-            <div class="pane-title-row"><span class="pane-title" id="spot-title">UNDERLYING</span></div>
+            <div class="pane-title-row"><span class="pane-title" id="spot-title">UNDERLYING</span><span class="pane-vp-chip" id="spot-signal-chip" role="status" hidden></span></div>
             <span class="pane-sub" id="spot-sub">spot index</span>
           </div>
           <div class="pane-quote">
@@ -677,6 +678,76 @@
     </div>
   </dialog>
 
+  <!-- Signal engine backtest modal: replays recorded sessions through the
+       deterministic engine so its suggestions can be audited before trading. -->
+  <dialog class="modal-backdrop" id="signal-backtest-modal" closedby="any" aria-labelledby="signal-backtest-title">
+    <div class="modal ai-signals-dialog" style="max-width:960px; width:95vw;">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">DETERMINISTIC ENGINE · REPLAY</span>
+          <h2 id="signal-backtest-title">📊 CE/PE Signal Engine — Backtest &amp; Attribution</h2>
+        </div>
+        <button type="button" class="icon-button" id="signal-backtest-close" aria-label="Close signal backtest modal">×</button>
+      </div>
+
+      <div class="ai-signals-content" style="padding:16px;">
+        <div id="signal-backtest-error" style="display:none; margin:0 0 10px; font-size:11px; line-height:1.45; color:var(--red,#ef4444); word-break:break-word;"></div>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:14px; align-items:end;">
+          <label style="display:flex; flex-direction:column; gap:4px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted,#888); font-weight:700;">
+            Days back
+            <input type="number" id="sb-days" min="1" max="30" value="10" style="padding:6px 8px; border-radius:4px; border:1px solid var(--border,#333); background:rgba(255,255,255,0.03); color:inherit;">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted,#888); font-weight:700;">
+            Max hold (5m bars)
+            <input type="number" id="sb-hold" min="1" max="48" value="12" style="padding:6px 8px; border-radius:4px; border:1px solid var(--border,#333); background:rgba(255,255,255,0.03); color:inherit;">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted,#888); font-weight:700;">
+            Lot size
+            <input type="number" id="sb-lot" min="1" max="1000" value="75" style="padding:6px 8px; border-radius:4px; border:1px solid var(--border,#333); background:rgba(255,255,255,0.03); color:inherit;">
+          </label>
+          <div>
+            <button type="button" class="accent small" id="signal-backtest-run">▶ Run Backtest</button>
+            <span id="signal-backtest-scope" style="display:inline-block; margin-left:8px; font-size:11px; color:var(--text-muted,#888); font-family:var(--mono, monospace);"></span>
+          </div>
+        </div>
+
+        <div class="ai-metrics-grid" id="signal-backtest-metrics" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; margin-bottom:14px;"></div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+          <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Per-Leg Attribution</h3>
+          <h3 style="font-size:13px; text-transform:uppercase; margin:0; letter-spacing:0.05em; color:var(--text-muted,#888);">Signals</h3>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div id="signal-backtest-legs" style="flex:1 1 260px; max-height:180px; overflow-y:auto; border:1px solid var(--border,#333); border-radius:6px; font-size:12px;"></div>
+          <div id="signal-backtest-table-wrap" style="flex:3 1 480px; max-height:180px; overflow-y:auto; border:1px solid var(--border,#333); border-radius:6px;">
+            <table style="width:100%; border-collapse:collapse; font-size:12px;" id="signal-backtest-table">
+              <thead>
+                <tr style="text-align:left; background:rgba(255,255,255,0.02); border-bottom:1px solid var(--border,#333); color:var(--text-muted,#888);">
+                  <th style="padding:7px 8px;">Time</th>
+                  <th style="padding:7px 8px;">Action</th>
+                  <th style="padding:7px 8px;">Score</th>
+                  <th style="padding:7px 8px;">Entry ₹</th>
+                  <th style="padding:7px 8px;">Exit ₹</th>
+                  <th style="padding:7px 8px;">P&amp;L / lot</th>
+                  <th style="padding:7px 8px;">Outcome</th>
+                </tr>
+              </thead>
+              <tbody id="signal-backtest-tbody">
+                <tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted,#888);">Configure a range and press Run Backtest.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border,#333); padding:12px 16px;">
+        <span style="font-size:11px; color:var(--text-muted,#888);">Replays the identical engine over stored 5-minute candles — same code path, not pixel-identical numbers: indicator seeds shift with the data window, so treat this as the audit record. Chain-context legs only cover sessions recorded by the chain snapshot recorder.</span>
+        <button type="button" class="primary small" id="signal-backtest-close-btn">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Serve mode lock modal -->
   {{if .ServeLocked}}
   <dialog class="modal-backdrop" id="serve-auth-modal" closedby="none" aria-labelledby="serve-auth-title" open>
@@ -1026,6 +1097,10 @@
         <label class="pattern-popover-item" title="Volume Profile + Buy/Sell zones (CE/PE only)">
           <input type="checkbox" id="cs-volume-profile">
           <span>Volume Profile <em>(CE/PE)</em></span>
+        </label>
+        <label class="pattern-popover-item" title="Deterministic CE/PE confluence engine: SuperTrend, EMA structure, futures VWAP + volume + OI buildup, RSI, patterns, premium ΔOI and chain context, evaluated on closed 5-minute bars">
+          <input type="checkbox" id="cs-signals">
+          <span>CE/PE Signal Engine <em>(spot)</em></span>
         </label>
       </div>
 

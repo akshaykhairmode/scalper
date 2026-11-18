@@ -189,6 +189,129 @@ func TestParseMCXCommodityOptions(t *testing.T) {
 	}
 }
 
+func indexFutureCSVRow(segment, name, trd, token string, expiry int64) string {
+	return csvRow(map[int]string{
+		0: token, 2: segment, 3: "FUTIDX", 4: name, 5: trd, 16: "75", 17: fmt.Sprint(expiry), 20: "-1",
+	})
+}
+
+func TestParseNSEIndexFutures(t *testing.T) {
+	// NSE epochs sit ten years behind; the trdSymbol month disambiguates.
+	novExpiry := time.Date(2016, 11, 26, 20, 0, 0, 0, ist).Unix()
+	decExpiry := time.Date(2016, 12, 31, 20, 0, 0, 0, ist).Unix()
+	octExpiry := time.Date(2015, 10, 30, 20, 0, 0, 0, ist).Unix()
+	body := strings.Join([]string{
+		testHeader,
+		// Plain-underlying naming shape.
+		indexFutureCSVRow(SegmentNSEFO, "NIFTY", "NIFTY26NOVFUT", "48999", novExpiry),
+		// Contract-shaped naming for the farther December contract: nearer wins.
+		indexFutureCSVRow(SegmentNSEFO, "NIFTY26DECFUT", "NIFTY26DECFUT", "49000", decExpiry),
+		// A NIFTYNEXT50 contract must not be claimed by the NIFTY underlying.
+		indexFutureCSVRow(SegmentNSEFO, "NIFTYNEXT5026NOVFUT", "NIFTYNEXT5026NOVFUT", "49001", novExpiry),
+		// Stock futures are FUTSTK and stay skipped.
+		csvRow(map[int]string{0: "49002", 2: SegmentNSEFO, 3: "FUTSTK", 4: "RELIANCE",
+			5: "RELIANCE26NOVFUT", 16: "500", 17: fmt.Sprint(novExpiry), 20: "-1"}),
+		// An already-expired contract is dropped.
+		indexFutureCSVRow(SegmentNSEFO, "NIFTY", "NIFTY25OCTFUT", "49003", octExpiry),
+	}, "\n")
+
+	data, err := ParseSegment(SegmentNSEFO, strings.NewReader(body), ParseConfig{
+		Underlyings:  testUnderlyings(),
+		ExpiryOffset: ExpiryOffsetFor(SegmentNSEFO),
+		Now:          time.Date(2026, 11, 18, 10, 0, 0, 0, ist),
+	})
+	if err != nil {
+		t.Fatalf("ParseSegment: %v", err)
+	}
+	if len(data.Spots) != 1 {
+		t.Fatalf("spots = %+v", data.Spots)
+	}
+	spot := data.Spots[0]
+	if spot.InstrumentKey != "nse_fo|NIFTY" {
+		t.Fatalf("key = %q, want nse_fo|NIFTY", spot.InstrumentKey)
+	}
+	if spot.ExchangeSegment != SegmentNSEFO || spot.Symbol != "NIFTY26NOVFUT" {
+		t.Fatalf("spot = %+v", spot)
+	}
+	if spot.DisplayName != "NIFTY FUT" || spot.PSymbol != "48999" {
+		t.Fatalf("spot = %+v", spot)
+	}
+	if data.Rows != 5 {
+		t.Fatalf("rows = %d, want 5", data.Rows)
+	}
+	// NIFTYNEXT50, the stock future and the expired contract are skipped; the
+	// farther December duplicate is silently superseded by the nearer contract.
+	if data.Skipped != 3 {
+		t.Fatalf("skipped = %d, want 3", data.Skipped)
+	}
+}
+
+func TestParseIndexFuturesLaterNearerContractReplacesFarther(t *testing.T) {
+	decExpiry := time.Date(2016, 12, 31, 20, 0, 0, 0, ist).Unix()
+	novExpiry := time.Date(2016, 11, 26, 20, 0, 0, 0, ist).Unix()
+	body := strings.Join([]string{
+		testHeader,
+		indexFutureCSVRow(SegmentNSEFO, "NIFTY", "NIFTY26DECFUT", "49000", decExpiry),
+		indexFutureCSVRow(SegmentNSEFO, "NIFTY", "NIFTY26NOVFUT", "48999", novExpiry),
+	}, "\n")
+
+	data, err := ParseSegment(SegmentNSEFO, strings.NewReader(body), ParseConfig{
+		Underlyings:  testUnderlyings(),
+		ExpiryOffset: ExpiryOffsetFor(SegmentNSEFO),
+		Now:          time.Date(2026, 11, 18, 10, 0, 0, 0, ist),
+	})
+	if err != nil {
+		t.Fatalf("ParseSegment: %v", err)
+	}
+	if len(data.Spots) != 1 {
+		t.Fatalf("spots = %+v", data.Spots)
+	}
+	spot := data.Spots[0]
+	if spot.Symbol != "NIFTY26NOVFUT" || spot.PSymbol != "48999" {
+		t.Fatalf("spot = %+v, want the nearer November contract", spot)
+	}
+}
+
+func TestParseBSEIndexFutures(t *testing.T) {
+	// BSE epochs carry no offset; the raw expiry already matches the symbol.
+	expiry := time.Date(2026, 11, 26, 20, 0, 0, 0, ist).Unix()
+	body := strings.Join([]string{
+		testHeader,
+		indexFutureCSVRow(SegmentBSEFO, "SENSEX", "SENSEX26NOVFUT", "91001", expiry),
+	}, "\n")
+
+	data, err := ParseSegment(SegmentBSEFO, strings.NewReader(body), ParseConfig{
+		Underlyings:  testUnderlyings(),
+		ExpiryOffset: ExpiryOffsetFor(SegmentBSEFO),
+		Now:          time.Date(2026, 11, 18, 10, 0, 0, 0, ist),
+	})
+	if err != nil {
+		t.Fatalf("ParseSegment: %v", err)
+	}
+	if len(data.Spots) != 1 {
+		t.Fatalf("spots = %+v", data.Spots)
+	}
+	spot := data.Spots[0]
+	if spot.InstrumentKey != "bse_fo|SENSEX" || spot.PSymbol != "91001" {
+		t.Fatalf("spot = %+v", spot)
+	}
+}
+
+func TestFutureExpiryMonth(t *testing.T) {
+	if month, ok := FutureExpiryMonth("NIFTY26NOVFUT"); !ok || month != "2026-11" {
+		t.Fatalf("FutureExpiryMonth(NIFTY26NOVFUT) = %q, %v", month, ok)
+	}
+	if month, ok := FutureExpiryMonth("SENSEX 27 jan fut"); !ok || month != "2027-01" {
+		t.Fatalf("FutureExpiryMonth(SENSEX 27 jan fut) = %q, %v", month, ok)
+	}
+	if _, ok := FutureExpiryMonth("NIFTY26OCT22750CE"); ok {
+		t.Fatalf("FutureExpiryMonth must reject option symbols")
+	}
+	if _, ok := FutureExpiryMonth(""); ok {
+		t.Fatalf("FutureExpiryMonth must reject empty symbols")
+	}
+}
+
 func TestParseSegmentSchemaErrors(t *testing.T) {
 	expiry := nseExpiry(t)
 	cases := []struct {

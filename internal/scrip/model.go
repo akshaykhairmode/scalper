@@ -213,6 +213,44 @@ var monthNames = map[string]time.Month{
 
 var symbolExpiryPattern = regexp.MustCompile(`(?i)^[A-Z]+(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)`)
 
+// futureSuffix matches the month tail of a future trading symbol, e.g. the
+// "26NOVFUT" of "NIFTY26NOVFUT". It is unanchored at the start so underlying
+// names may contain digits (NIFTYNXT50) and any exchange's naming.
+var futureSuffix = regexp.MustCompile(`(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)FUT$`)
+
+// FutureExpiryMonth derives the contract month ("2026-11") from a
+// month-suffixed future trading symbol such as "NIFTY26NOVFUT". False is
+// returned when the symbol carries no readable month.
+func FutureExpiryMonth(trdSymbol string) (string, bool) {
+	m := futureSuffix.FindStringSubmatch(NormalizeName(trdSymbol))
+	if m == nil {
+		return "", false
+	}
+	yy, err := strconv.Atoi(m[1])
+	if err != nil {
+		return "", false
+	}
+	month, ok := monthNames[strings.ToUpper(m[2])]
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("%04d-%02d", 2000+yy, int(month)), true
+}
+
+// IsScripsFeedSegment reports whether Spot rows on a segment subscribe through
+// the HSM scrips feed rather than the index feed. Only futures segments carry
+// Spot rows: the nearest MCX commodity contract and the NSE/BSE index futures
+// recorded by the parser. Cash indices live on the cash segments and resolve
+// through the configured index topics instead.
+func IsScripsFeedSegment(segment string) bool {
+	switch segment {
+	case SegmentNSEFO, SegmentBSEFO, SegmentMCXFO:
+		return true
+	default:
+		return false
+	}
+}
+
 func symbolExpiry(trdSymbol string) (int, time.Month, bool) {
 	m := symbolExpiryPattern.FindStringSubmatch(strings.TrimSpace(trdSymbol))
 	if m == nil {

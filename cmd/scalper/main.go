@@ -159,6 +159,13 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	if err := scripManager.Load(ctx); err != nil {
 		log.Warn("Scrip Master cache load failed", "event", "scrip_load_failed", "error", err)
 	}
+	quotes := market.NewQuotesClient(consumerKey, log)
+	marketService, err := market.NewService(cfg, scripManager, quotes, market.WithOIBaselineStore(st))
+	if err != nil {
+		return fmt.Errorf("configure live market data: %w", err)
+	}
+	hsmFeed := market.NewHSMFeed(cfg, scripManager, log)
+	defer hsmFeed.Stop()
 	if hasConsumerKey {
 		go func() {
 			// The snapshot is already loaded from SQLite. Let startup and the
@@ -173,16 +180,14 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 			defer cancel()
 			if err := scripManager.Refresh(refreshCtx, market.DefaultBaseURL); err != nil {
 				log.Error("initial Scrip Master refresh failed", "event", "scrip_refresh_failed", "error", err)
+				return
 			}
+			// A scrip refresh can retarget a stable instrument key to a new
+			// contract token (index-future rolls). Re-resolve live subscriptions
+			// so clients that subscribed from the boot snapshot keep streaming.
+			hsmFeed.ResyncTokens()
 		}()
 	}
-	quotes := market.NewQuotesClient(consumerKey, log)
-	marketService, err := market.NewService(cfg, scripManager, quotes, market.WithOIBaselineStore(st))
-	if err != nil {
-		return fmt.Errorf("configure live market data: %w", err)
-	}
-	hsmFeed := market.NewHSMFeed(cfg, scripManager, log)
-	defer hsmFeed.Stop()
 	orderFeedClient := orderfeed.New(log)
 
 	srv, err := web.New(web.Options{

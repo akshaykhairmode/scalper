@@ -244,6 +244,13 @@ func (c Config) validateMarket() error {
 	if c.Market.Chain.PremiumCutoff < 0 || c.Market.Chain.PremiumCutoff > 100000 {
 		return fieldErr("market.chain.premium_cutoff", "must be between 0 and 100000")
 	}
+	cr := c.Market.ChainRecorder
+	if cr.RetentionDays < 1 || cr.RetentionDays > 3650 {
+		return fieldErr("market.chain_recorder.retention_days", "must be between 1 and 3650, got %d", cr.RetentionDays)
+	}
+	if cr.MinIntervalSec < 5 || cr.MinIntervalSec > 3600 {
+		return fieldErr("market.chain_recorder.min_interval_sec", "must be between 5 and 3600, got %d", cr.MinIntervalSec)
+	}
 	bg := c.Market.Background
 	if bg.IntervalSeconds < 1 || bg.IntervalSeconds > 60 {
 		return fieldErr("market.background_collection.interval_seconds", "must be between 1 and 60, got %d", bg.IntervalSeconds)

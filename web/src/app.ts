@@ -1,6 +1,8 @@
 import { CandleChart } from "./charts";
 import { buildThetaSeries } from "./chart/theta";
 import { applyOITick, computeOIWalls } from "./chart/intraday";
+import { defaultSignalSettings, evaluateSignals, type SignalInput, type SignalResult } from "./chart/signal";
+import { runBacktest, summarizeReport, type BacktestInput, type BacktestReport } from "./chart/backtest";
 import { formatPrice, formatRange } from "./chart/volumeProfile";
 import { DAY_MS, IST_OFFSET_MS, istSessionKey } from "./chart/session";
 import { vwapFromBase } from "./chart/indicators";
@@ -324,6 +326,13 @@ const S: any = {
   charts: {},
   showTradesPanes: { ce: true, underlying: true, pe: true },
   candles: {},
+  // Stable key ("nse_fo|NIFTY") of the active index's current-month future;
+  // the signal engine's futures participation feed subscribes to it.
+  futuresKey: "",
+  // Signal engine state: recent per-bar results on the fixed 5m grid and the
+  // session's chain snapshots (the engine's chain-context input).
+  signalResults: [],
+  chainSnapshots: [],
   maxPain: null,
   chainStats: null,
   thetaMeta: null,
@@ -1409,6 +1418,14 @@ function syncChartSettingsMenu(pane) {
   }
   set("cs-theta", S.charts.spot?.showTheta);
   set("cs-max-pain", S.charts.spot?.showMaxPain);
+  set("cs-signals", S.charts.spot?.showSignals);
+  const signalsBox = $("cs-signals");
+  if (signalsBox) {
+    signalsBox.disabled = !spotPane;
+    signalsBox.title = spotPane
+      ? "Deterministic CE/PE confluence engine, evaluated on closed 5-minute bars."
+      : "The signal engine runs on the spot chart; open the spot pane to toggle it.";
+  }
   set("cs-volume-profile", S.charts.ce?.showVolumeProfile ?? S.charts.pe?.showVolumeProfile);
 }
 
@@ -1614,12 +1631,19 @@ function buildCharts() {
   const savedOIDelta = localStorage.getItem("scalper-show-oi-delta") === "true";
   // OI walls are a chain-derived level, so they are on by default for new users.
   const savedOIWalls = localStorage.getItem("scalper-show-oi-walls") !== "false";
+  // The signal engine is the feature the terminal exists around: on by
+  // default, observation-only, and always spot-scoped.
+  const savedSignals = localStorage.getItem("scalper-show-signals") !== "false";
 
   const indicatorOptions = { showRSI: savedRSI, showDivergence: savedDivergence, showMomentum: savedMomentum, showSupertrend: savedSupertrend, showATR: savedATR };
   const optionPaneOptions = { ...indicatorOptions, showOIPane: savedOIPane, showOIDeltaPane: savedOIDelta };
   S.charts.ce = new CandleChart($("chart-ce"), { showVolume: true, showSR: savedSR, showTrades: savedTradesCE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMACE, showVWAP: savedVWAPCE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("ce", info), onLevelDrop: (info) => handleChartLevelDrop("ce", info), onLevelRemove: (info) => handleChartLevelRemove("ce", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...optionPaneOptions });
   S.charts.spot = new CandleChart($("chart-spot"), { showVolume: false, showSR: savedSR, showTrades: savedTradesUnderlying, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAUnderlying, showVWAP: savedVWAPUnderlying, showTheta: savedTheta, showMaxPain: savedMaxPain, showOIWalls: savedOIWalls, showDepth: savedDOM, onLevelDrop: (info) => handleChartLevelDrop("spot", info), onLevelRemove: (info) => handleChartLevelRemove("spot", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...indicatorOptions });
   S.charts.pe = new CandleChart($("chart-pe"), { showVolume: true, showSR: savedSR, showTrades: savedTradesPE, showAutoTrendlines: savedAutoTL, showPatterns: savedPatterns, showFib: savedFib, showMA: savedMAPE, showVWAP: savedVWAPPE, showDepth: savedDOM, showVolumeProfile: savedVolumeProfile, onVolumeProfile: (info) => renderVolumeProfileChip("pe", info), onLevelDrop: (info) => handleChartLevelDrop("pe", info), onLevelRemove: (info) => handleChartLevelRemove("pe", info), onLevelDragStart: () => setQuickOrderPadDragging(true), onLevelDragEnd: () => setQuickOrderPadDragging(false), ...optionPaneOptions });
+
+  // Signal engine markers live on the spot pane; the runtime (evaluation,
+  // chip, toasts) is driven from app state, not the chart class.
+  if (savedSignals) S.charts.spot.toggleSignals(true);
 
   Object.defineProperty(S.charts, "underlying", {
     get() { return S.charts.spot; },
@@ -2206,6 +2230,9 @@ function startLivePolling() {
       try {
         applyIndexQuotes(await getJSON("/api/indices"));
         updateFeedSubscriptions();
+        // Cheap retry loop: resolves the futures shadow once the Scrip Master
+        // finishes its first sync, and is a no-op afterwards.
+        ensureFuturesShadow().catch((error) => console.warn("futures shadow refresh failed", error));
         renderHeader();
         // Periodically refresh option chain every 60s during open market hours
         chainPollCounter++;
@@ -2332,6 +2359,9 @@ function handleTickData(data, { batch = false } = {}) {
     data.volume,
     Number.isFinite(tickOI) && tickOI >= 0 && tickOI <= 100000000 ? tickOI : 0,
   );
+  if (S.futuresKey && data.key === S.futuresKey) {
+    foldFuturesShadowTick(data);
+  }
   if (data.bids || data.asks) {
     if (!S.depths) S.depths = {};
     S.depths[data.key] = mergeDepthData(S.depths[data.key], data.bids, data.asks);
@@ -2579,6 +2609,8 @@ function updateFeedSubscriptions() {
     selectedOption("PE")?.instrumentKey,
     ...S.positions.map((position) => position.instrument_key),
     ...[...S.spots.values()].map((spot) => spot.spotKey),
+    // Futures shadow for the signal engine's participation feed.
+    S.futuresKey,
   ].filter((k) => typeof k === "string" && k.includes("|") && !k.endsWith("|"));
   const desired = [...new Set(keys)];
   if (S.ws?.readyState !== WebSocket.OPEN) return;
@@ -3889,6 +3921,11 @@ async function loadCharts(forceRefresh = false) {
   renderPaneHeaders();
   updateChartTrades();
   refreshThetaSeries();
+  // The signal engine's inputs may have been reset by the reload (new strike,
+  // new timeframe, fresh history): backfill its fixed 5m base and re-evaluate.
+  ensureSignalBase()
+    .catch((error) => console.warn("signal base refresh failed", error))
+    .finally(() => scheduleSignalEvaluation(0));
 }
 
 function thetaSessionClock() {
@@ -3990,7 +4027,12 @@ function applyMaxPain() {
 }
 
 async function loadChainStats() {
-  if (!S.charts.spot?.showMaxPain || !S.activeIndex || !S.expiry) return;
+  // The chain stats poll serves two consumers: the Max Pain chart line and
+  // the signal engine's chain-context snapshots. Either being enabled keeps
+  // the poll alive — the engine must not silently lose its PCR/wall context
+  // just because a display toggle is off.
+  const statsNeeded = Boolean(S.charts.spot?.showMaxPain) || Boolean(S.charts.spot?.showSignals);
+  if (!statsNeeded || !S.activeIndex || !S.expiry) return;
   const requestID = ++S.chainStatsRequestID;
   const index = S.activeIndex;
   const expiry = S.expiry;
@@ -4009,6 +4051,9 @@ async function loadChainStats() {
           strikes: num(data?.strikes),
         }
       : null;
+    // The signal engine consumes chain context through snapshots: one per
+    // stats refresh, append-only so history can never repaint.
+    pushChainSnapshot();
     applyMaxPain();
   } catch (error) {
     console.warn("chain stats request failed", error);
@@ -4245,6 +4290,18 @@ function extendLiveVwap(candle, previous) {
   candle.vwapVol = totalVolume;
 }
 
+/**
+ * Session-open-anchored bucket start (seconds) for a tick time, on the same
+ * grid `applyLiveTickToSeries` folds bars into.
+ */
+function candleSessionStartFor(time) {
+  const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
+  const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
+  const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
+  const localDayStart = Math.floor((time + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
+  return localDayStart + openSeconds;
+}
+
 function updateLiveCandle(key, price, timestamp, volume, oi = 0) {
   if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
   const timeMs = num(timestamp) > 1e12 ? num(timestamp) : num(timestamp) * 1000;
@@ -4252,16 +4309,22 @@ function updateLiveCandle(key, price, timestamp, volume, oi = 0) {
   if (!candleSessionAllows(time, key)) return;
   const interval = CHART_TIMEFRAME_SECONDS[S.timeframe];
   if (!interval) return;
-  const sessionOpen = activeCommodity() ? "09:00" : (S.boot.marketSession?.open || "09:15");
-  const openMatch = /^(\d{2}):(\d{2})$/.exec(sessionOpen);
-  const openSeconds = openMatch ? (Number(openMatch[1]) * 60 + Number(openMatch[2])) * 60 : 9 * 3600 + 15 * 60;
-  const localDayStart = Math.floor((time + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
-  const sessionStart = localDayStart + openSeconds;
+  const sessionStart = candleSessionStartFor(time);
   const value = Number(price);
   const cumVolume = Number.isFinite(Number(volume)) && Number(volume) > 0 ? Number(volume) : 0;
   const cacheKey = `${key}|${S.timeframe}`;
   const { candle, startedNewBar, stale } = applyLiveTickToSeries(cacheKey, interval, value, time, sessionStart, cumVolume, 500, oi);
   if (stale) return;
+  // Fixed 5m evaluation grid for the signal engine: folded independently of
+  // the displayed timeframe so live and backtest always share one grid. A
+  // rolled 5m bucket on the spot instrument means a bar just closed and the
+  // engine gets an evaluation kick.
+  let evalBarClosed = startedNewBar && key === activeSpotInstrument();
+  if (interval !== SIGNAL_TIMEFRAME_SECONDS && isSignalSeriesKey(key)) {
+    const shadow = applyLiveTickToSeries(`${key}|5m`, SIGNAL_TIMEFRAME_SECONDS, value, time, sessionStart, cumVolume, SIGNAL_SHADOW_BARS, oi);
+    if (shadow.startedNewBar && key === activeSpotInstrument()) evalBarClosed = true;
+  }
+  if (evalBarClosed) scheduleSignalEvaluation();
   const series = S.candles[cacheKey] || [];
   if (series.length >= 2) {
     extendLiveVwap(candle, series[series.length - 2]);
@@ -4284,6 +4347,511 @@ function updateLiveCandle(key, price, timestamp, volume, oi = 0) {
   }
   if (startedNewBar && (key === activeSpotInstrument() || key === chartInstrument("CE") || key === chartInstrument("PE"))) {
     scheduleThetaRefresh();
+  }
+}
+
+/* ── Futures shadow (participation feed for the signal engine) ──────── */
+
+// The signal engine evaluates on a fixed 5-minute grid regardless of the
+// chart's displayed timeframe, so the shadow series is folded on 5m bars.
+const SIGNAL_TIMEFRAME_SECONDS = 300;
+const SIGNAL_SHADOW_BARS = 500;
+
+// Index futures resolved from the Scrip Master: one stable key per index
+// ("nse_fo|NIFTY") that the server retargets to the current-month contract on
+// every Scrip Master sync, so the client never tracks the expiry itself.
+let futuresByUnderlying = new Map();
+
+/**
+ * Resolve and subscribe the active index's current-month future, and backfill
+ * its 5-minute bars from stored candles. Safe to call repeatedly: it is a
+ * no-op once the key is resolved, and it retries the lookup while the Scrip
+ * Master has not provided the future yet.
+ */
+async function ensureFuturesShadow() {
+  if (!S.session?.authenticated) return;
+  // Commodities already chart their own futures contract as the spot pane;
+  // the shadow exists only for the equity indices.
+  if (activeCommodity()) return;
+  if (!futuresByUnderlying.has(S.activeIndex)) {
+    try {
+      const raw = await getJSON("/api/scrip/futures");
+      futuresByUnderlying = new Map(
+        (Array.isArray(raw?.futures) ? raw.futures : []).map((row) => [row.underlying, row]),
+      );
+    } catch (error) {
+      console.warn("futures shadow lookup failed", error);
+      return;
+    }
+  }
+  const nextKey = futuresByUnderlying.get(S.activeIndex)?.key || "";
+  if (nextKey === S.futuresKey) return;
+  S.futuresKey = nextKey;
+  updateFeedSubscriptions();
+  if (!S.futuresKey) return;
+  try {
+    const query = new URLSearchParams({ tf: "5m", instruments: S.futuresKey });
+    const resp = await getJSON(`/api/candles/batch?${query.toString()}`);
+    if (S.futuresKey !== nextKey) return; // the active index changed mid-flight
+    const entry = resp?.results?.[S.futuresKey];
+    const base = normalizeHistoricalCandles(entry?.candles || []);
+    if (!base.length) return;
+    const liveKey = `${S.futuresKey}|5m`;
+    const merged = mergeChartCandles(base, S.candles[liveKey] || [], liveKey);
+    S.candles[liveKey] = merged.slice(-SIGNAL_SHADOW_BARS).map((candle) => ({ ...candle }));
+  } catch (error) {
+    console.warn("futures shadow backfill failed", error);
+  }
+}
+
+/**
+ * Fold one futures tick into the fixed 5-minute shadow series. Idempotent per
+ * tick: bar volume is recomputed from cumulative-day-volume deltas, so a tick
+ * already folded through the displayed timeframe does not double count.
+ */
+function foldFuturesShadowTick(data) {
+  const price = num(data.ltp);
+  if (!Number.isFinite(price) || price <= 0) return;
+  const rawTs = num(data.timestamp);
+  const timeMs = rawTs > 1e12 ? rawTs : rawTs * 1000;
+  const time = Math.floor((timeMs > 0 ? timeMs : Date.now()) / 1000);
+  if (!candleSessionAllows(time, S.futuresKey)) return;
+  const rawVolume = Number(data.volume);
+  const cumVolume = Number.isFinite(rawVolume) && rawVolume > 0 ? rawVolume : 0;
+  const tickOI = Number(data.oi);
+  const oi = Number.isFinite(tickOI) && tickOI >= 0 && tickOI <= 100000000 ? tickOI : 0;
+  applyLiveTickToSeries(
+    `${S.futuresKey}|5m`,
+    SIGNAL_TIMEFRAME_SECONDS,
+    price,
+    time,
+    candleSessionStartFor(time),
+    cumVolume,
+    SIGNAL_SHADOW_BARS,
+    oi,
+  );
+}
+
+/* ── Signal engine runtime (fixed 5m evaluation grid) ──────────── */
+
+const SIGNAL_RESULTS_KEEP = 600;
+const SIGNAL_CHAIN_KEEP = 120;
+const SIGNAL_BASE_REFETCH_MS = 5 * 60 * 1000;
+
+let signalSettings = defaultSignalSettings();
+let signalEvalTimer: any = null;
+const signalBaseFetchedAt = new Map();
+
+/** Instruments whose 5-minute bars feed the signal engine. */
+function signalSeriesKeys() {
+  const keys = [activeSpotInstrument(), S.futuresKey, chartInstrument("CE"), chartInstrument("PE")];
+  return [...new Set(keys.filter(Boolean))];
+}
+
+function isSignalSeriesKey(key) {
+  return signalSeriesKeys().includes(key);
+}
+
+/**
+ * Backfill the fixed 5-minute series for every signal-relevant instrument.
+ * Keys are refetched at most once every few minutes, so chart timeframe
+ * switches and strike switches never turn into polling.
+ */
+async function ensureSignalBase() {
+  if (!S.session?.authenticated) return;
+  const due = signalSeriesKeys().filter((key) => {
+    const at = signalBaseFetchedAt.get(key) || 0;
+    return Date.now() - at > SIGNAL_BASE_REFETCH_MS;
+  });
+  if (!due.length) return;
+  for (const key of due) signalBaseFetchedAt.set(key, Date.now());
+  try {
+    const query = new URLSearchParams({ tf: "5m", instruments: due.join(",") });
+    const resp = await getJSON(`/api/candles/batch?${query.toString()}`);
+    for (const key of due) {
+      const entry = resp?.results?.[key];
+      const base = normalizeHistoricalCandles(entry?.candles || []);
+      if (!base.length) continue;
+      const liveKey = `${key}|5m`;
+      const merged = mergeChartCandles(base, S.candles[liveKey] || [], liveKey);
+      S.candles[liveKey] = merged.slice(-SIGNAL_SHADOW_BARS).map((candle) => ({ ...candle }));
+    }
+  } catch (error) {
+    console.warn("signal base backfill failed", error);
+  }
+}
+
+/**
+ * One chain snapshot per stats refresh: the engine's chain-context input.
+ * The timestamp is the *fetch* time from the server (`asOf`), never wall
+ * clock: a failing stats poll retains the last payload, and re-stamping it
+ * "now" would defeat the engine's 15-minute staleness gate. Append-only and
+ * time-keyed, so re-running the engine over history can never repaint an
+ * earlier bar's decision.
+ */
+function pushChainSnapshot() {
+  if (!S.chainStats || !S.activeIndex) return;
+  const asOfMs = num(S.chainStats.asOf);
+  const time = asOfMs > 0 ? Math.floor(asOfMs / 1000) : 0;
+  if (!(time > 0)) return; // no fetch time: do not fabricate freshness
+  const last = S.chainSnapshots.length ? S.chainSnapshots[S.chainSnapshots.length - 1] : null;
+  if (last && last.time === time) return; // same fetch: nothing new to record
+  const atm = computeATM();
+  const snap = {
+    time,
+    spot: num(S.spots.get(S.activeIndex)?.ltp),
+    pcr: num(S.chainStats.pcr),
+    maxPain: num(S.chainStats.maxPain),
+    callOIWall: num(S.chainStats.callOIWall),
+    putOIWall: num(S.chainStats.putOIWall),
+    atmStrike: atm ?? undefined,
+  };
+  if (!(snap.pcr > 0) && !(snap.maxPain > 0) && snap.atmStrike == null) return;
+  S.chainSnapshots.push(snap);
+  if (S.chainSnapshots.length > SIGNAL_CHAIN_KEEP) {
+    S.chainSnapshots.splice(0, S.chainSnapshots.length - SIGNAL_CHAIN_KEEP);
+  }
+}
+
+/** Bars on the fixed evaluation grid, with a still-forming tail dropped. */
+function closedSignalBars(key) {
+  const bars = S.candles[`${key}|5m`];
+  if (!Array.isArray(bars) || !bars.length) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const last = bars[bars.length - 1];
+  return last.time + SIGNAL_TIMEFRAME_SECONDS <= nowSec ? bars : bars.slice(0, -1);
+}
+
+function assembleSignalInput(): SignalInput {
+  const ceKey = chartInstrument("CE");
+  const peKey = chartInstrument("PE");
+  const ce = ceKey ? closedSignalBars(ceKey) : [];
+  const pe = peKey ? closedSignalBars(peKey) : [];
+  return {
+    spot: closedSignalBars(activeSpotInstrument()),
+    futures: S.futuresKey ? closedSignalBars(S.futuresKey) : undefined,
+    premium: ce.length || pe.length
+      ? { ce: ce.length ? ce : undefined, pe: pe.length ? pe : undefined }
+      : undefined,
+    chain: S.chainSnapshots,
+    settings: signalSettings,
+  };
+}
+
+function signalsEnabled() {
+  // v1 scope is the equity indices (NIFTY/SENSEX weekly options). A commodity
+  // underlying has a different session clock (MCX trades to 23:55) and its
+  // spot pane is already the futures contract, so the engine stays off there.
+  if (activeCommodity()) return false;
+  return Boolean(S.charts.spot?.showSignals) && Boolean(S.session?.authenticated);
+}
+
+/**
+ * Evaluate at the next idle moment after a 5m bar closes. Coalesces tick
+ * bursts into one engine run; the engine is pure so repeated evaluation of
+ * the same closed bars is identical and free of repaint.
+ */
+function scheduleSignalEvaluation(delayMs = 250) {
+  if (!signalsEnabled()) return;
+  if (signalEvalTimer) window.clearTimeout(signalEvalTimer);
+  signalEvalTimer = window.setTimeout(() => {
+    signalEvalTimer = null;
+    evaluateSignalsLive();
+  }, delayMs);
+}
+
+function evaluateSignalsLive() {
+  if (!signalsEnabled()) return;
+  const input = assembleSignalInput();
+  if (input.spot.length < 20) return;
+  let results: SignalResult[];
+  try {
+    results = evaluateSignals(input);
+  } catch (error) {
+    console.warn("signal evaluation failed", error);
+    return;
+  }
+  const previous = S.signalResults.length ? S.signalResults[S.signalResults.length - 1] : null;
+  S.signalResults = results.slice(-SIGNAL_RESULTS_KEEP);
+  S.charts.spot?.setSignals(S.signalResults);
+  renderSignalChip();
+  const latest = results.length ? results[results.length - 1] : null;
+  if (latest && (latest.action === "BUY_CE" || latest.action === "BUY_PE")) {
+    // A confirmed signal announces once per bar: re-evaluations of the same
+    // bar (chain snapshot arriving late, say) must not re-toast.
+    const sameBarBefore = previous && previous.time === latest.time &&
+      (previous.action === "BUY_CE" || previous.action === "BUY_PE");
+    if (!sameBarBefore) announceSignal(latest);
+  }
+}
+
+function announceSignal(result) {
+  const side = result.action === "BUY_CE" ? "CALL" : "PUT";
+  const strike = result.strikeHint ? ` · ${result.strikeHint.type} ${result.strikeHint.strike}` : "";
+  const stop = Number.isFinite(result.stop) ? ` · SL ${result.stop.toFixed(1)}` : "";
+  const target = Number.isFinite(result.target) ? ` · T ${result.target.toFixed(1)}` : "";
+  toast(`Signal: BUY ${side} (score ${result.score})${strike}${stop}${target}`, "ok", 8000);
+}
+
+/** The spot pane's signal readout: verdict, score and the per-leg votes. */
+function renderSignalChip() {
+  const chip = $("spot-signal-chip");
+  if (!chip) return;
+  if (!S.charts.spot?.showSignals) {
+    chip.hidden = true;
+    chip.textContent = "";
+    chip.removeAttribute("title");
+    chip.className = "pane-vp-chip";
+    return;
+  }
+  const latest = S.signalResults.length ? S.signalResults[S.signalResults.length - 1] : null;
+  if (!latest) {
+    chip.hidden = true;
+    chip.textContent = "";
+    chip.removeAttribute("title");
+    chip.className = "pane-vp-chip";
+    return;
+  }
+  const actionable = latest.action === "BUY_CE" || latest.action === "BUY_PE";
+  const armed = latest.action === "ARMED_CE" || latest.action === "ARMED_PE";
+  const label = actionable
+    ? (latest.action === "BUY_CE" ? "▲ BUY CE" : "▼ BUY PE")
+    : armed
+      ? (latest.action === "ARMED_CE" ? "◇ ARMED CE" : "◇ ARMED PE")
+      : "• WAIT";
+  chip.hidden = false;
+  chip.className = "pane-vp-chip";
+  chip.style.cursor = actionable && latest.strikeHint ? "pointer" : "default";
+  chip.textContent = `${label} · ${latest.score}`;
+  const votes = (latest.votes || [])
+    .map((vote) => `${vote.leg}:${vote.dir}${vote.note ? ` (${vote.note})` : ""}`)
+    .join("\n");
+  const blocked = latest.blockedBy ? `\nblocked: ${latest.blockedBy}` : "";
+  const hint = actionable && latest.strikeHint
+    ? `\nclick to select ${latest.strikeHint.type} ${latest.strikeHint.strike}`
+    : "";
+  chip.title = `Signal engine — bar ${new Date(latest.time * 1000).toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" })} IST\n${votes}${blocked}${hint}`;
+}
+
+/**
+ * The chip is the signal's trade hook: clicking it selects the hinted strike
+ * on the existing chain so the order pad and charts jump to the tradable
+ * contract. Observation-only — the user still presses BUY.
+ */
+function signalChipClicked() {
+  const latest = S.signalResults.length ? S.signalResults[S.signalResults.length - 1] : null;
+  if (!latest || !latest.strikeHint) {
+    return;
+  }
+  const type = latest.strikeHint.type;
+  const strike = num(latest.strikeHint.strike);
+  if (!strike || (latest.action !== "BUY_CE" && latest.action !== "BUY_PE")) {
+    toast("No actionable signal right now — the engine is in WAIT/ARMED.", "info");
+    return;
+  }
+  const row = S.chain.find((r) => r.strike === strike);
+  const option = row?.[type === "CE" ? "call" : "put"];
+  if (!option) {
+    toast(`Signal strike ${type} ${strike} is outside the loaded chain window. Load more strikes or pick the nearest one.`, "warn", 6000);
+    return;
+  }
+  selectStrike(strike, type);
+  const stop = Number.isFinite(latest.stop) ? `SL ${latest.stop.toFixed(1)}` : "SL —";
+  const target = Number.isFinite(latest.target) ? `target ${latest.target.toFixed(1)}` : "target —";
+  toast(`Signal strike selected: ${type} ${strike} · ${stop} · ${target} (spot scale). Your order pad is live.`, "ok", 8000);
+}
+
+function toggleChartSignals(checked) {
+  const chart = S.charts.spot;
+  if (!chart) return;
+  const next = chart.toggleSignals(Boolean(checked));
+  try { localStorage.setItem("scalper-show-signals", String(next)); } catch (_) {}
+  if (next) {
+    // The chain stats poll may have been dormant when Max Pain was off.
+    loadChainStats().catch((error) => console.warn("chain stats refresh failed", error));
+    ensureSignalBase()
+      .catch((error) => console.warn("signal base refresh failed", error))
+      .finally(() => scheduleSignalEvaluation(0));
+  } else {
+    chart.clearSignals();
+    renderSignalChip();
+  }
+}
+
+/* ── Signal engine backtest (recorded-session replay) ──────────── */
+
+function openSignalBacktestModal() {
+  openDialog("signal-backtest-modal");
+}
+
+function closeSignalBacktestModal() {
+  closeDialog("signal-backtest-modal");
+}
+
+function signalBacktestError(message) {
+  const el = $("signal-backtest-error");
+  if (!el) return;
+  el.textContent = message || "";
+  el.style.display = message ? "block" : "none";
+}
+
+/**
+ * Replay recorded sessions through the identical engine code path the live
+ * terminal runs. Inputs: stored 5-minute candles for the spot, the futures
+ * shadow and the currently selected strikes (premium rows degrade to
+ * no-premium on days those exact contracts were not feed-subscribed), plus
+ * recorded chain snapshots when the recorder has covered the window.
+ */
+async function runSignalBacktest() {
+  const btn = $("signal-backtest-run");
+  const days = Math.max(1, Math.min(30, Math.round(num(($("sb-days") as any)?.value, 10))));
+  const holdBars = Math.max(1, Math.min(48, Math.round(num(($("sb-hold") as any)?.value, 12))));
+  const lotSize = Math.max(1, Math.round(num(($("sb-lot") as any)?.value, 75)));
+  signalBacktestError("");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Running…";
+  }
+  try {
+    const spotKey = activeSpotInstrument();
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - days * 86400;
+    const keys = signalSeriesKeys();
+    const query = new URLSearchParams({ tf: "5m", instruments: keys.join(",") });
+    const candlesResp = await getJSON(`/api/candles/batch?${query.toString()}`);
+    // The server persists the forming bar on every flush, so the last stored
+    // bar can still be mid-formation during market hours. The live path drops
+    // it (closedSignalBars); the replay must not feed it to the engine as a
+    // closed bar either.
+    const seriesOf = (key) => {
+      const bars = normalizeHistoricalCandles(candlesResp?.results?.[key]?.candles || [])
+        .filter((bar) => bar.time >= from && bar.time <= to);
+      if (bars.length && bars[bars.length - 1].time + SIGNAL_TIMEFRAME_SECONDS > to) {
+        bars.pop();
+      }
+      return bars;
+    };
+    const spot = seriesOf(spotKey);
+    const futures = S.futuresKey ? seriesOf(S.futuresKey) : [];
+    const ceKey = chartInstrument("CE");
+    const peKey = chartInstrument("PE");
+    const ce = ceKey ? seriesOf(ceKey) : [];
+    const pe = peKey ? seriesOf(peKey) : [];
+    if (spot.length < 60) {
+      throw new Error(`Only ${spot.length} stored spot bars in the ${days}-day window. Keep a session open during market hours so the server-side candle store accumulates, then rerun.`);
+    }
+
+    let chainSnapshots: any[] = [];
+    if (S.expiry) {
+      try {
+        const chainURL = `/api/chain/history?index=${encodeURIComponent(S.activeIndex)}`
+          + `&expiry=${encodeURIComponent(S.expiry)}&from=${from}&to=${to}`;
+        const chainResp = await getJSON(chainURL);
+        chainSnapshots = ((chainResp?.snapshots || []) as any[])
+          .map((snap) => ({
+            time: num(snap.captured_at),
+            spot: num(snap.spot),
+            pcr: num(snap.pcr),
+            maxPain: num(snap.max_pain),
+            callOIWall: num(snap.call_oi_wall),
+            putOIWall: num(snap.put_oi_wall),
+          }))
+          .filter((snap) => snap.time > 0 && snap.time <= to);
+      } catch (_) {
+        // Chain history is optional context: the engine degrades without it.
+      }
+    }
+
+    const input: BacktestInput = {
+      spot,
+      futures: futures.length ? futures : undefined,
+      premium: ce.length || pe.length
+        ? { ce: ce.length ? ce : undefined, pe: pe.length ? pe : undefined }
+        : undefined,
+      chain: chainSnapshots,
+      settings: signalSettings,
+    };
+    const engine = (btInput: BacktestInput) => evaluateSignals({
+      spot: btInput.spot,
+      futures: btInput.futures,
+      premium: btInput.premium,
+      chain: btInput.chain as SignalInput["chain"],
+      settings: signalSettings,
+    });
+    const report = runBacktest(input, engine, { lotSize, maxHoldBars: holdBars });
+    renderSignalBacktestReport(report, chainSnapshots.length, lotSize);
+  } catch (error: any) {
+    signalBacktestError(`Backtest failed: ${error?.message || String(error)}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "▶ Run Backtest";
+    }
+  }
+}
+
+function renderSignalBacktestReport(report: BacktestReport, chainCount: number, lotSize: number) {
+  const scope = $("signal-backtest-scope");
+  if (scope) {
+    scope.textContent = `${report.totalSignals} signals · ${chainCount} chain snapshots · lot ${lotSize}`;
+    scope.title = summarizeReport(report);
+  }
+  const metrics = $("signal-backtest-metrics");
+  if (metrics) {
+    const pct = (value) => (value == null ? "n/a" : `${(value * 100).toFixed(1)}%`);
+    const money = (value) => (value == null ? "n/a" : `${value >= 0 ? "+" : ""}${Math.round(value).toLocaleString("en-IN")}`);
+    const card = (label, value, color) => `
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border,#333); border-radius:6px; padding:10px; text-align:center;">
+        <div style="font-size:10px; text-transform:uppercase; color:var(--text-muted,#888); font-weight:700; letter-spacing:0.05em;">${label}</div>
+        <div style="font-size:20px; font-weight:800; margin-top:3px;${color ? ` color:${color};` : ""}">${value}</div>
+      </div>`;
+    metrics.innerHTML = [
+      card("Hit Rate", pct(report.hitRate), "var(--green,#22c55e)"),
+      card("Target / Stop", `${report.targetHits} / ${report.stopHits}`, ""),
+      card("Timeouts", String(report.timeouts), ""),
+      card("Avg P&L / lot", money(report.avgPnlPerLot), ""),
+      card("Cumulative / lot", money(report.cumulativePnl), ""),
+      card("Max Drawdown", money(report.maxDrawdown), "var(--red,#ef4444)"),
+    ].join("");
+  }
+  const legsEl = $("signal-backtest-legs");
+  if (legsEl) {
+    const rows = (report.perLeg || []).map((leg) => {
+      const participated = leg.signalsWithLeg > 0 ? `${leg.winsWithLeg}W / ${leg.signalsWithLeg}` : "—";
+      return `<div style="display:flex; justify-content:space-between; gap:8px; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,0.04);">
+        <span>${leg.leg}</span>
+        <span style="color:var(--text-muted,#888); font-variant-numeric:tabular-nums;">${leg.bullVotes}▲ ${leg.bearVotes}▼</span>
+        <span style="font-variant-numeric:tabular-nums;">${participated}</span>
+      </div>`;
+    }).join("");
+    legsEl.innerHTML = rows || '<div style="padding:12px; color:var(--text-muted,#888);">No leg votes recorded.</div>';
+  }
+  const body = $("signal-backtest-tbody");
+  if (body) {
+    const rows = (report.signals || []).slice().reverse().map((row) => {
+      const outcomeColor = row.exitReason === "target"
+        ? "var(--green,#22c55e)"
+        : row.exitReason === "stop" ? "var(--red,#ef4444)" : "var(--text-muted,#888)";
+      const pnl = row.pnlPerLot == null
+        ? "—"
+        : `${row.pnlPerLot >= 0 ? "+" : ""}${Math.round(row.pnlPerLot).toLocaleString("en-IN")}`;
+      const pnlColor = row.pnlPerLot == null
+        ? ""
+        : row.pnlPerLot >= 0 ? "var(--green,#22c55e)" : "var(--red,#ef4444)";
+      const when = new Date(row.time * 1000).toLocaleString("en-GB", {
+        timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+      });
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+        <td style="padding:6px 8px; white-space:nowrap;">${when}</td>
+        <td style="padding:6px 8px; font-weight:700; color:${row.action === "BUY_CE" ? "var(--green,#22c55e)" : "var(--red,#ef4444)"};">${row.action === "BUY_CE" ? "▲ CE" : "▼ PE"}</td>
+        <td style="padding:6px 8px;">${row.score}</td>
+        <td style="padding:6px 8px;">${row.entryPremium == null ? "—" : row.entryPremium.toFixed(1)}</td>
+        <td style="padding:6px 8px;">${row.exitPremium == null ? "—" : row.exitPremium.toFixed(1)}</td>
+        <td style="padding:6px 8px;${pnlColor ? ` color:${pnlColor};` : ""}">${pnl}</td>
+        <td style="padding:6px 8px; color:${outcomeColor};">${row.exitReason}</td>
+      </tr>`;
+    }).join("");
+    body.innerHTML = rows || '<tr><td colspan="7" style="text-align:center; padding:18px; color:var(--text-muted,#888);">No signals in the selected window.</td></tr>';
   }
 }
 
@@ -7926,6 +8494,7 @@ function completeLogin(result) {
     // session is active instead of leaving them with live ticks only.
     loadCharts();
   }
+  ensureFuturesShadow().catch((error) => console.warn("futures shadow init failed", error));
   refreshBooksFromAPI(true).catch((error) => console.warn("account refresh failed", error));
 }
 
@@ -9560,6 +10129,23 @@ function bindEvents() {
     void removeAICall(btn.dataset.aiEvalId || "", btn.dataset.aiEvalLabel || "this call")
       .finally(() => { btn.disabled = false; });
   });
+
+  // Signal engine backtest modal events
+  $("signal-backtest-button")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    openSignalBacktestModal();
+  });
+  $("signal-backtest-close")?.addEventListener("click", closeSignalBacktestModal);
+  $("signal-backtest-close-btn")?.addEventListener("click", closeSignalBacktestModal);
+  $("signal-backtest-modal")?.addEventListener("click", (event) => {
+    if (event.target === $("signal-backtest-modal")) closeSignalBacktestModal();
+  });
+  $("signal-backtest-run")?.addEventListener("click", () => {
+    void runSignalBacktest();
+  });
+  $("spot-signal-chip")?.addEventListener("click", () => {
+    signalChipClicked();
+  });
   $("ai-scan-now-btn")?.addEventListener("click", async () => {
     const btn = $("ai-scan-now-btn") as HTMLButtonElement | null;
     if (btn) {
@@ -9681,6 +10267,7 @@ function bindEvents() {
     "cs-oi-delta": (checked) => toggleChartOIDeltaPane(checked),
     "cs-oi-walls": (checked) => toggleChartOIWalls(checked),
     "cs-max-pain": (checked) => toggleMaxPain(checked),
+    "cs-signals": (checked) => toggleChartSignals(checked),
     "cs-theta": (checked) => toggleTheta(checked),
     "cs-volume-profile": (checked) => toggleVolumeProfile(checked),
   };
@@ -9867,10 +10454,21 @@ async function switchIndex(key) {
   S.maxPain = null;
   S.chainStats = null;
   S.thetaMeta = null;
+  // The previous index's chain snapshots are wall-clock stamped, so they
+  // would survive the switch and be consumed as fresh context for up to 15
+  // minutes — wrong PCR, wrong OI walls, wrong ATM. Reset the engine state
+  // with the rest of the chain.
+  S.chainSnapshots = [];
+  S.signalResults = [];
+  S.charts.spot?.clearSignals();
+  renderSignalChip();
   S.chainStatsRequestID++;
   applyMaxPain();
   updateSpotMeta();
   updateFeedSubscriptions();
+  // The futures shadow follows the active index; the lookup is cached and
+  // retries until the Scrip Master provides the current-month contract.
+  ensureFuturesShadow().catch((error) => console.warn("futures shadow switch failed", error));
   renderAll();
   try {
     const raw = await getJSON(`/api/expiries?index=${encodeURIComponent(key)}`);
@@ -9917,6 +10515,13 @@ async function switchExpiry(date) {
   S.maxPain = null;
   S.chainStats = null;
   S.thetaMeta = null;
+  // The new expiry has its own OI walls, PCR and premium buildups: the old
+  // chain snapshots would otherwise be consumed as fresh context (they are
+  // stamped with fetch time, not expiry) and vote/veto on the wrong chain.
+  S.chainSnapshots = [];
+  S.signalResults = [];
+  S.charts.spot?.clearSignals();
+  renderSignalChip();
   S.chainStatsRequestID++;
   applyMaxPain();
   updateSpotMeta();

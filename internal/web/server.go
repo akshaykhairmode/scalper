@@ -162,6 +162,7 @@ type Server struct {
 	evaluator          *evaluator.Evaluator
 	agentClient        *agent.Client
 	candleAgg          *candleAggregator
+	chainRecorder      *chainRecorder
 	watchlistMu        sync.RWMutex
 	watchlist          []string
 	watchlistSaveMu    sync.Mutex
@@ -627,6 +628,21 @@ func New(opts Options) (*Server, error) {
 		s.candleAgg = newCandleAggregator(s.candleStore, s.log, s.configSnapshot().Charts.RetentionDays)
 		go s.candleAgg.Run(s.feedCtx)
 	}
+
+	// Chain snapshot recording piggybacks on chain/chain-stats refreshes the
+	// browser already performs; it needs a store that persists them and never
+	// makes an upstream call itself. Changes need a restart like the rest of
+	// the market section.
+	if recorderCfg := opts.Config.Market.ChainRecorder; recorderCfg.Enabled {
+		if snapStore, ok := opts.DB.(chainSnapshotStore); ok {
+			s.chainRecorder = newChainRecorder(snapStore, s.log, s.now,
+				recorderCfg.MinIntervalSec, recorderCfg.RetentionDays)
+			go s.chainRecorder.Run(s.feedCtx)
+		} else {
+			s.log.Warn("chain recorder is enabled but the configured database does not persist chain snapshots",
+				"event", "chain_recorder_unavailable")
+		}
+	}
 	s.initWatchlist()
 	go s.runBackgroundPoller(s.feedCtx)
 
@@ -698,6 +714,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /api/expiries", s.handleExpiries)
 	mux.HandleFunc("GET /api/chain", s.handleChain)
 	mux.HandleFunc("GET /api/chain/stats", s.handleChainStats)
+	mux.HandleFunc("GET /api/chain/history", s.handleChainHistory)
 	// Account books and order actions are available only through authenticated broker APIs.
 	mux.HandleFunc("GET /api/broker/orders", s.handleBrokerOrders)
 	mux.HandleFunc("GET /api/broker/orders/{id}", s.handleBrokerOrder)
@@ -713,6 +730,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /api/broker/margin/required", s.handleBrokerMarginRequired)
 	mux.HandleFunc("POST /api/margin/required", s.handleBrokerMarginRequired)
 	mux.HandleFunc("GET /api/scrip/search", s.handleScripSearch)
+	mux.HandleFunc("GET /api/scrip/futures", s.handleScripFutures)
 	mux.HandleFunc("GET /api/diagnostics/ip", s.handleDiagnosticsIP)
 	mux.HandleFunc("GET /api/brackets", s.handleListBrackets)
 	mux.HandleFunc("POST /api/brackets", s.handleCreateBracket)

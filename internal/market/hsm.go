@@ -186,6 +186,76 @@ func (f *HSMFeed) SubscribedKeys() []string {
 	return keys
 }
 
+// ResyncTokens re-resolves every subscribed key against the current Scrip
+// Master snapshot and re-subscribes the keys whose broker token changed.
+// Scrip syncs retarget stable keys to new contracts — an index future rolls to
+// the next month — and without this a client that subscribed from the boot
+// snapshot keeps streaming the previous, expiring contract.
+func (f *HSMFeed) ResyncTokens() {
+	if f == nil {
+		return
+	}
+	var subscribeIndices, subscribeScrips []string
+	var unsubscribeIndices, unsubscribeScrips []string
+	f.mu.Lock()
+	client := f.client
+	for key, sub := range f.subs {
+		fresh, err := f.topicForKey(key)
+		if err != nil {
+			// The key is no longer resolvable; leave it subscribed so an
+			// explicit Unsubscribe still removes it cleanly.
+			continue
+		}
+		if fresh.token == sub.token {
+			continue
+		}
+		f.subs[key] = fresh
+		if fresh.index {
+			subscribeIndices = append(subscribeIndices, fresh.token)
+			unsubscribeIndices = append(unsubscribeIndices, sub.token)
+		} else {
+			subscribeScrips = append(subscribeScrips, fresh.token)
+			unsubscribeScrips = append(unsubscribeScrips, sub.token)
+		}
+		if f.log != nil {
+			f.log.Info("HSM subscription token re-resolved", "event", "hsm_token_resynced",
+				"key", key, "old_token", sub.token, "new_token", fresh.token)
+		}
+	}
+	f.mu.Unlock()
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	// Subscribe the fresh tokens before dropping the stale ones so a token
+	// swap never leaves the key without a stream.
+	if len(subscribeIndices) > 0 {
+		if err := client.SubscribeIndices(subscribeIndices); err != nil {
+			f.log.Warn("token resubscribe failed for index tokens", "event", "hsm_resubscribe_failed", "error", err)
+		}
+	}
+	if len(subscribeScrips) > 0 {
+		if err := client.SubscribeScrips(subscribeScrips); err != nil {
+			f.log.Warn("token resubscribe failed for scrip tokens", "event", "hsm_resubscribe_failed", "error", err)
+		}
+		if err := client.SubscribeDepth(subscribeScrips); err != nil {
+			f.log.Warn("token depth resubscribe failed", "event", "hsm_resubscribe_failed", "error", err)
+		}
+	}
+	if len(unsubscribeIndices) > 0 {
+		if err := client.UnsubscribeIndices(unsubscribeIndices); err != nil {
+			f.log.Warn("token unsubscribe failed for index tokens", "event", "hsm_resubscribe_failed", "error", err)
+		}
+	}
+	if len(unsubscribeScrips) > 0 {
+		if err := client.UnsubscribeScrips(unsubscribeScrips); err != nil {
+			f.log.Warn("token unsubscribe failed for scrip tokens", "event", "hsm_resubscribe_failed", "error", err)
+		}
+		if err := client.UnsubscribeDepth(unsubscribeScrips); err != nil {
+			f.log.Warn("token depth unsubscribe failed", "event", "hsm_resubscribe_failed", "error", err)
+		}
+	}
+}
+
 // Unsubscribe removes instrument keys from the feed subscription set.
 func (f *HSMFeed) Unsubscribe(keys []string) error {
 	var scripTokens, indexTokens []string
@@ -373,7 +443,11 @@ func (f *HSMFeed) topicForKey(key string) (hsmSubscription, error) {
 		if option, ok := f.scrips.Option(key); ok {
 			return hsmSubscription{token: option.ExchangeSegment + "|" + option.PSymbol}, nil
 		}
-		if spot, ok := f.scrips.Spot(key); ok && spot.ExchangeSegment == scrip.SegmentMCXFO {
+		// Spot rows on a futures segment are by construction future contracts:
+		// MCX nearest-month commodities and the NSE/BSE index futures the
+		// parser records. Cash-segment Spot rows resolve through the
+		// configured index topics below instead.
+		if spot, ok := f.scrips.Spot(key); ok && scrip.IsScripsFeedSegment(spot.ExchangeSegment) {
 			return hsmSubscription{token: spot.ExchangeSegment + "|" + spot.PSymbol}, nil
 		}
 	}

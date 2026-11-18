@@ -39,14 +39,15 @@ func TestOpenAndSchema(t *testing.T) {
 		t.Fatalf("Ping: %v", err)
 	}
 	v, err := s.SchemaVersion(ctx)
-	if err != nil || v != 14 {
+	if err != nil || v != 15 {
 		t.Fatalf("SchemaVersion = %d, %v", v, err)
 	}
 	if !filepath.IsAbs(s.Path()) {
 		t.Fatalf("path is not absolute: %s", s.Path())
 	}
 	want := []string{
-		"ai_evaluations", "ai_playbooks", "audit_log", "background_watchlist", "brackets", "candles", "devices", "instruments", "meta", "oi_baselines", "orders",
+		"ai_evaluations", "ai_playbooks", "audit_log", "background_watchlist", "brackets", "candles",
+		"chain_snapshot_rows", "chain_snapshots", "devices", "instruments", "meta", "oi_baselines", "orders",
 		"paper_account", "paper_orders", "paper_positions", "paper_trades",
 		"schema_migrations", "scrip_sync", "sessions", "spot_instruments", "trades",
 	}
@@ -89,7 +90,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 			t.Fatalf("Open %d: %v", i, err)
 		}
 		v, err := s.SchemaVersion(context.Background())
-		if err != nil || v != 14 {
+		if err != nil || v != 15 {
 			t.Fatalf("version = %d, %v", v, err)
 		}
 		if err := s.Close(); err != nil {
@@ -174,7 +175,7 @@ func TestLoadMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m) != 14 {
+	if len(m) != 15 {
 		t.Fatalf("migrations = %+v", m)
 	}
 	if m[0].version != 1 || m[0].name != "0001_init.sql" || m[0].sql == "" {
@@ -219,6 +220,9 @@ func TestLoadMigrations(t *testing.T) {
 	if len(m) < 14 || m[13].version != 14 || m[13].name != "0014_candle_oi.sql" || m[13].sql == "" {
 		t.Fatalf("fourteenth migration = %+v", m[13])
 	}
+	if len(m) < 15 || m[14].version != 15 || m[14].name != "0015_chain_snapshots.sql" || m[14].sql == "" {
+		t.Fatalf("fifteenth migration = %+v", m[14])
+	}
 }
 
 func TestFailedMigrationRollsBack(t *testing.T) {
@@ -232,8 +236,8 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 14 {
-		t.Fatalf("version = %d, want 14", v)
+	if v != 15 {
+		t.Fatalf("version = %d, want 15", v)
 	}
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 99`).Scan(&count); err != nil {

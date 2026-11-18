@@ -88,6 +88,14 @@ market:
     # Expand the initial chain outward until the OTM call (above) or put
     # (below) premium falls to this value. 0 keeps the fixed 19-strike window.
     premium_cutoff: 30
+  # Persist option-chain snapshots for historical replay. Recording piggybacks
+  # on the /api/chain and /api/chain/stats refreshes the browser already makes;
+  # it never triggers an extra broker call. Spot/PCR/max-pain/OI walls plus
+  # per-strike LTP/OI/day-ΔOI/volume are stored in SQLite.
+  chain_recorder:
+    enabled: true
+    retention_days: 90        # prune snapshots older than this many days
+    min_interval_sec: 55      # min gap between recorded snapshots per (index, expiry)
   depth:
     enabled: true
     mode: "poll"             # poll | websocket

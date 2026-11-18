@@ -3546,6 +3546,8 @@ export class CandleChart {
     this.srOverlayIds = [];
     this.autoTrendlineOverlayIds = [];
     this.patternOverlayIds = [];
+    this.signalOverlayIds = [];
+    this.showSignals = false;
     this.fibOverlayIds = [];
     this.tradeOverlayIds = [];
     this.positionOverlayId = null;
@@ -4851,6 +4853,71 @@ export class CandleChart {
         if (id) this.patternOverlayIds.push(id);
       } catch (e) {
         console.warn("createOverlay liquidity:", e);
+      }
+    }
+  }
+
+  toggleSignals(forceState) {
+    this.showSignals = typeof forceState === "boolean" ? forceState : !this.showSignals;
+    if (!this.showSignals) this.clearSignals();
+    return this.showSignals;
+  }
+
+  clearSignals() {
+    if (!this.chart) return;
+    try {
+      this.chart.removeOverlay({ groupId: "signal_engine" });
+    } catch (_) {}
+    for (const id of this.signalOverlayIds) {
+      try {
+        this.chart.removeOverlay({ id });
+      } catch (_) {}
+    }
+    this.signalOverlayIds = [];
+  }
+
+  /**
+   * Render the deterministic signal engine's per-bar results as chart
+   * markers. Results come from the engine's fixed evaluation grid (5m); a
+   * marker's timestamp snaps onto whatever displayed bar contains it, so the
+   * markers stay meaningful on every chart timeframe. Only a bounded recent
+   * window is drawn, and just the last few ARMED previews to avoid clutter.
+   */
+  setSignals(results) {
+    this.clearSignals();
+    if (!this.showSignals || !this.chart || !Array.isArray(results) || !results.length) return;
+    const recent = results.slice(-120);
+    let armedDrawn = 0;
+    for (const result of recent) {
+      if (!result || !Number.isFinite(result.time)) continue;
+      const buy = result.action === "BUY_CE" || result.action === "BUY_PE";
+      const armed = result.action === "ARMED_CE" || result.action === "ARMED_PE";
+      if (!buy && !armed) continue;
+      const bull = result.action === "BUY_CE" || result.action === "ARMED_CE";
+      if (armed && armedDrawn >= 3) continue;
+      if (armed) armedDrawn += 1;
+      const bar = findClosestCandle(this.data, toChartTimestamp(result.time));
+      const price = bull
+        ? Number(result.stop ?? (bar ? bar.low : NaN))
+        : Number(result.stop ?? (bar ? bar.high : NaN));
+      if (!Number.isFinite(price)) continue;
+      try {
+        const id = this.chart.createOverlay({
+          name: "signalMarker",
+          groupId: "signal_engine",
+          points: [{ timestamp: toChartTimestamp(result.time), value: price }],
+          lock: true,
+          extendData: {
+            dir: bull ? "up" : "down",
+            color: armed ? "#f0b429" : bull ? "#29b360" : "#f05a5a",
+            label: armed ? "ARMED" : bull ? "CE" : "PE",
+            offset: armed ? 8 : 10,
+            size: armed ? 3 : 4,
+          },
+        });
+        if (id) this.signalOverlayIds.push(id);
+      } catch (e) {
+        console.warn("createOverlay signal:", e);
       }
     }
   }

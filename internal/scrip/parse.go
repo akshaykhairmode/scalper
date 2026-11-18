@@ -168,6 +168,36 @@ func ParseSegment(segment string, r io.Reader, cfg ParseConfig) (SegmentData, er
 			continue
 		}
 
+		// NSE/BSE index futures: recorded as Spot rows under a stable key
+		// ("nse_fo|NIFTY") with the live contract token in PSymbol, mirroring
+		// the MCX commodity-future handling above. Nearest non-expired
+		// contract wins, so every Scrip Master sync rolls the key to the next
+		// month automatically.
+		if (segment == SegmentNSEFO || segment == SegmentBSEFO) && instType == "FUTIDX" {
+			spot, expiry, matched, err := parseIndexFutureRow(segment, record, cols, name, underlyings, cfg)
+			if err != nil {
+				return SegmentData{}, fmt.Errorf("%w: %s line %d: %w", ErrSchema, segment, line, err)
+			}
+			if !matched {
+				data.Skipped++
+				continue
+			}
+			today := cfg.Now
+			if today.IsZero() {
+				today = time.Now()
+			}
+			if expiry < today.In(ist).Format("2006-01-02") {
+				data.Skipped++
+				continue
+			}
+			key := spot.InstrumentKey
+			if current, ok := spotExpiries[key]; !ok || expiry < current {
+				spots[key] = spot
+				spotExpiries[key] = expiry
+			}
+			continue
+		}
+
 		if isOptionInstrument(segment, instType) {
 			opt, matched, err := parseOptionRow(segment, record, cols, name, underlyings, cfg)
 			if err != nil {
@@ -262,6 +292,66 @@ func parseCommodityFutureRow(
 		return Spot{}, "", false, err
 	}
 	return spot, expiry, true, nil
+}
+
+// parseIndexFutureRow turns an NSE/BSE FUTIDX row into a Spot keyed by the
+// stable underlying name (e.g. "nse_fo|NIFTY") while the real contract token
+// stays in PSymbol. Scrip Masters name index futures either by the plain
+// underlying ("NIFTY") or by the month-suffixed contract ("NIFTY26NOVFUT"),
+// so matchUnderlyingFuture tries the exact underlying name first and then a
+// contract-shaped decomposition; the exact-prefix rule keeps NIFTY from ever
+// claiming a NIFTYNEXT50 contract.
+func parseIndexFutureRow(
+	segment string,
+	record []string,
+	cols csvColumns,
+	name string,
+	underlyings map[string]Underlying,
+	cfg ParseConfig,
+) (Spot, string, bool, error) {
+	u, ok := matchUnderlyingFuture(name, underlyings)
+	if !ok || u.ExchangeSegment != segment {
+		return Spot{}, "", false, nil
+	}
+	rawExpiry, err := strconv.ParseInt(field(record, cols.expiry), 10, 64)
+	if err != nil {
+		return Spot{}, "", false, fmt.Errorf("future expiry %q is not epoch seconds", field(record, cols.expiry))
+	}
+	trdSymbol := field(record, cols.pTrdSymbol)
+	expiry, err := ParseExpiry(rawExpiry, trdSymbol, cfg.ExpiryOffset)
+	if err != nil {
+		return Spot{}, "", false, err
+	}
+	spot := Spot{
+		InstrumentKey:   SpotKey(segment, u.ScripNameOrKey()),
+		ExchangeSegment: segment,
+		Symbol:          trdSymbol,
+		DisplayName:     u.DisplayName + " FUT",
+		PSymbol:         field(record, cols.pSymbol),
+	}
+	if err := spot.Validate(); err != nil {
+		return Spot{}, "", false, err
+	}
+	return spot, expiry, true, nil
+}
+
+// matchUnderlyingFuture resolves the configured underlying a future row
+// belongs to. `name` is the pSymbolName column: either the plain underlying
+// (exact map hit) or the month-suffixed contract name, whose prefix must be
+// exactly a configured underlying followed by the YY+MON+"FUT" suffix.
+func matchUnderlyingFuture(name string, underlyings map[string]Underlying) (Underlying, bool) {
+	normalized := NormalizeName(name)
+	if u, ok := underlyings[normalized]; ok {
+		return u, true
+	}
+	loc := futureSuffix.FindStringIndex(normalized)
+	if loc == nil || loc[0] == 0 {
+		return Underlying{}, false
+	}
+	// The prefix must be exactly a configured underlying: a NIFTYNEXT50
+	// contract must not resolve to NIFTY.
+	u, ok := underlyings[normalized[:loc[0]]]
+	return u, ok
 }
 
 func isOptionInstrument(segment, instType string) bool {

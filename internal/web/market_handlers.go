@@ -16,6 +16,7 @@ import (
 	"github.com/akshaykhairmode/scalper/internal/errs"
 	"github.com/akshaykhairmode/scalper/internal/logging"
 	"github.com/akshaykhairmode/scalper/internal/market"
+	"github.com/akshaykhairmode/scalper/internal/scrip"
 )
 
 func (s *Server) marketBaseURL() string {
@@ -219,6 +220,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			s.storeChainCache(cacheKey, payload)
 		}
 		s.ingestChainQuotes(page.Rows)
+		s.recordChainSnapshot(r.Context(), index, expiry, page.Rows, false)
 		s.writeRouteJSON(w, r, http.StatusOK, page)
 		return
 	}
@@ -256,6 +258,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		s.storeChainCache(cacheKey, payload)
 	}
 	s.ingestChainQuotes(rows)
+	s.recordChainSnapshot(r.Context(), index, expiry, rows, true)
 	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"rows": rows})
 }
 
@@ -266,6 +269,51 @@ type chainStatsPayload struct {
 	PCR        float64 `json:"pcr"`
 	Strikes    int     `json:"strikes"`
 	AsOf       int64   `json:"asOf"`
+}
+
+// chainStatsFromRows summarises a strike ladder into the chain-level levels
+// served by /api/chain/stats and stored with every recorded chain snapshot:
+// PCR, max pain and the strikes carrying the largest CE/PE open interest.
+// Both call sites must agree, so the computation lives in exactly one place.
+// Walls fall back to zero when the ladder carries no open interest; the
+// wall strike is the last row matching the maximum OI.
+func chainStatsFromRows(rows []market.ChainRow, asOf int64) chainStatsPayload {
+	var callOI, putOI, callWall, putWall int64
+	for _, row := range rows {
+		if row.Call != nil {
+			callOI += row.Call.OI
+			if row.Call.OI > callWall {
+				callWall = row.Call.OI
+			}
+		}
+		if row.Put != nil {
+			putOI += row.Put.OI
+			if row.Put.OI > putWall {
+				putWall = row.Put.OI
+			}
+		}
+	}
+	stats := chainStatsPayload{
+		Strikes: len(rows),
+		AsOf:    asOf,
+	}
+	if callOI+putOI > 0 {
+		stats.MaxPain = computeMaxPain(rows)
+	}
+	if callOI > 0 {
+		stats.PCR = float64(putOI) / float64(callOI)
+	}
+	if callWall > 0 || putWall > 0 {
+		for _, row := range rows {
+			if callWall > 0 && row.Call != nil && row.Call.OI == callWall {
+				stats.CallOIWall = row.Strike
+			}
+			if putWall > 0 && row.Put != nil && row.Put.OI == putWall {
+				stats.PutOIWall = row.Strike
+			}
+		}
+	}
+	return stats
 }
 
 // handleChainStats returns chain-level levels that need the full strike
@@ -315,41 +363,7 @@ func (s *Server) handleChainStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var callOI, putOI, callWall, putWall int64
-	for _, row := range rows {
-		if row.Call != nil {
-			callOI += row.Call.OI
-			if row.Call.OI > callWall {
-				callWall = row.Call.OI
-			}
-		}
-		if row.Put != nil {
-			putOI += row.Put.OI
-			if row.Put.OI > putWall {
-				putWall = row.Put.OI
-			}
-		}
-	}
-	stats := chainStatsPayload{
-		Strikes: len(rows),
-		AsOf:    s.now().UnixMilli(),
-	}
-	if callOI+putOI > 0 {
-		stats.MaxPain = computeMaxPain(rows)
-	}
-	if callOI > 0 {
-		stats.PCR = float64(putOI) / float64(callOI)
-	}
-	if callWall > 0 || putWall > 0 {
-		for _, row := range rows {
-			if callWall > 0 && row.Call != nil && row.Call.OI == callWall {
-				stats.CallOIWall = row.Strike
-			}
-			if putWall > 0 && row.Put != nil && row.Put.OI == putWall {
-				stats.PutOIWall = row.Strike
-			}
-		}
-	}
+	stats := chainStatsFromRows(rows, s.now().UnixMilli())
 
 	payload, encodeErr := json.Marshal(stats)
 	if encodeErr != nil {
@@ -357,6 +371,7 @@ func (s *Server) handleChainStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.storeChainCache(cacheKey, payload)
+	s.recordChainSnapshot(r.Context(), index, expiry, rows, true)
 	s.writeRouteJSON(w, r, http.StatusOK, stats)
 }
 
@@ -578,6 +593,50 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = res.Warning
 	}
 	s.writeRouteJSON(w, r, http.StatusOK, resp)
+}
+
+// scripFuturePayload is one configured index's resolved futures contract.
+type scripFuturePayload struct {
+	Underlying string `json:"underlying"`
+	Key        string `json:"key"`
+	Segment    string `json:"segment"`
+	Symbol     string `json:"symbol"`
+	Expiry     string `json:"expiry,omitempty"`
+}
+
+// handleScripFutures resolves the nearest-expiry index future per configured
+// index underlying, e.g. NIFTY -> "nse_fo|NIFTY" pointing at the current-month
+// contract token. The signal engine's futures shadow subscribes these keys;
+// the key is stable while the Scrip Master sync retargets it at every roll.
+func (s *Server) handleScripFutures(w http.ResponseWriter, r *http.Request) {
+	spotResolver, ok := s.market.(interface {
+		FindSpot(string, string) (scrip.Spot, bool)
+	})
+	if !ok {
+		s.writeRouteError(w, r, http.StatusServiceUnavailable, "scrip spot resolution is unavailable", nil)
+		return
+	}
+	snap := s.configSnapshot()
+	out := make([]scripFuturePayload, 0, len(snap.Market.Indices))
+	for _, idx := range snap.Market.Indices {
+		name := strings.TrimSpace(idx.ScripName)
+		if name == "" {
+			name = idx.Key
+		}
+		spot, found := spotResolver.FindSpot(idx.ExchangeSegment, name)
+		if !found || spot.ExchangeSegment == "" || !scrip.IsScripsFeedSegment(spot.ExchangeSegment) {
+			continue
+		}
+		expiry, _ := scrip.FutureExpiryMonth(spot.Symbol)
+		out = append(out, scripFuturePayload{
+			Underlying: idx.Key,
+			Key:        spot.InstrumentKey,
+			Segment:    spot.ExchangeSegment,
+			Symbol:     spot.Symbol,
+			Expiry:     expiry,
+		})
+	}
+	s.writeRouteJSON(w, r, http.StatusOK, map[string]any{"futures": out})
 }
 
 func (s *Server) handleCandlesBatch(w http.ResponseWriter, r *http.Request) {

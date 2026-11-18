@@ -1798,6 +1798,72 @@ func TestScripSearchRoute(t *testing.T) {
 	}
 }
 
+// futuresMarketAPI extends fakeMarketAPI with the spot resolution the
+// /api/scrip/futures route needs.
+type futuresMarketAPI struct {
+	fakeMarketAPI
+	futures []scrip.Spot
+}
+
+func (f futuresMarketAPI) FindSpot(segment, symbol string) (scrip.Spot, bool) {
+	for _, spot := range f.futures {
+		if spot.ExchangeSegment != segment {
+			continue
+		}
+		// Mirror the manager's feed indexes: the stable key's name tail, the
+		// trading symbol, or the token all resolve to the same row.
+		if scrip.SpotKey(segment, symbol) == spot.InstrumentKey ||
+			scrip.NormalizeName(spot.Symbol) == scrip.NormalizeName(symbol) {
+			return spot, true
+		}
+	}
+	return scrip.Spot{}, false
+}
+
+func TestScripFuturesRoute(t *testing.T) {
+	future := scrip.Spot{
+		InstrumentKey:   scrip.SpotKey("nse_fo", "NIFTY"),
+		ExchangeSegment: "nse_fo",
+		Symbol:          "NIFTY26NOVFUT",
+		DisplayName:     "NIFTY FUT",
+		PSymbol:         "48999",
+	}
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: futuresMarketAPI{futures: []scrip.Spot{future}}})
+	rec := do(t, s, localRequest(http.MethodGet, "/api/scrip/futures"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Futures []scripFuturePayload `json:"futures"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal futures: %v", err)
+	}
+	var nifty *scripFuturePayload
+	for i := range response.Futures {
+		if response.Futures[i].Underlying == "NIFTY" {
+			nifty = &response.Futures[i]
+		}
+	}
+	if nifty == nil {
+		t.Fatalf("NIFTY future missing: %+v", response.Futures)
+	}
+	if nifty.Key != "nse_fo|NIFTY" || nifty.Segment != "nse_fo" {
+		t.Fatalf("NIFTY future = %+v", nifty)
+	}
+	if nifty.Symbol != "NIFTY26NOVFUT" || nifty.Expiry != "2026-11" {
+		t.Fatalf("NIFTY future = %+v", nifty)
+	}
+}
+
+func TestScripFuturesRouteWithoutSpotResolution(t *testing.T) {
+	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
+	rec := do(t, s, localRequest(http.MethodGet, "/api/scrip/futures"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
 func TestDiagnosticsIPRoute(t *testing.T) {
 	s := newTestServer(t, serverOpts{db: fakeDB{}, marketAPI: fakeMarketAPI{}})
 	// Seed the cache to avoid outbound networking in unit tests

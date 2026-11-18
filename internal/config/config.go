@@ -60,16 +60,27 @@ type Kotak struct {
 
 // Market holds index, chain and feed settings.
 type Market struct {
-	DataMode    string      `yaml:"data_mode" json:"data_mode"`
-	HSMURL      string      `yaml:"hsm_url" json:"hsm_url"`
-	Indices     []Index     `yaml:"indices" json:"indices"`
-	Commodities []Commodity `yaml:"commodities" json:"commodities"`
-	IndiaVIX    IndiaVIX    `yaml:"india_vix" json:"india_vix"`
-	Chain       Chain       `yaml:"chain" json:"chain"`
-	Depth       Depth       `yaml:"depth" json:"depth"`
-	Holidays    []string    `yaml:"holidays" json:"holidays"`
+	DataMode      string        `yaml:"data_mode" json:"data_mode"`
+	HSMURL        string        `yaml:"hsm_url" json:"hsm_url"`
+	Indices       []Index       `yaml:"indices" json:"indices"`
+	Commodities   []Commodity   `yaml:"commodities" json:"commodities"`
+	IndiaVIX      IndiaVIX      `yaml:"india_vix" json:"india_vix"`
+	Chain         Chain         `yaml:"chain" json:"chain"`
+	ChainRecorder ChainRecorder `yaml:"chain_recorder" json:"chain_recorder"`
+	Depth         Depth         `yaml:"depth" json:"depth"`
+	Holidays      []string      `yaml:"holidays" json:"holidays"`
 
 	Background BackgroundCollection `yaml:"background_collection" json:"background_collection"`
+}
+
+// ChainRecorder persists option-chain snapshots the server has already served
+// so a signal backtester can replay historical chain context. Recording
+// piggybacks on the /api/chain and /api/chain/stats refreshes the browser
+// already performs; it never makes an additional upstream call.
+type ChainRecorder struct {
+	Enabled        bool `yaml:"enabled" json:"enabled"`
+	RetentionDays  int  `yaml:"retention_days" json:"retention_days"`
+	MinIntervalSec int  `yaml:"min_interval_sec" json:"min_interval_sec"`
 }
 
 // BackgroundCollection configures the TOTP-free REST poller that keeps candle
@@ -345,6 +356,11 @@ func Default() Config {
 			Chain: Chain{
 				BatchSize:     40,
 				PremiumCutoff: 30,
+			},
+			ChainRecorder: ChainRecorder{
+				Enabled:        true,
+				RetentionDays:  90,
+				MinIntervalSec: 55,
 			},
 			Depth: Depth{Enabled: true, Mode: "poll"},
 			Background: BackgroundCollection{
