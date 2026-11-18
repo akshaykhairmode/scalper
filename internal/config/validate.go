@@ -513,6 +513,16 @@ func (c Config) validateWeb() error {
 			return fieldErr("web.basic_auth", "app.listen binds to public/LAN address %q but web.basic_auth is unconfigured; configure web.basic_auth, set web.insecure_no_auth: true, or bind to localhost (127.0.0.1)", c.App.Listen)
 		}
 	}
+
+	rl := c.Web.RateLimit
+	if rl.Enabled {
+		if rl.PerSecond < 1 || rl.PerSecond > 10000 {
+			return fieldErr("web.rate_limit.per_second", "must be between 1 and 10000, got %d", rl.PerSecond)
+		}
+		if rl.Burst < rl.PerSecond || rl.Burst > 100000 {
+			return fieldErr("web.rate_limit.burst", "must be at least per_second and at most 100000, got %d", rl.Burst)
+		}
+	}
 	return nil
 }
 

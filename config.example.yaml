@@ -185,6 +185,18 @@ web:
     username: ""
     password: ""
 
+  # rate_limit: Per-IP request throttling across the whole API surface.
+  # The app is normally loopback-only behind the Caddy reverse proxy; this is
+  # its own flood valve for abuse coming through the proxy and the only line
+  # of defence if the app is ever exposed directly. Health probes bypass it.
+  # X-Forwarded-For is trusted only when the direct peer is loopback, so
+  # attribution cannot be spoofed by direct clients. Login endpoints keep
+  # their own tighter 5-attempts limiter on top of this.
+  rate_limit:
+    enabled: true
+    per_second: 60             # Sustained requests per second per client IP
+    burst: 120                 # Token bucket capacity per client IP (>= per_second)
+
 ai:
   enabled: false             # Master toggle for AI evaluation engine
   shadow_mode: true          # Paper-only: never send broker orders from AI signals

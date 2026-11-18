@@ -243,6 +243,21 @@ type Web struct {
 	BasicAuth      BasicAuth `yaml:"basic_auth" json:"basic_auth"`
 	AllowedOrigins []string  `yaml:"allowed_origins" json:"allowed_origins"`
 	InsecureNoAuth bool      `yaml:"insecure_no_auth" json:"insecure_no_auth"`
+	// RateLimit caps requests per client IP across the whole API surface.
+	// It is the application's own flood valve behind the reverse proxy, and
+	// the only line of defence if the app is ever exposed directly.
+	RateLimit RateLimit `yaml:"rate_limit" json:"rate_limit"`
+}
+
+// RateLimit holds per-IP request throttling settings. X-Forwarded-For is
+// trusted only when the direct peer is loopback, so attribution behind the
+// reverse proxy is correct and direct clients cannot spoof it.
+type RateLimit struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// PerSecond is the sustained request allowance per client IP.
+	PerSecond int `yaml:"per_second" json:"per_second"`
+	// Burst is the token bucket capacity per client IP.
+	Burst int `yaml:"burst" json:"burst"`
 }
 
 // HasBasicAuth reports whether both username and password are non-empty.
@@ -431,7 +446,12 @@ func Default() Config {
 		Scrip: Scrip{
 			Segments: []string{"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo"},
 		},
-		Web: Web{},
+		Web: Web{
+			// A single-user terminal polls a few requests per second in
+			// bursts; 60/s sustained with a 120-request bucket absorbs any
+			// legitimate tab storm while cutting floods early.
+			RateLimit: RateLimit{Enabled: true, PerSecond: 60, Burst: 120},
+		},
 		AI: AI{
 			Enabled:             false,
 			ShadowMode:          true,

@@ -176,8 +176,11 @@ type Server struct {
 
 	feedMu      sync.RWMutex
 	feedClients map[*feedClient]struct{}
-	feedCtx     context.Context
-	feedCancel  context.CancelFunc
+	// feedClientIPs counts live connections per client IP for the per-IP
+	// websocket cap; entries are maintained alongside feedClients.
+	feedClientIPs map[string]int
+	feedCtx       context.Context
+	feedCancel    context.CancelFunc
 
 	indicesMu           sync.RWMutex
 	indicesFetchMu      sync.Mutex
@@ -215,6 +218,8 @@ type Server struct {
 	loginFailures    int
 	loginBlockedTill time.Time
 	loginIPAttempts  map[string][]time.Time
+
+	rateLimiter *rateLimiter
 }
 
 type marginCacheEntry struct {
@@ -454,12 +459,14 @@ func New(opts Options) (*Server, error) {
 		books:               newBooksCache(),
 		risk:                newRiskState(),
 		feedClients:         make(map[*feedClient]struct{}),
+		feedClientIPs:       make(map[string]int),
 		feedCtx:             feedCtx,
 		feedCancel:          feedCancel,
 		serveMode:           true,
 		serveSessions:       make(map[string]time.Time),
 		serveUnlockFailures: make(map[string]serveUnlockFailure),
 		chainCache:          make(map[string]chainCacheEntry),
+		rateLimiter:         newRateLimiter(opts.Config.Web.RateLimit, opts.Now),
 		configPath:          cfgPath,
 	}
 
@@ -759,6 +766,7 @@ func New(opts Options) (*Server, error) {
 	h = s.serveAuthMiddleware(h)
 	h = s.corsMiddleware(h)
 	h = securityHeaders(h)
+	h = s.rateLimitMiddleware(h)
 	h = s.accessLog(h)
 	h = s.requestLogger(h)
 	h = s.recoverPanic(h)
@@ -1190,20 +1198,7 @@ func (s *Server) checkLoginAllowed(r *http.Request) (retryAfter int, errMsg stri
 	}
 
 	// 2. IP-based rate limiting (max 5 attempts per 5 minutes)
-	clientIP := r.RemoteAddr
-	if isLocalOrLoopbackRemote(r) {
-		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-			if idx := strings.IndexByte(xff, ','); idx >= 0 {
-				xff = strings.TrimSpace(xff[:idx])
-			}
-			if net.ParseIP(xff) != nil {
-				clientIP = xff
-			}
-		}
-	}
-	if host, _, err := net.SplitHostPort(clientIP); err == nil {
-		clientIP = host
-	}
+	clientIP := s.clientIPKey(r)
 	if s.loginIPAttempts == nil {
 		s.loginIPAttempts = make(map[string][]time.Time)
 	}

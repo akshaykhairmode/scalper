@@ -44,6 +44,11 @@ type feedClient struct {
 const (
 	maxFeedKeysPerCommand    = 2000
 	maxFeedCommandsPerMinute = 60
+	// Connection caps so a socket flood cannot hold the process's goroutines
+	// hostage. A single-user terminal needs nowhere near these; they exist
+	// so abuse fails closed.
+	maxFeedConnections      = 32
+	maxFeedConnectionsPerIP = 8
 )
 
 // allowSubscribe limits subscription churn per connection so a client cannot
@@ -77,7 +82,25 @@ type feedCommand struct {
 	Keys []string `json:"keys"`
 }
 
+// allowFeedConnection enforces the websocket connection caps before the
+// upgrade: a global ceiling and a per-IP spread. Refused connections get a
+// 429 with a retry hint instead of consuming an upgrade or goroutines.
+func (s *Server) allowFeedConnection(r *http.Request) bool {
+	ip := s.clientIPKey(r)
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	if len(s.feedClients) >= maxFeedConnections {
+		return false
+	}
+	return s.feedClientIPs[ip] < maxFeedConnectionsPerIP
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !s.allowFeedConnection(r) {
+		w.Header().Set("Retry-After", "10")
+		_ = writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "Feed connection limit reached. Try again shortly."})
+		return
+	}
 	if s.configSnapshot().App.ServeMode && s.a != nil && s.a.CurrentSession() == nil &&
 		!s.configSnapshot().Trading.Paper.Enabled {
 		http.Error(w, "broker authentication required", http.StatusUnauthorized)
@@ -140,14 +163,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		send: make(chan []byte, 256),
 	}
 
+	clientIP := s.clientIPKey(r)
 	s.feedMu.Lock()
 	s.feedClients[client] = struct{}{}
+	s.feedClientIPs[clientIP]++
 	s.feedMu.Unlock()
 	defer func() {
 		s.feedMu.Lock()
 		delete(s.feedClients, client)
-		close(client.send)
+		if s.feedClientIPs[clientIP] <= 1 {
+			delete(s.feedClientIPs, clientIP)
+		} else {
+			s.feedClientIPs[clientIP]--
+		}
 		s.feedMu.Unlock()
+		close(client.send)
 		if cerr := conn.Close(); cerr != nil && s.log != nil {
 			s.log.Debug("failed to close feed client connection", "error", cerr)
 		}
