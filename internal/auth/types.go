@@ -8,8 +8,12 @@ import (
 	"time"
 )
 
-// SessionTTL defines the strict Kotak authentication session lifetime.
-const SessionTTL = 3 * time.Hour
+// SessionTTL defines the local broker-session lifetime granted after TOTP or
+// MPIN authentication. 6h30m covers a full trading day plus login margin
+// (09:15–15:30 equity session, 09:00–23:55 MCX evenings still need a manual
+// re-login); the broker token itself may outlive it, but the app retires the
+// session after this window by policy.
+const SessionTTL = 6*time.Hour + 30*time.Minute
 
 // SessionStore persists broker sessions across server restarts.
 type SessionStore interface {

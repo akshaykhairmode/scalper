@@ -89,7 +89,7 @@ func (s *Store) SaveSession(ctx context.Context, session auth.Session) error {
 	}
 	expiresAt := session.TokenExpiry
 	if expiresAt.IsZero() {
-		expiresAt = createdAt.Add(3 * time.Hour)
+		expiresAt = createdAt.Add(auth.SessionTTL)
 	}
 
 	encToken, err := encryptGCM(s.key, session.BrokerToken)

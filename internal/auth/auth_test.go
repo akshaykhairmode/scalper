@@ -463,10 +463,10 @@ func TestServerPersistentSessionFlow(t *testing.T) {
 		t.Fatalf("CompleteLogin: %v", err)
 	}
 
-	// Verify session TTL is 3 hours
+	// Verify the session expiry honours the SessionTTL policy.
 	expectedExpiry := sess.CreatedAt.Add(SessionTTL)
 	if sess.TokenExpiry.Sub(expectedExpiry).Abs() > time.Second {
-		t.Fatalf("expected TTL 3h, got CreatedAt=%v, TokenExpiry=%v", sess.CreatedAt, sess.TokenExpiry)
+		t.Fatalf("expected TTL %v, got CreatedAt=%v, TokenExpiry=%v", SessionTTL, sess.CreatedAt, sess.TokenExpiry)
 	}
 
 	// Verify session was saved to store
