@@ -34,7 +34,8 @@ func TestStoreBracketsCRUD(t *testing.T) {
 		ExchangeStopMode:    bracket.ExchangeStopSLM,
 		ExchangeStopOrderID: "xstop-1",
 		ExchangeStopPrice:   2450.00,
-		ExchangeStopStatus:  bracket.ExchangeStopWorking,
+		ExchangeStopStatus:  bracket.ExchangeStopRejected,
+		ExchangeStopReason:  "SL-M Order Not Allowed — use a stop-loss limit order",
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -58,7 +59,8 @@ func TestStoreBracketsCRUD(t *testing.T) {
 	if got.ExchangeStopMode != bracket.ExchangeStopSLM ||
 		got.ExchangeStopOrderID != "xstop-1" ||
 		got.ExchangeStopPrice != 2450.00 ||
-		got.ExchangeStopStatus != bracket.ExchangeStopWorking {
+		got.ExchangeStopStatus != bracket.ExchangeStopRejected ||
+		got.ExchangeStopReason != "SL-M Order Not Allowed — use a stop-loss limit order" {
 		t.Fatalf("exchange stop fields did not round-trip: %+v", got)
 	}
 

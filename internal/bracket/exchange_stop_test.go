@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -494,5 +495,197 @@ func TestExchangeStopDistanceFallbacks(t *testing.T) {
 	b.StopLossPrice = 0
 	if got := e.exchangeStopDistanceLocked(b); got != 2 {
 		t.Fatalf("fallback distance = %v, want 2%% of entry", got)
+	}
+}
+
+func TestExchangeStopSLMRejectionFallsBackToSLL(t *testing.T) {
+	cfg := DefaultExchangeStopConfig()
+	cfg.Mode = ExchangeStopSLM
+	engine, h, store := newExchangeStopEngine(t, cfg)
+
+	b, err := engine.Create(context.Background(), Bracket{
+		ExchangeSegment:     "nse_fo",
+		TradingSymbol:       "NIFTY26NOV25000CE",
+		InstrumentKey:       "nse_fo|NIFTY|2026-11-26|25000|CE",
+		TransactionType:     "BUY",
+		Quantity:            50,
+		EntryPrice:          100,
+		TargetPrice:         110,
+		StopLossPrice:       94,
+		Status:              StatusInPosition,
+		ExchangeStopMode:    ExchangeStopSLM,
+		ExchangeStopOrderID: "xstop-1",
+		ExchangeStopStatus:  ExchangeStopWorking,
+		ExchangeStopPrice:   85,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"order_id": "xstop-1",
+		"status":   "rejected",
+		"rejRsn":   "RMS: STOP LOSS MARKET ORDER NOT ALLOWED",
+	})
+	engine.OnOrderEvent(context.Background(), orderfeed.Event{Data: data})
+
+	got, _ := engine.Get(b.ID)
+	if got.ExchangeStopMode != ExchangeStopSLL {
+		t.Fatalf("expected the bracket to fall back to SL, got %q", got.ExchangeStopMode)
+	}
+	if got.ExchangeStopStatus != ExchangeStopWorking {
+		t.Fatalf("expected a working replacement, got %q", got.ExchangeStopStatus)
+	}
+	if got.ExchangeStopReason != "" {
+		t.Fatalf("a working replacement should clear the old rejection reason, got %q", got.ExchangeStopReason)
+	}
+
+	h.mu.Lock()
+	var placed []kotakapi.Order
+	for _, rec := range h.orders {
+		if rec.order.Tag == exchangeStopTag(b.ID) {
+			placed = append(placed, rec.order)
+		}
+	}
+	h.mu.Unlock()
+	if len(placed) != 1 || placed[0].OrderType != "SL" {
+		t.Fatalf("expected exactly one SL-L replacement, got %+v", placed)
+	}
+	if placed[0].TriggerPrice != 85 || placed[0].Price >= placed[0].TriggerPrice {
+		t.Fatalf("unexpected SL-L prices: %+v", placed[0])
+	}
+
+	persisted, _ := store.GetBracket(context.Background(), b.ID)
+	if persisted.ExchangeStopMode != ExchangeStopSLL || persisted.ExchangeStopOrderID == "" {
+		t.Fatalf("fallback was not persisted: %+v", persisted)
+	}
+}
+
+func TestExchangeStopCancelledSLMDoesNotFallBack(t *testing.T) {
+	cfg := DefaultExchangeStopConfig()
+	cfg.Mode = ExchangeStopSLM
+	engine, h, _ := newExchangeStopEngine(t, cfg)
+
+	b, err := engine.Create(context.Background(), Bracket{
+		ExchangeSegment:     "nse_fo",
+		TradingSymbol:       "NIFTY26NOV25000CE",
+		InstrumentKey:       "nse_fo|NIFTY|2026-11-26|25000|CE",
+		TransactionType:     "BUY",
+		Quantity:            50,
+		EntryPrice:          100,
+		TargetPrice:         110,
+		StopLossPrice:       94,
+		Status:              StatusInPosition,
+		ExchangeStopMode:    ExchangeStopSLM,
+		ExchangeStopOrderID: "xstop-1",
+		ExchangeStopStatus:  ExchangeStopWorking,
+		ExchangeStopPrice:   85,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	data, _ := json.Marshal(map[string]any{"order_id": "xstop-1", "status": "cancelled"})
+	engine.OnOrderEvent(context.Background(), orderfeed.Event{Data: data})
+
+	got, _ := engine.Get(b.ID)
+	if got.ExchangeStopMode != ExchangeStopSLM {
+		t.Fatalf("a cancel must not change the mode, got %q", got.ExchangeStopMode)
+	}
+	if got.ExchangeStopStatus != ExchangeStopCancelled {
+		t.Fatalf("expected CANCELLED, got %q", got.ExchangeStopStatus)
+	}
+	if len(h.orders) != 0 {
+		t.Fatalf("a cancel must not place a replacement, got %d orders", len(h.orders))
+	}
+}
+
+func TestExchangeStopBSEFoCoercesSLMToSLL(t *testing.T) {
+	cfg := DefaultExchangeStopConfig()
+	cfg.Mode = ExchangeStopSLM
+	engine, h, _ := newExchangeStopEngine(t, cfg)
+
+	b, err := engine.Create(context.Background(), Bracket{
+		ExchangeSegment:  "bse_fo",
+		TradingSymbol:    "SENSEX26NOV83200CE",
+		InstrumentKey:    "bse_fo|SENSEX|2026-11-26|83200|CE",
+		TransactionType:  "BUY",
+		Quantity:         20,
+		EntryPrice:       100,
+		TargetPrice:      110,
+		StopLossPrice:    94,
+		Status:           StatusInPosition,
+		ExchangeStopMode: ExchangeStopSLM,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	engine.EnsureExchangeStop(context.Background(), b.ID)
+
+	ord, ok := h.placedByTag(exchangeStopTag(b.ID))
+	if !ok {
+		t.Fatal("expected an exchange stop order")
+	}
+	if ord.OrderType != "SL" {
+		t.Fatalf("BSE F&O must use SL-L, got %q", ord.OrderType)
+	}
+	got, _ := engine.Get(b.ID)
+	if got.ExchangeStopMode != ExchangeStopSLL {
+		t.Fatalf("bracket mode = %q, want SL", got.ExchangeStopMode)
+	}
+}
+
+func TestExchangeStopRejectionReasonFromAuditTrail(t *testing.T) {
+	cfg := DefaultExchangeStopConfig()
+	cfg.Mode = ExchangeStopSLL
+	h := newExchangeStopHarness()
+	store := newMockStore()
+	var askedFor string
+	engine := NewEngine(store, &testExec{
+		place:  h.placeOrder,
+		cancel: h.cancelOrder,
+		lookup: h.lookupOrder,
+		rejection: func(_ context.Context, orderID string) (string, error) {
+			askedFor = orderID
+			return "SL-L Order Not Allowed — Stop-loss limit orders are not allowed for this segment.", nil
+		},
+	}, testLogger())
+	engine.SetExchangeStopConfig(cfg)
+
+	b, err := engine.Create(context.Background(), Bracket{
+		ExchangeSegment:     "bse_fo",
+		TradingSymbol:       "SENSEX26NOV83200CE",
+		InstrumentKey:       "bse_fo|SENSEX|2026-11-26|83200|CE",
+		TransactionType:     "BUY",
+		Quantity:            20,
+		EntryPrice:          100,
+		TargetPrice:         110,
+		StopLossPrice:       94,
+		Status:              StatusInPosition,
+		ExchangeStopMode:    ExchangeStopSLL,
+		ExchangeStopOrderID: "xstop-1",
+		ExchangeStopStatus:  ExchangeStopWorking,
+		ExchangeStopPrice:   85,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	data, _ := json.Marshal(map[string]any{"order_id": "xstop-1", "status": "rejected"})
+	engine.OnOrderEvent(context.Background(), orderfeed.Event{Data: data})
+
+	if askedFor != "xstop-1" {
+		t.Fatalf("audit trail was asked for %q", askedFor)
+	}
+	got, _ := engine.Get(b.ID)
+	if got.ExchangeStopStatus != ExchangeStopRejected {
+		t.Fatalf("status = %q, want REJECTED", got.ExchangeStopStatus)
+	}
+	if !strings.Contains(got.ExchangeStopReason, "not allowed") {
+		t.Fatalf("rejection reason was not recorded: %q", got.ExchangeStopReason)
+	}
+	if len(h.orders) != 0 {
+		t.Fatalf("a rejected SL-L must not be retried, got %d orders", len(h.orders))
 	}
 }

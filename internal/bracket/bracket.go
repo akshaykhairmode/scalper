@@ -57,15 +57,18 @@ type Bracket struct {
 	PnL             float64 `json:"pnl"`
 	// ExchangeStopMode is the per-order choice: "" inherits the global default,
 	// "OFF" disables it explicitly, "SL-M"/"SL" request an exchange backstop.
-	ExchangeStopMode    string    `json:"exchange_stop_mode,omitempty"`
-	ExchangeStopOrderID string    `json:"exchange_stop_order_id,omitempty"`
-	ExchangeStopPrice   float64   `json:"exchange_stop_price"`
-	ExchangeStopStatus  string    `json:"exchange_stop_status,omitempty"`
-	Underlying          string    `json:"underlying,omitempty"`
-	Strike              float64   `json:"strike,omitempty"`
-	OptionType          string    `json:"option_type,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ExchangeStopMode    string  `json:"exchange_stop_mode,omitempty"`
+	ExchangeStopOrderID string  `json:"exchange_stop_order_id,omitempty"`
+	ExchangeStopPrice   float64 `json:"exchange_stop_price"`
+	ExchangeStopStatus  string  `json:"exchange_stop_status,omitempty"`
+	// ExchangeStopReason carries the broker's rejection message (RMS text) so
+	// the UI can explain why a backstop is not protecting the position.
+	ExchangeStopReason string    `json:"exchange_stop_reason,omitempty"`
+	Underlying         string    `json:"underlying,omitempty"`
+	Strike             float64   `json:"strike,omitempty"`
+	OptionType         string    `json:"option_type,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // HasExchangeStop reports whether an exchange backstop order was recorded.

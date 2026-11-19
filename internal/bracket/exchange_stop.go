@@ -89,10 +89,152 @@ func (e *Engine) resolveExchangeStopModeLocked(b *Bracket) string {
 	if b == nil {
 		return ""
 	}
+	mode := e.placedExchangeStopModeLocked(b)
+	// Kotak's RMS blocks SL-M on BSE F&O and asks for a stop-loss limit order
+	// instead. Coerce here so every placement path (fill, retry, reconcile)
+	// uses a mode the venue accepts.
+	if mode == ExchangeStopSLM && !exchangeStopSLMAllowed(b.ExchangeSegment) {
+		return ExchangeStopSLL
+	}
+	return mode
+}
+
+// placedExchangeStopModeLocked is the mode a bracket last asked for, before the
+// segment coercion above. An empty per-order choice inherits the global default.
+// The caller must hold e.mu.
+func (e *Engine) placedExchangeStopModeLocked(b *Bracket) string {
+	if b == nil {
+		return ""
+	}
 	if mode := NormalizeExchangeStopMode(b.ExchangeStopMode); mode != "" {
 		return mode
 	}
 	return NormalizeExchangeStopMode(e.exchangeStopCfg.Mode)
+}
+
+// exchangeStopSLMAllowed reports whether the venue accepts stop-loss market
+// orders for a segment. Kotak's RMS rejects them on BSE F&O with
+// "STOP LOSS MARKET ORDER NOT ALLOWED".
+func exchangeStopSLMAllowed(segment string) bool {
+	return !strings.EqualFold(strings.TrimSpace(segment), "bse_fo")
+}
+
+// noteExchangeStopTerminalLocked records a terminal broker status on a bracket
+// and reports whether it should be re-placed as SL-L. Rejected SL-M orders get
+// one fallback: Kotak blocks SL-M on some segments, and a stop that exists in
+// the wrong flavour is worthless while the position is live. The mode change is
+// the loop guard — a rejected SL-L is never retried again.
+// The caller must hold e.mu (write).
+func (e *Engine) noteExchangeStopTerminalLocked(b *Bracket, terminal, reason string) bool {
+	if b == nil {
+		return false
+	}
+	b.ExchangeStopStatus = terminal
+	if r := strings.TrimSpace(reason); r != "" {
+		b.ExchangeStopReason = r
+	}
+	b.UpdatedAt = time.Now()
+	if terminal != ExchangeStopRejected {
+		return false
+	}
+	if e.placedExchangeStopModeLocked(b) != ExchangeStopSLM {
+		return false
+	}
+	b.ExchangeStopMode = ExchangeStopSLL
+	b.ExchangeStopOrderID = ""
+	return true
+}
+
+// lookupExchangeStopRejection fills in the broker's rejection text from the
+// audit trail when the order feed did not carry a reason. Best effort: a missing
+// reason must never block reconciliation or the fallback placement.
+func (e *Engine) lookupExchangeStopRejection(ctx context.Context, bracketID, orderID string) {
+	provider, ok := e.exec.(RejectionReasonProvider)
+	if !ok || strings.TrimSpace(orderID) == "" {
+		return
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	reason, err := provider.OrderRejection(lookupCtx, orderID)
+	if err != nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+
+	e.mu.Lock()
+	b, ok := e.brackets[bracketID]
+	if !ok || strings.TrimSpace(b.ExchangeStopReason) != "" {
+		e.mu.Unlock()
+		return
+	}
+	// The lookup is asynchronous in production: only attach the reason when the
+	// rejection still describes the current backstop, not a superseded order or
+	// a successful SL-L fallback placed in the meantime.
+	if b.ExchangeStopStatus != ExchangeStopRejected && b.ExchangeStopStatus != ExchangeStopFailed {
+		e.mu.Unlock()
+		return
+	}
+	if b.ExchangeStopOrderID != "" && b.ExchangeStopOrderID != orderID {
+		e.mu.Unlock()
+		return
+	}
+	b.ExchangeStopReason = reason
+	b.UpdatedAt = time.Now()
+	cp := *b
+	e.mu.Unlock()
+
+	e.log.Warn("exchange backstop rejection reason",
+		"bracket_id", bracketID, "order_id", orderID, "reason", reason)
+	e.persistBracket(ctx, cp)
+	e.notify(cp)
+}
+
+// scheduleExchangeStopRejectionLookup keeps the broker round-trip off the order
+// feed's dispatch loop in production, while tests (async disabled) stay
+// deterministic.
+func (e *Engine) scheduleExchangeStopRejectionLookup(ctx context.Context, bracketID, orderID string) {
+	e.mu.RLock()
+	async := e.asyncExecution
+	e.mu.RUnlock()
+	if async {
+		go e.lookupExchangeStopRejection(ctx, bracketID, orderID)
+		return
+	}
+	e.lookupExchangeStopRejection(ctx, bracketID, orderID)
+}
+
+// applyExchangeStopTerminal records a terminal broker status, persists it, and
+// reports whether the backstop should be re-placed (a rejected SL-M becomes an
+// SL-L attempt). It must be called without e.mu held.
+func (e *Engine) applyExchangeStopTerminal(ctx context.Context, bracketID, terminal, orderID string) bool {
+	e.mu.Lock()
+	b, ok := e.brackets[bracketID]
+	if !ok {
+		e.mu.Unlock()
+		return false
+	}
+	placedMode := e.placedExchangeStopModeLocked(b)
+	retry := e.noteExchangeStopTerminalLocked(b, terminal, "")
+	cp := *b
+	e.mu.Unlock()
+
+	retryAs := ""
+	if retry {
+		retryAs = ExchangeStopSLL
+	}
+	e.log.Error("CRITICAL: exchange backstop was rejected or cancelled by broker",
+		"bracket_id", bracketID, "order_id", orderID, "status", terminal,
+		"mode", placedMode, "reason", cp.ExchangeStopReason, "retry_as", retryAs)
+	e.persistBracket(ctx, cp)
+	e.notify(cp)
+
+	if terminal == ExchangeStopRejected && strings.TrimSpace(cp.ExchangeStopReason) == "" {
+		e.scheduleExchangeStopRejectionLookup(ctx, bracketID, orderID)
+	}
+	return retry
 }
 
 func (e *Engine) exchangeStopDistanceLocked(b *Bracket) float64 {
@@ -288,6 +430,9 @@ placeLoop:
 	}
 	if placeErr != nil || orderID == "" {
 		curr.ExchangeStopStatus = ExchangeStopFailed
+		if placeErr != nil {
+			curr.ExchangeStopReason = placeErr.Error()
+		}
 		if curr.ExchangeStopPrice <= 0 {
 			curr.ExchangeStopPrice = trigger
 		}
@@ -303,6 +448,8 @@ placeLoop:
 	curr.ExchangeStopOrderID = orderID
 	curr.ExchangeStopStatus = ExchangeStopWorking
 	curr.ExchangeStopPrice = trigger
+	// The previous rejection no longer describes the live backstop.
+	curr.ExchangeStopReason = ""
 	curr.UpdatedAt = time.Now()
 	notified := *curr
 	e.mu.Unlock()
@@ -627,8 +774,7 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 			return
 		}
 		if terminal := exchangeStopTerminalStatus(brokerStatus); terminal != "" {
-			e.setExchangeStopStatus(ctx, bracketID, terminal)
-			if e.allowExchangeStopRetry(bracketID) {
+			if e.applyExchangeStopTerminal(ctx, bracketID, terminal, orderID) && e.allowExchangeStopRetry(bracketID) {
 				e.ensureExchangeStop(ctx, bracketID)
 			}
 			return
@@ -662,7 +808,9 @@ func (e *Engine) reconcileExchangeStop(ctx context.Context, bracketID string) {
 			return
 		}
 		if terminal := exchangeStopTerminalStatus(brokerStatus); terminal != "" {
-			e.setExchangeStopStatus(ctx, bracketID, terminal)
+			if e.applyExchangeStopTerminal(ctx, bracketID, terminal, foundID) && e.allowExchangeStopRetry(bracketID) {
+				e.ensureExchangeStop(ctx, bracketID)
+			}
 			return
 		}
 		e.mu.Lock()

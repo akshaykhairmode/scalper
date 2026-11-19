@@ -1384,6 +1384,9 @@ type parsedOrder struct {
 	Tag         string
 	Status      string
 	FilledPrice float64
+	// Reason is the broker's rejection message when the feed carries one. It is
+	// optional: the audit-trail lookup fills it in when the feed is silent.
+	Reason string
 }
 
 func parseOrderData(data json.RawMessage) []parsedOrder {
@@ -1445,6 +1448,17 @@ func extractParsedOrder(m map[string]any) (parsedOrder, bool) {
 		}
 	}
 
+	// Rejection detail, when the feed includes it.
+	for _, k := range []string{"rejLongDesc", "rejlngdesc", "rejShortDesc", "rejshortdesc", "rejRsn", "rejrsn", "rej_reason", "rejection_reason", "status_message"} {
+		if v, ok := m[k]; ok && v != nil {
+			str := strings.TrimSpace(fmt.Sprint(v))
+			if str != "" && str != "—" && str != "<nil>" && str != "NA" {
+				po.Reason = str
+				break
+			}
+		}
+	}
+
 	// Check filled price fields
 	for _, k := range []string{"avgPrc", "avgprc", "avg_price", "average_price", "price", "prc"} {
 		if v, ok := m[k]; ok && v != nil {
@@ -1499,6 +1513,9 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	e.mu.Lock()
 	var updated *Bracket
 	entryFilledID := ""
+	exchangeStopFallbackID := ""
+	exchangeStopRejectedID := ""
+	exchangeStopRejectedBracketID := ""
 	matched := false
 	for _, b := range e.brackets {
 		isEntryMatch := (b.EntryOrderID == ord.OrderID && ord.OrderID != "") || (ord.Tag != "" && ord.Tag == b.ID)
@@ -1528,6 +1545,12 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 			(ord.Tag != "" && ord.Tag == exchangeStopTag(b.ID))
 		if isExchangeStopMatch {
 			matched = true
+			// Every backstop a bracket ever placed shares one tag. Ignore feed
+			// reports for a superseded order so an old rejection cannot cancel
+			// or replace the current backstop.
+			if b.ExchangeStopOrderID != "" && ord.OrderID != "" && b.ExchangeStopOrderID != ord.OrderID {
+				break
+			}
 			if isFilledStatus(ord.Status) {
 				e.applyExchangeStopFillLocked(b, ord.FilledPrice)
 				cp := *b
@@ -1535,10 +1558,22 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 				break
 			}
 			if terminal := exchangeStopTerminalStatus(ord.Status); terminal != "" {
+				placedMode := e.placedExchangeStopModeLocked(b)
+				retry := e.noteExchangeStopTerminalLocked(b, terminal, ord.Reason)
+				retryAs := ""
+				if retry {
+					retryAs = ExchangeStopSLL
+				}
 				e.log.Error("CRITICAL: exchange backstop was rejected or cancelled by broker",
-					"bracket_id", b.ID, "order_id", ord.OrderID, "status", ord.Status)
-				b.ExchangeStopStatus = terminal
-				b.UpdatedAt = time.Now()
+					"bracket_id", b.ID, "order_id", ord.OrderID, "status", ord.Status,
+					"mode", placedMode, "reason", ord.Reason, "retry_as", retryAs)
+				if terminal == ExchangeStopRejected {
+					exchangeStopRejectedBracketID = b.ID
+					exchangeStopRejectedID = ord.OrderID
+					if retry {
+						exchangeStopFallbackID = b.ID
+					}
+				}
 				cp := *b
 				updated = &cp
 				break
@@ -1601,6 +1636,17 @@ func (e *Engine) handleOrderUpdate(ctx context.Context, ord parsedOrder) {
 	}
 	if entryFilledID != "" {
 		e.ensureExchangeStop(ctx, entryFilledID)
+	}
+	switch {
+	case exchangeStopFallbackID != "":
+		// Kotak's RMS blocks SL-M for some segments (notably BSE F&O) and asks
+		// for SL-L. Re-place immediately so the position is not left naked.
+		e.log.Warn("exchange backstop SL-M was rejected; retrying as SL-L",
+			"bracket_id", exchangeStopFallbackID, "rejected_order_id", exchangeStopRejectedID)
+		e.ensureExchangeStop(ctx, exchangeStopFallbackID)
+	case exchangeStopRejectedBracketID != "":
+		// No retry was available: fetch the broker's reason for the UI/log.
+		e.scheduleExchangeStopRejectionLookup(ctx, exchangeStopRejectedBracketID, exchangeStopRejectedID)
 	}
 }
 

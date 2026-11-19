@@ -70,6 +70,32 @@ This document provides architectural guidance, endpoint mapping, rate limiting s
 * **Payload (`jData` JSON):** `{"nOrdNo": "<orderId>"}`
 * **Response:** Array of historical state transitions containing `ordSt` (status), `qty`, `fldQty`, `prc`, `avgPrc`, `rejRsn` (rejection reason), `exchTmstp` (exchange execution timestamp).
 
+### 2a. Exchange Backstop: SL-M restrictions
+
+Kotak's RMS blocks **SL-M (stop-loss market) orders on BSE F&O** (`bse_fo`).
+A rejected backstop looks like this in the order audit trail:
+
+```
+ordSt: rejected
+prcTp: SL-M
+rejRsn: RMS:Blocked for IOSL-MPro/Cli CLIbse_foRemarks:STOP LOSS MARKET ORDER NOT ALLOWED  block type: ALL
+rejShortDesc: SL-M Order Not Allowed
+rejLongDesc: Stop-loss market (SL-M) orders are not allowed for this segment.
+             Try placing a stop-loss limit (SL) order instead.
+```
+
+Scalper handles this in three places:
+
+1. **Segment guard** — `resolveExchangeStopModeLocked` coerces SL-M to SL-L for
+   `bse_fo`, and the quick-order card disables the SL-M option for BSE contracts.
+2. **Fallback** — if an SL-M backstop is rejected anyway (e.g. an older bracket),
+   the engine re-places it once as SL-L at the same trigger, with the limit
+   offset (`trading.bracket.exchange_stop.sl_l_offset_ticks`, default 2 ticks).
+3. **Reason surfacing** — `rejShortDesc`/`rejLongDesc` from the audit trail (or
+   `rejRsn` from the order feed) are stored as `exchange_stop_reason` on the
+   bracket, logged with the CRITICAL rejection line, and shown on the bracket
+   row's backstop badge (`title` tooltip).
+
 ### 3. Demat Holdings (`holdings`)
 
 * **Kotak Route:** `GET <Base URL>/portfolio/v1/holdings`

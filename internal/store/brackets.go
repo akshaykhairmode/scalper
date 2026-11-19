@@ -36,13 +36,14 @@ func (s *Store) CreateBracket(ctx context.Context, b bracket.Bracket) error {
 			transaction_type, quantity, product, entry_price, entry_order_id,
 			target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 			status, pnl, exchange_stop_mode, exchange_stop_order_id,
-			exchange_stop_price, exchange_stop_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		b.ID, bracketMode(b.Mode), b.ExchangeSegment, b.TradingSymbol, b.InstrumentKey,
 		b.TransactionType, b.Quantity, b.Product, b.EntryPrice, b.EntryOrderID,
 		b.TargetPrice, b.StopLossPrice, b.TrailingStop, b.ExitOrderID, b.ExitPrice,
 		b.Status, b.PnL, b.ExchangeStopMode, b.ExchangeStopOrderID,
-		b.ExchangeStopPrice, b.ExchangeStopStatus,
+		b.ExchangeStopPrice, b.ExchangeStopStatus, b.ExchangeStopReason,
 		createdAt.UTC().Format("2006-01-02 15:04:05"),
 		updatedAt.UTC().Format("2006-01-02 15:04:05"),
 	)
@@ -102,6 +103,7 @@ func (s *Store) updateBracket(ctx context.Context, b bracket.Bracket, mode strin
 			exchange_stop_order_id = ?,
 			exchange_stop_price = ?,
 			exchange_stop_status = ?,
+			exchange_stop_reason = ?,
 			updated_at = ?
 		WHERE id = ?`
 	args := []any{
@@ -109,7 +111,7 @@ func (s *Store) updateBracket(ctx context.Context, b bracket.Bracket, mode strin
 		b.TransactionType, b.Quantity, b.Product, b.EntryPrice, b.EntryOrderID,
 		b.TargetPrice, b.StopLossPrice, b.TrailingStop, b.ExitOrderID, b.ExitPrice,
 		b.Status, b.PnL, b.ExchangeStopMode, b.ExchangeStopOrderID,
-		b.ExchangeStopPrice, b.ExchangeStopStatus,
+		b.ExchangeStopPrice, b.ExchangeStopStatus, b.ExchangeStopReason,
 		updatedAt.UTC().Format("2006-01-02 15:04:05"),
 		b.ID,
 	}
@@ -140,7 +142,8 @@ func (s *Store) GetBracket(ctx context.Context, id string) (*bracket.Bracket, er
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets WHERE id = ?`, id)
 
 	b, err := scanBracket(row)
@@ -166,7 +169,8 @@ func (s *Store) ListBrackets(ctx context.Context, limit int) ([]bracket.Bracket,
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list brackets: %w", err)
@@ -199,7 +203,8 @@ func (s *Store) GetActiveBrackets(ctx context.Context) ([]bracket.Bracket, error
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets WHERE status IN ('PENDING_ENTRY', 'IN_POSITION', 'EXIT_FAILED')
 		ORDER BY created_at ASC`)
 	if err != nil {
@@ -235,7 +240,8 @@ func scanBracket(s rowScanner) (*bracket.Bracket, error) {
 		&b.TransactionType, &b.Quantity, &b.Product, &b.EntryPrice, &b.EntryOrderID,
 		&b.TargetPrice, &b.StopLossPrice, &b.TrailingStop, &b.ExitOrderID, &b.ExitPrice,
 		&b.Status, &b.PnL, &b.ExchangeStopMode, &b.ExchangeStopOrderID,
-		&b.ExchangeStopPrice, &b.ExchangeStopStatus, &createdAtStr, &updatedAtStr,
+		&b.ExchangeStopPrice, &b.ExchangeStopStatus, &b.ExchangeStopReason,
+		&createdAtStr, &updatedAtStr,
 	)
 	if err != nil {
 		return nil, err

@@ -289,8 +289,8 @@ func TestChainSnapshotsMigrationApplied(t *testing.T) {
 		}
 	})
 	v, err := v1.SchemaVersion(context.Background())
-	if err != nil || v != 15 {
-		t.Fatalf("SchemaVersion = %d, %v, want 15", v, err)
+	if err != nil || v != 16 {
+		t.Fatalf("SchemaVersion = %d, %v, want 16", v, err)
 	}
 	// Open must be idempotent and the tables must survive the second migrate.
 	if _, err := v1.SaveChainSnapshot(context.Background(), sampleSnapshot(1_793_000_000, "NIFTY")); err != nil {

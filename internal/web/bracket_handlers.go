@@ -334,6 +334,59 @@ func normalizeBracketExchangeStop(b *bracket.Bracket) error {
 // lookupBrokerOrder resolves an exchange stop order by broker ID or by its
 // client tag. The engine uses it to confirm cancellations and reconcile after
 // a restart.
+// lookupOrderRejection reads the broker audit trail for an order and returns a
+// human-readable rejection reason. The order feed does not always carry one.
+func (s *Server) lookupOrderRejection(ctx context.Context, orderID string) (string, error) {
+	if s.kotak == nil {
+		return "", errors.New("broker API is not configured")
+	}
+	session, ok := s.brokerSessionValue()
+	if !ok {
+		return "", errors.New("kotak session unavailable")
+	}
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return "", errors.New("order id required")
+	}
+	raw, err := s.kotak.OrderHistory(ctx, session, orderID)
+	if err != nil {
+		return "", err
+	}
+	rows, err := decodeBookRows(raw)
+	if err != nil {
+		return "", err
+	}
+	clean := func(value string) string {
+		switch strings.ToUpper(strings.TrimSpace(value)) {
+		case "", "—", "-", "NA", "N/A", "NA.":
+			return ""
+		}
+		return strings.TrimSpace(value)
+	}
+	var short, long, rms string
+	for _, row := range rows {
+		if short == "" {
+			short = clean(stringField(row, "rejShortDesc", "rejshortdesc", "rej_short_desc"))
+		}
+		if long == "" {
+			long = clean(stringField(row, "rejLongDesc", "rejlngdesc", "rej_long_desc"))
+		}
+		if rms == "" {
+			rms = clean(stringField(row, "rejRsn", "rejrsn", "rej_reason", "rejection_reason"))
+		}
+	}
+	switch {
+	case short != "" && long != "":
+		return short + " — " + long, nil
+	case long != "":
+		return long, nil
+	case short != "":
+		return short, nil
+	default:
+		return rms, nil
+	}
+}
+
 func (s *Server) lookupBrokerOrder(ctx context.Context, orderID, tag string) (string, string, float64, error) {
 	if s.kotak == nil {
 		return "", "", 0, errors.New("broker API is not configured")

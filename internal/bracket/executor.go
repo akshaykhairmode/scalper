@@ -16,6 +16,13 @@ type Executor interface {
 	Lookup(ctx context.Context, id, tag string) (foundID, status string, price float64, err error)
 }
 
+// RejectionReasonProvider is an optional Executor extension: it returns the
+// broker's rejection reason (RMS text) for an order. Order feeds often omit the
+// reason, while the broker's audit trail always has it.
+type RejectionReasonProvider interface {
+	OrderRejection(ctx context.Context, orderID string) (reason string, err error)
+}
+
 // Fill is a normalized order update delivered to the engine by any executor.
 // Status uses the broker's canonical status strings (COMPLETE, CANCELLED, ...).
 type Fill struct {

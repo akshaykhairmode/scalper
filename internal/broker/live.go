@@ -22,6 +22,9 @@ type Live struct {
 	// LookupFn resolves an order by broker ID or client tag. It is supplied by
 	// the web package because it reuses the account-book parser.
 	LookupFn func(ctx context.Context, id, tag string) (string, string, float64, error)
+	// RejectionFn reads the broker's audit trail for a rejected order. It is
+	// supplied by the web package because it owns the Kotak session.
+	RejectionFn func(ctx context.Context, orderID string) (string, error)
 }
 
 // Place submits an order and extracts the broker order ID from the response.
@@ -86,6 +89,15 @@ func (l *Live) Lookup(ctx context.Context, id, tag string) (string, string, floa
 		return "", "", 0, bracket.ErrExecutorUnavailable
 	}
 	return l.LookupFn(ctx, id, tag)
+}
+
+// OrderRejection returns the broker's rejection reason for an order, when the
+// web layer has wired the audit-trail lookup.
+func (l *Live) OrderRejection(ctx context.Context, id string) (string, error) {
+	if l.RejectionFn == nil {
+		return "", bracket.ErrExecutorUnavailable
+	}
+	return l.RejectionFn(ctx, id)
 }
 
 func (l *Live) session() (kotakapi.Session, bool) {

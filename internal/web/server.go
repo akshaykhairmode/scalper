@@ -487,7 +487,8 @@ func New(opts Options) (*Server, error) {
 			OnOrderChange: func() {
 				s.books.expire(bookOrders, bookPositions, bookLimits)
 			},
-			LookupFn: s.lookupBrokerOrder,
+			LookupFn:    s.lookupBrokerOrder,
+			RejectionFn: s.lookupOrderRejection,
 		}
 		s.bracketEngine = bracket.NewEngine(bStore, live, s.log)
 		s.bracketEngine.SetMode("live")

@@ -82,10 +82,11 @@ func testLogger() *slog.Logger {
 
 // testExec adapts optional test hooks to the Executor interface.
 type testExec struct {
-	place  func(context.Context, kotakapi.Order) (string, error)
-	cancel func(context.Context, string) error
-	modify func(context.Context, string, kotakapi.Order) error
-	lookup func(context.Context, string, string) (string, string, float64, error)
+	place     func(context.Context, kotakapi.Order) (string, error)
+	cancel    func(context.Context, string) error
+	modify    func(context.Context, string, kotakapi.Order) error
+	lookup    func(context.Context, string, string) (string, string, float64, error)
+	rejection func(context.Context, string) (string, error)
 }
 
 func (e *testExec) Place(ctx context.Context, o kotakapi.Order) (string, error) {
@@ -114,6 +115,13 @@ func (e *testExec) Lookup(ctx context.Context, id, tag string) (string, string, 
 		return "", "", 0, ErrExecutorUnavailable
 	}
 	return e.lookup(ctx, id, tag)
+}
+
+func (e *testExec) OrderRejection(ctx context.Context, orderID string) (string, error) {
+	if e.rejection == nil {
+		return "", ErrExecutorUnavailable
+	}
+	return e.rejection(ctx, orderID)
 }
 
 func TestEngineCreate(t *testing.T) {

@@ -6658,6 +6658,7 @@ function normalizeBracket(raw) {
     exchangeStopOrderId: String(raw.exchange_stop_order_id ?? raw.exchangeStopOrderId ?? ""),
     exchangeStopPrice: num(raw.exchange_stop_price ?? raw.exchangeStopPrice ?? 0),
     exchangeStopStatus: String(raw.exchange_stop_status ?? raw.exchangeStopStatus ?? ""),
+    exchangeStopReason: String(raw.exchange_stop_reason ?? raw.exchangeStopReason ?? ""),
     exitOrderId: String(raw.exit_order_id ?? raw.exitOrderId ?? raw.ExitOrderId ?? ""),
     exitPrice,
     ltp: ltp > 0 ? ltp : entryPrice,
@@ -6874,14 +6875,19 @@ function bracketsHTML() {
     const hasBackstop = b.exchangeStopMode && b.exchangeStopMode !== "OFF" && b.exchangeStopPrice > 0;
     const backstopMode = b.exchangeStopMode === "SL" ? "SL-L" : b.exchangeStopMode;
     const backstopStatus = String(b.exchangeStopStatus || "").toUpperCase();
+    const backstopReason = String(b.exchangeStopReason || "").trim();
+    const backstopBroken = backstopStatus === "REJECTED" || backstopStatus === "FAILED";
     const backstopText = hasBackstop
-      ? `EXCH ${backstopMode} ₹${fmt(b.exchangeStopPrice)}${backstopStatus ? ` · ${backstopStatus}` : ""}`
+      ? `EXCH ${backstopMode} ₹${fmt(b.exchangeStopPrice)}${backstopStatus ? ` · ${backstopStatus}` : ""}${backstopBroken ? " ⚠" : ""}`
       : "—";
+    const backstopTitle = backstopBroken
+      ? (backstopReason || "Rejected by the broker — open the order audit trail for the reason.")
+      : (hasBackstop ? "Exchange-side catastrophe stop at Kotak" : "");
     const backstopClass = !hasBackstop
       ? "muted"
       : backstopStatus === "FILLED"
         ? "sl-hit"
-        : (backstopStatus === "REJECTED" || backstopStatus === "FAILED")
+        : backstopBroken
           ? "muted"
           : "pending";
 
@@ -6892,7 +6898,7 @@ function bracketsHTML() {
       <td class="font-bold">₹${fmt(b.entryPrice)}</td>
       <td class="up font-bold">${b.targetPrice > 0 ? `₹${fmt(b.targetPrice)} <span class="muted" style="font-size:9.5px;">(+${targetDiff.toFixed(2)})</span>` : "—"}</td>
       <td class="down font-bold">${b.stopLossPrice > 0 ? `₹${fmt(b.stopLossPrice)} <span class="muted" style="font-size:9.5px;">(−${Math.abs(b.entryPrice - b.stopLossPrice).toFixed(2)})</span>` : "—"}</td>
-      <td><span class="status-badge ${backstopClass}">${esc(backstopText)}</span></td>
+      <td><span class="status-badge ${backstopClass}"${backstopTitle ? ` title="${esc(backstopTitle)}"` : ""}>${esc(backstopText)}</span></td>
       <td class="font-bold" data-bracket-ltp="${esc(b.id)}">₹${fmt(ltp)}</td>
       <td class="${pnlClass} font-bold" data-bracket-pnl="${esc(b.id)}">${pnlText}</td>
       <td><span class="status-badge ${badgeClass}">${badgeLabel}</span></td>
@@ -7315,7 +7321,12 @@ function initChartQuickOrder() {
 
   $("cqo-exchange-stop-mode")?.addEventListener("change", (e) => {
     if (!S.quickOrder) return;
-    S.quickOrder.exchangeStopMode = e.target.value === "SL" ? "SL" : "SL-M";
+    let mode = e.target.value === "SL" ? "SL" : "SL-M";
+    if (mode === "SL-M" && exchangeStopSLMBlocked(S.quickOrder.option)) {
+      mode = "SL";
+      toast("Kotak blocks SL-M for BSE F&O — the backstop will use SL-L.", "warn", 4500);
+    }
+    S.quickOrder.exchangeStopMode = mode;
     try {
       localStorage.setItem("scalper-exchange-stop-mode", S.quickOrder.exchangeStopMode);
     } catch (_) {}
@@ -7745,6 +7756,11 @@ function openChartQuickOrder(pane, price, x, y) {
     if (savedMode === "SL" || savedMode === "SL-L") exchangeStopMode = "SL";
     else if (savedMode === "SL-M" || savedMode === "SLM") exchangeStopMode = "SL-M";
   } catch (_) {}
+  // Kotak's RMS rejects SL-M for BSE F&O ("STOP LOSS MARKET ORDER NOT ALLOWED")
+  // and asks for a stop-loss limit order. Mirror the server-side coercion so the
+  // card never shows a mode the broker will refuse.
+  const slmBlocked = exchangeStopSLMBlocked(option);
+  if (slmBlocked && exchangeStopMode === "SL-M") exchangeStopMode = "SL";
 
   S.quickOrder = {
     pane,
@@ -7925,6 +7941,19 @@ function computeExchangeStopPrice(price, slPrice, mode = "SL-M") {
   return Math.max(0.05, trigger);
 }
 
+// Kotak's RMS blocks SL-M for BSE F&O; the broker asks for SL-L instead.
+function exchangeStopSLMBlocked(option) {
+  const segment = String(option?.exchangeSegment || "").toLowerCase();
+  return segment === "bse_fo";
+}
+
+function syncExchangeStopModeOptions(blocked) {
+  const slmOption = document.querySelector('#cqo-exchange-stop-mode option[value="SL-M"]') as HTMLOptionElement | null;
+  if (!slmOption) return;
+  slmOption.disabled = Boolean(blocked);
+  slmOption.textContent = blocked ? "SL-M (blocked on BSE)" : "SL-M";
+}
+
 function renderQuickOrderSLRiskWarning() {
   const el = $("cqo-sl-risk-warning");
   if (!el || !S.quickOrder) return;
@@ -7949,6 +7978,7 @@ function renderQuickOrderExchangeStop() {
 
   const enableEl = $("cqo-exchange-stop-enable");
   if (enableEl) enableEl.checked = !!exchangeStopEnabled;
+  syncExchangeStopModeOptions(exchangeStopSLMBlocked(S.quickOrder.option));
   const modeEl = $("cqo-exchange-stop-mode");
   if (modeEl) {
     modeEl.value = exchangeStopMode === "SL" ? "SL" : "SL-M";

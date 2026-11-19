@@ -49,7 +49,8 @@ func (b *ScopedBrackets) GetBracket(ctx context.Context, id string) (*bracket.Br
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets WHERE id = ? AND mode = ?`, id, b.mode)
 	got, err := scanBracket(row)
 	if err != nil {
@@ -74,7 +75,8 @@ func (b *ScopedBrackets) ListBrackets(ctx context.Context, limit int) ([]bracket
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets WHERE mode = ? ORDER BY created_at DESC LIMIT ?`, b.mode, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list %s brackets: %w", b.mode, err)
@@ -105,7 +107,8 @@ func (b *ScopedBrackets) GetActiveBrackets(ctx context.Context) ([]bracket.Brack
 		       transaction_type, quantity, product, entry_price, entry_order_id,
 		       target_price, stoploss_price, trailing_stop, exit_order_id, exit_price,
 		       status, pnl, exchange_stop_mode, exchange_stop_order_id,
-		       exchange_stop_price, exchange_stop_status, created_at, updated_at
+		       exchange_stop_price, exchange_stop_status, exchange_stop_reason,
+		       created_at, updated_at
 		FROM brackets WHERE mode = ? AND status IN ('PENDING_ENTRY', 'IN_POSITION', 'EXIT_FAILED')
 		ORDER BY created_at ASC`, b.mode)
 	if err != nil {
