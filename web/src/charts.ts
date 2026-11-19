@@ -2120,9 +2120,10 @@ function registerCustomOverlays() {
       const showGrip = Boolean(data.draggable);
       const showRemove = showGrip && !data.noRemove;
       const removeX = showRemove ? width - 14 : null;
-      const gripX = showGrip ? (showRemove ? width - 34 : width - 14) : null;
+      // The draft grip is a wider pill, so keep it fully inside the plot.
+      const gripX = showGrip ? (showRemove ? width - 34 : width - 20) : null;
       let labelX = width - 8;
-      if (showGrip) labelX = gripX - 11;
+      if (showGrip) labelX = gripX - 13;
       if (!showGrip && showRemove) labelX = removeX - 10;
       if (showGrip) {
         data.gripX = gripX;
@@ -2186,6 +2187,9 @@ function registerCustomOverlays() {
       });
 
       if (showGrip) {
+        // Draft levels have no remove badge, so their grip carries the whole
+        // interaction and gets a taller/wider pill to aim at.
+        const gripWide = !showRemove;
         figures.push({
           type: "text",
           attrs: {
@@ -2198,14 +2202,14 @@ function registerCustomOverlays() {
           styles: {
             color: "#e2e8f0",
             backgroundColor: "#334155",
-            size: 10,
+            size: gripWide ? 12 : 10,
             weight: "bold",
             family: "system-ui, -apple-system, sans-serif",
-            paddingLeft: 3,
-            paddingRight: 3,
-            paddingTop: 2,
-            paddingBottom: 2,
-            borderRadius: 3,
+            paddingLeft: gripWide ? 6 : 3,
+            paddingRight: gripWide ? 6 : 3,
+            paddingTop: gripWide ? 4 : 2,
+            paddingBottom: gripWide ? 4 : 2,
+            borderRadius: gripWide ? 4 : 3,
           },
           ignoreEvent: true,
         });
@@ -2389,6 +2393,9 @@ function registerCustomOverlays() {
       });
 
       if (showGrip) {
+        // Draft levels have no remove badge, so their grip carries the whole
+        // interaction and gets a taller/wider pill to aim at.
+        const gripWide = !showRemove;
         figures.push({
           type: "text",
           attrs: {
@@ -2401,14 +2408,14 @@ function registerCustomOverlays() {
           styles: {
             color: "#e2e8f0",
             backgroundColor: "#334155",
-            size: 10,
+            size: gripWide ? 12 : 10,
             weight: "bold",
             family: "system-ui, -apple-system, sans-serif",
-            paddingLeft: 3,
-            paddingRight: 3,
-            paddingTop: 2,
-            paddingBottom: 2,
-            borderRadius: 3,
+            paddingLeft: gripWide ? 6 : 3,
+            paddingRight: gripWide ? 6 : 3,
+            paddingTop: gripWide ? 4 : 2,
+            paddingBottom: gripWide ? 4 : 2,
+            borderRadius: gripWide ? 4 : 3,
           },
           ignoreEvent: true,
         });
@@ -5556,31 +5563,58 @@ export class CandleChart {
     const y = clientY - rect.top;
     if (y < 0 || y > rect.height) return null;
     const coarse = pointerType === "touch" || pointerType === "pen";
-    for (const data of this.overlayHitTargets()) {
+    const targets = this.overlayHitTargets();
+    const gripYOf = (data) => Number(data.gripY);
+
+    // Controls win over the line band: when two levels sit a few points apart,
+    // grabbing one level's grip must never move its neighbour's line.
+    let control = null;
+    let controlDist = Infinity;
+    for (const data of targets) {
       const gripX = Number(data.gripX);
-      const gripY = Number(data.gripY);
+      const gripY = gripYOf(data);
       if (!Number.isFinite(gripX) || !Number.isFinite(gripY)) continue;
       const isDraft = data.source === "draft";
       // Draft levels have no remove badge, and the card may be sitting on the
       // grip column, so give them a generous target.
-      const radius = isDraft ? 16 : 10;
-      if (Math.abs(x - gripX) <= radius && Math.abs(y - gripY) <= radius) {
-        return this.resolveDraggableLevel(data);
+      const radius = isDraft ? 22 : 10;
+      const dx = Math.abs(x - gripX);
+      const dy = Math.abs(y - gripY);
+      if (dx <= radius && dy <= radius && dy < controlDist) {
+        control = data;
+        controlDist = dy;
+        continue;
       }
       const box = data.labelBox;
+      const boxPad = isDraft ? 4 : 0;
       if (box
         && x >= Number(box.left) && x <= Number(box.right)
-        && y >= Number(box.top) && y <= Number(box.bottom)) {
-        return this.resolveDraggableLevel(data);
-      }
-      // While the quick-order card is open its drafts are the only thing being
-      // edited, so dragging anywhere on the line is safe and expected.
-      const lineRadius = isDraft ? (coarse ? 14 : 7) : 0;
-      if (lineRadius > 0 && Math.abs(y - gripY) <= lineRadius) {
-        return this.resolveDraggableLevel(data);
+        && y >= Number(box.top) - boxPad && y <= Number(box.bottom) + boxPad
+        && dy < controlDist) {
+        control = data;
+        controlDist = dy;
       }
     }
-    return null;
+    if (control) return this.resolveDraggableLevel(control);
+
+    // While the quick-order card is open its drafts are the only thing being
+    // edited, so dragging anywhere on the line is safe and expected. The band
+    // is deliberately forgiving (the card hides most of the plot) and the
+    // closest line wins.
+    const lineRadius = coarse ? 20 : 12;
+    let line = null;
+    let lineDist = Infinity;
+    for (const data of targets) {
+      if (data.source !== "draft") continue;
+      const gripY = gripYOf(data);
+      if (!Number.isFinite(gripY)) continue;
+      const dist = Math.abs(y - gripY);
+      if (dist <= lineRadius && dist < lineDist) {
+        line = data;
+        lineDist = dist;
+      }
+    }
+    return line ? this.resolveDraggableLevel(line) : null;
   }
 
   hitTestRemoveBadge(clientX, clientY) {
@@ -5678,20 +5712,33 @@ export class CandleChart {
       price: Number(level.price),
     };
     this.suppressChartClickUntil = Date.now() + 600;
-    this.container.style.cursor = "grabbing";
+    this.setLevelCursor("grabbing");
     try {
       this.container.setPointerCapture(event.pointerId);
     } catch (_) {}
     this.showLevelDragPreview(level, Number(level.price));
   }
 
+  /**
+   * klinecharts writes an inline `cursor: crosshair` on its own wrapper, so a
+   * cursor set on the container never shows. Toggle classes on the frame and
+   * let CSS override the canvas subtree instead.
+   */
+  setLevelCursor(cursor) {
+    const frame = this.container?.closest?.(".chart-frame") || this.container;
+    if (!frame) return;
+    frame.classList.toggle("level-grab", cursor === "grab");
+    frame.classList.toggle("level-grabbing", cursor === "grabbing");
+    frame.classList.toggle("level-pointer", cursor === "pointer");
+  }
+
   onLevelPointerMove(event) {
     if (!this.container) return;
     if (!this.levelDrag) {
       if (this.hitTestRemoveBadge(event.clientX, event.clientY)) {
-        this.container.style.cursor = "pointer";
+        this.setLevelCursor("pointer");
       } else {
-        this.container.style.cursor = this.hitTestLevel(event.clientX, event.clientY, event.pointerType) ? "grab" : "";
+        this.setLevelCursor(this.hitTestLevel(event.clientX, event.clientY, event.pointerType) ? "grab" : "");
       }
       return;
     }
@@ -5705,7 +5752,7 @@ export class CandleChart {
     if (!Number.isFinite(price) || price <= 0) return;
     if (Math.abs(event.clientY - this.levelDrag.startY) >= 2) {
       this.levelDrag.moved = true;
-      this.container.style.cursor = "grabbing";
+      this.setLevelCursor("grabbing");
       if (!this.levelDrag.started) {
         this.levelDrag.started = true;
         // Only a real drag hides the quick-order card: a bare grip click would
@@ -5730,7 +5777,7 @@ export class CandleChart {
     this.levelDrag = null;
     this.suppressChartClickUntil = Date.now() + 400;
     if (this.container) {
-      this.container.style.cursor = "";
+      this.setLevelCursor("");
       try {
         if (this.container.hasPointerCapture(event.pointerId)) {
           this.container.releasePointerCapture(event.pointerId);

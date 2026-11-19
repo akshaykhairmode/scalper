@@ -833,6 +833,14 @@ button.metric { border: 0; background: transparent; font: inherit; color: inheri
 
 .chart-frame { position: relative; flex: 1; min-height: 0; }
 .chart-frame .chart-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+/* Level dragging: klinecharts sets an inline `cursor: crosshair` on its inner
+   wrapper, so a cursor on the container is ignored. Override the subtree. */
+.chart-frame.level-grab .chart-canvas,
+.chart-frame.level-grab .chart-canvas * { cursor: grab !important; }
+.chart-frame.level-grabbing .chart-canvas,
+.chart-frame.level-grabbing .chart-canvas * { cursor: grabbing !important; }
+.chart-frame.level-pointer .chart-canvas,
+.chart-frame.level-pointer .chart-canvas * { cursor: pointer !important; }
 .chart-frame.drawing-mode, .chart-frame.drawing-mode .chart-canvas, .chart-frame.drawing-mode canvas { cursor: crosshair !important; }
 .chart-tools {
   position: absolute;
