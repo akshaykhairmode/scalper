@@ -2132,6 +2132,15 @@ function registerCustomOverlays() {
         data.badgeX = removeX;
         data.badgeY = y;
       }
+      // Record the badge's hit box so the whole label can start a drag: aiming
+      // at the 10px grip glyph alone is the reason the levels felt "stuck".
+      data.labelBox = {
+        left: labelX - Math.max(36, label.length * 5.8 + 12),
+        right: labelX + 2,
+        top: y - 9,
+        bottom: y + 9,
+      };
+      data.lineY = y;
 
       const figures = [];
 
@@ -2347,6 +2356,13 @@ function registerCustomOverlays() {
         data.badgeX = removeX;
         data.badgeY = y;
       }
+      data.labelBox = {
+        left: labelX - Math.max(36, tagText.length * 5.8 + 12),
+        right: labelX + 2,
+        top: y - 9,
+        bottom: y + 9,
+      };
+      data.lineY = y;
 
       figures.push({
         type: "text",
@@ -5473,7 +5489,9 @@ export class CandleChart {
 
   overlayHitTargets() {
     if (!this.chart) return [];
-    const groups = ["bracket_levels", "open_orders", "draft_levels"];
+    // Drafts are checked first: while the quick-order card is open they are what
+    // the user is editing, even when a placed bracket sits at a nearby price.
+    const groups = ["draft_levels", "bracket_levels", "open_orders"];
     const targets = [];
     for (const groupId of groups) {
       let overlays = [];
@@ -5526,23 +5544,41 @@ export class CandleChart {
     return next;
   }
 
-  /** Only the drawn grab handle starts a drag; the price badge stays clickable. */
-  hitTestLevel(clientX, clientY) {
+  /**
+   * The grip, the price badge and (for draft levels) the dashed line itself all
+   * start a drag. Placed levels keep the line free so chart panning still works
+   * away from the badge.
+   */
+  hitTestLevel(clientX: number, clientY: number, pointerType = "") {
     if (!this.chart || !this.container) return null;
     const rect = this.container.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
     if (y < 0 || y > rect.height) return null;
+    const coarse = pointerType === "touch" || pointerType === "pen";
     for (const data of this.overlayHitTargets()) {
       const gripX = Number(data.gripX);
       const gripY = Number(data.gripY);
       if (!Number.isFinite(gripX) || !Number.isFinite(gripY)) continue;
-      // Draft levels only have the grip (no remove badge), so give them a
-      // slightly larger target — the card is hidden while dragging and the
-      // user is aiming at a single small handle.
-      const radius = data.source === "draft" ? 16 : 10;
-      if (Math.abs(x - gripX) > radius || Math.abs(y - gripY) > radius) continue;
-      return this.resolveDraggableLevel(data);
+      const isDraft = data.source === "draft";
+      // Draft levels have no remove badge, and the card may be sitting on the
+      // grip column, so give them a generous target.
+      const radius = isDraft ? 16 : 10;
+      if (Math.abs(x - gripX) <= radius && Math.abs(y - gripY) <= radius) {
+        return this.resolveDraggableLevel(data);
+      }
+      const box = data.labelBox;
+      if (box
+        && x >= Number(box.left) && x <= Number(box.right)
+        && y >= Number(box.top) && y <= Number(box.bottom)) {
+        return this.resolveDraggableLevel(data);
+      }
+      // While the quick-order card is open its drafts are the only thing being
+      // edited, so dragging anywhere on the line is safe and expected.
+      const lineRadius = isDraft ? (coarse ? 14 : 7) : 0;
+      if (lineRadius > 0 && Math.abs(y - gripY) <= lineRadius) {
+        return this.resolveDraggableLevel(data);
+      }
     }
     return null;
   }
@@ -5629,7 +5665,7 @@ export class CandleChart {
       }
       return;
     }
-    const level = this.hitTestLevel(event.clientX, event.clientY);
+    const level = this.hitTestLevel(event.clientX, event.clientY, event.pointerType);
     if (!level) return;
     event.preventDefault();
     event.stopPropagation();
@@ -5655,7 +5691,7 @@ export class CandleChart {
       if (this.hitTestRemoveBadge(event.clientX, event.clientY)) {
         this.container.style.cursor = "pointer";
       } else {
-        this.container.style.cursor = this.hitTestLevel(event.clientX, event.clientY) ? "grab" : "";
+        this.container.style.cursor = this.hitTestLevel(event.clientX, event.clientY, event.pointerType) ? "grab" : "";
       }
       return;
     }
