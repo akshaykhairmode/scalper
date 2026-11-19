@@ -2093,6 +2093,44 @@ function registerCustomOverlays() {
     },
   });
 
+  // Translucent wing between the entry and one of its exits (reward in green,
+  // risk in red). Drawn behind the level lines.
+  kc.registerOverlay({
+    name: "bracketZone",
+    totalStep: 2,
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: function({ overlay, coordinates, bounding }) {
+      const ys = (coordinates || [])
+        .map((coord) => Number(coord?.y))
+        .filter((value) => Number.isFinite(value));
+      if (ys.length < 2) return [];
+      const width = bounding?.width || 800;
+      const top = Math.min(...ys);
+      const bottom = Math.max(...ys);
+      if (!(bottom - top > 0.75)) return [];
+      return [{
+        type: "polygon",
+        attrs: {
+          coordinates: [
+            { x: 0, y: top },
+            { x: width, y: top },
+            { x: width, y: bottom },
+            { x: 0, y: bottom },
+          ],
+        },
+        styles: {
+          style: "fill",
+          color: overlay.extendData?.fill || "rgba(148, 163, 184, 0.12)",
+          borderColor: "transparent",
+          borderSize: 0,
+        },
+        ignoreEvent: true,
+      }];
+    },
+  });
+
   kc.registerOverlay({
     name: "bracketLevelLine",
     totalStep: 1,
@@ -2109,10 +2147,13 @@ function registerCustomOverlays() {
       const width = bounding?.width || 800;
       const isTarget = data.kind === "TARGET";
       const isStop = data.kind === "STOP";
+      const isExchangeStop = data.kind === "EXCHANGE_STOP";
       const isBuy = data.side === "B" || data.side === "BUY";
-      const lineColor = isTarget ? "#29b360" : isStop ? "#f05a5a" : isBuy ? "#3b82f6" : "#f97316";
-      const bgColor = isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
-      const defaultKindLabel = isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
+      const lineColor = isExchangeStop ? "#f59e0b"
+        : isTarget ? "#29b360" : isStop ? "#f05a5a" : isBuy ? "#3b82f6" : "#f97316";
+      const bgColor = isExchangeStop ? "#b45309"
+        : isTarget ? "#1e7e44" : isStop ? "#aa2e2e" : isBuy ? "#1d4ed8" : "#c2410c";
+      const defaultKindLabel = isExchangeStop ? "EXCH" : isTarget ? "TARGET" : isStop ? "SL" : "ENTRY";
       const label = data.label || `${defaultKindLabel}: ₹${price.toFixed(2)}`;
       // Every draggable level exposes a grab handle. Persisted levels also get
       // a remove badge; draft (pre-order) levels do not, because removing them
@@ -3596,7 +3637,7 @@ export class CandleChart {
     // Draft levels belong to the unsubmitted quick-order card: they are only
     // local prices until the user presses BUY/SELL, but they drag exactly like
     // a placed bracket level so TP/SL can be chosen directly on the chart.
-    this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+    this.draftLevels = { entry: 0, target: 0, stop: 0, exchangeStop: 0, exchangeStopMode: "", side: "B" };
     this.draftLevelsKey = "";
     this.draftLevelOverlayIds = [];
     this.levelDrag = null;
@@ -5067,6 +5108,18 @@ export class CandleChart {
     return null;
   }
 
+  /**
+   * Price distance covered by one vertical pixel in the candle pane. Used to
+   * give the draft bracket a readable gap: two levels a fraction of a point
+   * apart are indistinguishable on a chart that spans tens of points.
+   */
+  pricePerPixel() {
+    const near = this.getPriceFromPixel(4, 50, false);
+    const far = this.getPriceFromPixel(24, 50, false);
+    if (!Number.isFinite(near) || !Number.isFinite(far)) return 0;
+    return Math.abs(far - near) / 20;
+  }
+
   /* ── Draft (pre-order) levels ─────────────────────────────
    * The quick-order card opens on a chart click and parks ENTRY/TP/SL lines on
    * the price axis. They are draggable before submission so the user can pick
@@ -5106,28 +5159,80 @@ export class CandleChart {
     this.renderDraftLevels();
   }
 
+  /** Exchange-side catastrophe stop, derived from the server SL settings. */
+  showExchangeStopPreview(price, mode = "SL-M") {
+    const value = Number(price);
+    this.draftLevels.exchangeStop = Number.isFinite(value) && value > 0 ? value : 0;
+    this.draftLevels.exchangeStopMode = String(mode || "SL-M").toUpperCase() === "SL" ? "SL" : "SL-M";
+    this.renderDraftLevels();
+  }
+
+  clearExchangeStopPreview() {
+    if (!this.draftLevels.exchangeStop) return;
+    this.draftLevels.exchangeStop = 0;
+    this.draftLevels.exchangeStopMode = "";
+    this.renderDraftLevels();
+  }
+
   renderDraftLevels() {
     if (!this.chart) return;
-    const { entry = 0, target = 0, stop = 0, side = "B" } = this.draftLevels || {};
+    const {
+      entry = 0, target = 0, stop = 0, side = "B",
+      exchangeStop = 0, exchangeStopMode = "",
+    } = this.draftLevels || {};
     const tick = 0.05;
     const round = (value) => Math.round(Number(value) * 20) / 20;
     const sideTag = String(side).toUpperCase() === "S" ? "S" : "B";
     const levels = [];
     if (Number.isFinite(entry) && entry > 0) {
-      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} · LIMIT` });
+      levels.push({ kind: "ENTRY", price: entry, label: `ENTRY ₹${entry.toFixed(2)} · LIMIT`, draggable: true });
     }
     if (Number.isFinite(target) && target > 0) {
-      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)} · DRAFT` });
+      levels.push({ kind: "TARGET", price: target, label: `TARGET ₹${target.toFixed(2)} · DRAFT`, draggable: true });
     }
     if (Number.isFinite(stop) && stop > 0) {
-      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)} · DRAFT` });
+      levels.push({ kind: "STOP", price: stop, label: `SL ₹${stop.toFixed(2)} · DRAFT`, draggable: true });
+    }
+    if (Number.isFinite(exchangeStop) && exchangeStop > 0) {
+      const mode = String(exchangeStopMode).toUpperCase() === "SL" ? "SL-L" : "SL-M";
+      levels.push({
+        kind: "EXCHANGE_STOP",
+        price: exchangeStop,
+        label: `${mode} ₹${exchangeStop.toFixed(2)} · EXCH`,
+        // Derived from the SL and the server's distance settings, so it is a
+        // read-only reference line rather than another grab handle.
+        draggable: false,
+      });
+    }
+    // Shade the risk and reward wings so the bracket is readable at a glance.
+    const zones = [];
+    if (entry > 0 && target > 0) {
+      zones.push({ from: entry, to: target, fill: "rgba(41, 179, 96, 0.14)" });
+    }
+    if (entry > 0 && stop > 0) {
+      zones.push({ from: entry, to: stop, fill: "rgba(240, 90, 90, 0.13)" });
     }
 
-    const key = levels.map((level) => level.label).join("|") + `|${sideTag}`;
+    const key = levels.map((level) => level.label).join("|")
+      + `|${sideTag}|${zones.map((zone) => `${zone.from}-${zone.to}`).join(",")}`;
     if (key === this.draftLevelsKey && this.draftLevelOverlayIds.length === levels.length) return;
 
     this.clearDraftOverlays();
     this.draftLevelsKey = key;
+
+    for (const zone of zones) {
+      try {
+        this.chart.createOverlay({
+          name: "bracketZone",
+          groupId: "draft_zones",
+          points: [{ value: zone.from }, { value: zone.to }],
+          lock: true,
+          zLevel: 100,
+          extendData: { fill: zone.fill },
+        });
+      } catch (_) {}
+    }
+
     for (const level of levels) {
       // Clamp each drag inside its neighbours so an entry can never cross its
       // own TP/SL. Zero means "no bound on that side".
@@ -5147,13 +5252,14 @@ export class CandleChart {
           groupId: "draft_levels",
           points: [{ value: level.price }],
           lock: true,
+          zLevel: 101,
           extendData: {
             source: "draft",
             kind: level.kind,
             price: level.price,
             label: level.label,
             side: sideTag,
-            draggable: true,
+            draggable: level.draggable !== false,
             noRemove: true,
             minPrice,
             maxPrice: Math.max(0, maxPrice),
@@ -5169,6 +5275,7 @@ export class CandleChart {
     if (!this.chart) return;
     try {
       this.chart.removeOverlay({ groupId: "draft_levels" });
+      this.chart.removeOverlay({ groupId: "draft_zones" });
     } catch (_) {}
     for (const id of this.draftLevelOverlayIds) {
       try {
@@ -5352,7 +5459,7 @@ export class CandleChart {
       this.bracketLevelsKey = "";
       this.bracketData = null;
       // Draft prices belong to the previous instrument, so drop them with it.
-      this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+      this.draftLevels = { entry: 0, target: 0, stop: 0, exchangeStop: 0, exchangeStopMode: "", side: "B" };
       this.clearDraftOverlays();
       this.indicatorSignature = "";
       this.vpLastKey = "";
@@ -6735,7 +6842,7 @@ export class CandleChart {
       this.container.removeEventListener("pointercancel", this.levelPointerHandlers.up, true);
       this.levelPointerHandlers = null;
     }
-    this.draftLevels = { entry: 0, target: 0, stop: 0, side: "B" };
+    this.draftLevels = { entry: 0, target: 0, stop: 0, exchangeStop: 0, exchangeStopMode: "", side: "B" };
     this.clearDraftOverlays();
     this.clearOIWalls();
     this.clearOpenOrders();

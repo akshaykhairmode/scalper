@@ -7659,6 +7659,7 @@ function openChartQuickOrder(pane, price, x, y) {
       c?.clearOrderPreview?.();
       c?.clearTargetPreview?.();
       c?.clearStopPreview?.();
+      c?.clearExchangeStopPreview?.();
     }
   }
 
@@ -7678,6 +7679,13 @@ function openChartQuickOrder(pane, price, x, y) {
     ? Math.min(Math.max(roundToTick(paneATR), atrFloor), priceCeiling)
     : 0;
 
+  // A level only a tick or two away from the entry renders as a single smudged
+  // line. Guarantee ~34px of vertical room per wing so all three (plus the
+  // exchange backstop) are individually visible and grabbable.
+  const pxGap = 34;
+  const openGapPts = Math.max(0.05, roundToTick(Math.max(0, num(chart.pricePerPixel?.() || 0)) * pxGap));
+  const maxGapPts = Math.max(0.05, price - 0.05);
+
   let defaultPts = 2.0;
   let targetSource = "default";
   try {
@@ -7694,6 +7702,7 @@ function openChartQuickOrder(pane, price, x, y) {
     defaultPts = atrPts;
     targetSource = "atr";
   }
+  defaultPts = Math.min(Math.max(defaultPts, openGapPts), maxGapPts);
 
   let targetEnabled = true;
   try {
@@ -7714,7 +7723,7 @@ function openChartQuickOrder(pane, price, x, y) {
     }
   } catch (_) {}
   if (!Number.isFinite(slPts) || slPts <= 0) slPts = defaultPts;
-  slPts = Math.min(slPts, Math.max(0.05, price - 0.05));
+  slPts = Math.min(Math.max(slPts, openGapPts), maxGapPts);
 
   let slEnabled = true;
   try {
@@ -7950,10 +7959,12 @@ function renderQuickOrderExchangeStop() {
 
   const priceEl = $("cqo-exchange-stop-price");
   const riskEl = $("cqo-exchange-stop-risk");
+  const chart = S.charts[S.quickOrder.pane];
   if (!exchangeStopEnabled) {
     S.quickOrder.exchangeStopPrice = 0;
     if (priceEl) priceEl.textContent = "Off";
     if (riskEl) riskEl.textContent = "No live sell at Kotak";
+    chart?.clearExchangeStopPreview?.();
     renderQuickOrderSLRiskWarning();
     return;
   }
@@ -7967,6 +7978,11 @@ function renderQuickOrderExchangeStop() {
   }
   if (riskEl) {
     riskEl.textContent = `Catastrophe risk ≈ ₹${risk.toLocaleString("en-IN")} (server SL still active)`;
+  }
+  if (trigger > 0) {
+    chart?.showExchangeStopPreview?.(trigger, exchangeStopMode);
+  } else {
+    chart?.clearExchangeStopPreview?.();
   }
   renderQuickOrderSLRiskWarning();
 }
@@ -8115,6 +8131,7 @@ function closeChartQuickOrder() {
     S.charts[S.quickOrder.pane]?.clearOrderPreview();
     S.charts[S.quickOrder.pane]?.clearTargetPreview();
     S.charts[S.quickOrder.pane]?.clearStopPreview();
+    S.charts[S.quickOrder.pane]?.clearExchangeStopPreview();
     S.quickOrder = null;
   }
   const widget = $("chart-quick-order");
